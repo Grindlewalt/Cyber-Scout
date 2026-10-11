@@ -95,3 +95,15 @@ Run heavy jobs on atomosserver (`/mnt/nas/autoscout-scratch`, `rtenv` Python, GP
 - API: StationCams(event_dir, match_json, inset_video) → .usable, .cam, .frames(), .frame_at(), .project(),
   .visible(), .ray(), .ground(), .robots_at(). CLI: sync / check / sheet / calibrate. qm11 has no inset upload.
 - Insets for the dev set: /mnt/nas/autoscout-media/2026wasam/insets/. Low-res (ball 6–25 px): upscale for OCR.
+
+## hubcam.py — station-view made/miss verification (done; NOT in the pipeline yet)
+- Station cams sit ~1.8–1.9 m up, level with the 1.829 m opening (seen edge-on); the white lid is the hub-box roof
+  ~1.35 m. Insets are true 60 fps; station lead 0.085 s. Each shot's 3D arc predicts the ball in every station frame;
+  nearest blob within a shrinking gate (45→5 px), then one ballistic refit to overhead + station sightings (two views
+  ~70° apart pin depth near the hub).
+- Deliberately conservative: flips only when the station ball sits on the shot's own arc (≤15 px median, ≥6
+  sightings). Wrong-ball matches in volleys were the failure mode of looser versions.
+- Result (dev set): confirms 36% of made shots with 16/16 precision (outcome_conf → 0.95); held-out outcome accuracy
+  unchanged (0.892); reconciliation unchanged. ~45% of hub shots get no station match (edge of view, occlusion).
+  Cost ~137 s/match (105 s sync+pose — reuse station_export's sync to cut to ~30 s).
+- Verdict: a confidence booster, not an accuracy fix. Integrate later if the per-match cost is worth it.
