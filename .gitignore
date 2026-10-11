@@ -33,3 +33,4 @@ kaggle_pkg/
 *.mov
 *.mkv
 .env
+.work/

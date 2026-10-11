@@ -24,6 +24,7 @@ START_FALLBACK = float(os.environ.get("START_FALLBACK", "6.5"))
 SCAN_T1 = float(os.environ.get("SCAN_T1", "190"))
 OUT_HZ = 10                                             # web export rate
 HB, SB = 12, 3
+NO_FEED_LEVEL = 20                                      # field mean below this = feed lost
 CLOCK_BOX = tuple(int(v) for v in os.environ.get("CLOCK_BOX", "912,72,1008,116").split(","))   # x0,y0,x1,y1
 
 
@@ -60,7 +61,8 @@ def check_pose(video, cam, tag_csv, log=print):
     frames, nxt = [], 8.0
     for f in c.decode(s):
         if f.time is None or f.time < nxt: continue
-        frames.append(cv2.cvtColor(f.to_ndarray(format="bgr24"), cv2.COLOR_BGR2GRAY)); nxt += 6.0
+        g = cv2.cvtColor(f.to_ndarray(format="bgr24"), cv2.COLOR_BGR2GRAY); nxt += 6.0
+        if g[::16, ::16].mean() > NO_FEED_LEVEL: frames.append(g)
         if nxt > 170: break
     c.close()
     if len(frames) < 5:
@@ -85,17 +87,79 @@ def check_pose(video, cam, tag_csv, log=print):
     P = np.array([tags[i] for i in ids]); uv = np.array([found[i] for i in ids])
     err = np.linalg.norm(cam.project(P) - uv, axis=1)
     info = {"checked": True, "tags": len(ids), "moved_px": round(float(np.median(err)), 2)}
-    if np.median(err) > 2.0 and len(ids) >= 4:
-        ok, rv, tv = cv2.solvePnP(P, uv, cam.K, cam.D, cam.rvec.copy(), cam.tvec.copy(),
-                                  useExtrinsicGuess=True, flags=cv2.SOLVEPNP_ITERATIVE)
-        if ok:
-            new = dict(cam.raw); new["rvec"] = rv.ravel().tolist(); new["tvec"] = tv.ravel().tolist()
-            cam2 = CAMM.Camera(new)
-            e2 = np.linalg.norm(cam2.project(P) - uv, axis=1)
-            if np.median(e2) < np.median(err):
-                info["resolved_px"] = round(float(np.median(e2)), 2); cam = cam2
+    if np.median(err) > 2.0:
+        plate = np.median(np.stack(frames), 0).astype(np.uint8)
+        cam2 = resolve_pose(cam, P, uv, plate)
+        e2 = np.linalg.norm(cam2.project(P) - uv, axis=1)
+        # accept only if the tags fit AND the centre line lines up at least as well
+        s_old, s_new = centreline_score(cam, plate), centreline_score(cam2, plate)
+        info.update(resolved_px=round(float(np.median(e2)), 2), line_old_px=round(s_old, 1), line_new_px=round(s_new, 1))
+        if np.median(e2) < 0.5 * np.median(err) and s_new <= max(s_old, 3.0):
+            cam = cam2; info["applied"] = True
     log(f"  pose check: {info}")
     return cam, info
+
+
+def centreline_pixels(cam, plate, search=25):
+    """White centre-line pixels near where `cam` predicts it, from a robot-free plate."""
+    Y = np.linspace(0.5, CAMM.WID - 0.5, 70)
+    pred = cam.project(np.c_[np.full(70, CAMM.LEN / 2), Y, np.zeros(70)])
+    g = cv2.GaussianBlur(plate, (3, 3), 0).astype(float)
+    pts = []
+    for u, v in pred:
+        u, v = int(round(u)), int(round(v))
+        if not (search <= u < g.shape[1] - search and 0 <= v < g.shape[0]): continue
+        row = g[v, u - search:u + search + 1]
+        k = int(row.argmax())
+        if row[k] - np.median(row) < 50: continue          # no clear white line here (ball/robot)
+        w = np.clip(row - np.median(row), 0, None); xs = np.arange(len(row))
+        w[np.abs(xs - k) > 3] = 0
+        pts.append([u - search + float((xs * w).sum() / w.sum()), float(v)])
+    return np.array(pts).reshape(-1, 2)
+
+
+def resolve_pose(cam, P, uv, plate=None):
+    """Camera was nudged: re-fit its pose from the tags plus the white centre line
+    (tags alone may all sit on one side), intrinsics fixed, position held near the
+    calibrated one by a soft prior (a bump mostly re-aims, it doesn't relocate)."""
+    from scipy.optimize import least_squares
+    C0 = cam.C.copy()
+    line = np.zeros((0, 2))
+    def proj(x, X):
+        rv, C = x[:3], x[3:]
+        R, _ = cv2.Rodrigues(rv); tv = -R @ C
+        q, _ = cv2.projectPoints(X.reshape(-1, 1, 3), rv, tv, cam.K, cam.D)
+        return q.reshape(-1, 2)
+    Yl = np.linspace(-0.3, CAMM.WID + 0.3, 200)
+    LW = np.c_[np.full(200, CAMM.LEN / 2), Yl, np.zeros(200)]
+    def res(x):
+        r = [(proj(x, P) - uv).ravel()]
+        if len(line):
+            poly = proj(x, LW)
+            d = np.abs(np.interp(line[:, 1], poly[:, 1], poly[:, 0]) - line[:, 0])   # line is near-vertical
+            r.append(d * np.sqrt(2 * len(P) / max(len(line), 1)))                    # line ~ as much weight as the tags
+        r.append((x[3:] - C0) / 0.25)                                              # camera position prior, 25 cm
+        return np.concatenate(r)
+    x = np.r_[cam.rvec, C0]
+    for _ in range(2):          # fit, then re-extract the line near the improved guess
+        x = least_squares(res, x, loss="soft_l1", f_scale=2.0).x
+        if plate is not None:
+            R, _ = cv2.Rodrigues(x[:3]); tmp = dict(cam.raw); tmp["rvec"] = x[:3].tolist(); tmp["tvec"] = (-R @ x[3:]).tolist()
+            line = centreline_pixels(CAMM.Camera(tmp), plate)
+    x = least_squares(res, x, loss="soft_l1", f_scale=2.0).x
+    rv = x[:3]; R, _ = cv2.Rodrigues(rv); tv = -R @ x[3:]
+    new = dict(cam.raw); new["rvec"] = np.ravel(rv).tolist(); new["tvec"] = np.ravel(tv).tolist()
+    return CAMM.Camera(new)
+
+
+def centreline_score(cam, plate):
+    """Median pixel offset between the predicted and the actual white centre line
+    (lower = the calibration lines up).  inf if the line isn't found."""
+    pts = centreline_pixels(cam, plate)
+    if len(pts) < 10: return float("inf")
+    Y = np.linspace(-0.3, CAMM.WID + 0.3, 200)
+    poly = cam.project(np.c_[np.full(200, CAMM.LEN / 2), Y, np.zeros(200)])
+    return float(np.median(np.abs(np.interp(pts[:, 1], poly[:, 1], poly[:, 0]) - pts[:, 0])))
 
 
 # ---------------------------------------------------------------- detection
@@ -126,6 +190,7 @@ def cam_len():
 def detect_video(video, cam, model, t1=SCAN_T1, log=print):
     x0, y0, x1, y1 = cam.roi()
     swapped = swap_check(cam); n_swap = 0
+    feed = []                       # per processed frame: True if the field camera is live
     c = av.open(video); s = c.streams.video[0]; s.thread_type = "AUTO"
     rows, chas, body = [], [], []
     clock = []                      # (t, binarised clock digits) for the first 45 s
@@ -136,6 +201,10 @@ def detect_video(video, cam, model, t1=SCAN_T1, log=print):
         if f.time + 1e-6 < nxt: continue
         nxt = (n + 1) / FPS
         im = f.to_ndarray(format="bgr24")
+        live = float(im[y0:y1:16, x0:x1:16].mean()) > NO_FEED_LEVEL
+        feed.append(live)
+        if not live:                # camera feed missing (black field): nothing to detect
+            n += 1; continue
         if swapped(im):
             im = np.ascontiguousarray(im[:, :, ::-1]); n_swap += 1
         if f.time < 45:
@@ -157,7 +226,7 @@ def detect_video(video, cam, model, t1=SCAN_T1, log=print):
     if n_swap:
         log(f"  fixed {n_swap} colour-swapped frames")
     return (np.array(rows, float).reshape(-1, 9), np.array(chas, np.float32).reshape(-1, HB * SB + 4),
-            np.array(body, np.float32).reshape(-1, HB * SB + 4), n, clock)
+            np.array(body, np.float32).reshape(-1, HB * SB + 4), n, clock, np.array(feed, bool))
 
 
 def clock_start(clock, log=print):
@@ -188,7 +257,7 @@ def clock_start(clock, log=print):
     return None
 
 
-def match_start(det, xy, cov, n, log=print):
+def match_start(det, xy, cov, n, log=print, fallback=None):
     """Auto start from robot motion, seconds into the video: the first moment >= 3
     robots move at once (sustained 1 s).  Uses pure tracklets so detection flicker
     (which moves nothing) cannot trigger it.  Pre-match robots are parked."""
@@ -206,8 +275,9 @@ def match_start(det, xy, cov, n, log=print):
     lo, hi = int(0.5 * FPS), int(30 * FPS)
     cand = np.where(run[lo:hi] >= 0.7 * FPS)[0]
     if len(cand) == 0:
-        log(f"  match start: no motion onset found, fallback {START_FALLBACK}s")
-        return START_FALLBACK, False
+        fb = START_FALLBACK if fallback is None else fallback
+        log(f"  match start: no motion onset found, fallback {fb:.2f}s")
+        return fb, False
     f = lo + cand[0]
     while f > 0 and moving[f] >= 2: f -= 1                               # walk back to the first mover
     t = f / FPS - 0.3                                                    # reaction latency
@@ -222,26 +292,31 @@ def zone_of(x, LEN):
     return "neutral"
 
 
-def track_stats(xy, obs, alliance_name, t_auto_end, LEN):
+def track_stats(xy, obs, alliance_name, t_auto_end, LEN, live=None):
+    """Per-robot match stats.  Only frames where the camera feed was live count;
+    distance and speed are scaled up to the full match so matches stay comparable."""
     dt = 1 / FPS
+    live = np.ones(len(xy), bool) if live is None else live[:len(xy)]
     v = np.r_[0, np.linalg.norm(np.diff(xy, axis=0), axis=1)] / dt
     v = np.minimum(v, 5.5)
-    dist = float(v.sum() * dt)
-    za = np.array([zone_of(x, LEN) for x in xy[:, 0]])
+    ok = live & np.r_[True, live[:-1]]
+    fa = int(t_auto_end * FPS)
+    cover, acover = max(ok.mean(), 1e-6), max(ok[:fa].mean(), 1e-6)
+    za = np.array([zone_of(x, LEN) for x in xy[:, 0]])[live]
     own = "red_zone" if alliance_name == "red" else "blue_zone"
     opp = "blue_zone" if alliance_name == "red" else "red_zone"
-    fa = int(t_auto_end * FPS)
-    return dict(distance_m=round(dist, 1),
-                auto_distance_m=round(float(v[:fa].sum() * dt), 1),
-                max_speed=round(float(np.percentile(v, 99)), 2),
-                observed=round(float(obs.mean()), 3),
-                time_own_zone=round(float((za == own).mean()), 3),
-                time_neutral=round(float((za == "neutral").mean()), 3),
-                time_opp_zone=round(float((za == opp).mean()), 3))
+    z = lambda name: round(float((za == name).mean()), 3) if len(za) else None
+    return dict(distance_m=round(float(v[ok].sum() * dt / cover), 1),
+                auto_distance_m=round(float(v[:fa][ok[:fa]].sum() * dt / acover), 1) if ok[:fa].any() else None,
+                max_speed=round(float(np.percentile(v[ok], 99)), 2) if ok.any() else None,
+                observed=round(float(obs[live].mean()), 3) if live.any() else 0.0,
+                time_own_zone=z(own), time_neutral=z("neutral"), time_opp_zone=z(opp))
 
 
 # ---------------------------------------------------------------- main
-def process(video, cam_path, onnx, tag_csv=None, log=print):
+def process(video, cam_path, onnx, tag_csv=None, log=print, start_hint=None):
+    """start_hint: typical match-start offset for this kind of upload, used only
+    when neither the clock nor robot motion gives one."""
     cam = CAMM.Camera(cam_path)
     pose = {"checked": False}
     if tag_csv:
@@ -252,7 +327,7 @@ def process(video, cam_path, onnx, tag_csv=None, log=print):
 
     model = Detector(onnx)
     t0 = time.time()
-    det, chas, body, n, clock = detect_video(video, cam, model, log=log)
+    det, chas, body, n, clock, feed = detect_video(video, cam, model, log=log)
     log(f"  detection: {n} frames, {len(det)} raw dets in {time.time() - t0:.0f}s")
 
     keep = det[:, 7] >= CONF_TRACK
@@ -264,7 +339,7 @@ def process(video, cam_path, onnx, tag_csv=None, log=print):
     d, ch, bo, xy = d[nms], ch[nms], bo[nms], xy[nms]
 
     t_clock = clock_start(clock, log)
-    t_motion, found = match_start(d, xy, cam.cov(xy, su=2.0, sv=2.5), n, log)
+    t_motion, found = match_start(d, xy, cam.cov(xy, su=2.0, sv=2.5), n, log, fallback=start_hint)
     if t_clock is not None and 0 <= t_clock < 40:
         t_start, found, how = t_clock, True, "clock"
     else:
@@ -272,6 +347,7 @@ def process(video, cam_path, onnx, tag_csv=None, log=print):
     log(f"  match start {t_start:.2f}s from {how} (clock {t_clock}, motion {t_motion:.2f})")
     f0 = max(0, int(round((t_start - 0.5) * FPS)))
     nf = min(n - f0, int(math.ceil((MATCH_S + 1.0) * FPS)))
+    fw = np.ones(nf, bool); seg = feed[f0:f0 + nf]; fw[:len(seg)] = seg
     w = (d[:, 0] >= f0) & (d[:, 0] < f0 + nf)
     d, ch, bo, xy = d[w].copy(), ch[w], bo[w], xy[w]
     d[:, 0] -= f0
@@ -299,14 +375,25 @@ def process(video, cam_path, onnx, tag_csv=None, log=print):
             alliance=tr["alliance"], idx=k,
             xy=np.round(tr["xy"][::step] * 100).astype(int).tolist(),      # cm @ OUT_HZ
             obs=tr["obs"][::step].astype(int).tolist(),
-            stats=track_stats(tr["xy"], tr["obs"], tr["alliance"], t_auto_end, CAMM.LEN),
+            stats=track_stats(tr["xy"], tr["obs"], tr["alliance"], t_auto_end, CAMM.LEN, fw),
             feat=dict(height=None if not np.isfinite(tr["height"]) else round(tr["height"], 3),
                       hist=np.round(hist, 4).tolist(), n_iso=len(iso),
                       box_w_px=None if not np.isfinite(wpx) else float(wpx),
                       start_xy=np.round(tr["xy"][int(0.5 * FPS)], 2).tolist(),
                       auto_end_xy=np.round(tr["xy"][min(len(tr["xy"]) - 1, int(t_auto_end * FPS))], 2).tolist(),
                       end_xy=np.round(tr["xy"][-1], 2).tolist())))
-    return dict(t_start=round(t_start, 2), start_detected=found, start_source=how, frames=nf, hz=OUT_HZ,
+    gaps, i = [], 0
+    while i < nf:
+        if not fw[i]:
+            j = i
+            while j < nf and not fw[j]: j += 1
+            gaps.append([round(i / FPS, 2), round(j / FPS, 2)]); i = j
+        else:
+            i += 1
+    if gaps: log(f"  camera feed missing for {(~fw).sum() / FPS:.0f}s: {gaps}")
+    return dict(t_start=round(t_start, 2), start_detected=found, start_source=how,
+                feed_ok=round(float(fw.mean()), 3), feed_gaps=gaps,
+                auto_feed_ok=round(float(fw[:int(t_auto_end * FPS)].mean()), 3), frames=nf, hz=OUT_HZ,
                 t_auto_end=t_auto_end, t_teleop_start=0.5 + AUTO_S + PAUSE_S,
                 pose=pose, n_dets=int(len(d)), tracks=out_tracks,
                 field=dict(length=CAMM.LEN, width=CAMM.WID))

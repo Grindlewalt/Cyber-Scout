@@ -126,6 +126,12 @@ function teamsTable(el, d, ev) {
   render();
 }
 
+const STATE_LABEL = { done: "tracked", pending: "waiting", no_video: "no video yet", processing: "processing", error: "retrying", failed: "failed" };
+function statusPill(m) {
+  if (m.state === "done" && m.feed_ok != null && m.feed_ok < 0.9)
+    return `<span class="pill no_video" title="the field camera was missing from the broadcast for part of this match">partial footage (${Math.round(m.feed_ok * 100)}%)</span>`;
+  return `<span class="pill ${m.state}">${STATE_LABEL[m.state] || m.state}</span>`;
+}
 function matchesTable(el, d, ev) {
   const tl = (ts, al) => ts.map(t => `<a class="team ${al[0]}" href="#/${ev}/t/${t}">${num(t)}</a>`).join(" ");
   el.innerHTML = `<div class="tablewrap"><table><thead><tr><th>Match</th><th>Red</th><th class="num">Score</th><th>Blue</th><th>Tracking</th><th>Labels</th></tr></thead><tbody>
@@ -135,7 +141,7 @@ function matchesTable(el, d, ev) {
       <td class="num"><span class="score r ${m.winner === "red" ? "win" : ""}">${m.red.score ?? "–"}</span>
         <span class="muted">–</span> <span class="score b ${m.winner === "blue" ? "win" : ""}">${m.blue.score ?? "–"}</span></td>
       <td>${tl(m.blue.teams, "blue")}</td>
-      <td><span class="pill ${m.state}">${{ done: "tracked", pending: "waiting", no_video: "no video yet", processing: "processing", error: "retrying", failed: "failed" }[m.state] || m.state}</span></td>
+      <td>${statusPill(m)}</td>
       <td>${confBar(m.id_conf)}</td></tr>`).join("")}</tbody></table></div>`;
 }
 
@@ -164,7 +170,8 @@ async function matchPage(ev, key) {
   $app.innerHTML = `<h1>${esc(d.label)}</h1>
     <div class="sub"><span class="score r ${d.winner === "red" ? "win" : ""}">${d.red.score}</span> – <span class="score b ${d.winner === "blue" ? "win" : ""}">${d.blue.score}</span>
      · video: <a href="https://youtu.be/${d.video.id}?t=${Math.floor(v0)}" target="_blank" rel="noopener">${esc(d.video.title)}</a>
-     ${d.start_detected ? "" : ' · <span class="pill no_video" title="match start not detected from motion; using a default offset">start estimated</span>'}</div>
+     ${d.start_detected ? "" : ' · <span class="pill no_video" title="match start not detected from motion; using a default offset">start estimated</span>'}
+     ${d.feed_ok < 0.98 ? ` · <span class="pill no_video" title="the field camera was missing from the broadcast for part of this match; stats use only the filmed part">camera footage ${Math.round(d.feed_ok * 100)}%</span>` : ""}</div>
     <div class="match-layout">
       <div class="stack"><div class="video"><div id="yt"></div></div>
         <div class="card"><h2>Robots</h2><div class="tablewrap"><table><thead><tr><th></th><th>Team</th><th class="num">Dist (m)</th><th class="num">Auto (m)</th><th class="num">Top (m/s)</th><th class="num">Own</th><th class="num">Neutral</th><th class="num">Opp.</th><th class="num">Seen</th><th>Label</th></tr></thead>
@@ -209,6 +216,14 @@ async function matchPage(ev, key) {
       ctx.globalAlpha = 1; ctx.strokeStyle = "#0008"; ctx.lineWidth = Math.max(1, c.width / 800); ctx.strokeRect(x - s / 2, y - s / 2, s, s);
       ctx.font = `700 ${Math.max(11, c.width / 75)}px system-ui`; ctx.textAlign = "center"; ctx.textBaseline = "middle";
       ctx.fillStyle = "#000c"; ctx.fillText(t.label, x + 1, y - s * 0.95 + 1); ctx.fillStyle = "#fff"; ctx.fillText(t.label, x, y - s * 0.95);
+    }
+    const gap = (d.feed_gaps || []).find(([a, b]) => fi / hz >= a && fi / hz < b);
+    if (gap) {
+      ctx.fillStyle = "rgba(13,17,23,.72)"; ctx.fillRect(0, 0, c.width, c.height);
+      ctx.fillStyle = "#e6edf3"; ctx.font = `600 ${Math.max(13, c.width / 40)}px system-ui`; ctx.textAlign = "center";
+      ctx.fillText("No camera feed in the broadcast here", c.width / 2, c.height / 2);
+      ctx.font = `${Math.max(11, c.width / 60)}px system-ui`; ctx.fillStyle = "#8b98a8";
+      ctx.fillText("positions are not known for this stretch", c.width / 2, c.height / 2 + c.width / 30);
     }
     const tt = fi / hz, ae = d.t_auto_end, ts = d.t_teleop_start;
     let clk, ph;

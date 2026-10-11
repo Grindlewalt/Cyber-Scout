@@ -34,7 +34,12 @@ def search(query, n=6):
 
 
 def choose(match, cfg, cache):
-    """-> dict(id, title, channel) or None.  `cache` memoises yt-dlp metadata."""
+    c = candidates(match, cfg, cache)
+    return c[0] if c else None
+
+
+def candidates(match, cfg, cache):
+    """-> acceptable videos, best first ([] if none yet).  `cache` memoises metadata."""
     prefer = re.compile(cfg.get("prefer", r"^Wide Match"), re.I)
     reject = re.compile(cfg.get("reject", r"^Match \d"), re.I)
     chans = set(cfg.get("allow_channels", ["FIRSTRoboticsCompetition"]))
@@ -46,10 +51,10 @@ def choose(match, cfg, cache):
             cache[vid] = meta(vid)
         if cache[vid]: cands.append(cache[vid])
     ok = [c for c in cands if not reject.search(c["title"]) and c["duration"] < 600]
-    for c in ok:
-        if prefer.search(c["title"]): return c
-    for c in ok:
-        if c["channel"] in chans: return c
+    ranked = [c for c in ok if prefer.search(c["title"])] + \
+             [c for c in ok if not prefer.search(c["title"]) and c["channel"] in chans]
+    if ranked:
+        return ranked
     title = cfg.get("search_title")
     if title:
         mf = match_fields(match)
@@ -57,10 +62,8 @@ def choose(match, cfg, cache):
         head, _, tail = q.partition(mf["name"])
         # FIRST titles playoff videos like "Match 8 (R2) - <event>": allow a suffix after the name
         pat = re.compile("^" + re.escape(head + mf["name"]) + r"(\s*\([^)]*\))?" + re.escape(tail) + "$", re.I)
-        for c in search(q):
-            if c["channel"] in chans and pat.match(c["title"].strip()):
-                return c
-    return None
+        return [c for c in search(q) if c["channel"] in chans and pat.match(c["title"].strip())][:2]
+    return []
 
 
 def match_fields(m):
