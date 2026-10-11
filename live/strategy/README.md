@@ -122,3 +122,61 @@ Show it greyed out.
   three tracked matches per team. Check `n_eff` and `prior_only` before showing them as facts.
 - Phase 1 has no per-robot cycle-time or fire-rate model inside the simulator. Robot FUEL per period is the fitted
   per-match amount, which already includes those rates over the time available.
+
+## District points, season goals, rankings and schedule (agent C)
+`district.py` (FRC district-points rules + TBA loader), `goals.py` (season Monte Carlo, `rankings.json`, `schedule.json`).
+```
+python -m live.strategy.goals DATA_DIR EV [--team frc4911] [--goal DCMP|Worlds|rank:N] [--asof TS] [--sims 800] [--out-dir D] [--offline]
+python -m live.strategy.goals DATA_DIR EV --replay        # goal odds at ~24 points of the season vs who really reached DCMP
+python -m live.strategy.goals DATA_DIR EV --goal-only     # print just the goal block
+```
+Worker: `from live.strategy import goals; goals.site_build(DATA, ev, team=DASH_TEAM)` writes `site/api/<ev>/rankings.json` and
+`schedule.json` (~2-5 s; pass `ctx=` a `dashboard.Context` to reuse it; reads `dashboard.<team>.json` for the blended ratings if
+present). Goal from `goal=` / env `DASH_GOAL` (default `DCMP`). Needs env `TBA_KEY` (district/event/awards/alliances, cached under
+`DATA/cache/tba_district/`, finished events forever). `DCMP_CAPACITY` env or `district.CAPACITY[district]` sets the DCMP size (TBA does not
+expose it; 2026pnw = 51 observed, default elsewhere 64); `district.WORLDS_SLOTS` likewise (assumed 14 for pnw). Events outside a
+district get rankings/schedule without the `district`/`goal` parts.
+
+**District rules** (`district.py`, exact vs TBA on all 309 team-events of 2026pnw and 126/126 season totals):
+qual `ceil(erfinv((N-2R+2)/(1.07N))*10/erfinv(1/1.07)+12)`; alliance captain/1st pick `17-n`, 2nd pick `n`, backup 0; playoffs
+(8-alliance double elim) winner 30 / finalist 20 / "Round 5" 13 / "Round 4" 7 (partial participation by backups: empirical table
+`PARTIAL`); awards Impact 10, EI 8, Rookie All-Star 8, other judged 5 (`NO_POINT_AWARDS` excluded); DCMP all x3; season = first two
+district events + DCMP + rookie bonus + adjustments (from TBA district rankings).
+
+**`rankings.json`** (`cyber-scout/goals@1`, kind `rankings`)
+```jsonc
+{ "schema", "kind": "rankings", "generated", "event", "team", "asof": null|ts, "quals_played", "quals_total", "district": "2026pnw"|null,
+  "teams": [{ "team": "frc4911", "number", "nickname", "rank", "rp", "matches_played", "record": "W-L-T", "rs",
+              "projection": {rank_mean, rank_p10, rank_p90, p_top8, p_top4, p_first, rp_mean, rs_mean, ...} | null,   // dashboard schema
+              "district": {"current": pts so far (counted events + rookie bonus), "projected": mean final pre-DCMP pts,
+                           "p10", "p90", "p_dcmp"} | null }],            // sorted by rank
+  "goal": null | {                                  // for `team` (DASH_TEAM)
+    "goal": "DCMP", "team", "district",
+    "p_goal": 0..1, "p_goal_ci": [lo, hi],           // 90% Monte-Carlo interval
+    "current_points", "projected_points": {mean, p10, p90},       // pre-DCMP season total
+    "cutoff": {"now": pts of the last points-qualifier if the season ended now,
+               "projected": {mean, p10, p50, p90}},                // projected points of the last points-qualifier
+    "points_needed": {"p50"|"p80"|"p95": {"final_points", "still_needed"}},   // for that chance of beating the cutoff
+    "points_still_needed",                           // = p50.still_needed
+    "dcmp": {"capacity", "points_slots_mean", "award_prequalified_now", "is_prequalified"},
+    "events": [{"event", "name", "start_date", "status": "done|live|future", "counts": bool (one of the first two),
+                "points": number (done) | {mean, p10, p90, rank_mean} (projected)}],
+    "value": {"baseline", "matches": [{"key", "label", "time", "p_if_win", "p_if_loss", "delta"}],   // focal-event quals, forced results
+              "events": [{"event", "by_points": [{"outcome","points","p_goal"}], "by_rank": [{"outcome","p_goal","share"}]}]},
+    "model": {"sims", "theta": source text, "sigma_alliance", "worlds_slots", "theta_team": {mean, sd}},
+    "p_dcmp"?: (goal Worlds only) } }
+```
+**`schedule.json`**: `{"schema","kind":"schedule","event","team","matches":[{ "key","label","short","comp_level","time","played",
+"red":[3],"blue":[3],"us":"red"|"blue"|null,"analyze_url":"#/<ev>/a/<key>"|null,
+"result":{red,blue,winner,rp:{red,blue},bonus:{red,blue}} (played) | "pred":{p_red, score:{red,blue}, rp?:{red,blue}} (upcoming),
+"breakdown": (upcoming matches of `team` only) {"win_prob" (ours),"p_win_auto","score":{ours,theirs,margin,margin_sd},"fouls":{ours,theirs},
+  "periods":[{period: auto|transition|shift1..4|endgame, label, ours, theirs, delta, p_ours_ahead, our_active_p, their_active_p,
+              ours_if_won_auto, ours_if_lost_auto, theirs_if_won_auto, theirs_if_lost_auto}],
+  "summary": plain-English "where you will be beaten"}}]}`. auto includes auto tower, endgame includes climb; shifts 1/3 are
+active for the auto loser (`our_active_p` = P our hub is active); FUEL points include the human player.
+
+**Model notes.** Strength: dashboard blend (+ foul share) for the event's teams, else running district EPA (Statbotics team_events when
+up and `asof` is None); one draw per team per season. Match = sum(theta) + N(0, sigma) (sigma ~ 61 from district residuals); RP bonus
+probabilities logistic in score (fitted on the district). Alliance selection: captains by rank, picks best remaining rating (no
+declines). Awards at unplayed events: random teams (Impact, EI, RAS ~ 30%, ~12 judged); they pre-qualify for DCMP. Worlds: surrogate
+DCMP (performance = theta + noise), approximate. Not modelled: team withdrawals, DCMP declines, tie-break details beyond avg RP.
