@@ -1,4 +1,11 @@
 "use strict";
+// Plugin registry: feature files (web/setup.js, admin.js, sources.js, rankings.js, schedule.js, teams2.js,
+// defense.js, ...) call CS.route()/CS.globalRoute()/CS.nav() at load time instead of editing this router.
+window.CS = window.CS || { routes: {}, globalRoutes: {}, navItems: [] };
+CS.route = (name, fn) => { CS.routes[name] = fn; };            // #/<ev>/<name>/...  -> fn(ev, ...rest)
+CS.globalRoute = (name, fn) => { CS.globalRoutes[name] = fn; }; // #/<name>/...      -> fn(...rest)
+CS.nav = item => { CS.navItems.push(item); };                   // {label, href: ev => "#/..", order, roles?}
+
 /* ============================================================================================
  * DATA CONTRACT (JSON under api/<ev>/...; cm for xy in t/*.json and m/*.json tracks, metres for shots/intakes in m/*.json)
  * Everything v2 is optional: missing fields simply hide the corresponding widget.
@@ -403,11 +410,21 @@ async function matchPage(ev, key) {
 }
 
 // ------------------------------------------------------------------ router
+function renderTopNav(p) {
+  const el = document.getElementById("topnav"); if (!el) return;
+  const ev = p.length && !CS.globalRoutes[p[0]] ? p[0] : null;
+  const items = CS.navItems.filter(i => ev || i.global).sort((a, b) => (a.order || 50) - (b.order || 50));
+  el.innerHTML = items.map(i => `<a href="${i.href(ev)}">${esc(i.label)}</a>`).join("");
+}
+
 async function route(scroll = true) {
   cleanup.forEach(f => f()); cleanup = [];
   const p = location.hash.replace(/^#\/?/, "").split("/").filter(Boolean);
   try {
-    if (!p.length) await home();
+    renderTopNav(p);
+    if (p.length && CS.globalRoutes[p[0]]) await CS.globalRoutes[p[0]](...p.slice(1));
+    else if (!p.length) await home();
+    else if (p[1] && CS.routes[p[1]]) await CS.routes[p[1]](p[0], ...p.slice(2));
     else if (p[1] === "dash") await dashPage(p[0], p[2]);
     else if (p.length === 1) { try { await api(`${p[0]}/dashboard.json`); await dashPage(p[0]); } catch (e) { if (!/404/.test(e.message)) throw e; await eventPage(p[0]); } }
     else if (p[1] === "m") await matchPage(p[0], p[2]);
@@ -422,4 +439,4 @@ async function route(scroll = true) {
 }
 window.addEventListener("hashchange", () => route());
 FIELD.onload = () => { };
-route();
+if (document.readyState === "complete") route(); else window.addEventListener("load", () => route());

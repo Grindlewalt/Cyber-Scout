@@ -255,3 +255,7 @@ table.rate .tm { position: sticky; left: 0; background: var(--panel); z-index: 1
 .dash > *, .dash .grid2 > *, .hgrid > *, .plan > * { min-width: 0; }
 .dash .tablewrap { overflow-x: auto; }
 .plan .mini { width: 100%; }
+
+.topnav { display:flex; gap:12px; font-size:13px; }
+.topnav a { color: var(--muted); }
+.topnav a:hover { color: var(--text); text-decoration:none; }
