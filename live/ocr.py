@@ -33,12 +33,50 @@ ANGLES = tuple(float(a) for a in os.environ.get("OCR_ANGLES", "0,45,-45").split(
 CONFUSABLE = {"0": "OoDQ", "1": "lIi|!]Jj", "2": "Zz", "4": "Hh", "5": "Ss", "6": "bG", "8": "B", "9": "gqSs"}
 
 
+# Open-set scoring (read_many(open_cands=...)): each text box is also scored against every team
+# at the event, so a number that is NOT in this match (wrong video, substitute robot, a look-alike
+# that is really another team) is noticed instead of being forced onto the nearest match team.
+# A read is "out of match" (Read.oos) unless its best candidate is a match team that beats the best
+# non-match team by OPEN_MARGIN nats.  The open-set scores feed integrity.py (wrong video /
+# substitution).  Dropping out-of-match reads from the identity solve (OCR_OPEN_REJECT=1) did NOT
+# help on the 10-match dev set (wrong reads are mostly neighbours' numbers -- match teams; look-alike
+# event teams such as 948/949 cost correct reads): 0.920 -> 0.913 of samples at margin 1, so it is off.
+OPEN_MARGIN = float(os.environ.get("OCR_OPEN_MARGIN", "1.0"))
+OPENSET = os.environ.get("OCR_OPENSET", "1") == "1"            # score open-set when the event list is known
+OPEN_REJECT = os.environ.get("OCR_OPEN_REJECT", "0") == "1"    # ... and drop out-of-match reads from identity
+
+
+def team_numbers(keys):
+    """["frc254", "1678", ...] -> ["254", "1678", ...] (order kept, duplicates removed)."""
+    out = []
+    for t in keys or []:
+        t = str(t); t = t[3:] if t.startswith("frc") else t
+        if t and t.isdigit() and t not in out: out.append(t)
+    return out
+
+
 class Read:
-    __slots__ = ("cand", "lp", "margin", "uv")
-    def __init__(self, cand, lp, margin, uv):
+    """cand/lp/margin: best of the match candidates (index, CTC log P, margin over the runner-up
+    match candidate) -- the closed-set read, unchanged.  With open-set scoring also:
+    best/best_lp: best candidate over match + event teams (number string); alt/alt_lp: best
+    NON-match candidate; best_margin: best_lp - runner-up over ALL candidates; gap = lp - alt_lp;
+    oos: out-of-match (best is not a match team, or gap < open_margin); rejected: not to be used
+    for identity (oos with open_reject, else the closed-set rule lp <= min_lp); scores: all candidate
+    log-probs (match cands first, then the other event teams, ocr cand order)."""
+    __slots__ = ("cand", "lp", "margin", "uv", "best", "best_lp", "best_margin", "alt", "alt_lp", "oos",
+                 "rejected", "scores")
+    def __init__(self, cand, lp, margin, uv, best=None, best_lp=None, best_margin=None, alt=None, alt_lp=None,
+                 oos=False, scores=None, rejected=False):
         self.cand, self.lp, self.margin, self.uv = cand, lp, margin, uv
+        self.best, self.best_lp = best, (lp if best_lp is None else best_lp)
+        self.best_margin = margin if best_margin is None else best_margin    # best vs runner-up, open set
+        self.alt, self.alt_lp, self.oos, self.scores, self.rejected = alt, alt_lp, oos, scores, rejected
+    @property
+    def gap(self):
+        return 30.0 if self.alt_lp is None else float(self.lp - self.alt_lp)
     def __repr__(self):
-        return f"Read({self.cand}, lp={self.lp:.2f}, m={self.margin:.1f}, uv=({self.uv[0]:.0f},{self.uv[1]:.0f}))"
+        x = "" if self.alt is None else f", best={self.best} alt={self.alt} gap={self.gap:.1f}{' OOS' if self.oos else ''}{' REJ' if self.rejected else ''}"
+        return f"Read({self.cand}, lp={self.lp:.2f}, m={self.margin:.1f}, uv=({self.uv[0]:.0f},{self.uv[1]:.0f}){x})"
 
 
 def _find_models():
@@ -183,7 +221,8 @@ class BumperOCR:
         return np.logaddexp(a[r, last], a[r, last - 1])
 
     # ------------------------------------------------------------ API
-    def read_many(self, crops, cands, offsets=None, up=UP, min_lp=MIN_LP, angles=None, confusable=None):
+    def read_many(self, crops, cands, offsets=None, up=UP, min_lp=MIN_LP, angles=None, confusable=None,
+                  open_cands=None, open_margin=None, keep_rejected=False, open_reject=None):
         """crops: BGR images (robot bumper regions); cands: candidate number strings.
         offsets: optional (x0, y0) of each crop in the frame -> Read.uv in frame pixels.
         angles: also detect text in the crop rotated by these degrees (bumper numbers on
@@ -191,9 +230,19 @@ class BumperOCR:
         (0, 45, -45) doubles the readable crops at ~2.5x the cost).
         confusable: score digits together with their look-alike glyphs (CONFUSABLE); default
         self.confusable (False = the measured overhead behaviour).
+        open_cands: other team numbers that could be in the picture (the event's teams); each box
+        is scored against cands + open_cands; a read is out-of-match (Read.oos) unless its best
+        candidate is in `cands` and beats the best other one by open_margin (OPEN_MARGIN).
+        open_reject (default OPEN_REJECT): out-of-match reads are rejected; else a read is rejected
+        only by the closed-set rule (best match lp <= min_lp: same reads as without open_cands).
+        Rejected reads (Read.rejected) are returned only with keep_rejected=True.  None = closed set.
         Returns per crop a list of Read (one per text box that matches a candidate)."""
         angles = ANGLES if angles is None else angles
         confusable = self.confusable if confusable is None else confusable
+        cands = list(cands); nm = len(cands)
+        allc = cands + [c for c in team_numbers(open_cands) if c not in cands] if open_cands is not None else cands
+        open_margin = OPEN_MARGIN if open_margin is None else open_margin
+        open_reject = OPEN_REJECT if open_reject is None else open_reject
         big, inv, own, ups = [], [], [], []
         for i, c in enumerate(crops):
             for ang in angles:
@@ -220,20 +269,32 @@ class BumperOCR:
         lps = self._rec_batch(lines)
         if confusable: lps = [self.merge_confusable(x) for x in lps]
         for k, (b, r) in enumerate(owner):
-            s = np.maximum(self.ctc(lps[2 * k], cands), self.ctc(lps[2 * k + 1], cands))
+            sa = np.maximum(self.ctc(lps[2 * k], allc), self.ctc(lps[2 * k + 1], allc))
+            s = sa[:nm]
             o = np.argsort(-s); j = int(o[0])
-            if s[j] <= min_lp: continue
             m = float(s[j] - (s[o[1]] if len(o) > 1 else -30.0))
+            if len(allc) > nm:
+                ja = int(np.argmax(sa)); jo = nm + int(np.argmax(sa[nm:]))
+                if sa[ja] <= min_lp: continue
+                oos = ja >= nm or float(s[j] - sa[jo]) < open_margin
+                rej = oos if open_reject else s[j] <= min_lp
+                if rej and not keep_rejected: continue
+                extra = dict(best=allc[ja], best_lp=float(sa[ja]), best_margin=float(sa[ja] - np.partition(sa, -2)[-2]),
+                             alt=allc[jo], alt_lp=float(sa[jo]),
+                             oos=bool(oos), rejected=bool(rej), scores=sa.astype(np.float32))
+            else:
+                if s[j] <= min_lp: continue
+                extra = {}
             cx, cy = r[0][0] / ups[b], r[0][1] / ups[b]
             if inv[b] is not None:
                 cx, cy = inv[b] @ [cx, cy, 1.0]
             i = own[b]
             ox, oy = offsets[i] if offsets is not None else (0, 0)
-            rd = Read(j, float(s[j]), m, (ox + cx, oy + cy))
+            rd = Read(j, float(s[j]), m, (ox + cx, oy + cy), **extra)
             # the same text found at two rotations: keep the better read
             dup = [q for q, x in enumerate(out[i]) if np.hypot(x.uv[0] - rd.uv[0], x.uv[1] - rd.uv[1]) < 12]
             if dup:
-                if out[i][dup[0]].lp < rd.lp: out[i][dup[0]] = rd
+                if out[i][dup[0]].best_lp < rd.best_lp: out[i][dup[0]] = rd
             else:
                 out[i].append(rd)
         return out
@@ -263,9 +324,16 @@ def bumper_rect(cam, xy, W, H, half=0.6, z1=0.5, pad=4):
     return max(0, x0), max(0, y0), min(W, x1), min(H, y1)
 
 
+OPEN_COLS = 14   # open-set read rows: [det_row, cand, lp, margin, amb, u, v, best_team, best_lp, alt_team, alt_lp,
+                 #                      rejected, best_margin, oos]
+
+
 def _attribute(ocr_res, jobs, rects, cen, row0):
     """Reads of a frame's crops -> rows [det_row, cand, lp, margin, ambiguous, u, v]: each read
-    goes to the detection whose bumper region holds the text (nearest robot centre)."""
+    goes to the detection whose bumper region holds the text (nearest robot centre).
+    Open-set reads (Read.alt set) get 7 more columns: best_team (number), best_lp, alt_team
+    (best non-match number), alt_lp, rejected (1 = not for identity), best_margin (open set),
+    oos (1 = out of match)."""
     rows = []
     for (j, _, _), rr in zip(jobs, ocr_res):
         for r in rr:
@@ -275,11 +343,15 @@ def _attribute(ocr_res, jobs, rects, cen, row0):
             d = {k: float(np.hypot(*(cen[k] - (u, v)))) for k in inside}
             best = min(d, key=d.get)
             amb = len(d) > 1 and sorted(d.values())[1] < 1.5 * d[best] + 3
-            rows.append([row0 + best, r.cand, round(r.lp, 3), round(r.margin, 2), int(amb), round(u, 1), round(v, 1)])
+            row = [row0 + best, r.cand, round(r.lp, 3), round(r.margin, 2), int(amb), round(u, 1), round(v, 1)]
+            if r.alt is not None:
+                row += [int(r.best), round(r.best_lp, 3), int(r.alt), round(r.alt_lp, 3), int(r.rejected),
+                        round(r.best_margin, 2), int(r.oos)]
+            rows.append(row)
     return rows
 
 
-def _worker_main(cands, device):
+def _worker_main(cands, device, open_cands=None):
     """OCR worker process (python live/ocr.py --worker ...): pickled jobs on stdin,
     pickled ("reads", rows) / ("ready", device) / ("error", msg) / ("done", busy_s) on stdout.
     A separate interpreter, so OCR never contends with decoding/detection for the GIL."""
@@ -302,7 +374,8 @@ def _worker_main(cands, device):
         t0 = time.time()
         try:
             row0, jobs, rects, cen = item
-            res = o.read_many([c for _, c, _ in jobs], cands, offsets=[x for _, _, x in jobs])
+            res = o.read_many([c for _, c, _ in jobs], cands, offsets=[x for _, _, x in jobs],
+                              open_cands=open_cands, keep_rejected=open_cands is not None)
             send(("reads", _attribute(res, jobs, rects, cen, row0)))
         except Exception as e:
             send(("error", repr(e)))
@@ -320,12 +393,20 @@ class OcrSampler:
     regions are kept but flagged ambiguous.
 
     result: self.reads, rows [det_row, cand_idx, lp, margin, ambiguous, u, v]
-    (det_row = index into detect_video's raw detection rows), self.n_tried."""
+    (det_row = index into detect_video's raw detection rows), self.n_tried.
 
-    def __init__(self, cam, teams, log=print, ocr=None, use_process=None):
+    open_cands (the event's team keys/numbers): open-set scoring (BumperOCR.read_many) -- self.reads
+    then holds the accepted reads (all closed-set reads unless OCR_OPEN_REJECT=1) and
+    self.open_reads ALL scored text boxes incl. the out-of-match ones, rows of OPEN_COLS (see
+    _attribute); close() returns the accepted reads as before."""
+
+    def __init__(self, cam, teams, log=print, ocr=None, use_process=None, open_cands=None):
         import threading, queue
         self.cam, self.teams = cam, list(teams)
         self.cands = [t[3:] if t.startswith("frc") else t for t in self.teams]
+        oc = [c for c in team_numbers(open_cands) if c not in self.cands] if open_cands else []
+        self.open_cands = oc or None
+        self.open_reads = []
         self.log = log
         self.recent = []                    # (t, x, y) of attempts
         self.good = []                      # (t, x, y) of successful reads (filled asynchronously)
@@ -339,7 +420,8 @@ class OcrSampler:
             dev = int(os.environ.get("OCR_GPU", os.environ.get("GPU_DEVICE", "0")))
             nw = max(1, int(os.environ.get("OCR_WORKERS", "4")))
             self.procs = [subprocess.Popen([sys.executable, os.path.abspath(__file__), "--worker",
-                                            _json.dumps(self.cands), str(dev)],
+                                            _json.dumps(self.cands), str(dev)]
+                                           + ([_json.dumps(self.open_cands)] if self.open_cands else []),
                                            stdin=subprocess.PIPE, stdout=subprocess.PIPE) for _ in range(nw)]
             self.proc = self.procs[0]; self.rr = 0; self.busy = [0.0] * nw
             self.done = [threading.Event() for _ in range(nw)]
@@ -413,7 +495,7 @@ class OcrSampler:
             while True:
                 kind, val = pickle.load(self.procs[k].stdout)
                 if kind == "reads":
-                    self.reads += val
+                    val = self._split(val)
                     for r in val:
                         if r[2] > -6 and r[3] >= 4 and r[0] in self.rowpos: self.good.append(self.rowpos[r[0]])
                 elif kind == "ready": self.device = val
@@ -431,14 +513,26 @@ class OcrSampler:
             try:
                 t0 = time.time()
                 row0, jobs, rects, cen = item
-                res = self.ocr.read_many([c for _, c, _ in jobs], self.cands, offsets=[o for _, _, o in jobs])
-                val = _attribute(res, jobs, rects, cen, row0)
-                self.reads += val
+                res = self.ocr.read_many([c for _, c, _ in jobs], self.cands, offsets=[o for _, _, o in jobs],
+                                         open_cands=self.open_cands, keep_rejected=self.open_cands is not None)
+                val = self._split(_attribute(res, jobs, rects, cen, row0))
                 for r in val:
                     if r[2] > -6 and r[3] >= 4 and r[0] in self.rowpos: self.good.append(self.rowpos[r[0]])
                 self.busy_s += time.time() - t0
             except Exception as e:          # never kill detection over OCR
                 self.err = repr(e)
+
+    def _split(self, rows):
+        """open-set rows -> self.open_reads (all) + accepted 7-col reads (returned, added to self.reads)."""
+        if rows and len(rows[0]) >= OPEN_COLS:
+            self.open_reads += rows
+            rows = [r[:7] for r in rows if not r[11]]
+        self.reads += rows
+        return rows
+
+    def open_rows(self):
+        """All open-set reads (OPEN_COLS columns; empty without open_cands)."""
+        return np.array(self.open_reads, float).reshape(-1, OPEN_COLS)
 
     def close(self):
         if self.proc is not None:
@@ -456,11 +550,14 @@ class OcrSampler:
         else:
             self.q.put(None); self.th.join()
         if self.err: self.log(f"  OCR error: {self.err}")
+        oos = sum(1 for r in self.open_reads if r[13])
         self.log(f"  OCR: {self.n_tried} crops, {len(self.reads)} reads "
-                 f"({self.device}, {self.busy_s:.0f}s busy)")
+                 + (f"(open set of {len(self.open_cands) + len(self.cands)}: {oos} text boxes out of match"
+                    f"{', rejected' if OPEN_REJECT else ''}) " if self.open_cands else "")
+                 + f"({self.device}, {self.busy_s:.0f}s busy)")
         return np.array(self.reads, float).reshape(-1, 7)
 
 
 if __name__ == "__main__" and len(sys.argv) > 1 and sys.argv[1] == "--worker":
     import json as _json
-    _worker_main(_json.loads(sys.argv[2]), int(sys.argv[3]))
+    _worker_main(_json.loads(sys.argv[2]), int(sys.argv[3]), _json.loads(sys.argv[4]) if len(sys.argv) > 4 else None)

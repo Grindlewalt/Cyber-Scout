@@ -335,7 +335,7 @@ def track_stats(xy, obs, alliance_name, t_auto_end, LEN, live=None):
 
 # ---------------------------------------------------------------- main
 def process(video, cam_path, onnx, tag_csv=None, log=print, start_hint=None, pose_guess=None,
-            teams=None, hooks=(), dump=None, extra_reads=None):
+            teams=None, hooks=(), dump=None, extra_reads=None, event=None):
     """start_hint: typical match-start offset for this kind of upload, used only
     when neither the clock nor robot motion gives one.  pose_guess: {rvec, tvec} of
     the camera as last seen (a bump persists across matches).
@@ -348,7 +348,13 @@ def process(video, cam_path, onnx, tag_csv=None, log=print, start_hint=None, pos
     extra_reads: bumper reads from other cameras for the identity solve -- an array of
     field-located rows (fuse.attribute_extra) or a callable (st, teams, log) -> rows run after
     prepare() (it gets the overhead detections; e.g. station_ocr.extra_reads_fn(...)).
-    Ignored without teams; None = overhead reads only (unchanged behaviour)."""
+    Ignored without teams; None = overhead reads only (unchanged behaviour).
+    event: {"teams": [the event's team keys], "matches": [the event's TBA matches], "key": this
+    match key} (all optional; teams default to everyone in matches).  With it and OCR_OPENSET=1
+    (default), bumper text is also scored against every event team (ocr.read_many open set) and
+    match["identity"]["integrity"] reports out-of-match reads, possible_wrong_video,
+    possible_substitution (integrity.py; integrity.should_retry(...) -> try the next video).
+    Identity uses the same reads as without it unless OCR_OPEN_REJECT=1 (measured: no gain)."""
     raw = json.load(open(cam_path))
     if pose_guess:
         raw = dict(raw, rvec=pose_guess["rvec"], tvec=pose_guess["tvec"])
@@ -363,22 +369,28 @@ def process(video, cam_path, onnx, tag_csv=None, log=print, start_hint=None, pos
         team_list = list(teams["red"]) + list(teams["blue"])
     model = Detector(onnx)
     sampler = None
+    open_teams = event_teams(event) if team_list else None
     if team_list:
         try:
             import ocr as OCRM
-            sampler = OCRM.OcrSampler(cam, team_list, log)
+            if not OCRM.OPENSET: open_teams = None
+            sampler = OCRM.OcrSampler(cam, team_list, log, open_cands=open_teams)
         except Exception as e:
             log(f"  bumper OCR unavailable ({e!r}): tracking without team identity")
     t0 = time.time()
     det, chas, body, n, clock, feed = detect_video(video, cam, model, log=log, hooks=hooks, ocr=sampler)
     reads = sampler.close() if sampler else np.zeros((0, 7))
     log(f"  detection: {n} frames, {len(det)} raw dets in {time.time() - t0:.0f}s")
-    st = prepare(det, chas, body, n, clock, feed, reads, cam, log, start_hint)
+    st = prepare(det, chas, body, n, clock, feed, reads, cam, log, start_hint,
+                 reads_open=sampler.open_rows() if sampler is not None and sampler.open_cands else None)
     st.update(camera_pose=dict(rvec=cam.rvec.tolist(), tvec=cam.tvec.tolist()), pose=pose,
               cam_raw=cam.raw, teams=team_list, ocr_ok=sampler is not None)
+    if open_teams and sampler is not None:
+        st.update(open_teams=open_teams, event_lineups=_lineups(event), match_key=(event or {}).get("key"))
     if extra_reads is not None and team_list and sampler is not None:
         try:
-            st["extra_reads"] = np.asarray(extra_reads(st, team_list, log) if callable(extra_reads) else extra_reads, float)
+            xr = np.asarray(extra_reads(st, team_list, log) if callable(extra_reads) else extra_reads, float)
+            st["extra_reads"] = xr.reshape(len(xr), -1) if len(xr) else np.zeros((0, 13))
         except Exception as e:                                  # never lose the match over extra reads
             log(f"  extra reads failed ({e!r}): overhead reads only")
     if dump:
@@ -387,8 +399,29 @@ def process(video, cam_path, onnx, tag_csv=None, log=print, start_hint=None, pos
     return finish(st, log)
 
 
-def prepare(det, chas, body, n, clock, feed, reads, cam, log=print, start_hint=None):
-    """Raw detections -> tracking inputs inside the match window (+ match start)."""
+def event_teams(event):
+    """process(event=...) -> the event's team keys (explicit list, else everyone in its matches)."""
+    if not event: return None
+    ts = list(event.get("teams") or [])
+    ts = [t["key"] if isinstance(t, dict) else t for t in ts]
+    if not ts:
+        import integrity
+        ts = sorted({f"frc{n}" for _, l in integrity.lineups(event.get("matches")) for n in l})
+    return ts or None
+
+
+def _lineups(event):
+    """event matches -> compact [{key, red, blue}] kept in the stage state (integrity re-checks)."""
+    import integrity
+    out = []
+    for k, l in integrity.lineups((event or {}).get("matches")):
+        out.append(dict(key=k, red=[f"frc{n}" for n in l[:3]], blue=[f"frc{n}" for n in l[3:]]))
+    return out
+
+
+def prepare(det, chas, body, n, clock, feed, reads, cam, log=print, start_hint=None, reads_open=None):
+    """Raw detections -> tracking inputs inside the match window (+ match start).
+    reads_open: optional open-set read rows (ocr.OPEN_COLS, raw det row first) -> st["reads_open"]."""
     idx = np.arange(len(det))
     keep = det[:, 7] >= CONF_TRACK
     d, ch, bo, idx = det[keep], chas[keep], body[keep], idx[keep]
@@ -413,12 +446,13 @@ def prepare(det, chas, body, n, clock, feed, reads, cam, log=print, start_hint=N
     d[:, 0] -= f0
     # reads: raw detection row -> kept detection (a read on an NMS-suppressed duplicate
     # moves to the kept detection of that robot in the same frame)
-    rd = np.zeros((0, 7))
-    if len(reads):
-        lut = np.full(len(det), -1); lut[idx] = np.arange(len(idx))
+    lut = np.full(len(det), -1); lut[idx] = np.arange(len(idx))
+    byf = {}
+    for k, f in enumerate(d[:, 0].astype(int)): byf.setdefault(f, []).append(k)
+
+    def remap(reads, ncol):
+        if not len(reads): return np.zeros((0, ncol))
         out = []
-        byf = {}
-        for k, f in enumerate(d[:, 0].astype(int)): byf.setdefault(f, []).append(k)
         for r in reads:
             g = lut[int(r[0])]
             if g < 0:
@@ -431,9 +465,35 @@ def prepare(det, chas, body, n, clock, feed, reads, cam, log=print, start_hint=N
                 if dd.min() > 0.7: continue
                 g = ks[int(dd.argmin())]
             out.append([g, *r[1:]])
-        rd = np.array(out, float).reshape(-1, 7)
-    return dict(d=d, ch=ch, bo=bo, xy=xy, reads=rd, nf=nf, fw=fw, f0=f0, t_start=t_start, found=found,
-                how=how, n_raw_reads=len(reads))
+        return np.array(out, float).reshape(-1, ncol)
+    rd = remap(reads, 7)
+    st = dict(d=d, ch=ch, bo=bo, xy=xy, reads=rd, nf=nf, fw=fw, f0=f0, t_start=t_start, found=found,
+              how=how, n_raw_reads=len(reads))
+    if reads_open is not None:
+        ro = np.asarray(reads_open, float)
+        ro = ro.reshape(len(ro), -1) if ro.size else ro.reshape(0, ro.shape[-1] if ro.ndim == 2 else 14)
+        st["reads_open"] = remap(ro, ro.shape[1])
+    return st
+
+
+def match_integrity(st, tracks, team_list, d, xy, teams=None, lineups=None, match_key=None):
+    """Open-set reads (overhead st["reads_open"] + station rows with open-set columns) ->
+    integrity.check(...) (out-of-match counts, possible_wrong_video, possible_substitution).
+    teams/lineups/match_key override the state's (e.g. a re-check against another lineup)."""
+    import integrity, fuse
+    det_track = {}
+    for k, tr in enumerate(tracks or []):
+        for g in tr.get("det_idx", []): det_track[int(g)] = k
+    xr = st.get("extra_reads")
+    sdet = None
+    if xr is not None and len(xr) and np.asarray(xr).shape[1] >= 19:
+        X = np.array(xr, float); X[:, 1] = np.arange(len(X)); X[:, 17] = 0      # attribute every row
+        a, _ = fuse.attribute_extra(d, xy, X)
+        sdet = np.full(len(X), -1); sdet[a[:, 1].astype(int)] = a[:, 0].astype(int)
+    R = integrity.normalise(st.get("reads_open"), xr, det_track, sdet)
+    track_teams = {k: tr.get("team") for k, tr in enumerate(tracks or []) if tr.get("team")}
+    return integrity.check(teams or team_list, R, lineups if lineups is not None else st.get("event_lineups"),
+                           track_teams, match_key if match_key is not None else st.get("match_key"))
 
 
 def finish(st, log=print):
@@ -458,6 +518,12 @@ def finish(st, log=print):
             v0 = st["t_start"] - 0.5
             for c in identity.get("corrections", []):          # add video time for review
                 c["t_video"] = round(v0 + c["frame"] / OUT_HZ, 2)
+            if st.get("open_teams"):
+                identity["open_set"] = dict(n_teams=len(st["open_teams"]))
+                try:
+                    identity["integrity"] = match_integrity(st, tracks, team_list, d, xy)
+                except Exception as e:                          # diagnostics only
+                    log(f"  integrity check failed ({e!r})")
         except Exception as e:                                  # never lose the match over identity
             import traceback; traceback.print_exc()
             log(f"  labelled tracking failed ({e!r}): falling back to unlabelled tracks")

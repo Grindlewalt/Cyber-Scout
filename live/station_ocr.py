@@ -16,6 +16,10 @@ to the overhead detection nearest in field space, like its own reads:
          [t_video, cand, lp, margin, x, y, dir_x, dir_y, sig_along, sig_perp, cam, u, v]
      (t_video = wide-video seconds of the overhead instant the read belongs to; dir = unit
      horizontal viewing direction; cam 0 = red station, 1 = blue).
+     Open-set scoring (open_teams = the event's teams, or st["open_teams"]): rows get 7 more
+     columns [best_team, best_lp, alt_team, alt_lp, rejected, best_margin, oos] (ocr.read_many) and
+     ALSO hold the rejected reads (rejected = 1: fuse.attribute_extra skips them; out-of-match reads
+     are rejected only with STOCR_OPEN_REJECT=1, default $OCR_OPEN_REJECT = off).
 
 Attribution to overhead detections (with an ambiguity guard) happens in fuse.attribute_extra.
 
@@ -42,6 +46,7 @@ SIG_ALONG0, SIG_ALONG_K = float(E("STOCR_SIG_A0", "0.30")), float(E("STOCR_SIG_A
 ANGLES = tuple(float(a) for a in E("STOCR_ANGLES", "0").split(","))   # "0,25,-25": +4% reads, 2x cost
 UP = float(E("STOCR_UP", "3.0"))
 CONFUSE = E("STOCR_CONFUSABLE", "1") == "1"   # digits scored with look-alike glyphs (ocr.CONFUSABLE)
+OPEN_REJECT = E("STOCR_OPEN_REJECT", E("OCR_OPEN_REJECT", "0")) == "1"   # drop out-of-match reads (open set)
 MIN_PX = 14                                 # px, smallest crop side worth reading
 OVERHEAD_FPS = 30.0
 
@@ -68,21 +73,26 @@ def locate(cam, uv):
     return p + FACE * u, u, r
 
 
-def station_reads(st, sc, teams, ocr=None, hz=HZ, log=print, t_range=None):
+def station_reads(st, sc, teams, ocr=None, hz=HZ, log=print, t_range=None, open_teams=None):
     """st: process.prepare() state (d rows [frame, t_video, ., x0,y0,x1,y1, conf, colour], xy);
     sc: stationcam.StationCams for the match; teams: 6 team keys (candidate order = read cand idx).
-    -> (R, 13) float rows (see module doc)."""
+    open_teams: the event's team keys for open-set scoring (default st.get("open_teams"); None/empty
+    = closed set, 13 columns).  -> (R, 13) or (R, 20) float rows (see module doc)."""
     import ocr as OCRM
     if ocr is None:
         ocr = OCRM.BumperOCR()
     cands = [t[3:] if t.startswith("frc") else t for t in teams]
+    if open_teams is None: open_teams = st.get("open_teams")
+    oc = [c for c in OCRM.team_numbers(open_teams) if c not in cands] if open_teams else []
+    oc = oc or None
+    ncol = 20 if oc else 13
     d, xy = st["d"], st["xy"]
     tv = d[:, 1]
     order = np.argsort(tv, kind="stable"); ts = tv[order]
     fr_t = np.unique(ts)                                          # overhead frame times
     ws = [w for w in ("red", "blue") if sc.usable.get(w)]
     if not ws:
-        log("  station OCR: no usable station camera"); return np.zeros((0, 13))
+        log("  station OCR: no usable station camera"); return np.zeros((0, ncol))
     if t_range is None:
         t0 = st["t_start"] - 0.5; t_range = (t0, t0 + st["nf"] / OVERHEAD_FPS)
     rows, n_crops, n_fr, t_start = [], 0, 0, time.time()
@@ -109,13 +119,14 @@ def station_reads(st, sc, teams, ocr=None, hz=HZ, log=print, t_range=None):
                 crops.append(im[y0:y1, x0:x1]); offs.append((x0, y0)); meta.append((ci, w))
         if not crops: continue
         n_crops += len(crops)
-        res = ocr.read_many(crops, cands, offsets=offs, up=UP, angles=ANGLES, confusable=CONFUSE)
+        res = ocr.read_many(crops, cands, offsets=offs, up=UP, angles=ANGLES, confusable=CONFUSE,
+                            open_cands=oc, keep_rejected=oc is not None, open_reject=OPEN_REJECT)
         seen = {}
         for (ci, w), rr in zip(meta, res):
             for r in rr:
                 dup = [q for q in seen.get(ci, []) if np.hypot(q.uv[0] - r.uv[0], q.uv[1] - r.uv[1]) < 12]
                 if dup:
-                    if dup[0].lp >= r.lp: continue
+                    if dup[0].best_lp >= r.best_lp: continue
                     seen[ci].remove(dup[0])
                 seen.setdefault(ci, []).append(r)
         for ci, rr in seen.items():
@@ -124,12 +135,18 @@ def station_reads(st, sc, teams, ocr=None, hz=HZ, log=print, t_range=None):
             c, u, rng = locate(cam, uv)
             for r, p, dv, rg in zip(rr, c, u, rng):
                 if not np.isfinite(p).all(): continue
-                rows.append([tn, r.cand, round(r.lp, 3), round(r.margin, 2), p[0], p[1], dv[0], dv[1],
-                             SIG_ALONG0 + SIG_ALONG_K * rg, SIG_PERP, ci, r.uv[0], r.uv[1]])
-    out = np.array(rows, float).reshape(-1, 13)
+                row = [tn, r.cand, round(r.lp, 3), round(r.margin, 2), p[0], p[1], dv[0], dv[1],
+                       SIG_ALONG0 + SIG_ALONG_K * rg, SIG_PERP, ci, r.uv[0], r.uv[1]]
+                if oc:
+                    row += [int(r.best), round(r.best_lp, 3), int(r.alt), round(r.alt_lp, 3), int(r.rejected),
+                            round(r.best_margin, 2), int(r.oos)]
+                rows.append(row)
+    out = np.array(rows, float).reshape(-1, ncol)
     out = debias(out, tv, xy, log)
-    log(f"  station OCR: {n_fr} frames, {n_crops} crops, {len(out)} reads in {time.time() - t_start:.0f}s "
-        f"(per team {np.bincount(out[:, 1].astype(int), minlength=len(teams)).tolist() if len(out) else []})")
+    acc = out[out[:, 17] == 0] if oc else out
+    log(f"  station OCR: {n_fr} frames, {n_crops} crops, {len(acc)} reads in {time.time() - t_start:.0f}s "
+        + (f"(+{len(out) - len(acc)} rejected; {int(out[:, 19].sum())} out of match) " if oc else "")
+        + f"(per team {np.bincount(acc[:, 1].astype(int), minlength=len(teams)).tolist() if len(acc) else []})")
     return out
 
 

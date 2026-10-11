@@ -24,7 +24,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
 sys.path.insert(0, HERE)
 from tba import TBA, match_label, short_label, sort_key
-import videos, identity, sitev2
+import videos, identity, sitev2, integrity
 import analytics as AN
 
 DATA = os.environ.get("DATA", "/data")
@@ -95,16 +95,24 @@ def process_match(ev, m, cfg, status, meta_cache):
                 extra = station_reads(ev, m, vpath, meta_cache) if HUBCAM else None
                 res = process.process(vpath, ev_file(ev, "camera.json"), MODEL, TAG_CSV,
                                       log=lambda *a: log(m["key"], *a), start_hint=start_hint(ev, v),
-                                      pose_guess=jload(pose_p), teams=match_teams(m), extra_reads=extra)
+                                      pose_guess=jload(pose_p), teams=match_teams(m), extra_reads=extra,
+                                      event=event_ctx(ev, m))
                 pc = res.get("pose", {})
                 if pc.get("tags", 0) >= 3 and (pc.get("applied") or (pc.get("moved_px") or 99) < 2.0):
                     jsave(pose_p, res["camera_pose"])          # verified pose: next match starts here
                 res.update(key=m["key"], video=dict(id=v["id"], title=v["title"], channel=v["channel"]),
                            processed_at=time.time(), seconds=round(time.time() - t0))
                 log(f"{m['key']}: {v['id']} camera coverage {res['feed_ok']:.0%} in {time.time() - t0:.0f}s")
-                if best is None or res["feed_ok"] > best["feed_ok"] + 0.02:
+                ig = (res.get("identity") or {}).get("integrity")
+                wrong = bool(ig) and integrity.should_retry(ig)
+                if wrong:                                   # bumper reads say this is another match's video
+                    fl = (ig.get("flags") or [{}])[0]
+                    log(f"{m['key']}: {v['id']} looks like the wrong video (likely {fl.get('likely_match')}) -> trying next upload")
+                    res["wrong_video"] = fl
+                if best is None or (best.get("wrong_video") and not wrong) or \
+                        (bool(best.get("wrong_video")) == wrong and res["feed_ok"] > best["feed_ok"] + 0.02):
                     best, best_path = res, vpath
-                if res["feed_ok"] >= 0.9:
+                if res["feed_ok"] >= 0.9 and not wrong:
                     break
             except Exception as e:
                 traceback.print_exc(); errors.append(str(e)[-300:])
@@ -160,6 +168,15 @@ def station_reads(ev, m, wide_path, meta_cache):
         return station_ocr.extra_reads_fn(cal, inset, wide_video=wide_path)
     except Exception:
         traceback.print_exc(); return None
+
+
+def event_ctx(ev, m):
+    """Event context for open-set OCR + match integrity (wrong video / substitution checks)."""
+    try:
+        t = TBA(os.environ["TBA_KEY"], os.path.join(DATA, "tba"))
+        return {"teams": [x["key"] for x in t.teams(ev)], "matches": t.matches(ev), "key": m["key"]}
+    except Exception:
+        return None
 
 
 def match_teams(m):

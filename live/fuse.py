@@ -213,7 +213,11 @@ def attribute_extra(det, xy, extra, tol_s=None, gate=None):
     tol_s = X_TOL_S if tol_s is None else tol_s
     gate = X_GATE if gate is None else gate
     extra = np.asarray(extra, float).reshape(len(extra), -1) if len(extra) else np.zeros((0, 10))
+    n_oos = 0
+    if extra.shape[1] >= 18:              # open-set rows (station_ocr): drop the rejected reads
+        n_oos = int((extra[:, 17] > 0).sum()); extra = extra[extra[:, 17] == 0]
     out, stats = [], dict(n=len(extra), no_frame=0, far=0, amb_drop=0, amb=0)
+    if n_oos: stats["out_of_match"] = n_oos
     if not len(extra) or not len(det): return np.zeros((0, 5)), stats
     tv = det[:, 1]; order = np.argsort(tv, kind="stable"); ts = tv[order]
     for r in extra:
@@ -557,7 +561,8 @@ def run_labeled(det, xy, cov, hs, ex, nf, LEN, WID, reads, teams, log=print, ext
             wx = read_weight(xr[:, 2], xr[:, 3], xr[:, 4]) * X_W
             reads = np.r_[reads[:, :5], xr]; w = np.r_[w, wx]
         log(f"  extra reads: {x_stats['n']} -> {len(xr)} attributed ({int((wx > 0).sum()) if len(xr) else 0} usable; "
-            f"no frame {x_stats['no_frame']}, far {x_stats['far']}, ambiguous dropped {x_stats['amb_drop']} / flagged {x_stats['amb']})")
+            f"no frame {x_stats['no_frame']}, far {x_stats['far']}, ambiguous dropped {x_stats['amb_drop']} / flagged {x_stats['amb']}"
+            + (f"; {x_stats['out_of_match']} rejected (open set) not used" if x_stats.get("out_of_match") else "") + ")")
     rd_by_det = {}
     for r, wi in zip(reads, w):
         if wi <= 0: continue

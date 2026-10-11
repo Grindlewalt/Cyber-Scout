@@ -117,3 +117,10 @@ Run heavy jobs on atomosserver (`/mnt/nas/autoscout-scratch`, `rtenv` Python, GP
 - Dev set (10 matches, 563 GT samples): 88.1% → 91.7% of all samples; answered 95.6% → 98.5%; wrong 23 → 8;
   station reads 202/202 correct. Never-read teams now get 25–330 reads/match. Cost ~1–2 min/match (GPU OCR).
 - Tuning hint (not applied): with station reads, W_R=0.2 / J_LIMBO=24 scored higher — check on held-out first.
+
+## integrity.py + open-set OCR (done)
+- Reads are scored against every event team (look-alikes included). Rejecting out-of-match reads does NOT help identity
+  (wrong reads are mostly a neighbouring robot = a match team; loses 949/948-type look-alikes) → OCR_OPEN_REJECT=0.
+- Integrity (identity.integrity): wrong-video detection 570/570 on swapped lineups (names the true match), 0/10 false
+  alarms; substitution 4/4 synthetic. Worker: process(..., event=event_ctx) and retries the next upload when
+  integrity.should_retry() flags the video. Substitution is informational only.
