@@ -1,4 +1,40 @@
 "use strict";
+/* ============================================================================================
+ * DATA CONTRACT (JSON under api/<ev>/...; cm for xy in t/*.json and m/*.json tracks, metres for shots/intakes in m/*.json)
+ * Everything v2 is optional: missing fields simply hide the corresponding widget.
+ *
+ * m/<match>.json  (v1 fields unchanged, plus)
+ *   shots[]    {t (video s), match_t, period, shooter:{kind,alliance,track_idx}, origin:[x,y,z], v0:[vx,vy,vz],
+ *               landing:[x,y], target, outcome:"made"|"missed"|"pass"|"unknown", hub_active:bool|null, conf, team}
+ *              period in auto|transition|shift1..shift4|endgame. Field frame in metres, absolute (red end at x=16.541).
+ *   intakes[]  {t, match_t, track_idx, xy:[x,y], conf}
+ *   analytics[track_idx] = {                      // one per tracks[] entry, same order
+ *     scoring:{attempts,made,missed,passes,accuracy,points,uncounted,by_period:{<period>:{a,m}},fire_rate,volley_size,volleys,
+ *              cycle_s,dist_mean,on_move_rate,first_shot_auto,first_shot_teleop},
+ *     collection:{intakes,per_min,by_loc:{neutral,depot,outpost,opp}},
+ *     movement:{distance_m,mean_speed,p95_speed,max_accel,pct_moving,zone:{own,neutral,opp},lanes:{bump,trench,open},near_side_pct,trench_capable},
+ *     auto:{routine,start_xy,end_xy,distance_m,neutral_cross,shots,made,climb},
+ *     defense:{time_s,contacts,pins,effect}, defended:{time_s,rate_retained,escape_s},
+ *     endgame:{level:0-3,attempted,arrive_t,duration_s,stop_scoring_t}, reliability:{dead_s,dead,stalls,low_coverage},
+ *     congestion, role:"scorer"|"feeder"|"collector"|"defender"|"hybrid", coverage:{feed_ok,observed} }
+ *   periods[]  optional {name,t0,t1,active:{red,blue}}  match_t seconds (t0 = auto start); default 0/20/30/55/80/105/130/160,
+ *              shifts 1,3 red-active, 2,4 blue-active. Replay-frame time of match_t: <20 -> t+0.5, else t_teleop_start+(t-20).
+ *
+ * t/<team>.json  (v1 fields unchanged, plus)
+ *   analytics  aggregate: same tree as a match analytics but numeric leaves are {v,n,conf} (mean, matches, 0..1 confidence), plus
+ *              scoring.made_total/attempts_total/accuracy_pooled, movement.lanes_total{bump,trench,open}, movement.trench_capable,
+ *              endgame:{levels:{"0":n,..},climb_rate,attempt_rate,arrive_t,duration_s,stop_scoring_t,n},
+ *              reliability:{dead_matches,n,mean_dead_s,low_coverage_matches}, role:{v,scores:{role:share},n,conf}, n
+ *   matches[].analytics   that match's analytics (so the team page needs no extra fetches)
+ *   shots_map[]  {xy:[x_cm,y_cm] launch point, land:[x,y], o:"made"|"missed"|"pass", p:period, m:"Q12"}  team frame (own end on the
+ *                left like autos/heat: blue matches are point-reflected)
+ *   intakes_map[] [[x_cm,y_cm],...] same frame
+ *   autos[].routine  routine id;  routines[] {id,name,n,of,freq,matches[short],xy (representative, cm),start_xy,end_xy,shots_avg,
+ *                made_avg,neutral_cross_rate,climb_rate,consistency}
+ *
+ * event.json  teams[].q (recommended, avoids fetching every team file for the table; otherwise derived from t/*.json analytics):
+ *   {n,acc,made,att,fire,volley,cycle,intakes,climb,defs,pins,automade,dead (share of matches),role,speed,dist,conf}
+ * ============================================================================================ */
 // autoscout-live front end: hash-routed, reads the JSON the worker writes under api/.
 const $app = document.getElementById("app");
 const $crumbs = document.getElementById("crumbs");
@@ -19,10 +55,10 @@ async function api(p) {
   if (!r.ok) throw new Error(p + ": " + r.status);
   return r.json();
 }
-function confBar(c) {
+function confBar(c, what = "team label confidence") {
   if (c == null) return "";
   const col = c > 0.7 ? "var(--good)" : c > 0.35 ? "var(--warn)" : "var(--bad)";
-  return `<span class="conf" title="team label confidence ${Math.round(c * 100)}%"><i style="width:${Math.round(c * 100)}%;background:${col}"></i></span>`;
+  return `<span class="conf" title="${what} ${Math.round(c * 100)}%"><i style="width:${Math.round(c * 100)}%;background:${col}"></i></span>`;
 }
 function crumbs(parts) {
   $crumbs.innerHTML = parts.map(([t, h]) => h ? `<a href="${h}">${esc(t)}</a>` : `<span>${esc(t)}</span>`).join(" / ");
@@ -70,7 +106,7 @@ async function home() {
       || `<div class="empty">No events yet. The worker publishes here as soon as it has synced one.</div>`}</div>`;
 }
 
-async function eventPage(ev, tab) {
+async function eventPage(ev, tab, arg) {
   const d = await api(`${ev}/event.json`);
   crumbs([[d.name, `#/${ev}`]]); $updated.textContent = ago(d.updated);
   tab = tab || sessionStorageGet("tab:" + ev) || "teams";
@@ -78,13 +114,13 @@ async function eventPage(ev, tab) {
     <div class="sub">${esc([d.city, d.state_prov].filter(Boolean).join(", "))} · ${esc(d.start || "")}${d.end && d.end !== d.start ? " – " + esc(d.end) : ""}
       · ${d.n_done}/${d.n_total} matches tracked${d.calibrated ? "" : ' · <span class="pill failed">camera not calibrated</span>'}
       <div class="progress"><div style="width:${d.n_total ? 100 * d.n_done / d.n_total : 0}%"></div></div></div>
-    <div class="tabs"><div class="tab" data-t="teams">Teams</div><div class="tab" data-t="matches">Matches</div></div>
+    <div class="tabs"><div class="tab" data-t="teams">Teams</div><div class="tab" data-t="compare">Compare</div><div class="tab" data-t="picklist">Picklist</div><div class="tab" data-t="matches">Matches</div></div>
     <div id="tabbody" class="card"></div>`;
   const body = document.getElementById("tabbody");
   const show = t => {
     sessionStorageSet("tab:" + ev, t);
     document.querySelectorAll(".tab").forEach(x => x.classList.toggle("on", x.dataset.t === t));
-    if (t === "teams") teamsTable(body, d, ev); else matchesTable(body, d, ev);
+    if (t === "teams") teamsTable(body, d, ev); else if (t === "compare") comparePane(body, d, ev, arg); else if (t === "picklist") picklistPane(body, d, ev); else matchesTable(body, d, ev);
   };
   document.querySelectorAll(".tab").forEach(x => x.onclick = () => show(x.dataset.t));
   show(tab);
@@ -95,36 +131,6 @@ async function eventPage(ev, tab) {
 }
 function sessionStorageGet(k) { try { return sessionStorage.getItem(k); } catch (e) { return null; } }
 function sessionStorageSet(k, v) { try { sessionStorage.setItem(k, v); } catch (e) { } }
-
-function teamsTable(el, d, ev) {
-  const cols = [
-    ["rank", "Rank", r => r.rank ?? "–", true], ["number", "Team", r => `<a class="team" href="#/${ev}/t/${r.key}">${r.number}</a>`, false],
-    ["nickname", "Name", r => esc(r.nickname), false], ["opr", "OPR", r => fx(r.opr), true],
-    ["tracked", "Tracked", r => r.tracked, true], ["distance_m", "Dist / match (m)", r => fx(r.distance_m, 0), true],
-    ["auto_distance_m", "Auto dist (m)", r => fx(r.auto_distance_m), true], ["max_speed", "Top speed (m/s)", r => fx(r.max_speed), true],
-    ["time_own_zone", "Own zone", r => pct(r.time_own_zone), true], ["time_neutral", "Neutral", r => pct(r.time_neutral), true],
-    ["time_opp_zone", "Opp. zone", r => pct(r.time_opp_zone), true], ["id_conf", "Label conf.", r => confBar(r.id_conf), true]];
-  let sk = "rank", dir = 1;
-  const render = () => {
-    const rows = [...d.teams].sort((a, b) => {
-      const x = a[sk], y = b[sk];
-      if (x == null && y == null) return a.number - b.number;
-      if (x == null) return 1; if (y == null) return -1;
-      return (typeof x === "string" ? x.localeCompare(y) : x - y) * dir;
-    });
-    el.innerHTML = `<div class="tablewrap"><table><thead><tr>${cols.map(([k, t, , n]) =>
-      `<th data-k="${k}" class="${n ? "num" : ""}">${t}${sk === k ? (dir > 0 ? " ▲" : " ▼") : ""}</th>`).join("")}</tr></thead>
-      <tbody>${rows.map(r => `<tr>${cols.map(([, , f, n]) => `<td class="${n ? "num" : ""}">${f(r)}</td>`).join("")}</tr>`).join("")}</tbody></table></div>
-      <div class="note">Per-match averages over the matches where the robot was tracked. "Own zone" is the alliance zone
-      on the robot's own side of its hub; "Opp. zone" the other alliance's. Label confidence is how sure the team
-      assignment is (robots are matched to teams by appearance and starting spot across the event).</div>`;
-    el.querySelectorAll("th").forEach(th => th.onclick = () => {
-      const k = th.dataset.k; if (sk === k) dir = -dir; else { sk = k; dir = ["rank", "number", "nickname"].includes(k) ? 1 : -1; }
-      render();
-    });
-  };
-  render();
-}
 
 const STATE_LABEL = { done: "tracked", pending: "waiting", no_video: "no video yet", processing: "processing", error: "retrying", failed: "failed" };
 function statusPill(m) {
@@ -167,6 +173,21 @@ async function matchPage(ev, key) {
     const al = t.alliance, k = d.tracks.filter(x => x.alliance === al).indexOf(t);
     return { ...t, color: COLORS[al][k % 3], on: true, label: t.team ? num(t.team) : `${al[0].toUpperCase()}${k + 1}` };
   });
+  // ---- v2: shots, periods
+  const ts0 = d.t_teleop_start, ae0 = d.t_auto_end;
+  const mt2ft = mt => mt < 20 ? mt + 0.5 : ts0 + (mt - 20);
+  const PER = (d.periods && d.periods.length ? d.periods : [["auto", 0, 20], ["transition", 20, 30], ["shift1", 30, 55], ["shift2", 55, 80], ["shift3", 80, 105], ["shift4", 105, 130], ["endgame", 130, 160]]
+    .map(([name, t0, t1]) => ({ name, t0, t1, active: { red: name === "shift1" || name === "shift3" || !/^shift/.test(name), blue: name === "shift2" || name === "shift4" || !/^shift/.test(name) } })))
+    .map(p => ({ ...p, f0: mt2ft(p.t0), f1: p.t1 >= 160 ? Math.min(T, mt2ft(p.t1)) : mt2ft(p.t1) }));
+  const SH = (d.shots || []).map(s => {
+    const o = s.origin, l = s.landing, ft = s.t - v0, dist = Math.hypot(l[0] - o[0], l[1] - o[1]);
+    const vh = s.v0 ? Math.hypot(s.v0[0], s.v0[1]) : 0, tf = Math.max(.35, Math.min(2.5, vh > .5 ? dist / vh : .3 + dist * .12));
+    const ti = s.shooter && s.shooter.track_idx;
+    return { ...s, ft, tf, tr: tracks[ti], ti };
+  }).filter(s => s.tr).sort((a, b) => a.ft - b.ft);
+  const hasShots = SH.length > 0, an = d.analytics || null;
+  const $ = id => document.getElementById(id);
+
   $app.innerHTML = `<h1>${esc(d.label)}</h1>
     <div class="sub"><span class="score r ${d.winner === "red" ? "win" : ""}">${d.red.score}</span> – <span class="score b ${d.winner === "blue" ? "win" : ""}">${d.blue.score}</span>
      · video: <a href="https://youtu.be/${d.video.id}?t=${Math.floor(v0)}" target="_blank" rel="noopener">${esc(d.video.title)}</a>
@@ -183,12 +204,25 @@ async function matchPage(ev, key) {
           <div class="note">"Seen" is the share of the match the robot was directly detected; elsewhere its path is
           interpolated (drawn faded). Team labels are inferred across the event; low-confidence ones may be swapped
           within an alliance.</div></div>
+        ${an ? `<div class="card"><h2>Robot analytics</h2><div class="tablewrap"><table><thead><tr><th></th><th>Team</th><th>Role</th><th class="num">Made/Att</th><th class="num">Acc</th><th class="num">Fire /s</th><th class="num">Volley</th><th class="num">Cycle s</th>
+          <th class="num">Intakes</th><th class="num">Auto</th><th>Climb</th><th class="num">Def s</th><th class="num">Cont.</th><th class="num">Pins</th><th>Flags</th></tr></thead><tbody>
+          ${tracks.map((t, i) => { const a = an[i]; return a ? `<tr><td><span class="sw" style="background:${t.color}"></span></td><td><span class="team ${t.alliance[0]}">${t.label}</span></td><td>${esc(a.role || "")}</td>
+            <td class="num">${a.scoring.made}/${a.scoring.attempts}</td><td class="num">${pct(a.scoring.accuracy)}</td><td class="num">${fx(a.scoring.fire_rate)}</td><td class="num">${a.scoring.volley_size ?? "–"}</td><td class="num">${fx(a.scoring.cycle_s)}</td>
+            <td class="num">${a.collection.intakes}</td><td class="num">${a.auto.made}/${a.auto.shots}${a.auto.routine ? ` <span class="muted">${esc(a.auto.routine)}</span>` : ""}</td>
+            <td>${a.endgame.level ? "L" + a.endgame.level : a.endgame.attempted ? "failed" : "–"}</td><td class="num">${fx(a.defense.time_s)}</td><td class="num">${a.defense.contacts}</td><td class="num">${a.defense.pins}</td>
+            <td>${a.reliability.dead ? '<span class="pill failed">dead</span>' : ""}</td></tr>` : ""; }).join("")}</tbody></table></div>
+          <div class="note">Fuel stats are reconstructed from the broadcast video; counts can differ from the official hub counts. Accuracy = made / attempted (passes excluded).</div></div>` : ""}
       </div>
       <div><div class="card"><div class="fieldwrap" id="fw"></div>
         <div class="controls"><button id="play">▶ Play</button><span class="clock" id="clock">–</span><span class="phase" id="phase"></span>
           <input type="range" id="scrub" min="0" max="${Math.max(N - 1, 0)}" value="0" step="1"></div>
-        <div class="controls"><button id="trail" class="on">Trails</button><button id="full">Full paths</button>
+        ${hasShots ? `<div class="tl" id="tl"><div class="tlseg" id="tlseg"></div><div class="tlact"><i class="r"></i><i class="b"></i></div><div class="tlhead" id="tlhead"></div></div>` : ""}
+        <div class="controls"><button id="trail" class="on">Trails</button>${hasShots ? '<button id="shots" class="on">Shots</button><button id="allshots">Shot history</button>' : ""}<button id="full">Full paths</button>
           <button id="speed">1×</button><button id="sync" class="on" title="follow the video">Sync video</button></div>
+        ${hasShots ? `<div class="legendline"><svg width="34" height="10"><line x1="0" y1="5" x2="34" y2="5" stroke="#fff" stroke-width="2.4"/></svg>made
+          <svg width="34" height="10"><line x1="0" y1="5" x2="34" y2="5" stroke="#fff" stroke-width="2.4" stroke-dasharray="5 4"/></svg>missed
+          <svg width="34" height="10"><line x1="0" y1="5" x2="34" y2="5" stroke="#facc15" stroke-width="1.6" stroke-dasharray="1 4" stroke-linecap="round"/></svg>pass
+          <span class="muted small">arc colour = shooter</span></div><div id="sb" class="sb"></div>` : ""}
         <div class="legend">${tracks.map((t, i) => `<label><input type="checkbox" data-i="${i}" checked>
           <span class="sw" style="background:${t.color}"></span><span class="team ${t.alliance[0]}">${t.label}</span>
           ${t.team ? confBar(t.id_conf) : ""}</label>`).join("")}</div></div></div>
@@ -196,9 +230,73 @@ async function matchPage(ev, key) {
   const F = fieldCanvas(document.getElementById("fw"));
   let f = 0, playing = false, last = 0, trail = true, full = false, speed = 1, sync = true, player = null, alive = true;
   const scrub = document.getElementById("scrub");
+  let showShots = true, histShots = false, sbKey = "";
+  function drawShots(F, ft) {
+    const { ctx, P, S, c } = F, lw = Math.max(2, c.width / 400);
+    for (const s of SH) {
+      if (s.ft > ft) break;
+      const age = ft - (s.ft + s.tf), landed = age >= 0;
+      if (landed && age > 2.5 && !histShots) continue;
+      const [x0, y0] = P(s.origin[0], s.origin[1]), [x1, y1] = P(s.landing[0], s.landing[1]);
+      const dx = x1 - x0, dy = y1 - y0, L = Math.hypot(dx, dy), cx = (x0 + x1) / 2 - dy * .12, cy = (y0 + y1) / 2 + dx * .12 - L * .12;
+      const u = Math.min(1, (ft - s.ft) / s.tf), col = s.tr.color, pass = s.outcome === "pass", made = s.outcome === "made";
+      const alpha = landed ? (histShots ? Math.max(.18, 1 - age / 2.5 * .8) : 1 - age / 2.5) : 1;
+      ctx.globalAlpha = Math.max(0, alpha) * (s.outcome === "unknown" ? .5 : 1);
+      ctx.strokeStyle = pass ? "#facc15" : col; ctx.lineWidth = pass ? lw * .8 : lw * (made ? 1.15 : 1);
+      ctx.setLineDash(pass ? [1, c.width / 150] : made ? [] : [c.width / 120, c.width / 160]); ctx.lineCap = pass ? "round" : "butt";
+      ctx.beginPath(); ctx.moveTo(x0, y0);
+      const n = Math.max(2, Math.ceil(24 * u));
+      for (let k = 1; k <= n; k++) { const w = u * k / n, a = (1 - w) * (1 - w), b = 2 * (1 - w) * w, e = w * w; ctx.lineTo(a * x0 + b * cx + e * x1, a * y0 + b * cy + e * y1); }
+      ctx.stroke(); ctx.setLineDash([]);
+      if (!landed) {         // ball in flight
+        const w = u, a = (1 - w) * (1 - w), b = 2 * (1 - w) * w, e = w * w;
+        ctx.fillStyle = "#fff"; ctx.beginPath(); ctx.arc(a * x0 + b * cx + e * x1, a * y0 + b * cy + e * y1, Math.max(2.5, c.width / 260), 0, 7); ctx.fill();
+      } else {               // landing marker
+        const r = Math.max(3, c.width / 200);
+        ctx.lineWidth = lw; ctx.strokeStyle = pass ? "#facc15" : made ? col : "#fff";
+        if (made) { ctx.fillStyle = col; ctx.beginPath(); ctx.arc(x1, y1, r, 0, 7); ctx.fill(); ctx.strokeStyle = "#fff"; ctx.stroke(); }
+        else if (pass) { ctx.beginPath(); ctx.arc(x1, y1, r, 0, 7); ctx.stroke(); }
+        else { ctx.beginPath(); ctx.moveTo(x1 - r, y1 - r); ctx.lineTo(x1 + r, y1 + r); ctx.moveTo(x1 + r, y1 - r); ctx.lineTo(x1 - r, y1 + r); ctx.stroke(); }
+        if (s.hub_active === false && made) { ctx.globalAlpha *= .9; ctx.fillStyle = "#000"; ctx.font = `700 ${Math.max(9, c.width / 110)}px system-ui`; ctx.textAlign = "center"; ctx.fillText("0", x1, y1 - r * 1.8); }
+      }
+      ctx.globalAlpha = 1;
+    }
+  }
+  function updateBoard(ft) {
+    if (!hasShots) return;
+    const cnt = tracks.map(() => ({ am: 0, aa: 0, tm: 0, ta: 0, p: 0 }));
+    for (const s of SH) {
+      if (s.ft > ft) break; const k = cnt[s.ti];
+      if (s.outcome === "pass") { k.p++; continue; }
+      const au = s.period === "auto"; if (s.outcome === "made") au ? k.am++ : k.tm++; if (s.outcome === "made" || s.outcome === "missed") au ? k.aa++ : k.ta++;
+    }
+    const key = JSON.stringify(cnt); if (key === sbKey) return; sbKey = key;
+    const col = al => { const idx = tracks.map((t, i) => t.alliance === al ? i : -1).filter(i => i >= 0), sum = f => idx.reduce((a, i) => a + cnt[i][f], 0);
+      return `<div class="sbcol ${al}"><div class="sbh"><b>${al.toUpperCase()}</b><span>fuel made <b>${sum("am") + sum("tm")}</b>/${sum("aa") + sum("ta")}</span></div>
+        <table><thead><tr><th></th><th class="num">Auto</th><th class="num">Teleop</th><th class="num">Total</th><th class="num">Pass</th></tr></thead><tbody>
+        ${idx.map(i => { const k = cnt[i], t = tracks[i]; return `<tr><td><span class="sw" style="background:${t.color}"></span> <span class="team ${al[0]}">${t.label}</span></td><td class="num">${k.am}/${k.aa}</td><td class="num">${k.tm}/${k.ta}</td><td class="num"><b>${k.am + k.tm}</b>/${k.aa + k.ta}</td><td class="num">${k.p || ""}</td></tr>`; }).join("")}
+        </tbody></table></div>`; };
+    $("sb").innerHTML = col("red") + col("blue");
+  }
+  function buildTimeline() {
+    if (!hasShots) return;
+    $("tlseg").innerHTML = PER.map(p => `<div class="seg" style="left:${100 * p.f0 / T}%;width:${100 * (p.f1 - p.f0) / T}%" title="${esc(p.name)} ${p.t0}–${p.t1}s"><span>${esc((PLABEL[p.name] || p.name))}</span></div>`).join("");
+    $("tl").querySelector(".tlact").innerHTML = ["r", "b"].map(a => `<div class="row ${a}">${PER.map(p => `<i class="${p.active[a === "r" ? "red" : "blue"] ? "on" : ""}" style="left:${100 * p.f0 / T}%;width:${100 * (p.f1 - p.f0) / T}%"></i>`).join("")}</div>`).join("");
+    $("tl").onclick = e => { const r = $("tl").getBoundingClientRect(); f = Math.max(0, Math.min(N - 1, (e.clientX - r.left) / r.width * N)); if (sync && ytState() != null) player.seekTo(v0 + f / hz, true); draw(); };
+  }
   const draw = () => {
     const { ctx, P, S, bg, c } = F; bg(0.95);
-    const fi = Math.max(0, Math.min(N - 1, Math.round(f)));
+    const fi = Math.max(0, Math.min(N - 1, Math.round(f))), ftNow = f / hz;
+    if (hasShots) {
+      const cur = PER.find(p => ftNow >= p.f0 && ftNow < p.f1);
+      for (const al of ["red", "blue"]) {
+        const [hx, hy] = P(HUBS[al][0], HUBS[al][1]), act = cur ? cur.active[al] : null;
+        ctx.lineWidth = Math.max(2, c.width / 300); ctx.strokeStyle = act ? (al === "red" ? "#ff5a5f" : "#3e8bff") : "#8b98a8"; ctx.globalAlpha = act ? .95 : .45;
+        ctx.setLineDash(act ? [] : [4, 5]); ctx.beginPath(); ctx.arc(hx, hy, S(.75), 0, 7); ctx.stroke(); ctx.setLineDash([]);
+        if (act) { ctx.fillStyle = al === "red" ? "rgba(255,90,95,.18)" : "rgba(62,139,255,.18)"; ctx.fill(); }
+        ctx.globalAlpha = 1;
+      }
+    }
     for (const t of tracks) {
       if (!t.on) continue;
       const a = full ? 0 : trail ? Math.max(0, fi - 3 * hz) : fi;
@@ -217,6 +315,7 @@ async function matchPage(ev, key) {
       ctx.font = `700 ${Math.max(11, c.width / 75)}px system-ui`; ctx.textAlign = "center"; ctx.textBaseline = "middle";
       ctx.fillStyle = "#000c"; ctx.fillText(t.label, x + 1, y - s * 0.95 + 1); ctx.fillStyle = "#fff"; ctx.fillText(t.label, x, y - s * 0.95);
     }
+    if (hasShots && showShots) drawShots(F, ftNow);
     const gap = (d.feed_gaps || []).find(([a, b]) => fi / hz >= a && fi / hz < b);
     if (gap) {
       ctx.fillStyle = "rgba(13,17,23,.72)"; ctx.fillRect(0, 0, c.width, c.height);
@@ -233,6 +332,7 @@ async function matchPage(ev, key) {
     else { clk = fmt(Math.max(0, 140 - (tt - ts))); ph = "TELEOP"; }
     document.getElementById("clock").textContent = clk; document.getElementById("phase").textContent = ph;
     scrub.value = fi;
+    if (hasShots) { updateBoard(ftNow); $("tlhead").style.left = (100 * Math.min(1, ftNow / T)) + "%"; }
   };
   const fmt = s => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
   const setPlaying = p => { playing = p; document.getElementById("play").textContent = p ? "❚❚ Pause" : "▶ Play"; };
@@ -262,6 +362,7 @@ async function matchPage(ev, key) {
   };
   scrub.oninput = () => { f = +scrub.value; if (sync && ytState() != null) player.seekTo(v0 + f / hz, true); draw(); };
   const tog = (id, fn) => { const b = document.getElementById(id); b.onclick = () => b.classList.toggle("on", fn()); };
+  if (hasShots) { tog("shots", () => (showShots = !showShots)); tog("allshots", () => (histShots = !histShots)); buildTimeline(); }
   tog("trail", () => (trail = !trail)); tog("full", () => (full = !full));
   tog("sync", () => { sync = !sync; if (!sync && player && player.pauseVideo) player.pauseVideo(); return sync; });
   document.getElementById("speed").onclick = e => { speed = speed === 1 ? 2 : speed === 2 ? 4 : speed === 4 ? 0.5 : 1; e.target.textContent = speed + "×"; };
@@ -276,75 +377,6 @@ async function matchPage(ev, key) {
   }
 }
 
-// ------------------------------------------------------------------ team page
-async function teamPage(ev, tk) {
-  const [d, e] = await Promise.all([api(`${ev}/t/${tk}.json`), api(`${ev}/event.json`).catch(() => null)]);
-  crumbs([[e ? e.name : ev, `#/${ev}`], [`${d.number}${d.nickname ? " · " + d.nickname : ""}`]]); $updated.textContent = "";
-  $app.innerHTML = `<h1>${d.number} <span class="muted" style="font-weight:500">${esc(d.nickname || "")}</span></h1>
-    <div class="sub">${d.rank ? `Rank ${d.rank} · ` : ""}${d.opr != null ? `OPR ${fx(d.opr)} · ` : ""}${d.tracked} matches tracked
-      · <a href="https://www.thebluealliance.com/team/${d.number}/${(e && e.year) || ""}" target="_blank" rel="noopener">TBA</a></div>
-    <div class="kv" style="margin-bottom:16px">
-      <div><b>${fx(d.distance_m, 0)} m</b><span>distance / match</span></div>
-      <div><b>${fx(d.auto_distance_m)} m</b><span>auto distance</span></div>
-      <div><b>${fx(d.max_speed)} m/s</b><span>top speed</span></div>
-      <div><b>${pct(d.time_own_zone)}</b><span>time in own zone</span></div>
-      <div><b>${pct(d.time_neutral)}</b><span>time in neutral zone</span></div>
-      <div><b>${pct(d.time_opp_zone)}</b><span>time in opponent zone</span></div></div>
-    <div class="grid2">
-      <div class="card"><h2>Auto paths</h2><div id="autos"></div><div class="chips" id="chips"></div>
-        <div class="note">First 20 s of every tracked match, from the team's own end (own alliance wall on the left).
-        Dot = start, arrow = where it was at the end of auto. Faded segments are interpolated.</div></div>
-      <div class="card"><h2>Teleop heatmap</h2><div id="heat"></div>
-        <div class="note">Where the robot spent teleop, summed over all tracked matches, from the team's own end.</div></div>
-    </div>
-    <div class="card" style="margin-top:16px"><h2>Matches</h2><div class="tablewrap"><table><thead><tr><th>Match</th><th>Alliance</th>
-      <th class="num">Dist (m)</th><th class="num">Auto (m)</th><th class="num">Top (m/s)</th><th class="num">Own</th><th class="num">Neutral</th><th class="num">Opp.</th><th class="num">Seen</th><th>Label</th></tr></thead>
-      <tbody>${d.matches.map(m => `<tr><td><a href="#/${ev}/m/${m.match}">${esc(m.short)}</a></td><td class="${m.alliance[0]}">${m.alliance}</td>
-        <td class="num">${fx(m.distance_m, 0)}</td><td class="num">${fx(m.auto_distance_m)}</td><td class="num">${fx(m.max_speed)}</td>
-        <td class="num">${pct(m.time_own_zone)}</td><td class="num">${pct(m.time_neutral)}</td><td class="num">${pct(m.time_opp_zone)}</td>
-        <td class="num">${pct(m.observed)}</td><td>${confBar(m.conf)}</td></tr>`).join("") || `<tr><td colspan="10" class="empty">No tracked matches yet</td></tr>`}</tbody></table></div></div>`;
-
-  const A = fieldCanvas(document.getElementById("autos"));
-  const on = d.autos.map(() => true);
-  const chips = document.getElementById("chips");
-  chips.innerHTML = d.autos.map((a, i) => `<span class="chip on" data-i="${i}" style="color:${PALETTE[i % PALETTE.length]}">${esc(a.short)}</span>`).join("");
-  chips.querySelectorAll(".chip").forEach(ch => ch.onclick = () => { const i = +ch.dataset.i; on[i] = !on[i]; ch.classList.toggle("on", on[i]); drawAutos(); });
-  function drawAutos() {
-    const { ctx, P, c, bg } = A; bg(0.85);
-    d.autos.forEach((a, i) => {
-      if (!on[i] || !a.xy.length) return;
-      const col = PALETTE[i % PALETTE.length]; ctx.strokeStyle = col; ctx.fillStyle = col;
-      ctx.lineWidth = Math.max(2, c.width / 380); ctx.lineJoin = "round"; ctx.lineCap = "round";
-      for (let j = 1; j < a.xy.length; j++) {
-        const [x0, y0] = P(a.xy[j - 1][0] / 100, a.xy[j - 1][1] / 100), [x1, y1] = P(a.xy[j][0] / 100, a.xy[j][1] / 100);
-        ctx.globalAlpha = a.obs && !a.obs[j] ? 0.35 : 0.9;
-        ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke();
-      }
-      ctx.globalAlpha = 1;
-      const [sx, sy] = P(a.xy[0][0] / 100, a.xy[0][1] / 100); ctx.beginPath(); ctx.arc(sx, sy, c.width / 160, 0, 7); ctx.fill();
-      const n = a.xy.length - 1, [ex, ey] = P(a.xy[n][0] / 100, a.xy[n][1] / 100), [px, py] = P(a.xy[Math.max(0, n - 2)][0] / 100, a.xy[Math.max(0, n - 2)][1] / 100);
-      const ang = Math.atan2(ey - py, ex - px), r = c.width / 90;
-      ctx.beginPath(); ctx.moveTo(ex + r * Math.cos(ang), ey + r * Math.sin(ang));
-      ctx.lineTo(ex + r * Math.cos(ang + 2.5), ey + r * Math.sin(ang + 2.5)); ctx.lineTo(ex + r * Math.cos(ang - 2.5), ey + r * Math.sin(ang - 2.5)); ctx.fill();
-    });
-  }
-  const H = fieldCanvas(document.getElementById("heat"));
-  function drawHeat() {
-    const { ctx, P, c, bg } = H; bg(0.6);
-    if (!d.heat) return;
-    const g = d.grid, mx = Math.max(...d.heat.flat()) || 1;
-    for (let i = 0; i < d.heat.length; i++) for (let j = 0; j < d.heat[i].length; j++) {
-      const v = d.heat[i][j] / mx; if (v < 0.02) continue;
-      const [x0, y0] = P(i * g, j * g), [x1, y1] = P((i + 1) * g, (j + 1) * g);
-      ctx.fillStyle = `hsla(${Math.round(55 - 55 * v)}, 100%, 55%, ${0.25 + 0.6 * Math.sqrt(v)})`;
-      ctx.fillRect(Math.min(x0, x1), Math.min(y0, y1), Math.abs(x1 - x0) + 0.5, Math.abs(y1 - y0) + 0.5);
-    }
-  }
-  const redraw = () => { A.size(); H.size(); drawAutos(); drawHeat(); };
-  FIELD.complete ? redraw() : FIELD.addEventListener("load", redraw, { once: true });
-  window.addEventListener("resize", redraw); cleanup.push(() => window.removeEventListener("resize", redraw));
-}
-
 // ------------------------------------------------------------------ router
 async function route(scroll = true) {
   cleanup.forEach(f => f()); cleanup = [];
@@ -354,7 +386,7 @@ async function route(scroll = true) {
     else if (p.length === 1) await eventPage(p[0]);
     else if (p[1] === "m") await matchPage(p[0], p[2]);
     else if (p[1] === "t") await teamPage(p[0], p[2]);
-    else await eventPage(p[0]);
+    else await eventPage(p[0], p[1], p[2]);
   } catch (e) {
     console.error(e);
     $app.innerHTML = `<div class="empty">Couldn't load this page (${esc(e.message)}). It may not be processed yet.</div>`;

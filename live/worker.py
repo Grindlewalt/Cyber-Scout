@@ -24,7 +24,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
 sys.path.insert(0, HERE)
 from tba import TBA, match_label, short_label, sort_key
-import videos, identity
+import videos, identity, sitev2
+import analytics as AN
 
 DATA = os.environ.get("DATA", "/data")
 MODEL = os.environ.get("MODEL", os.path.join(DATA, "models", "robot.onnx"))
@@ -32,6 +33,7 @@ POLL = int(os.environ.get("POLL_SECONDS", "120"))
 TAG_CSV = os.path.join(HERE, "field", "2026-rebuilt-welded.csv")
 API = os.path.join(DATA, "site", "api")
 RETRY_NO_VIDEO = 300
+V2 = os.environ.get("V2", "1") == "1"            # fuel/shot/analytics enrichment
 MAX_ATTEMPTS = 3
 
 
@@ -71,22 +73,22 @@ def process_match(ev, m, cfg, status, meta_cache):
     if not cands:
         st.update(state="no_video", at=time.time()); return False
     cache = os.path.join(DATA, "cache"); os.makedirs(cache, exist_ok=True)
-    path = os.path.join(cache, f"{m['key']}.mp4")
     st.update(state="processing", at=time.time(), video=cands[0]["id"], attempts=st.get("attempts", 0) + 1)
     jsave(os.path.join(ev_dir(ev), "status.json"), status)
     import process
-    best, errors = None, []
+    best, best_path, errors, paths = None, None, [], []
     try:
         # a broadcast upload can be missing camera footage (feed dropped out);
         # try the next acceptable upload of the same match and keep the better one
         for v in cands[:3]:
+            vpath = os.path.join(cache, f"{m['key']}_{v['id']}.mp4"); paths.append(vpath)
             try:
                 log(f"{m['key']}: downloading {v['id']} ({v['title']})")
-                videos.download(v["id"], path)
+                videos.download(v["id"], vpath)
                 log(f"{m['key']}: processing")
                 t0 = time.time()
                 pose_p = os.path.join(ev_dir(ev), "pose_latest.json")
-                res = process.process(path, ev_file(ev, "camera.json"), MODEL, TAG_CSV,
+                res = process.process(vpath, ev_file(ev, "camera.json"), MODEL, TAG_CSV,
                                       log=lambda *a: log(m["key"], *a), start_hint=start_hint(ev, v),
                                       pose_guess=jload(pose_p))
                 pc = res.get("pose", {})
@@ -96,16 +98,21 @@ def process_match(ev, m, cfg, status, meta_cache):
                            processed_at=time.time(), seconds=round(time.time() - t0))
                 log(f"{m['key']}: {v['id']} camera coverage {res['feed_ok']:.0%} in {time.time() - t0:.0f}s")
                 if best is None or res["feed_ok"] > best["feed_ok"] + 0.02:
-                    best = res
+                    best, best_path = res, vpath
                 if res["feed_ok"] >= 0.9:
                     break
             except Exception as e:
                 traceback.print_exc(); errors.append(str(e)[-300:])
-            finally:
-                if os.path.exists(path): os.remove(path)
         if best is None:
             raise RuntimeError("; ".join(errors) or "no usable video")
         jsave(os.path.join(ev_dir(ev), "matches", f"{m['key']}.json"), best)
+        if V2:
+            try:                                          # v2: fuel -> shots -> analytics
+                import enrich
+                enrich.enrich(ev_dir(ev), m["key"], best_path, ev_file(ev, "camera.json"), best, m,
+                              log=lambda *a: log(m["key"], *a))
+            except Exception:
+                traceback.print_exc()                     # v1 data still published
         st.update(state="done", at=time.time(), error=None, video=best["video"]["id"])
         log(f"{m['key']}: done ({best['video']['id']}, coverage {best['feed_ok']:.0%})")
         return True
@@ -114,21 +121,9 @@ def process_match(ev, m, cfg, status, meta_cache):
                   error=str(e)[-500:])
         return False
     finally:
+        for vp in paths:
+            if os.path.exists(vp): os.remove(vp)
         jsave(os.path.join(ev_dir(ev), "status.json"), status)
-
-
-def start_hint(ev, v):
-    """Median detected match start of earlier uploads from the same channel with the
-    same kind of title ("Wide Match" vs "Qualification"): cuts are consistent per source."""
-    ts = []
-    d = os.path.join(ev_dir(ev), "matches")
-    for f in os.listdir(d) if os.path.isdir(d) else []:
-        r = jload(os.path.join(d, f), {})
-        vv = r.get("video", {})
-        if r.get("start_source") in ("clock", "motion") and vv.get("channel") == v["channel"] \
-                and vv.get("title", "").split()[:1] == v["title"].split()[:1]:
-            ts.append(r["t_start"])
-    return float(np.median(ts)) if len(ts) >= 3 else None
 
 
 # ------------------------------------------------------------------ site JSON
@@ -158,7 +153,9 @@ def build_site(ev, tba):
         rk = {}
 
     out_dir = os.path.join(API, ev)
-    per_team = {k: dict(matches=[], autos=[], heat=None) for k in teams}
+    per_team = {k: dict(matches=[], autos=[], heat=None, an=[], an_web=[], shots=[], intakes=[], auto_paths=[])
+                for k in teams}
+    rules = jload(os.path.join(HERE, "field", "rebuilt_rules.json"), {}) or {}
     L, W = 16.541, 8.069
     nx, ny = int(np.ceil(L / GRID)), int(np.ceil(W / GRID))
     match_rows = []
@@ -200,8 +197,60 @@ def build_site(ev, tba):
                     per_team[team]["heat"] = H if per_team[team]["heat"] is None else per_team[team]["heat"] + H
                     per_team[team]["matches"].append(dict(match=k, short=row["short"], alliance=t["alliance"],
                                                           conf=a.get("confidence"), **t["stats"]))
+            # ---- v2: shots + per-robot analytics (when the match has been enriched)
+            evs = jload(os.path.join(ev_dir(ev), "shots", f"{k}.json"))
+            an = jload(os.path.join(ev_dir(ev), "analytics", f"{k}.json"))
+            team_of = {t["idx"]: t["team"] for t in tracks}
+            alli_of = {t["idx"]: t["alliance"] for t in tracks}
+            v2 = {}
+            if evs:
+                shots_out = []
+                for sh in evs.get("shots", []):
+                    who = sh.get("shooter") or {}
+                    ti = who.get("track_idx")
+                    team = team_of.get(ti) if who.get("kind") == "robot" else None
+                    shots_out.append({kk: sh.get(kk) for kk in ("t", "match_t", "period", "shooter", "origin", "v0", "landing",
+                                                               "target", "outcome", "hub_active", "conf", "apex_z")}
+                                     | {"team": team})
+                    if team in per_team and sh.get("origin"):
+                        al = alli_of.get(ti, "red")
+                        o = sitev2.team_frame(sh["origin"], al); ld = sitev2.team_frame(sh.get("landing") or sh["origin"], al)
+                        per_team[team]["shots"].append({"xy": [round(o[0] * 100), round(o[1] * 100)],
+                                                        "land": [round(ld[0] * 100), round(ld[1] * 100)],
+                                                        "o": sh.get("outcome"), "p": sh.get("period"), "m": row["short"]})
+                for it in evs.get("intakes", []) or []:
+                    team = team_of.get(it.get("track_idx"))
+                    if team in per_team and it.get("xy"):
+                        x, y = sitev2.team_frame(it["xy"], alli_of.get(it.get("track_idx"), "red"))
+                        per_team[team]["intakes"].append([round(x * 100), round(y * 100)])
+                v2["shots"] = shots_out
+                v2["intakes"] = evs.get("intakes", []) or []
+                v2["reconcile"] = evs.get("reconcile")
+                act = evs.get("hub_active") or {}
+                per = rules.get("periods") or []
+                v2["periods"] = [{"name": pp["name"], "t0": pp["t0"], "t1": pp["t1"],
+                                  "active": {a_: (act.get(a_) or {}).get(pp["name"]) for a_ in ("red", "blue")}}
+                                 for pp in per]
+            if an:
+                at = an.get("tracks") or {}
+                web = []
+                for t in tracks:
+                    a_ = at.get(str(t["idx"])) or at.get(t["idx"]) or {}
+                    if a_:
+                        a_.setdefault("meta", {})["team"] = t["team"]
+                    w = sitev2.web_track_analytics(a_) if a_ else None
+                    web.append(w)
+                    if a_ and t["team"] in per_team:
+                        per_team[t["team"]]["an"].append(a_); per_team[t["team"]]["an_web"].append(w)
+                        au = a_.get("auto") or {}
+                        if au.get("path"):
+                            per_team[t["team"]]["auto_paths"].append({"match": k, "alliance": t["alliance"],
+                                                                      "path": au["path"], "coverage": au.get("coverage") or 0})
+                    for mm_ in per_team.get(t["team"], {}).get("matches", [])[-1:]:
+                        if mm_["match"] == k and w: mm_["analytics"] = w
+                v2["analytics"] = web
             sb = m.get("score_breakdown") or {}
-            jsave(os.path.join(out_dir, "m", f"{k}.json"), dict(
+            jsave(os.path.join(out_dir, "m", f"{k}.json"), dict(**v2,
                 key=k, label=row["label"], short=row["short"], event=ev, hz=r["hz"], frames=r["frames"],
                 t_start=r["t_start"], start_detected=r.get("start_detected"),
                 t_auto_end=r["t_auto_end"], t_teleop_start=r["t_teleop_start"], video=r["video"],
@@ -212,6 +261,10 @@ def build_site(ev, tba):
                 tracks=tracks))
         match_rows.append(row)
 
+    try:
+        routines = AN.cluster_autos({tk: pt["auto_paths"] for tk, pt in per_team.items() if pt["auto_paths"]})
+    except Exception:
+        traceback.print_exc(); routines = {}
     team_rows = []
     for tk, t in teams.items():
         pt = per_team[tk]; mm = pt["matches"]
@@ -224,10 +277,32 @@ def build_site(ev, tba):
                    max_speed=avg("max_speed"), time_own_zone=avg("time_own_zone"),
                    time_neutral=avg("time_neutral"), time_opp_zone=avg("time_opp_zone"),
                    id_conf=round(float(np.mean([x["conf"] or 0 for x in mm])), 2) if mm else None)
-        team_rows.append(row)
         heat = pt["heat"]
+        tv2 = {}
+        if pt["an"]:
+            try:
+                agg = AN.team_aggregate(pt["an"])
+                tv2["analytics"] = sitev2.web_team_analytics(agg, pt["an_web"], row["id_conf"] or 0.0)
+            except Exception:
+                traceback.print_exc()
+        if pt["shots"]: tv2["shots_map"] = pt["shots"]
+        if pt["intakes"]: tv2["intakes_map"] = pt["intakes"]
+        rt = routines.get(tk)
+        if rt:
+            short = {x["match"]: x["short"] for x in pt["autos"]}
+            for au in pt["autos"]:
+                au["routine"] = rt["labels"].get(au["match"])
+            tv2["routines"] = [{"id": r_["id"], "name": f"Auto {r_['id']}", "n": r_["n"], "of": rt.get("n_autos"),
+                                "freq": r_.get("freq"), "matches": [short.get(x, x) for x in r_.get("matches", [])],
+                                "xy": [[round(a_ * 100), round(b_ * 100)] for a_, b_ in r_.get("rep_path_red_frame", [])],
+                                "start_xy": r_.get("start"), "end_xy": r_.get("end"),
+                                "kind": r_.get("kind"), "consistency": r_.get("mean_intra_dist")}
+                               for r_ in rt.get("routines", [])]
+        row_q = dict(row, **tv2)
+        row["q"] = sitev2.event_q(row_q)
+        team_rows.append(row)
         jsave(os.path.join(out_dir, "t", f"{tk}.json"), dict(
-            **row, event=ev, matches=mm, autos=pt["autos"], grid=GRID,
+            **row, **tv2, event=ev, matches=mm, autos=pt["autos"], grid=GRID,
             heat=None if heat is None else (heat / max(heat.sum(), 1)).round(5).tolist()))
     team_rows.sort(key=lambda r: (r["rank"] or 999, r["number"]))
     n_done = sum(1 for r in match_rows if r["state"] == "done")

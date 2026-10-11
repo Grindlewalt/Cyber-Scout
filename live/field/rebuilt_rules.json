@@ -1,0 +1,512 @@
+{
+  "_meta": {
+    "game": "FRC 2026 REBUILT presented by Haas",
+    "manual": "2026GameManual.pdf, Version TU22 (final Team Update 22, Apr 21 2026)",
+    "frame": "metres; X 0..16.541 blue wall at X=0; Y 0..8.069; point-symmetric field",
+    "status": "measured from official manual/drawings unless marked unverified or derived"
+  },
+  "fuel_diameter_m": 0.15,
+  "fuel_mass_kg": {
+    "min": 0.203,
+    "max": 0.227,
+    "source": "manual 5.10.1 (0.448-0.500 lb)"
+  },
+  "hub": {
+    "centers": {
+      "red": [
+        11.915,
+        4.035
+      ],
+      "blue": [
+        4.626,
+        4.035
+      ]
+    },
+    "centers_from_tags": {
+      "blue": [
+        4.6255,
+        4.0346
+      ],
+      "red": [
+        11.915,
+        4.0346
+      ]
+    },
+    "footprint_m": [
+      1.194,
+      1.194
+    ],
+    "opening_height_m": 1.829,
+    "opening_height_note": "front edge of hexagonal opening is 72 in off carpet (manual 5.4, Fig 5-7); drawing sheet 4 gives hub body 72.000 +/-0.5 in. Roof/rear rim may be lower; unverified for rear edge.",
+    "opening_shape": "hexagon (flat-to-flat/across-corners not stated consistently; ~41.7-41.9 in)",
+    "opening_size_m": 1.06,
+    "opening_size_note": "41.7 in (1.059 m) per manual text; drawing sheet 4 shows 41.932 in +/-0.5",
+    "scoring_rule": "FUEL scored once it passes through the top opening and the sensor array (manual 6.5.1)",
+    "funnel_note": "fuel exits via 4 base exits towards NEUTRAL ZONE; net at rear keeps out fuel from most prohibited areas; deflectors removed per Fuel Counter update (TU15)"
+  },
+  "bumps": [
+    {
+      "id": "blue_A",
+      "side": "blue",
+      "polygon": [
+        [
+          4.0616,
+          4.6315
+        ],
+        [
+          5.1894,
+          4.6315
+        ],
+        [
+          5.1894,
+          6.4857
+        ],
+        [
+          4.0616,
+          6.4857
+        ]
+      ],
+      "height_m": 0.165,
+      "ramp": "15 deg, both sides"
+    },
+    {
+      "id": "blue_B",
+      "side": "blue",
+      "polygon": [
+        [
+          4.0616,
+          1.5835
+        ],
+        [
+          5.1894,
+          1.5835
+        ],
+        [
+          5.1894,
+          3.4377
+        ],
+        [
+          4.0616,
+          3.4377
+        ]
+      ],
+      "height_m": 0.165,
+      "ramp": "15 deg, both sides"
+    },
+    {
+      "id": "red_A",
+      "side": "red",
+      "polygon": [
+        [
+          12.4789,
+          3.4381
+        ],
+        [
+          11.3511,
+          3.4381
+        ],
+        [
+          11.3511,
+          1.5839
+        ],
+        [
+          12.4789,
+          1.5839
+        ]
+      ],
+      "height_m": 0.165,
+      "ramp": "15 deg, both sides"
+    },
+    {
+      "id": "red_B",
+      "side": "red",
+      "polygon": [
+        [
+          12.4789,
+          6.4861
+        ],
+        [
+          11.3511,
+          6.4861
+        ],
+        [
+          11.3511,
+          4.6319
+        ],
+        [
+          12.4789,
+          4.6319
+        ]
+      ],
+      "height_m": 0.165,
+      "ramp": "15 deg, both sides"
+    }
+  ],
+  "bump_note": "size 73 x 44.4 x 6.513 in (manual 5.5). Position along Y is DERIVED from hub tag faces + bump width (unverified against bump drawing).",
+  "trenches": [
+    {
+      "id": "blue_near",
+      "side": "blue",
+      "polygon": [
+        [
+          3.7918,
+          0.0
+        ],
+        [
+          5.4593,
+          0.0
+        ],
+        [
+          5.4593,
+          1.1938
+        ],
+        [
+          3.7918,
+          1.1938
+        ]
+      ],
+      "clearance_m": 0.565,
+      "clearance_width_m": 1.279,
+      "height_m": 1.022,
+      "arm_width_m": 1.668
+    },
+    {
+      "id": "blue_far",
+      "side": "blue",
+      "polygon": [
+        [
+          3.7918,
+          6.8758
+        ],
+        [
+          5.4593,
+          6.8758
+        ],
+        [
+          5.4593,
+          8.0696
+        ],
+        [
+          3.7918,
+          8.0696
+        ]
+      ],
+      "clearance_m": 0.565,
+      "clearance_width_m": 1.279,
+      "height_m": 1.022,
+      "arm_width_m": 1.668
+    },
+    {
+      "id": "red_near",
+      "side": "red",
+      "polygon": [
+        [
+          12.7487,
+          8.0696
+        ],
+        [
+          11.0812,
+          8.0696
+        ],
+        [
+          11.0812,
+          6.8758
+        ],
+        [
+          12.7487,
+          6.8758
+        ]
+      ],
+      "clearance_m": 0.565,
+      "clearance_width_m": 1.279,
+      "height_m": 1.022,
+      "arm_width_m": 1.668
+    },
+    {
+      "id": "red_far",
+      "side": "red",
+      "polygon": [
+        [
+          12.7487,
+          1.1938
+        ],
+        [
+          11.0812,
+          1.1938
+        ],
+        [
+          11.0812,
+          -0.0
+        ],
+        [
+          12.7487,
+          -0.0
+        ]
+      ],
+      "clearance_m": 0.565,
+      "clearance_width_m": 1.279,
+      "height_m": 1.022,
+      "arm_width_m": 1.668
+    }
+  ],
+  "trench_note": "clearance 22.25 in (0.565 m) under arm (manual 5.6). Polygon Y/X extents DERIVED from 65.65 x 47 in and AprilTag positions; unverified.",
+  "towers": {
+    "red": {
+      "centre": [
+        0.4201,
+        0.1043
+      ],
+      "centre_m": [
+        16.5405,
+        4.1077
+      ],
+      "wall_x_m": 16.5405,
+      "footprint_m": [
+        1.143,
+        1.251
+      ],
+      "rung_height_m": {
+        "level1": null,
+        "low_rung": 0.686,
+        "mid_rung": 1.143,
+        "high_rung": 1.6
+      }
+    },
+    "blue": {
+      "centre_m": [
+        0.0,
+        3.9616
+      ],
+      "wall_x_m": 0.0,
+      "footprint_m": [
+        1.143,
+        1.251
+      ],
+      "rung_height_m": {
+        "level1": null,
+        "low_rung": 0.686,
+        "mid_rung": 1.143,
+        "high_rung": 1.6
+      }
+    }
+  },
+  "tower_levels": {
+    "level1": "robot no longer touching carpet or TOWER BASE (manual 6.5.2)",
+    "level2": "bumper covers completely above LOW RUNG (27 in / 0.686 m)",
+    "level3": "bumper covers completely above MID RUNG (45 in / 1.143 m)"
+  },
+  "tower_size_note": "tower 49.25 in wide along wall, 45 in deep, 78.25 in tall; Y centres from tags 31/32 (blue) and 15/16 (red).",
+  "outposts": {
+    "red": {
+      "centre_m": [
+        16.5405,
+        7.1874
+      ],
+      "opening_m": {
+        "width": 0.808,
+        "height": 0.178,
+        "bottom_height": 0.714
+      },
+      "chute_capacity_fuel": 25,
+      "area_m": {
+        "x": [
+          13.1365,
+          16.5405
+        ],
+        "y": [
+          6.2666,
+          8.0696
+        ]
+      }
+    },
+    "blue": {
+      "centre_m": [
+        0.0,
+        0.8819
+      ],
+      "opening_m": {
+        "width": 0.808,
+        "height": 0.178,
+        "bottom_height": 0.714
+      },
+      "chute_capacity_fuel": 25,
+      "area_m": {
+        "x": [
+          0.0,
+          3.404
+        ],
+        "y": [
+          0.0,
+          1.803
+        ]
+      }
+    }
+  },
+  "outpost_note": "centres from tags 29/30 and 13/14 (midpoint). opening 31.8 in wide x 7.0 in tall at 28.1 in (manual 5.9.2). Area per 5.3 (71 x 134 in).",
+  "depots": {
+    "blue": {
+      "centre_m": [
+        0.343,
+        2.56
+      ],
+      "size_m": [
+        1.067,
+        0.686
+      ],
+      "note": "UNVERIFIED Y centre; estimate between outpost and tower"
+    },
+    "red": {
+      "centre_m": [
+        16.198,
+        5.51
+      ],
+      "size_m": [
+        1.067,
+        0.686
+      ],
+      "note": "UNVERIFIED Y centre; estimate mirrored"
+    }
+  },
+  "zones": {
+    "blue_alliance_x_max": 4.028,
+    "red_alliance_x_min": 12.513,
+    "neutral_x": [
+      4.028,
+      12.513
+    ],
+    "alliance_zone_depth_m": 4.028,
+    "alliance_zone_note": "alliance zone 158.6 in deep (manual 5.3)",
+    "neutral_zone_depth_manual_m": 7.19,
+    "neutral_zone_note": "manual says 283 in deep, which does not match 651.2 - 2*158.6 = 334 in; discrepancy flagged, UNVERIFIED",
+    "center_line_x_m": 8.2705,
+    "blue_starting_line_x_m": 4.028,
+    "red_starting_line_x_m": 12.513,
+    "human_starting_line_blue_x_m": 0.61,
+    "human_starting_line_red_x_m": 15.931
+  },
+  "periods": [
+    {
+      "name": "auto",
+      "t0": 0,
+      "t1": 20
+    },
+    {
+      "name": "transition",
+      "t0": 20,
+      "t1": 30
+    },
+    {
+      "name": "shift1",
+      "t0": 30,
+      "t1": 55
+    },
+    {
+      "name": "shift2",
+      "t0": 55,
+      "t1": 80
+    },
+    {
+      "name": "shift3",
+      "t0": 80,
+      "t1": 105
+    },
+    {
+      "name": "shift4",
+      "t0": 105,
+      "t1": 130
+    },
+    {
+      "name": "endgame",
+      "t0": 130,
+      "t1": 160
+    }
+  ],
+  "periods_note": "seconds from auto start on the match clock. Manual Table 6-2 gives durations (AUTO 20, TRANSITION 10, SHIFT 25 x4, END GAME 30). Timer 0:00 at AUTO end coincides with TELEOP 2:20 start; manual has a 3 s scoring-assessment delay (6.4/6.5), NOT an explicit physical pause. Spec's assumed ~3 s pause is not in the manual.",
+  "pause_after_auto_assumed_s": 3.0,
+  "hub_active_rules": "AUTO, TRANSITION, END GAME: both hubs active. During SHIFT 1-4 only one hub active. The alliance scoring more FUEL in AUTO (or FMS-selected on tie) has its hub INACTIVE in SHIFT 1, then alternates each shift. Table 6-3 in manual. FUEL assessment continues 3 s after hub deactivates (6.5).",
+  "hub_active_table": {
+    "auto_red_wins": {
+      "red_hub": [
+        "shift1 inactive",
+        "shift2 active",
+        "shift3 inactive",
+        "shift4 active"
+      ],
+      "blue_hub": [
+        "shift1 active",
+        "shift2 inactive",
+        "shift3 active",
+        "shift4 inactive"
+      ]
+    },
+    "auto_blue_wins": {
+      "red_hub": [
+        "shift1 active",
+        "shift2 inactive",
+        "shift3 active",
+        "shift4 inactive"
+      ],
+      "blue_hub": [
+        "shift1 inactive",
+        "shift2 active",
+        "shift3 inactive",
+        "shift4 active"
+      ]
+    }
+  },
+  "uncounted_definition": "per spec: FUEL into an inactive hub (manual: earns no points). Manual has no 'uncounted' term; TBA field is the authority for the label.",
+  "human_player_fuel": {
+    "delivery": "G425: FUEL may only enter the field by HP/DRIVER through the CHUTE, through the bottom opening in the OUTPOST, or thrown over the top of the ALLIANCE WALL from the OUTPOST AREA. Violation: MAJOR FOUL.",
+    "hub_direct_throw": "not explicitly addressed; the HUB net blocks FUEL from most prohibited areas. Unverified whether HP throws land in hub.",
+    "chute_capacity": 25,
+    "preload_per_robot": 8,
+    "staged_depot_fuel": 24,
+    "staged_chute_fuel": 24
+  },
+  "robot_limits": {
+    "weight_max_kg": 52.16,
+    "weight_max_lb": 115.0,
+    "starting_perimeter_max_m": 2.794,
+    "starting_height_max_m": 0.762,
+    "starting_height_max_in": 30.0,
+    "horizontal_extension_max_m": 0.305,
+    "vertical_extension_max_m": 0.762,
+    "bumper_extension_max_m": 0.102,
+    "passing_trench_clearance_m": 0.565,
+    "passing_bump_clearance_note": "bump height 0.165 m"
+  },
+  "points": {
+    "fuel_active_hub_auto": 1,
+    "fuel_active_hub_teleop": 1,
+    "fuel_inactive_hub": 0,
+    "tower_auto": {
+      "level1": 15,
+      "note": "max 2 robots at level1 in AUTO"
+    },
+    "tower_teleop": {
+      "level1": 10,
+      "level2": 20,
+      "level3": 30
+    },
+    "ranking": {
+      "energized_rp_threshold": {
+        "regional": 100,
+        "district": 240,
+        "fira": 360
+      },
+      "supercharged_rp_threshold": {
+        "regional": 360,
+        "district": 360,
+        "fira": 500
+      },
+      "traversal_rp_threshold": 50
+    }
+  },
+  "sources": [
+    "https://firstfrc.blob.core.windows.net/frc2026/Manual/2026GameManual.pdf (Version TU22)",
+    "https://firstfrc.blob.core.windows.net/frc2026/Manual/TeamUpdates/REBUILT_TeamUpdate-Combined.pdf (TU22 final, Apr 21 2026)",
+    "https://firstfrc.blob.core.windows.net/frc2026/FieldAssets/2026-field-dimension-dwgs.pdf (FE-2026 sheets 2, 11, 22, 25)",
+    "https://www.firstinspires.org/hubfs/web/volunteer/frc/2026-rebuilt-game-overview.pdf (not read, binary-only in fetch)",
+    "/Users/grant/Projects/autoscout/live/field/2026-rebuilt-welded.json (tag positions, welded)"
+  ]
+}
