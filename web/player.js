@@ -77,6 +77,8 @@ async function analyzePage(ev, key) {
   }).sort((a, b) => a.t - b.t);
   const sIdx = shots.map(s => s.t);
 
+  const ST = hasVideo && d.stations && d.stations.video && d.stations.cams ? d.stations : null;
+  const VIEWS = [["ov", "Overhead"], ["red", "Red station"], ["blue", "Blue station"], ["all", "All"]];
   const S = {  // state
     layers: Object.fromEntries(PL.layers.map(l => [l[0], plLS.get("layer." + l[0], !!l[3])])),
     team: "", alliance: "", outcome: "", trailS: plLS.get("trailS", 4), offset: plLS.get("offset", 0), speed: 1, fuel: null, fuelOn: 0.5,
@@ -87,11 +89,13 @@ async function analyzePage(ev, key) {
    <div class="an-main">
     <div class="an-stage" id="anStage">${hasVideo ? `<video id="anVid" playsinline muted preload="auto" src="${esc(d.video_local)}"></video>` : `<div class="an-field"></div>`}
       <canvas id="anCv"></canvas><div class="an-msg" id="anMsg"></div></div>
+    ${ST ? `<div class="an-sts" id="anSts">${["red", "blue"].map(al => `<div class="an-stage an-st" data-al="${al}"><canvas></canvas><div class="an-msg"></div></div>`).join("")}</div><video id="anIns" playsinline muted preload="auto" src="${esc(ST.video)}" style="display:none"></video>` : ""}
     <div class="an-scrub" id="anScrub"></div>
     <div class="an-ctl">
       <button id="bPlay" title="space">Play</button><button id="bBack" title="left arrow">&#9664; frame</button><button id="bFwd" title="right arrow">frame &#9654;</button>
       <button id="bM5">-5 s</button><button id="bP5">+5 s</button>
       <span class="an-speed" id="anSpeed">${[0.25, 0.5, 1, 2].map(s => `<button data-s="${s}" class="${s === 1 ? "on" : ""}">${s}&times;</button>`).join("")}</span>
+      ${ST ? `<span class="an-speed" id="anView" title="camera view (v key)">${VIEWS.map(v => `<button data-v="${v[0]}">${v[1]}</button>`).join("")}</span>` : ""}
       <span class="muted small" id="anTime"></span>
       <label class="small muted" title="Shift data relative to video, in frames ( [ and ] keys )">sync <input id="anOff" type="number" step="1" value="${Math.round(S.offset * PL.FPS)}" style="width:54px"> fr</label>
     </div>
@@ -107,8 +111,9 @@ async function analyzePage(ev, key) {
     ${COR.length || ID ? `<div class="card"><h2>Identity <span class="muted small">(${COR.length} correction${COR.length === 1 ? "" : "s"})</span></h2><div class="an-list" id="anId" style="max-height:200px"></div></div>` : ""}
     <div class="card"><h2>Shots <span class="muted small" id="anShotN"></span></h2><div class="an-list" id="anList"></div></div>
    </div></div>`;
-  const $ = id => document.getElementById(id), stage = $("anStage"), cv = $("anCv"), ctx = cv.getContext("2d"), vid = $("anVid");
+  const $ = id => document.getElementById(id), stage = $("anStage"), cv = $("anCv"), octx = cv.getContext("2d"), vid = $("anVid");
   const msg = $("anMsg");
+  let ctx = octx, tcam = cam;   // current draw target (overhead canvas, or a station canvas while drawing stations)
   const unhot = {};
   for (const al of ["red", "blue"]) { const h = document.createElement("div"); h.className = "an-unhot"; h.style.display = "none"; h.title = UNATTR_TIP; stage.appendChild(h); unhot[al] = h; }
   const idcard = document.createElement("div"); idcard.className = "an-idcard"; idcard.style.display = "none"; stage.appendChild(idcard);
@@ -167,7 +172,7 @@ async function analyzePage(ev, key) {
     if (!p || !q || p[0] == null) return null;
     return [(p[0] + (q[0] - p[0]) * a) / 100, (p[1] + (q[1] - p[1]) * a) / 100, tr.obs ? tr.obs[i0] : 1];
   }
-  const PJ = (x, y, z) => { const p = cam.project(x, y, z); return p[2] > 0.1 ? [p[0] * K, p[1] * K, p[2]] : null; };
+  const PJ = (x, y, z) => { const p = tcam.project(x, y, z); return p[2] > 0.1 ? [p[0] * K, p[1] * K, p[2]] : null; };
   // projected polyline in field space; breaks where behind camera
   function poly(pts, close) {
     ctx.beginPath(); let pen = false, first = null;
@@ -215,14 +220,7 @@ async function analyzePage(ev, key) {
     const L = S.layers;
     if (!cam) { msg.textContent = "no camera calibration: video layers unavailable (minimap only)"; }
     else if (!vid) { /* plain-field mode handled via minimap below */ }
-    if (cam && vid) {
-      if (L.grid) drawGrid();
-      if (L.history) drawHistory(T);
-      if (L.fuel) drawFuel(T);
-      if (L.trails) drawTrails(T);
-      if (L.robots) drawRobots(T);
-      if (L.arcs) drawArcs(T);
-    }
+    if (cam && vid) drawLayers(L, T, true);
     const cn = (L.score || L.tba) ? counts(T) : null;
     if (L.minimap || !vid) drawMini(T, !vid);
     for (const al in unhot) if (!L.score) unhot[al].style.display = "none";
@@ -233,6 +231,15 @@ async function analyzePage(ev, key) {
     updIdCard(T);
     $("anTime").textContent = fmtT(curT()) + " / " + fmtT(clock.dur) + "  frame " + Math.round(curT() * PL.FPS) + (periodAt(T) ? "  " + periodAt(T).name : "");
     moveHead();
+    drawStations(T);
+  }
+  function drawLayers(L, T, overhead) {
+    if (L.grid) drawGrid();
+    if (L.history) drawHistory(T);
+    if (overhead && L.fuel) drawFuel(T);
+    if (L.trails) drawTrails(T);
+    if (L.robots) drawRobots(T);
+    if (L.arcs) drawArcs(T);
   }
   const fmtT = t => `${Math.floor(t / 60)}:${(t % 60).toFixed(2).padStart(5, "0")}`;
 
@@ -252,7 +259,7 @@ async function analyzePage(ev, key) {
     }
   }
   function drawRobots(T) {
-    const h = PL.FOOT / 2, zt = 0.5;
+    const h = PL.FOOT / 2, zt = tcam === cam ? 0.5 : 0.6;
     for (const tr of tracks) {
       if (!trackVisible(tr)) continue;
       const p = robotAt(tr, T); if (!p) continue;
@@ -481,6 +488,76 @@ async function analyzePage(ev, key) {
   }
   $("anList").onclick = e => { const r = e.target.closest(".an-row"); if (!r) return; const s = shots.find(x => x.i === +r.dataset.i); seek(s.t - 1 + S.offset); };
 
+
+  // ---- driver-station cameras (second video = full broadcast inset; each station is a crop of it)
+  const SYNC = ST && ST.sync || { offset: 0, knots: [] };
+  const KN = (SYNC.knots && SYNC.knots.length ? SYNC.knots : [[0, SYNC.offset || 0]]).slice().sort((a, b) => a[0] - b[0]);
+  function insOff(ti) {   // overhead time - inset time, piecewise-linear over knots, linear extrapolation
+    const n = KN.length; if (n === 1) return KN[0][1];
+    let i = 0; while (i < n - 2 && ti > KN[i + 1][0]) i++;
+    const a = KN[i], b = KN[i + 1], dt = b[0] - a[0];
+    return dt > 1e-9 ? a[1] + (b[1] - a[1]) * (ti - a[0]) / dt : a[1];
+  }
+  const ov2ins = ov => { let ti = ov - insOff(ov); for (let k = 0; k < 4; k++) ti = ov - insOff(ti); return ti; };
+  const ins = $("anIns");
+  const stn = !ST ? [] : ["red", "blue"].map(al => {
+    const el = stage.parentNode.querySelector(`.an-st[data-al="${al}"]`), c = ST.cams && ST.cams[al];
+    const crop = c && c.crop || [0, 0, 1920, 1080];
+    el.style.aspectRatio = (crop[2] - crop[0]) + " / " + (crop[3] - crop[1]);
+    const cv2 = el.querySelector("canvas");
+    return { al, el, cv: cv2, ctx: cv2.getContext("2d"), c, crop, cam: c && c.usable !== false && c.K ? makeCamera(c) : null, w: 0, h: 0, k: 1, dpr: 1, m: el.querySelector(".an-msg") };
+  });
+  let view = ST ? plLS.get("view", "ov") : "ov";
+  if (!VIEWS.some(v => v[0] === view)) view = "ov";
+  function setView(v) {
+    view = v; plLS.set("view", v);
+    const m = stage.parentNode; m.dataset.view = v;
+    stage.classList.toggle("off", v === "red" || v === "blue");
+    $("anSts").dataset.n = v === "all" ? "2" : v === "ov" ? "0" : "1";
+    for (const s of stn) s.el.style.display = v === "all" || v === s.al ? "" : "none";
+    $("anView").querySelectorAll("button").forEach(b => b.classList.toggle("on", b.dataset.v === v));
+    resize(); stn.forEach(sizeSt); syncIns(true); draw();
+  }
+  function sizeSt(s) {
+    const r = s.el.getBoundingClientRect(); if (!r.width) return;
+    s.dpr = window.devicePixelRatio || 1; s.w = r.width; s.h = r.height;
+    s.cv.width = Math.round(s.w * s.dpr); s.cv.height = Math.round(s.h * s.dpr); s.k = s.w / ((s.c && s.c.W) || (s.crop[2] - s.crop[0]));
+  }
+  const roS = new ResizeObserver(es => { for (const e of es) { const s = stn.find(x => x.el === e.target); if (s) { sizeSt(s); draw(); } } });
+  stn.forEach(s => roS.observe(s.el));
+  let lastIns = 0;
+  function syncIns(force) {
+    if (!ins || !vid || view === "ov") { if (ins && !ins.paused) ins.pause(); return; }
+    const tgt = Math.max(0, ov2ins(vid.currentTime));
+    if (ins.playbackRate !== vid.playbackRate) ins.playbackRate = vid.playbackRate;
+    if (vid.paused) { if (!ins.paused) ins.pause(); }
+    else if (ins.paused && ins.readyState >= 2) ins.play().catch(() => { });
+    const err = Math.abs(ins.currentTime - tgt), now = performance.now();
+    if (err > (vid.paused ? 0.4 / PL.FPS : 1.2 / PL.FPS) && (force || vid.paused || now - lastIns > 300 || err > 0.5)) { lastIns = now; ins.currentTime = tgt; }
+  }
+  function drawStations(T) {
+    for (const s of stn) {
+      if (!s.w || s.el.style.display === "none") continue;
+      const g = s.ctx; g.setTransform(s.dpr, 0, 0, s.dpr, 0, 0); g.clearRect(0, 0, s.w, s.h);
+      try { if (ins.readyState >= 2) g.drawImage(ins, s.crop[0], s.crop[1], s.crop[2] - s.crop[0], s.crop[3] - s.crop[1], 0, 0, s.w, s.h); } catch (e) { }
+      s.m.textContent = !s.c ? "no calibration for this station camera" : !s.cam ? s.al + " station camera calibration is not usable for this match: no layers drawn" : "";
+      if (!s.cam) continue;
+      ctx = g; tcam = s.cam; K = s.k; ctx.lineJoin = "round"; ctx.lineCap = "round";
+      ctx.save(); ctx.beginPath(); ctx.rect(0, 0, s.w, s.h); ctx.clip();
+      drawLayers(S.layers, T, false);
+      ctx.restore();
+      ctx.fillStyle = "rgba(0,0,0,.6)"; ctx.fillRect(6, 6, 96, 18); ctx.fillStyle = COLORS[s.al][0]; ctx.font = "bold 12px system-ui,sans-serif"; ctx.fillText(s.al.toUpperCase() + " STATION", 11, 19);
+      ctx = octx; tcam = cam; K = CW / 1920;
+    }
+  }
+  if (ST) {
+    $("anView").onclick = e => { const b = e.target.closest("button"); if (b) setView(b.dataset.v); };
+    ins.addEventListener("seeked", () => draw()); ins.addEventListener("loadeddata", () => draw());
+    ins.addEventListener("error", () => { msg.textContent = "station video failed to load: " + ST.video; });
+    setInterval0();
+  }
+  function setInterval0() { const id = setInterval(() => { if (!dead && view !== "ov") syncIns(); }, 250); cleanup.push(() => clearInterval(id)); }
+
   // ---- transport
   const step = n => { if (vid) vid.pause(); seek((Math.round(curT() * PL.FPS) + n) / PL.FPS + 0.002); };
   const togglePlay = () => { if (vid) { vid.paused ? vid.play() : vid.pause(); } else { clock.playing = !clock.playing; clock.last = performance.now(); loop(); } updPlay(); };
@@ -488,7 +565,7 @@ async function analyzePage(ev, key) {
   $("bPlay").onclick = togglePlay; $("bBack").onclick = () => step(-1); $("bFwd").onclick = () => step(1);
   $("bM5").onclick = () => seek(curT() - 5); $("bP5").onclick = () => seek(curT() + 5);
   $("anSpeed").onclick = e => {
-    const b = e.target.closest("button"); if (!b) return; S.speed = +b.dataset.s; if (vid) vid.playbackRate = S.speed;
+    const b = e.target.closest("button"); if (!b) return; S.speed = +b.dataset.s; if (vid) vid.playbackRate = S.speed; syncIns();
     $("anSpeed").querySelectorAll("button").forEach(x => x.classList.toggle("on", x === b));
   };
   const setOff = fr => { S.offset = fr / PL.FPS; plLS.set("offset", S.offset); $("anOff").value = fr; draw(); };
@@ -500,6 +577,7 @@ async function analyzePage(ev, key) {
     if (k === " ") togglePlay();
     else if (k === "ArrowLeft") e.shiftKey ? seek(curT() - 5) : step(-1);
     else if (k === "ArrowRight") e.shiftKey ? seek(curT() + 5) : step(1);
+    else if (k === "v" && ST) setView(VIEWS[(VIEWS.findIndex(x => x[0] === view) + 1) % VIEWS.length][0]);
     else if (k === "[") setOff(Math.round(S.offset * PL.FPS) - 1);
     else if (k === "]") setOff(Math.round(S.offset * PL.FPS) + 1);
     else { const l = PL.layers.find(x => x[2] === k.toLowerCase()); if (!l) return; toggleLayer(l[0]); }
@@ -514,17 +592,17 @@ async function analyzePage(ev, key) {
     if (!vid) { if (clock.playing) { const n = performance.now(); clock.t += (n - clock.last) / 1000 * S.speed; clock.last = n; draw(); raf = requestAnimationFrame(loop); } return; }
   }
   if (vid) {
-    const onFrame = (now, meta) => { if (dead) return; draw(); rv = vid.requestVideoFrameCallback(onFrame); };
+    const onFrame = (now, meta) => { if (dead) return; syncIns(); draw(); rv = vid.requestVideoFrameCallback(onFrame); };
     const hasRVFC = "requestVideoFrameCallback" in HTMLVideoElement.prototype;
     if (hasRVFC) rv = vid.requestVideoFrameCallback(onFrame);
-    else { const tick = () => { if (dead) return; if (!vid.paused) draw(); raf = requestAnimationFrame(tick); }; raf = requestAnimationFrame(tick); }
-    for (const ev2 of ["seeked", "timeupdate", "loadeddata", "pause", "play"]) vid.addEventListener(ev2, () => { draw(); updPlay(); });
+    else { const tick = () => { if (dead) return; if (!vid.paused) { syncIns(); draw(); } raf = requestAnimationFrame(tick); }; raf = requestAnimationFrame(tick); }
+    for (const ev2 of ["seeked", "timeupdate", "loadeddata", "pause", "play", "ratechange"]) vid.addEventListener(ev2, () => { syncIns(ev2 === "seeked"); draw(); updPlay(); });
     vid.addEventListener("loadedmetadata", () => { clock.dur = vid.duration; buildScrub(); resize(); if (!vid.currentTime) vid.currentTime = Math.max(0, t0m); });
     vid.addEventListener("error", () => { msg.textContent = "video failed to load: " + d.video_local; });
     vid.addEventListener("click", togglePlay);
     stage.style.aspectRatio = "16 / 9";
   } else { stage.style.aspectRatio = "2.05 / 1"; clock.t = t0m; }
-  buildScrub(); buildIdSide(); refreshList(); resize(); updPlay();
-  window.__an = { S, seek, draw, vid, shots, tracks, cam, step, toggleLayer };
-  cleanup.push(() => { dead = true; document.removeEventListener("keydown", onKey); ro.disconnect(); cancelAnimationFrame(raf); if (vid) { vid.pause(); vid.removeAttribute("src"); vid.load(); } delete window.__an; });
+  buildScrub(); buildIdSide(); refreshList(); resize(); updPlay(); if (ST) setView(view);
+  window.__an = { stn, ins, setView, ov2ins, S, seek, draw, vid, shots, tracks, cam, step, toggleLayer };
+  cleanup.push(() => { dead = true; document.removeEventListener("keydown", onKey); ro.disconnect(); roS.disconnect(); cancelAnimationFrame(raf); if (ins) { ins.pause(); ins.removeAttribute("src"); ins.load(); } if (vid) { vid.pause(); vid.removeAttribute("src"); vid.load(); } delete window.__an; });
 }
