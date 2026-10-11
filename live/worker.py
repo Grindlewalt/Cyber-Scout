@@ -126,6 +126,20 @@ def process_match(ev, m, cfg, status, meta_cache):
         jsave(os.path.join(ev_dir(ev), "status.json"), status)
 
 
+def start_hint(ev, v):
+    """Median detected match start of earlier uploads from the same channel with the
+    same kind of title ("Wide Match" vs "Qualification"): cuts are consistent per source."""
+    ts = []
+    d = os.path.join(ev_dir(ev), "matches")
+    for f in os.listdir(d) if os.path.isdir(d) else []:
+        r = jload(os.path.join(d, f), {})
+        vv = r.get("video", {})
+        if r.get("start_source") in ("clock", "motion") and vv.get("channel") == v["channel"] \
+                and vv.get("title", "").split()[:1] == v["title"].split()[:1]:
+            ts.append(r["t_start"])
+    return float(np.median(ts)) if len(ts) >= 3 else None
+
+
 # ------------------------------------------------------------------ site JSON
 GRID = 0.5   # heatmap cell, metres
 
