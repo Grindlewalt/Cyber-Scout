@@ -137,3 +137,22 @@ select { background: var(--panel2); color: var(--text); border: 1px solid var(--
   h1 { font-size: 21px; } .sect { padding: 12px; }
 }
 @media (max-width: 520px) { .sb { grid-template-columns: 1fr; } .controls { gap: 6px; } .tiles { grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); } .legend { grid-template-columns: 1fr; } }
+/* analyze view */
+.an { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 14px; align-items: start; }
+.an-stage { position: relative; background: #000; border-radius: 8px; overflow: hidden; width: 100%; }
+.an-stage video, .an-stage canvas, .an-field { position: absolute; inset: 0; width: 100%; height: 100%; }
+.an-stage video { object-fit: fill; background: #000; } .an-stage canvas { pointer-events: none; }
+.an-msg { position: absolute; left: 8px; bottom: 8px; font-size: 12px; color: #ffd43b; pointer-events: none; }
+.an-ctl { display: flex; flex-wrap: wrap; gap: 6px 8px; align-items: center; margin: 8px 0; }
+.an-ctl button, .an-lay button { padding: 4px 9px; font-size: 13px; }
+.an-speed button.on, .an-lay button.on { background: var(--accent); color: #fff; border-color: var(--accent); }
+.an-lay { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 8px; } .an-lay kbd { opacity: .6; font-size: 10px; margin-left: 3px; }
+.an-scrub { position: relative; height: 40px; margin-top: 8px; cursor: pointer; background: var(--panel2); border-radius: 6px; overflow: hidden; touch-action: none; user-select: none; }
+.an-scrub .seg { position: absolute; top: 0; bottom: 0; height: auto; font-size: 10px; align-items: flex-start; justify-content: flex-start; padding: 1px 3px; pointer-events: none; }
+.an-scrub .seg i { position: absolute; left: 0; right: 0; height: 3px; background: #1b2330; } .an-scrub .seg i.r { bottom: 4px; } .an-scrub .seg i.b { bottom: 0; }
+.an-scrub .seg i.r.on { background: var(--red); } .an-scrub .seg i.b.on { background: var(--blue); }
+.an-scrub u { position: absolute; top: 14px; width: 1px; height: 14px; background: #888; text-decoration: none; pointer-events: none; }
+.an-scrub u.made { background: #51cf66; } .an-scrub u.missed { background: #ff6b6b; opacity: .7; } .an-scrub u.pass { background: #ffd43b; opacity: .6; }
+.an-scrub .head { position: absolute; top: 0; bottom: 0; width: 2px; background: #fff; pointer-events: none; }
+.an-list { max-height: 380px; overflow: auto; font-size: 13px; } .an-row { padding: 3px 4px; cursor: pointer; border-radius: 4px; } .an-row:hover { background: var(--panel2); }
+@media (max-width: 900px) { .an { grid-template-columns: 1fr; } }

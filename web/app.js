@@ -189,7 +189,7 @@ async function matchPage(ev, key) {
   const $ = id => document.getElementById(id);
 
   $app.innerHTML = `<h1>${esc(d.label)}</h1>
-    <div class="sub"><span class="score r ${d.winner === "red" ? "win" : ""}">${d.red.score}</span> – <span class="score b ${d.winner === "blue" ? "win" : ""}">${d.blue.score}</span>
+    <div class="sub"><a class="btn" href="#/${ev}/a/${key}" style="font-weight:600">Analyze (video + layers)</a> <span class="score r ${d.winner === "red" ? "win" : ""}">${d.red.score}</span> – <span class="score b ${d.winner === "blue" ? "win" : ""}">${d.blue.score}</span>
      · video: <a href="https://youtu.be/${d.video.id}?t=${Math.floor(v0)}" target="_blank" rel="noopener">${esc(d.video.title)}</a>
      ${d.start_detected ? "" : ' · <span class="pill no_video" title="match start not detected from motion; using a default offset">start estimated</span>'}
      ${d.feed_ok < 0.98 ? ` · <span class="pill no_video" title="the field camera was missing from the broadcast for part of this match; stats use only the filmed part">camera footage ${Math.round(d.feed_ok * 100)}%</span>` : ""}</div>
@@ -385,6 +385,7 @@ async function route(scroll = true) {
     if (!p.length) await home();
     else if (p.length === 1) await eventPage(p[0]);
     else if (p[1] === "m") await matchPage(p[0], p[2]);
+    else if (p[1] === "a") await analyzePage(p[0], p[2]);
     else if (p[1] === "t") await teamPage(p[0], p[2]);
     else await eventPage(p[0], p[1], p[2]);
   } catch (e) {
