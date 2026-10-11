@@ -314,10 +314,14 @@ def track_stats(xy, obs, alliance_name, t_auto_end, LEN, live=None):
 
 
 # ---------------------------------------------------------------- main
-def process(video, cam_path, onnx, tag_csv=None, log=print, start_hint=None):
+def process(video, cam_path, onnx, tag_csv=None, log=print, start_hint=None, pose_guess=None):
     """start_hint: typical match-start offset for this kind of upload, used only
-    when neither the clock nor robot motion gives one."""
-    cam = CAMM.Camera(cam_path)
+    when neither the clock nor robot motion gives one.  pose_guess: {rvec, tvec} of
+    the camera as last seen (a bump persists across matches)."""
+    raw = json.load(open(cam_path))
+    if pose_guess:
+        raw = dict(raw, rvec=pose_guess["rvec"], tvec=pose_guess["tvec"])
+    cam = CAMM.Camera(raw)
     pose = {"checked": False}
     if tag_csv:
         cam, pose = check_pose(video, cam, tag_csv, log)
@@ -392,6 +396,7 @@ def process(video, cam_path, onnx, tag_csv=None, log=print, start_hint=None):
             i += 1
     if gaps: log(f"  camera feed missing for {(~fw).sum() / FPS:.0f}s: {gaps}")
     return dict(t_start=round(t_start, 2), start_detected=found, start_source=how,
+                camera_pose=dict(rvec=cam.rvec.tolist(), tvec=cam.tvec.tolist()),
                 feed_ok=round(float(fw.mean()), 3), feed_gaps=gaps,
                 auto_feed_ok=round(float(fw[:int(t_auto_end * FPS)].mean()), 3), frames=nf, hz=OUT_HZ,
                 t_auto_end=t_auto_end, t_teleop_start=0.5 + AUTO_S + PAUSE_S,

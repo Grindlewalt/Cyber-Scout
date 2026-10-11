@@ -85,8 +85,13 @@ def process_match(ev, m, cfg, status, meta_cache):
                 videos.download(v["id"], path)
                 log(f"{m['key']}: processing")
                 t0 = time.time()
+                pose_p = os.path.join(ev_dir(ev), "pose_latest.json")
                 res = process.process(path, ev_file(ev, "camera.json"), MODEL, TAG_CSV,
-                                      log=lambda *a: log(m["key"], *a), start_hint=start_hint(ev, v))
+                                      log=lambda *a: log(m["key"], *a), start_hint=start_hint(ev, v),
+                                      pose_guess=jload(pose_p))
+                pc = res.get("pose", {})
+                if pc.get("tags", 0) >= 3 and (pc.get("applied") or (pc.get("moved_px") or 99) < 2.0):
+                    jsave(pose_p, res["camera_pose"])          # verified pose: next match starts here
                 res.update(key=m["key"], video=dict(id=v["id"], title=v["title"], channel=v["channel"]),
                            processed_at=time.time(), seconds=round(time.time() - t0))
                 log(f"{m['key']}: {v['id']} camera coverage {res['feed_ok']:.0%} in {time.time() - t0:.0f}s")
