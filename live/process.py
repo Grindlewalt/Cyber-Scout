@@ -26,43 +26,6 @@ OUT_HZ = 10                                             # web export rate
 HB, SB = 12, 3
 NO_FEED_LEVEL = 20                                      # field mean below this = feed lost
 CLOCK_BOX = tuple(int(v) for v in os.environ.get("CLOCK_BOX", "912,72,1008,116").split(","))   # x0,y0,x1,y1
-# Broadcast layout (live/layout.py, data/events/<ev>/layout.json drawn in the box editor): clock box,
-# picture-in-picture areas without robots, field area.  No layout = the hard-coded 2026 FIRST values above.
-# An explicit CLOCK_BOX env var still wins over the layout.
-
-
-def layout_params(cam, cam_path=None, video=None, layout=None, log=print):
-    """-> dict(clock_box, masks, field, light_clock, info) for detect_video from the event's layout
-    (layout: None = look it up, False = ignore layouts, a layout.Layout / path / dict = use it)."""
-    out = dict(clock_box=CLOCK_BOX, masks=[], field=None, light_clock=False, info=None)
-    if layout is False:
-        return out
-    try:
-        import layout as LY
-        if layout is None:
-            L = LY.find(cam_path=cam_path, video_path=video, cam=cam)
-        elif isinstance(layout, str):
-            L = LY.load(layout)
-        elif isinstance(layout, dict):
-            L = LY.Layout(layout)
-        else:
-            L = layout
-    except Exception as e:
-        log(f"  layout unavailable ({e!r}): hard-coded overlay boxes")
-        return out
-    s = L.processing() if L else None
-    if s is None:
-        return out
-    if "CLOCK_BOX" not in os.environ:
-        out["clock_box"] = LY.clock_box(L, cam.W, cam.H)
-        r = [r for r in s.regions if r.get("kind") == "clock"]
-        out["light_clock"] = bool(r and r[0].get("light_on_dark"))
-    out["masks"] = LY.detect_masks(L, cam.W, cam.H)
-    out["field"] = LY.field_box(L, cam.W, cam.H)
-    out["info"] = dict(path=L.path, source=s.id, clock_box=list(out["clock_box"]), masks=[list(b) for b in out["masks"]],
-                       field=list(out["field"]) if out["field"] else None)
-    log(f"  layout: {out['info']}")
-    return out
 
 
 def hsv_desc(img, x0, y0, x1, y1):
@@ -232,24 +195,13 @@ def cam_len():
     return CAMM.LEN
 
 
-def detect_video(video, cam, model, t1=SCAN_T1, log=print, hooks=(), ocr=None, clock_box=None, masks=(),
-                 field=None, light_clock=False):
+def detect_video(video, cam, model, t1=SCAN_T1, log=print, hooks=(), ocr=None):
     """Robot detection at FPS (30 Hz) over the field ROI.  `hooks` get EVERY decoded
     frame (full video rate, colour-swap fixed, no-feed frames skipped) via
     hook.push(video_frame_idx, t, bgr) -- the fuel tracker needs 60 fps.
     `ocr`: optional ocr.OcrSampler -- reads robots' bumper numbers from the detection
-    frames (its reads index the returned detection rows); the caller closes it.
-    Layout (layout_params; defaults = hard-coded behaviour): clock_box (default CLOCK_BOX),
-    masks = picture-in-picture boxes greyed out in the detection crop, field = box the ROI is
-    clipped to, light_clock = clock digits are light on a dark box (inverted for clock_start)."""
+    frames (its reads index the returned detection rows); the caller closes it."""
     x0, y0, x1, y1 = cam.roi()
-    if field:
-        x0, y0 = max(x0, int(field[0])), max(y0, int(field[1]))
-        x1, y1 = min(x1, int(field[2])), min(y1, int(field[3]))
-    masks = [(max(0, int(a) - x0), max(0, int(b) - y0), min(x1 - x0, int(c) - x0), min(y1 - y0, int(d) - y0))
-             for a, b, c, d in (masks or [])]
-    masks = [m for m in masks if m[2] > m[0] and m[3] > m[1]]
-    clock_box = tuple(clock_box) if clock_box else CLOCK_BOX
     swapped = swap_check(cam); n_swap = 0
     feed = []                       # per processed frame: True if the field camera is live
     c = av.open(video); s = c.streams.video[0]; s.thread_type = "AUTO"
@@ -274,13 +226,10 @@ def detect_video(video, cam, model, t1=SCAN_T1, log=print, hooks=(), ocr=None, c
         if not live:                # camera feed missing (black field): nothing to detect
             n += 1; continue
         if f.time < 45:
-            cx0, cy0, cx1, cy1 = clock_box
+            cx0, cy0, cx1, cy1 = CLOCK_BOX
             g = cv2.cvtColor(im[cy0:cy1, cx0:cx1], cv2.COLOR_BGR2GRAY)
-            clock.append((float(f.time), 255 - g if light_clock else g))
+            clock.append((float(f.time), g))
         crop = im[y0:y1, x0:x1]
-        if masks:
-            crop = crop.copy()
-            for a, b, c, d in masks: crop[b:d, a:c] = 114
         b, sc = model(crop, conf=CONF_KEEP)
         if ocr is not None and len(b):
             ocr.frame(float(f.time), im, b + [x0, y0, x0, y0], np.asarray(sc), len(rows))
@@ -386,7 +335,7 @@ def track_stats(xy, obs, alliance_name, t_auto_end, LEN, live=None):
 
 # ---------------------------------------------------------------- main
 def process(video, cam_path, onnx, tag_csv=None, log=print, start_hint=None, pose_guess=None,
-            teams=None, hooks=(), dump=None, extra_reads=None, event=None, layout=None):
+            teams=None, hooks=(), dump=None, extra_reads=None, event=None):
     """start_hint: typical match-start offset for this kind of upload, used only
     when neither the clock nor robot motion gives one.  pose_guess: {rvec, tvec} of
     the camera as last seen (a bump persists across matches).
@@ -405,10 +354,7 @@ def process(video, cam_path, onnx, tag_csv=None, log=print, start_hint=None, pos
     (default), bumper text is also scored against every event team (ocr.read_many open set) and
     match["identity"]["integrity"] reports out-of-match reads, possible_wrong_video,
     possible_substitution (integrity.py; integrity.should_retry(...) -> try the next video).
-    Identity uses the same reads as without it unless OCR_OPEN_REJECT=1 (measured: no gain).
-    layout: the event's broadcast layout (live/layout.py): None = found next to cam_path / by the event
-    key in the paths, False = hard-coded 2026 FIRST boxes, or a Layout / layout.json path / dict.
-    Without a layout.json the behaviour is unchanged."""
+    Identity uses the same reads as without it unless OCR_OPEN_REJECT=1 (measured: no gain)."""
     raw = json.load(open(cam_path))
     if pose_guess:
         raw = dict(raw, rvec=pose_guess["rvec"], tvec=pose_guess["tvec"])
@@ -431,11 +377,8 @@ def process(video, cam_path, onnx, tag_csv=None, log=print, start_hint=None, pos
             sampler = OCRM.OcrSampler(cam, team_list, log, open_cands=open_teams)
         except Exception as e:
             log(f"  bumper OCR unavailable ({e!r}): tracking without team identity")
-    lp = layout_params(cam, cam_path, video, layout, log)
     t0 = time.time()
-    det, chas, body, n, clock, feed = detect_video(video, cam, model, log=log, hooks=hooks, ocr=sampler,
-                                                   clock_box=lp["clock_box"], masks=lp["masks"], field=lp["field"],
-                                                   light_clock=lp["light_clock"])
+    det, chas, body, n, clock, feed = detect_video(video, cam, model, log=log, hooks=hooks, ocr=sampler)
     reads = sampler.close() if sampler else np.zeros((0, 7))
     log(f"  detection: {n} frames, {len(det)} raw dets in {time.time() - t0:.0f}s")
     st = prepare(det, chas, body, n, clock, feed, reads, cam, log, start_hint,
@@ -453,10 +396,7 @@ def process(video, cam_path, onnx, tag_csv=None, log=print, start_hint=None, pos
     if dump:
         import pickle
         pickle.dump(st, open(dump, "wb"))
-    res = finish(st, log)
-    if lp["info"]:
-        res["layout"] = lp["info"]
-    return res
+    return finish(st, log)
 
 
 def event_teams(event):

@@ -60,8 +60,6 @@ NO_FEED_LEVEL = 20              # mean luma below this = feed lost (as process.p
 OVERLAY_BOXES = [(446, 8, 1474, 134), (896, 126, 1024, 170),           # title/score bar, clock
                  (28, 60, 358, 118), (1562, 60, 1890, 118),             # alliance boxes + "<-"/"->" arrows
                  (616, 1004, 1304, 1072)]                              # event banner
-# Other broadcasts: the event's layout.json (live/layout.py; box editor) replaces these -- track_fuel looks
-# it up (scoreboard / clock / mask / inset boxes); no layout.json = the boxes above, unchanged.
 
 TY = 60                         # min yellowness of a moving-fuel pixel (BGR scale ~ min(R,G)-B)
 TD = 45                         # min yellowness increase over the lagged background
@@ -233,7 +231,7 @@ class FuelTracker:
     """
 
     def __init__(self, cam, fps=60.0, log=print, scale=SCALE, overlay=OVERLAY_BOXES,
-                 floor_every=2.0, t_from=None, t_to=None, overlay_px=None):
+                 floor_every=2.0, t_from=None, t_to=None):
         self.cam, self.fps, self.log, self.S = cam, float(fps), log, int(scale)
         self.t_from, self.t_to = t_from, t_to
         S = self.S
@@ -245,11 +243,8 @@ class FuelTracker:
         h, w = (y1 - y0) // S, (x1 - x0) // S
         m = np.zeros((h, w), np.uint8)
         cv2.fillPoly(m, [np.round((hull - [x0, y0]) / S).astype(np.int32)], 1)
-        if overlay_px is not None:                    # layout boxes, already in camera pixels
-            overlay, sx, sy = overlay_px, 1.0, 1.0
-        else:                                         # 1920x1080 reference boxes (OVERLAY_BOXES)
-            sx, sy = cam.W / 1920.0, cam.H / 1080.0
         for bx0, by0, bx1, by1 in (overlay or []):
+            sx, sy = cam.W / 1920.0, cam.H / 1080.0
             cv2.rectangle(m, (int((bx0 * sx - x0) / S), int((by0 * sy - y0) / S)),
                           (int((bx1 * sx - x0) / S), int((by1 * sy - y0) / S)), 0, -1)
         self.mask = m
@@ -1023,34 +1018,16 @@ def iter_av(video_path, t_from, t_to, warm=0.3):
         c.close()
 
 
-def overlay_from_layout(cam, video_path=None, layout=None, log=print):
-    """Graphics boxes (camera px) from the event's layout.json, or None (= OVERLAY_BOXES).
-    layout: None = look it up (camera "event" key / event key in the video path), False = ignore,
-    or a layout.Layout / layout.json path."""
-    if layout is False:
-        return None
-    try:
-        import layout as LY
-        L = LY.load(layout) if isinstance(layout, str) else (layout or LY.find(cam=cam, video_path=video_path))
-        boxes = LY.overlay_boxes(L, cam.W, cam.H) if L else None
-    except Exception as e:
-        log(f"  fuel: layout unavailable ({e!r}), default overlay boxes"); return None
-    if boxes is not None:
-        log(f"  fuel: overlay boxes from layout {L.path}: {boxes}")
-    return boxes
-
-
-def track_fuel(video_path, cam, t_from, t_to, log=print, frame_iter=None, fps=None, cv_threads=None, layout=None):
+def track_fuel(video_path, cam, t_from, t_to, log=print, frame_iter=None, fps=None, cv_threads=None):
     """Moving-fuel tracks between video seconds t_from and t_to.  frame_iter: optional
     iterable of (frame_idx, time_s, bgr ndarray) to reuse another decode pass (any
     subset of frames in time order, e.g. 30 Hz).  cv_threads: temporarily set OpenCV's
-    thread count (1 = same wall time on these small images at ~1/3 of the CPU).
-    layout: broadcast layout for the overlay mask (overlay_from_layout; default = look it up)."""
+    thread count (1 = same wall time on these small images at ~1/3 of the CPU)."""
     t_start = time.time()
     if cv_threads is not None:
         prev_threads = cv2.getNumThreads(); cv2.setNumThreads(int(cv_threads))
         try:
-            return track_fuel(video_path, cam, t_from, t_to, log, frame_iter, fps, None, layout)
+            return track_fuel(video_path, cam, t_from, t_to, log, frame_iter, fps, None)
         finally:
             cv2.setNumThreads(prev_threads)
     if fps is None:
@@ -1059,8 +1036,7 @@ def track_fuel(video_path, cam, t_from, t_to, log=print, frame_iter=None, fps=No
             import av
             with av.open(video_path) as c:
                 fps = float(c.streams.video[0].average_rate or 60)
-    ft = FuelTracker(cam, fps=fps, log=log, t_from=t_from, t_to=t_to,
-                     overlay_px=overlay_from_layout(cam, video_path, layout, log))
+    ft = FuelTracker(cam, fps=fps, log=log, t_from=t_from, t_to=t_to)
     if frame_iter is None:
         for idx, t, fr in iter_av(video_path, t_from, t_to):
             ft.push_av(idx, t, fr)
