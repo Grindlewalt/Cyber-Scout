@@ -46,7 +46,7 @@ def hsv_desc(img, x0, y0, x1, y1):
 
 # ---------------------------------------------------------------- camera check
 def check_pose(video, cam, tag_csv, log=print):
-    """Median plate -> AprilTags near their predicted pixels -> re-solve pose
+    """AprilTags near their predicted pixels in ~28 frames -> re-solve pose
     (intrinsics fixed) when the camera moved.  Returns (cam, info)."""
     try:
         from pupil_apriltags import Detector as TagDet
@@ -60,23 +60,24 @@ def check_pose(video, cam, tag_csv, log=print):
     frames, nxt = [], 8.0
     for f in c.decode(s):
         if f.time is None or f.time < nxt: continue
-        frames.append(f.to_ndarray(format="bgr24")); nxt += 6.0
+        frames.append(cv2.cvtColor(f.to_ndarray(format="bgr24"), cv2.COLOR_BGR2GRAY)); nxt += 6.0
         if nxt > 170: break
     c.close()
     if len(frames) < 5:
         return cam, {"checked": False}
-    plate = np.median(np.stack(frames), 0).astype(np.uint8)
-    g = cv2.cvtColor(plate, cv2.COLOR_BGR2GRAY)
-    det = TagDet(families="tag36h11", quad_decimate=1.0, decode_sharpening=0.8)
-    found = {}
-    for tid, P in tags.items():
-        u, v = cam.project(P[None])[0]
-        if not (40 <= u < cam.W - 40 and 40 <= v < cam.H - 40): continue
-        x0, y0 = int(u) - 40, int(v) - 40
-        roi = cv2.resize(g[y0:y0 + 80, x0:x0 + 80], None, fx=4, fy=4, interpolation=cv2.INTER_CUBIC)
-        for d in det.detect(roi):
-            if d.tag_id == tid and d.hamming == 0 and d.decision_margin > 20:
-                found[tid] = d.center / 4 + [x0, y0]
+    # per-frame detection (a median plate blurs the tiny tags), median of the hits
+    det = TagDet(families="tag36h11", quad_decimate=1.0, decode_sharpening=0.25)
+    hits = {}
+    for g in frames:
+        for tid, P in tags.items():
+            u, v = cam.project(P[None])[0]
+            if not (40 <= u < cam.W - 40 and 40 <= v < cam.H - 40): continue
+            x0, y0 = int(u) - 40, int(v) - 40
+            roi = cv2.resize(g[y0:y0 + 80, x0:x0 + 80], None, fx=4, fy=4, interpolation=cv2.INTER_CUBIC)
+            for d in det.detect(roi):
+                if d.tag_id == tid and d.hamming == 0 and d.decision_margin > 15:
+                    hits.setdefault(tid, []).append(d.center / 4 + [x0, y0])
+    found = {k: np.median(v, 0) for k, v in hits.items() if len(v) >= 3}
     if len(found) < 3:
         log(f"  pose check: only {len(found)} tags, keeping calibration")
         return cam, {"checked": True, "tags": len(found), "moved_px": None}
