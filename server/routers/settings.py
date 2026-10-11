@@ -26,6 +26,7 @@ class SettingsOut(BaseModel):
     season_goal: str | None
     tba_key_set: bool
     tba_key_hint: str | None = Field(None, description="admin only: '••••abcd'")
+    setup_complete: bool = Field(False, description="an admin finished the setup wizard (imported .env values don't count)")
     options: Options | None = Field(None, description="admin only")
 
 
@@ -33,6 +34,7 @@ class SettingsPatch(BaseModel):
     team_number: int | None = Field(None, ge=1, le=99999)
     season_goal: str | None = Field(None, max_length=40, description='e.g. "DCMP", "Worlds", "Win event"')
     options: Options | None = None
+    setup_complete: bool | None = None
 
 
 class KeyIn(BaseModel):
@@ -45,6 +47,7 @@ def settings_out(db, user: User) -> SettingsOut:
     return SettingsOut(team_number=DB.get_setting(db, "team_number"), team_name=DB.get_setting(db, "team_name"),
                        season_goal=DB.get_setting(db, "season_goal"), tba_key_set=bool(key),
                        tba_key_hint=("••••" + key[-4:]) if key and admin else None,
+                       setup_complete=bool(DB.get_setting(db, "setup_complete", False)),
                        options=Options(**(DB.get_setting(db, "options", {}) or {})) if admin else None)
 
 
@@ -86,6 +89,8 @@ def patch_settings(body: SettingsPatch, user: User = Depends(require_role("admin
             DB.set_setting(db, "team_name", team_name)
         if "season_goal" in fs:
             DB.set_setting(db, "season_goal", (body.season_goal or "").strip() or None)
+        if "setup_complete" in fs:
+            DB.set_setting(db, "setup_complete", bool(body.setup_complete))
         if "options" in fs:
             cur = DB.get_setting(db, "options", {}) or {}
             cur.update(body.options.model_dump(exclude_unset=True) if body.options else {})

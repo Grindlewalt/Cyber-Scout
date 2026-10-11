@@ -18,7 +18,7 @@ class SessionOut(BaseModel):
     setup_code_required: bool = Field(description="setup needs the one-time code from DATA/setup-code.txt")
     user: dict | None = Field(description="{id, username, display_name, role} or null when signed out")
     csrf: str = Field(description="send as X-CSRF-Token on POST/PUT/PATCH/DELETE (also in the cs_csrf cookie)")
-    configured: bool = Field(description="TBA key set and at least one followed event (setup wizard finished)")
+    configured: bool = Field(description="TBA key set, at least one followed event, and the setup wizard finished")
 
 
 class SetupIn(BaseModel):
@@ -97,7 +97,9 @@ def ensure_setup_code(db):
 
 
 def configured(db) -> bool:
-    return bool(DB.get_setting(db, "tba_key")) and db.execute("SELECT 1 FROM events LIMIT 1").fetchone() is not None
+    # values imported from an old .env don't count: an admin walks the wizard once (and sets up the video there)
+    return (bool(DB.get_setting(db, "tba_key")) and db.execute("SELECT 1 FROM events LIMIT 1").fetchone() is not None
+            and bool(DB.get_setting(db, "setup_complete", False)))
 
 
 @router.get("/session", response_model=SessionOut, summary="Who am I / is setup needed (always 200)")

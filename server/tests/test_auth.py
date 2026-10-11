@@ -189,3 +189,13 @@ def test_optional_passwords_for_non_admins(admin, app):
     kid = [u for u in admin.get("/users").json() if u["username"] == "kid"][0]["id"]
     assert admin.patch(f"/users/{kid}", {"password": ""}).status_code == 200
     assert new_client(app).login("kid", "").status_code == 200
+
+
+def test_imported_config_still_needs_the_wizard(admin, app):
+    # a key + followed event (e.g. imported from .env) isn't enough: the wizard must be finished once
+    assert admin.put("/settings/tba-key", {"key": "k" * 60}).status_code == 200
+    assert admin.post("/events", {"key": "2026wasam"}).status_code == 201
+    s = admin.get("/session").json()
+    assert s["configured"] is False and admin.get("/settings").json()["setup_complete"] is False
+    assert admin.patch("/settings", {"setup_complete": True}).status_code == 200
+    assert admin.get("/session").json()["configured"] is True

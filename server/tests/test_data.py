@@ -17,6 +17,8 @@ def test_wizard_flow(admin, data):
     assert r.status_code == 201 and r.json()["name"].startswith("PNW")
     assert admin.post("/events", {"key": "2026nope"}).status_code == 404
     assert admin.post("/events", {"key": "../etc"}).status_code == 422
+    assert admin.get("/session").json()["configured"] is False      # not until the wizard's last step
+    assert admin.patch("/settings", {"setup_complete": True}).status_code == 200
     assert admin.get("/session").json()["configured"] is True
     wc = json.loads((data / "config" / "worker.json").read_text())
     assert wc["events"] == ["2026wasam"] and wc["team_number"] == 4911 and wc["season_goal"] == "DCMP"

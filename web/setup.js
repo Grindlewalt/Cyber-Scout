@@ -222,13 +222,14 @@
     }
     const row = e => `<div class="evrow"><div><b>${esc(e.name || e.key)}</b><div class="muted">${esc(e.key)} · ${esc(e.start_date || "")}
         ${e.end_date && e.end_date !== e.start_date ? "– " + esc(e.end_date) : ""} · ${esc([e.city, e.state_prov, e.country].filter(Boolean).join(", "))}${e.district ? " · " + esc(e.district.toUpperCase()) : ""}</div></div>
-        ${followed.has(e.key) ? `<span class="pill done">following</span>` : `<button data-k="${esc(e.key)}">Follow</button>`}</div>`;
+        ${followed.has(e.key) ? `<span><span class="pill done">following</span> <button data-u="${esc(e.key)}" title="stop following (its data is kept)">Unfollow</button></span>` : `<button data-k="${esc(e.key)}">Follow</button>`}</div>`;
     function draw() {
       const needle = q.trim().toLowerCase();
       const match = e => !needle || [e.key, e.name, e.city, e.state_prov, e.country, e.district].some(v => (v || "").toLowerCase().includes(needle));
       const mine = data.team_events.filter(match), all = data.events.filter(match);
       el.innerHTML = `<div class="controls" style="margin-top:0"><select id="evyear">${[thisYear + 1, thisYear, thisYear - 1, thisYear - 2].map(y => `<option ${y === year ? "selected" : ""}>${y}</option>`).join("")}</select>
           <input class="csin" id="evq" placeholder="Search name, city, key…" value="${esc(q)}" style="flex:1;min-width:180px"></div>
+        ${opts.showFollowed !== false && followed.size ? `<h3>Following</h3><div class="evpick">${[...followed].map(k => row(data.events.concat(data.team_events).find(e => e.key === k) || { key: k })).join("")}</div>` : ""}
         ${data.team_number ? `<h3>Team ${esc(data.team_number)}'s events</h3>${mine.length ? `<div class="evpick">${mine.map(row).join("")}</div>` : `<div class="muted small">None registered for ${year}${needle ? " matching the search" : ""}.</div>`}` : ""}
         <h3>All ${year} events</h3><div class="evpick">${all.slice(0, 80).map(row).join("") || `<div class="muted small">No events.</div>`}</div>
         ${all.length > 80 ? `<div class="note">Showing 80 of ${all.length}; search to narrow down.</div>` : ""}
@@ -238,6 +239,11 @@
       const qi = el.querySelector("#evq");
       qi.oninput = () => { q = qi.value; clearTimeout(draw.t); draw.t = setTimeout(() => { draw(); const n = el.querySelector("#evq"); n.focus(); n.setSelectionRange(q.length, q.length); }, 200); };
       el.querySelectorAll("button[data-k]").forEach(b => b.onclick = () => follow(b.dataset.k, b));
+      el.querySelectorAll("button[data-u]").forEach(b => b.onclick = async () => {
+        b.disabled = true;
+        try { await CS.app("DELETE", "events/" + b.dataset.u); followed.delete(b.dataset.u); draw(); opts.onFollow && opts.onFollow(null); }
+        catch (e) { b.disabled = false; el.querySelector(".cserr").textContent = e.message; }
+      });
       el.querySelector("#evadd").onclick = e => follow(el.querySelector("#evkey").value.trim().toLowerCase(), e.target);
     }
     async function follow(key, btn) {
@@ -250,12 +256,21 @@
   };
 
   // ---------------------------------------------------------------- first-run wizard
-  const STEPS = [["account", "Admin account"], ["tba", "TBA key"], ["team", "Your team"], ["goal", "Season goal"], ["event", "Event"], ["done", "Done"]];
+  const STEPS = [["account", "Admin account"], ["tba", "TBA key"], ["team", "Your team"], ["goal", "Season goal"], ["event", "Event"], ["video", "Video"], ["done", "Done"]];
+  const KEYS = STEPS.map(x => x[0]);
 
-  async function wizardState() {
+  // Until the admin finishes the wizard once (settings.setup_complete), it walks every step in order, even ones that
+  // already have a value (e.g. a TBA key / event imported from an old .env), so nothing is silently auto-picked.
+  async function wizardState(cur) {
     const [s, evs] = await Promise.all([CS.app("GET", "settings"), CS.app("GET", "events")]);
-    const done = { account: true, tba: s.tba_key_set, team: !!s.team_number, goal: !!s.season_goal, event: evs.length > 0 };
-    return { s, evs, done, next: STEPS.map(x => x[0]).find(k => k !== "done" && !done[k]) || "done" };
+    const done = { account: true, tba: s.tba_key_set, team: !!s.team_number, goal: !!s.season_goal, event: evs.length > 0, video: false };
+    const firstMissing = KEYS.find(k => k !== "done" && k !== "video" && !done[k]) || "done";
+    let next = firstMissing;
+    if (!s.setup_complete) {
+      const after = cur ? KEYS[KEYS.indexOf(cur) + 1] : "tba";
+      next = KEYS.indexOf(firstMissing) < KEYS.indexOf(after) ? firstMissing : after;
+    }
+    return { s, evs, done, next };
   }
 
   CS.globalRoute("setup", async step => {
@@ -265,12 +280,12 @@
     if (!CS.user) { goLogin(); return; }
     if (!CS.can("admin")) { $app.innerHTML = `<div class="empty">Only an admin can change the setup.</div>`; return; }
     const st = await wizardState();
-    step = STEPS.some(x => x[0] === step) && step !== "account" ? step : st.next;
+    step = KEYS.includes(step) && step !== "account" ? step : st.next;
     const head = `<h1>Set up Cyber-Scout</h1><div class="steps">${STEPS.map(([k, t]) => {
       const cls = k === step ? "cur" : st.done[k] ? "done" : "";
       return k === "account" || k === step ? `<span class="${cls}">${st.done[k] && k !== step ? "✓ " : ""}${t}</span>` : `<a class="${cls}" href="#/setup/${k}">${st.done[k] ? "✓ " : ""}${t}</a>`;
     }).join("")}</div>`;
-    const next = () => wizardState().then(s2 => { location.hash = "#/setup/" + s2.next; });
+    const next = () => wizardState(step).then(s2 => { location.hash = "#/setup/" + s2.next; });
     if (step === "tba") {
       $app.innerHTML = head + `<div class="card" style="max-width:620px"><h2>The Blue Alliance API key</h2>
         <div class="note" style="margin:0 0 12px">Cyber-Scout gets schedules, results and match videos from The Blue Alliance. Sign in at
@@ -305,12 +320,28 @@
     } else if (step === "event") {
       $app.innerHTML = head + `<div class="card"><h2>Which event(s) should Cyber-Scout follow?</h2>
         <div class="note" style="margin:0 0 4px">It processes every match of a followed event as soon as the video is up. You can follow several and change this later in Admin.</div>
-        ${st.evs.length ? `<div class="csok">Following: ${st.evs.map(e => esc(e.name || e.key)).join(", ")}</div>` : ""}
         <div id="picker"></div><div class="controls"><button class="primary" id="cont" ${st.evs.length ? "" : "disabled"}>Continue</button></div></div>`;
-      CS.eventPicker($app.querySelector("#picker"), { onFollow: () => { $app.querySelector("#cont").disabled = false; } });
+      CS.eventPicker($app.querySelector("#picker"), { onFollow: () => CS.app("GET", "events").then(l => { $app.querySelector("#cont").disabled = !l.length; }) });
+      $app.querySelector("#cont").onclick = next;
+    } else if (step === "video") {
+      const srcs = await Promise.all(st.evs.map(e => CS.app("GET", `events/${e.key}/sources`).then(d => d.sources || [], () => null)));
+      $app.innerHTML = head + `<div class="card" style="max-width:760px"><h2>Match video</h2>
+        <div class="note" style="margin:0 0 12px">For each event, tell Cyber-Scout where the video comes from: the livestream (found on TBA, or paste the
+          YouTube link), any extra camera angles, and what kind each one is (<b>wide overhead</b>, <b>dynamic broadcast</b> that switches cameras,
+          or <b>alliance-side</b> station cams). Then draw boxes on a sample frame (field view, red / blue alliance views, scoreboard) and
+          calibrate the camera. Without this, matches can't be tracked.</div>
+        <div class="tablewrap"><table><thead><tr><th>Event</th><th>Sources</th><th>Layout</th><th></th></tr></thead><tbody>
+        ${st.evs.map((e, i) => { const S = srcs[i];
+          return `<tr><td><b>${esc(e.name || e.key)}</b><div class="muted small">${esc(e.key)}</div></td>
+            <td>${S == null ? '<span class="muted">not available yet</span>' : S.length ? S.map(x => esc(x.label || x.kind || x.id)).join(", ") : '<span class="muted">none yet</span>'}</td>
+            <td>${S && S.some(x => x.has_layout) ? "✓ boxes drawn" : '<span class="muted">not drawn</span>'}</td>
+            <td><a href="#/${esc(e.key)}/sources"><b>Set up video →</b></a></td></tr>`; }).join("")}
+        </tbody></table></div>
+        <div class="controls"><button class="primary" id="cont">Continue</button> <span class="muted small">You can come back to this any time from the event's <b>Video</b> tab.</span></div></div>`;
       $app.querySelector("#cont").onclick = next;
     } else {
       const ev = st.evs[0];
+      if (!st.s.setup_complete) await CS.app("PATCH", "settings", { setup_complete: true });
       CS.session = await CS.refreshSession();
       $app.innerHTML = head + `<div class="card" style="max-width:720px"><h2>All set</h2>
         <div class="note" style="margin:0 0 12px">Team ${esc(st.s.team_number || "?")}${st.s.team_name ? " " + esc(st.s.team_name) : ""} · goal: ${esc(st.s.season_goal || "none")} ·
