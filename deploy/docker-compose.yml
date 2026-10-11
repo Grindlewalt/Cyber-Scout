@@ -1,0 +1,36 @@
+# autoscout-live -- lives in /opt/stacks/autoscout (app/ = this repo, data/ = all state)
+#   docker compose up -d --build        start / update
+#   docker compose logs -f worker       watch matches being processed
+name: autoscout
+services:
+  worker:
+    build: ./app
+    image: autoscout-worker:latest
+    container_name: autoscout-worker
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATA: /data
+    volumes:
+      - ./data:/data
+    # GPU makes a match take ~3-6 min instead of ~20. On a machine without an
+    # NVIDIA GPU, delete this block; the worker falls back to CPU by itself.
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  web:
+    build:
+      context: ./app
+      dockerfile: web/Dockerfile
+    image: autoscout-web:latest
+    container_name: autoscout-web
+    restart: unless-stopped
+    ports:
+      - "7560:80"
+    volumes:
+      - ./data/site/api:/usr/share/nginx/html/api:ro

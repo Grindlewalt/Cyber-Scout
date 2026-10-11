@@ -1,0 +1,10 @@
+.venv
+.git
+.env
+.roboflow_key
+out
+runs
+docs
+tools
+data/rf
+data/*.mp4
