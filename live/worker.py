@@ -299,6 +299,9 @@ def build_site(ev, tba):
                 v2["fuel_url"] = f"{k}.fuel.json"
             if os.path.exists(os.path.join(MEDIA, ev, f"{k}.mp4")):
                 v2["video_local"] = f"media/{ev}/{k}.mp4"
+            stn = jload(os.path.join(ev_dir(ev), "stations", f"{k}.json"))
+            if stn and os.path.exists(os.path.join(MEDIA, ev, "insets", f"{k}.mp4")):
+                v2["stations"] = stn                      # station cams for the Analyze camera switcher
             sb = m.get("score_breakdown") or {}
             jsave(os.path.join(out_dir, "m", f"{k}.json"), dict(**v2,
                 key=k, label=row["label"], short=row["short"], event=ev, hz=r["hz"], frames=r["frames"],
