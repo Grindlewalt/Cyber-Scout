@@ -98,8 +98,33 @@ def check_pose(video, cam, tag_csv, log=print):
 
 
 # ---------------------------------------------------------------- detection
+def _hue_is(h, which):
+    return (h < 12 or h > 165) if which == "red" else (95 <= h <= 135)
+
+
+def swap_check(cam):
+    """Broadcast glitches sometimes swap red and blue for a few frames (RGB<->BGR),
+    which would flip every robot's alliance.  The red and blue bumps are static and
+    always visible: if red reads blue and blue reads red, the frame is swapped."""
+    pts = cam.project(np.array([[cam_len() - 4.64, 6.6, 0.1], [4.64, 6.6, 0.1]])).astype(int)
+    def swapped(im):
+        hs = []
+        for u, v in pts:
+            p = cv2.cvtColor(im[v - 5:v + 5, u - 5:u + 5], cv2.COLOR_BGR2HSV).reshape(-1, 3)
+            p = p[p[:, 1] > 90]
+            if len(p) < 20: return False
+            hs.append(float(np.median(p[:, 0])))
+        return _hue_is(hs[0], "blue") and _hue_is(hs[1], "red")
+    return swapped
+
+
+def cam_len():
+    return CAMM.LEN
+
+
 def detect_video(video, cam, model, t1=SCAN_T1, log=print):
     x0, y0, x1, y1 = cam.roi()
+    swapped = swap_check(cam); n_swap = 0
     c = av.open(video); s = c.streams.video[0]; s.thread_type = "AUTO"
     rows, chas, body = [], [], []
     clock = []                      # (t, binarised clock digits) for the first 45 s
@@ -110,6 +135,8 @@ def detect_video(video, cam, model, t1=SCAN_T1, log=print):
         if f.time + 1e-6 < nxt: continue
         nxt = (n + 1) / FPS
         im = f.to_ndarray(format="bgr24")
+        if swapped(im):
+            im = np.ascontiguousarray(im[:, :, ::-1]); n_swap += 1
         if f.time < 45:
             cx0, cy0, cx1, cy1 = CLOCK_BOX
             g = cv2.cvtColor(im[cy0:cy1, cx0:cx1], cv2.COLOR_BGR2GRAY)
@@ -126,6 +153,8 @@ def detect_video(video, cam, model, t1=SCAN_T1, log=print):
         if n % 900 == 0:
             log(f"  {n} frames t={f.time:.0f}s {len(rows)} dets {n / (time.time() - t0):.1f} fps")
     c.close()
+    if n_swap:
+        log(f"  fixed {n_swap} colour-swapped frames")
     return (np.array(rows, float).reshape(-1, 9), np.array(chas, np.float32).reshape(-1, HB * SB + 4),
             np.array(body, np.float32).reshape(-1, HB * SB + 4), n, clock)
 
@@ -274,6 +303,7 @@ def process(video, cam_path, onnx, tag_csv=None, log=print):
                       hist=np.round(hist, 4).tolist(), n_iso=len(iso),
                       box_w_px=None if not np.isfinite(wpx) else float(wpx),
                       start_xy=np.round(tr["xy"][int(0.5 * FPS)], 2).tolist(),
+                      auto_end_xy=np.round(tr["xy"][min(len(tr["xy"]) - 1, int(t_auto_end * FPS))], 2).tolist(),
                       end_xy=np.round(tr["xy"][-1], 2).tolist())))
     return dict(t_start=round(t_start, 2), start_detected=found, start_source=how, frames=nf, hz=OUT_HZ,
                 t_auto_end=t_auto_end, t_teleop_start=0.5 + AUTO_S + PAUSE_S,

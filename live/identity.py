@@ -27,13 +27,22 @@ def _bhat(p, q):
     return float(1.0 - np.sqrt(np.clip(p, 0, None) * np.clip(q, 0, None)).sum())
 
 
-def climb_cost(track, climbed):
-    if climbed is None or track["feat"].get("end_xy") is None:
+def _tower_cost(track, climbed, key):
+    xy = track["feat"].get(key)
+    if climbed is None or xy is None:
         return 0.0
-    near = np.linalg.norm(np.array(track["feat"]["end_xy"]) - TOWER[track["alliance"]]) < 1.6
+    near = np.linalg.norm(np.array(xy) - TOWER[track["alliance"]]) < 1.6
     if climbed and not near: return W_CLIMB
     if not climbed and near: return 0.5 * W_CLIMB
     return 0.0
+
+
+def climb_cost(track, climbed):
+    """climbed: (auto, endgame) booleans/None from TBA for the station's team."""
+    if climbed is None:
+        return 0.0
+    auto, end = climbed if isinstance(climbed, tuple) else (None, climbed)
+    return _tower_cost(track, auto, "auto_end_xy") + _tower_cost(track, end, "end_xy")
 
 
 def feat_cost(track, proto):
@@ -128,8 +137,8 @@ def climb_flags(match, alliance):
     teams = match["alliances"][alliance]["team_keys"]
     out = {}
     for i, t in enumerate(teams):
-        v = sb.get(f"endGameTowerRobot{i + 1}")
-        out[t] = None if v is None else (v not in ("None", "", None))
+        a, e = sb.get(f"autoTowerRobot{i + 1}"), sb.get(f"endGameTowerRobot{i + 1}")
+        out[t] = (None if a is None else a not in ("None", ""), None if e is None else e not in ("None", ""))
     return out
 
 
