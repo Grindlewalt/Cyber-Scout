@@ -149,34 +149,39 @@ def clock_start(clock, log=print):
     for i in range(len(ev) - 3):
         gaps = np.diff(ev[i:i + 4])
         if np.all(np.abs(gaps - 1.0) < 0.12):
+            # must be the PRE-MATCH clock that starts ticking: visible and static for
+            # >= 2 s before the first tick (an overlay that appears mid-match is not)
+            pre = (ts > ev[i] - 2.2) & (ts < ev[i] - 0.15)
+            if pre.sum() < 20 or not ok[pre].all() or d[pre].max() > 25:
+                return None
             return float(ev[i] - 1.0)
     return None
 
 
-def match_start(det, xy, n, log=print):
-    """First moment the robots start moving together (auto start), seconds into
-    the video.  Pre-match robots are parked; at auto start several move at once."""
-    fr = det[:, 0].astype(int)
-    lag = int(FPS * 0.5)
-    by = {f: xy[fr == f] for f in np.unique(fr)}
-    sig = np.zeros(n)
-    for f in range(lag, n):
-        a, b = by.get(f), by.get(f - lag)
-        if a is None or b is None or len(a) < 3 or len(b) < 3: continue
-        d = np.linalg.norm(a[:, None] - b[None], axis=2).min(1)
-        sig[f] = np.mean(np.sort(d)[-3:])      # three most-moved robots
-    k = np.ones(int(FPS)) / FPS
-    sm = np.convolve(sig, k, mode="same")
-    lo, hi = int(2 * FPS), int(16 * FPS)
-    cand = np.where(sm[lo:hi] > 0.25)[0]
+def match_start(det, xy, cov, n, log=print):
+    """Auto start from robot motion, seconds into the video: the first moment >= 3
+    robots move at once (sustained 1 s).  Uses pure tracklets so detection flicker
+    (which moves nothing) cannot trigger it.  Pre-match robots are parked."""
+    import track as T
+    moving = np.zeros(n)
+    for t in T.build_tracklets(det, xy, cov):
+        fr = np.array(t.fr); xs = np.array(t.xs)
+        if len(fr) < 10: continue
+        k = int(FPS * 0.5)
+        for i in range(k, len(fr)):
+            dt = (fr[i] - fr[i - k]) / FPS
+            if dt > 0 and np.linalg.norm(xs[i] - xs[i - k]) / dt > 0.6:
+                moving[fr[i] - k // 2] += 1
+    run = np.convolve(moving >= 3, np.ones(int(FPS)), mode="valid")       # frames in a 1 s window
+    lo, hi = int(0.5 * FPS), int(30 * FPS)
+    cand = np.where(run[lo:hi] >= 0.7 * FPS)[0]
     if len(cand) == 0:
         log(f"  match start: no motion onset found, fallback {START_FALLBACK}s")
         return START_FALLBACK, False
     f = lo + cand[0]
-    while f > lo and sm[f] > 0.08: f -= 1
-    t = f / FPS - 0.25 + 0.5            # signal is centred on a 0.5 s lag window
-    log(f"  match start: {t:.2f}s")
-    return float(t), True
+    while f > 0 and moving[f] >= 2: f -= 1                               # walk back to the first mover
+    t = f / FPS - 0.3                                                    # reaction latency
+    return float(max(t, 0.0)), True
 
 
 # ---------------------------------------------------------------- stats
@@ -229,7 +234,7 @@ def process(video, cam_path, onnx, tag_csv=None, log=print):
     d, ch, bo, xy = d[nms], ch[nms], bo[nms], xy[nms]
 
     t_clock = clock_start(clock, log)
-    t_motion, found = match_start(d, xy, n, log)
+    t_motion, found = match_start(d, xy, cam.cov(xy, su=2.0, sv=2.5), n, log)
     if t_clock is not None and 0 <= t_clock < 40:
         t_start, found, how = t_clock, True, "clock"
     else:

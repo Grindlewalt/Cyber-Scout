@@ -52,9 +52,13 @@ def choose(match, cfg, cache):
         if c["channel"] in chans: return c
     title = cfg.get("search_title")
     if title:
-        q = title.format(**match_fields(match))
+        mf = match_fields(match)
+        q = title.format(**mf)
+        head, _, tail = q.partition(mf["name"])
+        # FIRST titles playoff videos like "Match 8 (R2) - <event>": allow a suffix after the name
+        pat = re.compile("^" + re.escape(head + mf["name"]) + r"(\s*\([^)]*\))?" + re.escape(tail) + "$", re.I)
         for c in search(q):
-            if c["channel"] in chans and c["title"].strip().lower() == q.strip().lower():
+            if c["channel"] in chans and pat.match(c["title"].strip()):
                 return c
     return None
 

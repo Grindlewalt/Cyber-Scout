@@ -1,0 +1,6 @@
+{
+  "prefer": "^Wide Match",
+  "reject": "^Match \\d",
+  "allow_channels": ["FIRSTRoboticsCompetition", "FIRST Washington"],
+  "search_title": "{name} - PNW District Sammamish Event"
+}

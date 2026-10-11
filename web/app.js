@@ -89,7 +89,7 @@ async function eventPage(ev, tab) {
   document.querySelectorAll(".tab").forEach(x => x.onclick = () => show(x.dataset.t));
   show(tab);
   const iv = setInterval(async () => {
-    try { const n = await api(`${ev}/event.json`); if (n.updated !== d.updated) route(); } catch (e) { }
+    try { const n = await api(`${ev}/event.json`); if (n.updated !== d.updated) route(false); } catch (e) { }
   }, 60000);
   cleanup.push(() => clearInterval(iv));
 }
@@ -223,9 +223,9 @@ async function matchPage(ev, key) {
   const setPlaying = p => { playing = p; document.getElementById("play").textContent = p ? "❚❚ Pause" : "▶ Play"; };
   const loop = ts => {
     if (!alive) return;
-    if (player && sync && player.getCurrentTime && player.getPlayerState) {
-      const st = player.getPlayerState();
-      if (st === 1 || st === 2 || st === 3) { f = (player.getCurrentTime() - v0) * hz; setPlaying(st === 1); }
+    const st = ytState();
+    if (sync && (st === 1 || st === 2 || st === 3)) {
+      f = (player.getCurrentTime() - v0) * hz; setPlaying(st === 1);
     } else if (playing) {
       f += (ts - last) / 1000 * hz * speed;
       if (f >= N - 1) { f = N - 1; setPlaying(false); }
@@ -233,11 +233,19 @@ async function matchPage(ev, key) {
     last = ts; draw(); requestAnimationFrame(loop);
   };
   requestAnimationFrame(t => { last = t; loop(t); });
+  const ytState = () => { try { return player && player.getPlayerState ? player.getPlayerState() : null; } catch (e) { return null; } };
+  const standalone = () => { if (f >= N - 1) f = 0; setPlaying(!playing); };
   document.getElementById("play").onclick = () => {
-    if (player && sync && player.playVideo) { player.getPlayerState() === 1 ? player.pauseVideo() : player.playVideo(); }
-    else { if (f >= N - 1) f = 0; setPlaying(!playing); }
+    const st = ytState();
+    if (!sync || st == null) return standalone();
+    if (st === 1) { player.pauseVideo(); return; }
+    if (playing) { setPlaying(false); return; }
+    player.seekTo(v0 + f / hz, true); player.playVideo();
+    setTimeout(() => {           // video blocked / unavailable: run the replay on its own
+      if (alive && ![1, 3].includes(ytState())) { sync = false; document.getElementById("sync").classList.remove("on"); setPlaying(true); }
+    }, 2500);
   };
-  scrub.oninput = () => { f = +scrub.value; if (player && sync && player.seekTo) player.seekTo(v0 + f / hz, true); };
+  scrub.oninput = () => { f = +scrub.value; if (sync && ytState() != null) player.seekTo(v0 + f / hz, true); draw(); };
   const tog = (id, fn) => { const b = document.getElementById(id); b.onclick = () => b.classList.toggle("on", fn()); };
   tog("trail", () => (trail = !trail)); tog("full", () => (full = !full));
   tog("sync", () => { sync = !sync; if (!sync && player && player.pauseVideo) player.pauseVideo(); return sync; });
@@ -323,7 +331,7 @@ async function teamPage(ev, tk) {
 }
 
 // ------------------------------------------------------------------ router
-async function route() {
+async function route(scroll = true) {
   cleanup.forEach(f => f()); cleanup = [];
   const p = location.hash.replace(/^#\/?/, "").split("/").filter(Boolean);
   try {
@@ -336,8 +344,8 @@ async function route() {
     console.error(e);
     $app.innerHTML = `<div class="empty">Couldn't load this page (${esc(e.message)}). It may not be processed yet.</div>`;
   }
-  window.scrollTo(0, 0);
+  if (scroll) window.scrollTo(0, 0);
 }
-window.addEventListener("hashchange", route);
+window.addEventListener("hashchange", () => route());
 FIELD.onload = () => { };
 route();
