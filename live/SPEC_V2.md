@@ -129,3 +129,16 @@ piles up.
 ### Site JSON additions (worker writes, web reads)
 match: `shots[]` (above, plus `team`), `analytics[track_idx]`; team: `analytics` aggregate,
 `shots_map`, `intakes_map`, `autos[].routine`, `routines[]`.
+
+## v2.1 additions (tracker v2 + quarantine)
+- Match JSON tracks are ordered red 1–3, blue 1–3 (TBA station order) with `idx` = position, and carry
+  `team` ("frcNNNN"), `team_conf` (0..1 overall), `conf` (per frame @ hz; 0 = unknown/limbo: obs=0 and the xy is
+  only the nearest known position). Match-level `identity` = {method "ocr-ilp", n_reads, n_reads_raw,
+  per_team_reads, n_tracklets, n_cuts, seconds, corrections[{kind cut|relink, frame, t, t_video, teams, tracks,
+  evidence [[frame, team, lp, weight]], encounter {dist_m, xy?}, motion_link?, conf, anchored, unresolved?}]}.
+- Quarantine (ID_CONF_MIN, default 0.5): analytics run on a copy where frames with conf < 0.5 are unobserved;
+  site shots launched while the shooter's conf < 0.5 get `team: null, unattributed: "low_identity_conf"`.
+- Site match JSON adds `identity`, tracks[].team_conf/conf/reads; event/team files flag matches with team_conf < 0.6.
+- Production entry: process(video, cam, onnx, tag_csv, log, start_hint, pose_guess, teams={red:[...],blue:[...]}).
+- Videos are kept in MEDIA_DIR (/media in the containers) and served at /media/<ev>/<match>.mp4;
+  live/reprocess.py re-runs matches from those files without YouTube.
