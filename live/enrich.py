@@ -100,3 +100,30 @@ def enrich(ev_dir, key, video, cam_path, res, tba_match, log=print):
     _jsave(os.path.join(ev_dir, "shots", f"{key}.json"), events)
     _jsave(os.path.join(ev_dir, "analytics", f"{key}.json"), analytics_for(res, events, tba_match))
     return events
+
+
+def station_pass(data_dir, media, ev, key, res, tba_match, meta_cache=None, log=print):
+    """OPTIONAL (HUBCAM=1): driver-station cameras for one match -- fetch the "Match N" inset upload,
+    export the station cameras for the Analyze camera switcher, verify shot outcomes from the hub
+    side views (live/hubcam.py) and refresh this match's shots + analytics.  ~1-2 min per match."""
+    import stationcam as SC, station_export as SX, hubcam as HC, videos
+    evd = os.path.join(data_dir, "events", ev)
+    wide = os.path.join(media, ev, f"{key}.mp4")
+    inset = os.path.join(media, ev, "insets", f"{key}.mp4")
+    if not os.path.exists(inset):
+        v = SC.find_inset_video(tba_match, meta_cache if meta_cache is not None else {})
+        if not v:
+            log("  stations: no inset upload for this match"); return None
+        os.makedirs(os.path.dirname(inset), exist_ok=True)
+        videos.download(v["id"], inset)
+    st = SX.export(data_dir, media, ev, key, log=log)                  # sync + per-match station poses
+    shots_p, fuel_p = os.path.join(evd, "shots", f"{key}.json"), os.path.join(evd, "fuel", f"{key}.json")
+    if not (os.path.exists(shots_p) and os.path.exists(fuel_p)):
+        return st
+    cal = evd if os.path.exists(os.path.join(evd, "station_red.json")) else os.path.join(HERE, "..", "events", ev)
+    events = json.load(open(shots_p))
+    ev2 = HC.run_match(cal, res, events, json.load(open(fuel_p)), wide, inset, tba_match, sync=st["sync"], log=log)
+    _jsave(shots_p, ev2)
+    _jsave(os.path.join(evd, "analytics", f"{key}.json"), analytics_for(res, ev2, tba_match))
+    log(f"  hubcam: {ev2.get('hubcam')}")
+    return st

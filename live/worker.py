@@ -37,6 +37,7 @@ V2 = os.environ.get("V2", "1") == "1"            # fuel/shot/analytics enrichmen
 MEDIA = os.environ.get("MEDIA", "/media")         # kept match videos, served at /media/ (NAS-backed)
 KEEP_VIDEO = os.environ.get("KEEP_VIDEO", "1") == "1"
 ID_CONF_MIN = float(os.environ.get("ID_CONF_MIN", "0.5"))   # below: shots/frames are not credited to a team
+HUBCAM = os.environ.get("HUBCAM", "0") == "1"   # optional station-camera pass (~1-2 min/match extra)
 MAX_ATTEMPTS = 3
 
 
@@ -122,6 +123,12 @@ def process_match(ev, m, cfg, status, meta_cache):
                 shutil.move(best_path, dst)
             except Exception as e:
                 log(f"{m['key']}: could not keep video: {e}")
+        if HUBCAM and KEEP_VIDEO and V2:
+            try:                                          # optional: driver-station cams (hardware/time permitting)
+                import enrich
+                enrich.station_pass(DATA, MEDIA, ev, m["key"], best, m, meta_cache, log=lambda *a: log(m["key"], *a))
+            except Exception:
+                traceback.print_exc()
         st.update(state="done", at=time.time(), error=None, video=best["video"]["id"])
         log(f"{m['key']}: done ({best['video']['id']}, coverage {best['feed_ok']:.0%})")
         return True
