@@ -259,3 +259,6 @@ table.rate .tm { position: sticky; left: 0; background: var(--panel); z-index: 1
 .topnav { display:flex; gap:12px; font-size:13px; }
 .topnav a { color: var(--muted); }
 .topnav a:hover { color: var(--text); text-decoration:none; }
+
+.topnav { overflow-x: auto; white-space: nowrap; max-width: 60vw; scrollbar-width: none; }
+.topnav::-webkit-scrollbar { display: none; }

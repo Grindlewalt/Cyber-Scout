@@ -49,6 +49,10 @@ const plLS = {
 };
 
 async function analyzePage(ev, key) {
+  // optional start time: #/<ev>/a/<match>?t=<video seconds> (backward compatible; used by the defense library)
+  let seekT = null;
+  { const qi = String(key || "").indexOf("?");
+    if (qi >= 0) { const q = new URLSearchParams(key.slice(qi + 1)); key = key.slice(0, qi); const v = parseFloat(q.get("t")); if (Number.isFinite(v)) seekT = v; } }
   const d = await api(`${ev}/m/${key}.json`);
   crumbs([[ev, `#/${ev}`], [d.label, `#/${ev}/m/${key}`], ["Analyze"]]); $updated.textContent = "";
   const hz = d.hz || 10, v0 = d.t_start - 0.5, ts0 = d.t_teleop_start;
@@ -83,7 +87,7 @@ async function analyzePage(ev, key) {
     layers: Object.fromEntries(PL.layers.map(l => [l[0], plLS.get("layer." + l[0], !!l[3])])),
     team: "", alliance: "", outcome: "", trailS: plLS.get("trailS", 4), offset: plLS.get("offset", 0), speed: 1, fuel: null, fuelOn: 0.5,
   };
-  const t0m = d.t_start - 3;
+  const t0m = seekT != null ? seekT : d.t_start - 3;
 
   $app.innerHTML = `<div class="an">
    <div class="an-main">
