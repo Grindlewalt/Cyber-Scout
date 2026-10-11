@@ -104,3 +104,89 @@ if __name__ == "__main__":
                    C=C.tolist(), rail_h=float(h), rail_d=float(d),
                    tag_rms=float(np.sqrt((tr ** 2).mean()))), open(out, "w"), indent=1)
     print("wrote", out)
+
+
+# ---------------------------------------------------------------------------------------------
+# Additive helpers (live/stationcam.py): AprilTag corner geometry and a generic camera fit from
+# 3D-2D point correspondences.  Nothing above depends on these.
+TAG_SIZE = 6.5 * IN          # 2026 FRC tags (36h11): black square edge = the detected corners
+
+
+def load_tag_poses(path):
+    """{id: (centre xyz in m, yaw rad)} -- yaw = direction the tag faces (Z-Rotation)."""
+    T = {}
+    for r in csv.DictReader(open(path, encoding="utf-8-sig")):
+        T[int(r["ID"])] = (np.array([float(r["X"]), float(r["Y"]), float(r["Z"])]) * IN,
+                           np.radians(float(r["Z-Rotation"])))
+    return T
+
+
+def tag_corners(pose, size=TAG_SIZE):
+    """4x3 field points of a vertical tag's corners in pupil_apriltags / AprilTag-3 order
+    (as the tag is seen from the front: bottom-left, bottom-right, top-right, top-left)."""
+    c, yaw = pose
+    n = np.array([np.cos(yaw), np.sin(yaw), 0.0])
+    rt = np.array([-n[1], n[0], 0.0]); up = np.array([0, 0, 1.0]); h = size / 2
+    return np.array([c - rt * h - up * h, c + rt * h - up * h, c + rt * h + up * h, c - rt * h + up * h])
+
+
+def pack_pinhole(cam):
+    """camera dict (K, dist, rvec, tvec) -> parameter vector of fit_points."""
+    K = np.array(cam["K"], float); D = np.array(cam["dist"], float)
+    R, _ = cv2.Rodrigues(np.array(cam["rvec"], float)); C = -R.T @ np.array(cam["tvec"], float)
+    return np.r_[K[0, 0], K[1, 1] / K[0, 0], K[0, 2], K[1, 2], D[0], D[1], np.ravel(cam["rvec"]), C]
+
+
+def unpack_pinhole(p):
+    """[f, aspect, cx, cy, k1, k2, rvec(3), C(3)] -> K, dist, rvec, tvec, R, C"""
+    f, a, cx, cy, k1, k2 = p[:6]
+    K = np.array([[f, 0, cx], [0, f * a, cy], [0, 0, 1.0]])
+    rv = np.asarray(p[6:9], float); C = np.asarray(p[9:12], float)
+    R, _ = cv2.Rodrigues(rv)
+    return K, np.array([k1, k2, 0, 0, 0.0]), rv, -R @ C, R, C
+
+
+def proj_pinhole(p, P):
+    """Project field points with the fit_points parameter vector (NaN behind the camera)."""
+    K, D, rv, tv, R, C = unpack_pinhole(p)
+    P = np.asarray(P, float).reshape(-1, 3)
+    q, _ = cv2.projectPoints(P.reshape(-1, 1, 3), rv, tv, K, D)
+    q = q.reshape(-1, 2)
+    q[(P - C) @ R[2] <= 0.1] = np.nan
+    return q
+
+
+def fit_points(W, H, groups, p0, sig_c=10.0, sig_aspect=0.05, sig_k2=0.002, prior_C=None, sig_C=None,
+               free=None, loss="soft_l1", f_scale=2.0):
+    """Fit [f, aspect, cx, cy, k1, k2, rvec, C] to point groups [(P Nx3, uv Nx2, sigma_px), ...].
+    Soft priors: principal point near the image centre (sig_c px), square pixels, k2 ~ 0, and
+    optionally the camera centre near prior_C (sig_C m).  `free` = indices to fit (default all).
+    Returns (p, least_squares result)."""
+    p0 = np.asarray(p0, float)
+    free = np.arange(12) if free is None else np.asarray(free)
+
+    def res(q):
+        p = p0.copy(); p[free] = q
+        r = []
+        for P, uv, s in groups:
+            if len(P) == 0: continue
+            e = proj_pinhole(p, P) - np.asarray(uv, float)
+            e[~np.isfinite(e)] = 100.0
+            r.append((e / s).ravel())
+        r.append([(p[2] - W / 2) / sig_c, (p[3] - H / 2) / sig_c, (p[1] - 1) / sig_aspect, p[5] / sig_k2])
+        if prior_C is not None:
+            r.append((p[9:12] - np.asarray(prior_C, float)) / sig_C)
+        return np.concatenate(r)
+
+    s = least_squares(res, p0[free], loss=loss, f_scale=f_scale, max_nfev=5000)
+    p = p0.copy(); p[free] = s.x
+    return p, s
+
+
+def camera_dict(p, W, H, **extra):
+    """fit_points vector -> camera JSON as live/camera.py reads it."""
+    K, D, rv, tv, R, C = unpack_pinhole(p)
+    d = dict(W=int(W), H=int(H), K=K.tolist(), dist=D.tolist(), rvec=rv.ravel().tolist(),
+             tvec=tv.ravel().tolist(), C=C.tolist())
+    d.update(extra)
+    return d

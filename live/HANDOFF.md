@@ -80,3 +80,18 @@ Run heavy jobs on atomosserver (`/mnt/nas/autoscout-scratch`, `rtenv` Python, GP
   disc around each robot between [t-1.4,t-0.6] and [t+0.6,t+1.4] s, minus balls shoved aside; blur/cut gating essential.
 - ~7 s/match. Precision ~0.88 (68 labelled events), recall ~0.45 (tiny sample) — robots parked on balls are missed.
   Treat intake counts as a LOWER BOUND. Rolling-ball and outpost-chute signals exist but are off (not validated).
+
+## stationcam.py — driver-station "hub cams" (done: foundation)
+- FIRST WA "Match N" uploads = the Wide upload + overlays; insets red [0,708,622,1080], blue [1294,708,1920,1080]
+  (above y=708 pixel-identical to Wide). Cameras ~3.5 m outside the near side, ~1.8 m up: red at X≈16.3 sees red hub
+  +Y face (tags 2, 11) + red tower; blue at X≈0.24 sees blue hub (21, 24, 26) + tower.
+- sync_offset(): motion-energy xcorr + frame compare on the shared region; constant offset (0.03–0.30 s) or
+  piecewise when the Wide video is an HQ re-encode (qm19). Validated by clock-tick timing: ±1 frame @30 fps.
+  Station cams lead the overhead picture by ~0.07–0.10 s (not applied).
+- Calibration once per event (events/<ev>/station_{red,blue}.json, inset px + crop): joint fit over 9 matches,
+  tags (σ 0.3 px) + ~3900 static-ball pairs per camera located by the overhead cam; f≈804/813, k1 only;
+  tag RMS 0.2–0.6 px, ball median ~1 px. Per-match check_station_pose: rotation-only re-aim (+0.10 m position prior
+  only if needed); flags unusable when no tags / >1.5 px. Blue was re-aimed between qm1 and qm10 (12 px, fixed).
+- API: StationCams(event_dir, match_json, inset_video) → .usable, .cam, .frames(), .frame_at(), .project(),
+  .visible(), .ray(), .ground(), .robots_at(). CLI: sync / check / sheet / calibrate. qm11 has no inset upload.
+- Insets for the dev set: /mnt/nas/autoscout-media/2026wasam/insets/. Low-res (ball 6–25 px): upscale for OCR.
