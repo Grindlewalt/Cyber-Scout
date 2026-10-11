@@ -396,6 +396,13 @@ def build_site(ev, tba):
                                                       start=info.get("start_date"), n_done=n_done,
                                                       n_total=len(match_rows))]
     jsave(os.path.join(API, "events.json"), sorted(evs, key=lambda e: e.get("start") or "", reverse=True))
+    if os.environ.get("DASHBOARD", "1") == "1":       # strategy dashboard (EPA prior + video), replay snapshots
+        try:
+            import subprocess
+            subprocess.run([sys.executable, "-m", "live.strategy.dashboard", DATA, ev, "--site",
+                            "--snapshots", "--only-missing"], cwd=REPO, timeout=900, check=False)
+        except Exception:
+            traceback.print_exc()
     log(f"{ev}: site rebuilt ({n_done}/{len(match_rows)} matches tracked)")
 
 

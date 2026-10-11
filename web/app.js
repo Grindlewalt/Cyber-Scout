@@ -132,7 +132,7 @@ async function eventPage(ev, tab, arg) {
     <div class="sub">${esc([d.city, d.state_prov].filter(Boolean).join(", "))} · ${esc(d.start || "")}${d.end && d.end !== d.start ? " – " + esc(d.end) : ""}
       · ${d.n_done}/${d.n_total} matches tracked${d.calibrated ? "" : ' · <span class="pill failed">camera not calibrated</span>'}
       <div class="progress"><div style="width:${d.n_total ? 100 * d.n_done / d.n_total : 0}%"></div></div></div>
-    <div class="tabs"><div class="tab" data-t="teams">Teams</div><div class="tab" data-t="compare">Compare</div><div class="tab" data-t="picklist">Picklist</div><div class="tab" data-t="matches">Matches</div></div>
+    <div class="tabs"><a class="tablink" href="#/${ev}/dash">Dashboard</a><div class="tab" data-t="teams">Teams</div><div class="tab" data-t="compare">Compare</div><div class="tab" data-t="picklist">Picklist</div><div class="tab" data-t="matches">Matches</div></div>
     <div id="tabbody" class="card"></div>`;
   const body = document.getElementById("tabbody");
   const show = t => {
@@ -408,7 +408,8 @@ async function route(scroll = true) {
   const p = location.hash.replace(/^#\/?/, "").split("/").filter(Boolean);
   try {
     if (!p.length) await home();
-    else if (p.length === 1) await eventPage(p[0]);
+    else if (p[1] === "dash") await dashPage(p[0], p[2]);
+    else if (p.length === 1) { try { await api(`${p[0]}/dashboard.json`); await dashPage(p[0]); } catch (e) { if (!/404/.test(e.message)) throw e; await eventPage(p[0]); } }
     else if (p[1] === "m") await matchPage(p[0], p[2]);
     else if (p[1] === "a") await analyzePage(p[0], p[2]);
     else if (p[1] === "t") await teamPage(p[0], p[2]);

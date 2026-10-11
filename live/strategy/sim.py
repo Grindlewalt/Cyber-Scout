@@ -61,21 +61,10 @@ def _param_draws(M, c, teams, n, rng):
     return th, beta
 
 
-def simulate(M, red, blue, n=4000, seed=0, fouls=True, param_uncertainty=True, schedule_effect=True,
-             force_red_auto=None):
-    """force_red_auto=True/False overrides the auto winner (counterfactual schedule; auto FUEL itself unchanged)."""
-    rng = np.random.default_rng(seed)
-    teams = list(red) + list(blue)
+def _core(M, teams, TH, BE, n, rng, fouls=True, schedule_effect=True, force_red_auto=None):
+    """one match given parameter draws TH[c] (n, 6), BE[c] (n,) -> raw per-sim arrays."""
     al = np.array([0, 0, 0, 1, 1, 1])
     nc = len(COMPONENTS)
-    # ---- parameters
-    TH, BE = {}, {}
-    for c in COMPONENTS:
-        if param_uncertainty:
-            TH[c], BE[c] = _param_draws(M, c, teams, n, rng)
-        else:
-            TH[c] = np.tile([team_theta(M.comp[c], t)[0] for t in teams], (n, 1))
-            BE[c] = np.full(n, M.comp[c]["beta"])
     # ---- correlated uniforms per robot (copula)
     L = np.linalg.cholesky(M.R)
     z = rng.standard_normal((n, 6, nc)) @ L.T
@@ -114,11 +103,10 @@ def simulate(M, red, blue, n=4000, seed=0, fouls=True, param_uncertainty=True, s
         auto_l1[:, r] = rng.random(n) < ct["auto_l1"]
         pe = np.asarray(ct["end"], float)
         end_lvl[:, r] = rng.choice(4, size=n, p=pe / pe.sum())
-    tower_auto_robot = auto_l1 * TOWER_AUTO_PTS
     tower_end_robot = np.asarray(TOWER_TELEOP_PTS)[end_lvl]
-    # ---- alliance scores
-    out = {"n_sims": n, "alliances": {}, "robots": []}
-    scores = []
+    R = {"P": P, "red_wins_auto": red_wins_auto, "auto_l1": auto_l1, "end_lvl": end_lvl,
+         "tower_auto_robot": auto_l1 * TOWER_AUTO_PTS, "tower_end_robot": tower_end_robot, "hp": hp,
+         "hp_active": hp_active, "f13": f13, "f24": f24, "alliances": {}}
     for k, a in enumerate(("red", "blue")):
         sel = al == k
         fuel_by_p = {p: P[p][:, sel].sum(1) for p in PERIODS}
@@ -134,14 +122,41 @@ def simulate(M, red, blue, n=4000, seed=0, fouls=True, param_uncertainty=True, s
         ta = np.minimum(auto_l1[:, sel].sum(1), 2) * TOWER_AUTO_PTS
         te = tower_end_robot[:, sel].sum(1)
         fl = rng.choice(M.fouls, size=n) if (fouls and len(M.fouls)) else np.zeros(n)
-        score = fuel + ta + te + fl
+        R["alliances"][a] = {"fuel_by_p": fuel_by_p, "fuel": fuel, "ta": ta, "te": te, "fl": fl,
+                             "score": fuel + ta + te + fl, "aw": aw}
+    return R
+
+
+def simulate(M, red, blue, n=4000, seed=0, fouls=True, param_uncertainty=True, schedule_effect=True,
+             force_red_auto=None, raw=False):
+    """force_red_auto=True/False overrides the auto winner (counterfactual schedule; auto FUEL itself unchanged).
+    raw=True also returns the per-sim arrays under "raw"."""
+    rng = np.random.default_rng(seed)
+    teams = list(red) + list(blue)
+    # ---- parameters
+    TH, BE = {}, {}
+    for c in COMPONENTS:
+        if param_uncertainty:
+            TH[c], BE[c] = _param_draws(M, c, teams, n, rng)
+        else:
+            TH[c] = np.tile([team_theta(M.comp[c], t)[0] for t in teams], (n, 1))
+            BE[c] = np.full(n, M.comp[c]["beta"])
+    R = _core(M, teams, TH, BE, n, rng, fouls=fouls, schedule_effect=schedule_effect, force_red_auto=force_red_auto)
+    P, red_wins_auto = R["P"], R["red_wins_auto"]
+    hp, hp_active = R["hp"], R["hp_active"]
+    # ---- alliance scores
+    out = {"n_sims": n, "alliances": {}, "robots": []}
+    scores = []
+    for a in ("red", "blue"):
+        A = R["alliances"][a]
+        score, fl, ta, te, aw = A["score"], A["fl"], A["ta"], A["te"], A["aw"]
         scores.append(score)
         out["alliances"][a] = {
             "teams": list(red if a == "red" else blue),
             "score": _dist(score), "score_no_fouls": _dist(score - fl),
-            "fuel": _dist(fuel), "tower_pts_mean": round(float((ta + te).mean()), 2),
+            "fuel": _dist(A["fuel"]), "tower_pts_mean": round(float((ta + te).mean()), 2),
             "foul_pts_mean": round(float(fl.mean()), 2),
-            "fuel_by_period_mean": {p: round(float(v.mean()), 2) for p, v in fuel_by_p.items()},
+            "fuel_by_period_mean": {p: round(float(v.mean()), 2) for p, v in A["fuel_by_p"].items()},
             "hp_fuel_mean": round(float(hp["auto"] + hp["transition"] + hp["endgame"] + hp_active), 2),
             "p_win_auto": round(float(aw.mean()), 4),
         }
@@ -153,6 +168,7 @@ def simulate(M, red, blue, n=4000, seed=0, fouls=True, param_uncertainty=True, s
     out["p_red_win_if_blue_wins_auto"] = round(float(rw[~red_wins_auto].mean()), 4) if (~red_wins_auto).any() else None
     out["margin"] = _dist(rs - bs)
     # ---- robots
+    tower_auto_robot, tower_end_robot = R["tower_auto_robot"], R["tower_end_robot"]
     for r, t in enumerate(teams):
         a = "red" if r < 3 else "blue"
         aw = red_wins_auto if a == "red" else ~red_wins_auto
@@ -164,6 +180,32 @@ def simulate(M, red, blue, n=4000, seed=0, fouls=True, param_uncertainty=True, s
                "fuel_if_lost_auto": round(float(sum(P[p][~aw, r] for p in PERIODS).mean()), 2) if (~aw).any() else None,
                "tower_pts_mean": round(float((tower_auto_robot[:, r] + tower_end_robot[:, r]).mean()), 2)}
         out["robots"].append(rec)
+    if raw:
+        out["raw"] = R
+    return out
+
+
+def simulate_schedule(M, matches, n=2000, seed=0, fouls=True):
+    """Simulate many matches with each team's strength drawn ONCE per simulated event (so a strong draw for a team
+    carries through all its matches -- needed for rank distributions).  matches: [(red3, blue3)].
+    -> list of {"red"|"blue": {"score","fuel","tower","auto_fuel","fouls"} (n,) arrays, "red_wins_auto"}."""
+    rng = np.random.default_rng(seed)
+    teams = sorted({t for r, b in matches for t in list(r) + list(b)})
+    col = {t: i for i, t in enumerate(teams)}
+    TH, BE = {}, {}
+    for c in COMPONENTS:
+        TH[c], BE[c] = _param_draws(M, c, teams, n, rng)
+    out = []
+    for red, blue in matches:
+        six = list(red) + list(blue)
+        idx = [col[t] for t in six]
+        R = _core(M, six, {c: TH[c][:, idx] for c in COMPONENTS}, BE, n, rng, fouls=fouls)
+        rec = {"red_wins_auto": R["red_wins_auto"]}
+        for a in ("red", "blue"):
+            A = R["alliances"][a]
+            rec[a] = {"score": A["score"], "fuel": A["fuel"], "tower": A["ta"] + A["te"],
+                      "auto_fuel": A["fuel_by_p"]["auto"], "fouls": A["fl"]}
+        out.append(rec)
     return out
 
 

@@ -212,12 +212,14 @@ def key_factors(M, S, robots, red, blue):
     return F
 
 
-def build_preview(E, key, asof="prior", sims=8000, seed=0):
+def build_preview(E, key, asof="prior", sims=8000, seed=0, epa_prior=None, M=None):
+    """epa_prior: epa.pre_event_prior(...) (team-effect prior); M: an already fitted model to reuse (must match `asof`)."""
     m = E["by_key"].get(key)
     if not m:
         raise SystemExit(f"unknown match {key}")
     before = m["time"] if (asof == "prior" and m["played"]) else None
-    M = fit_event_model(E, before, use_video=True)
+    if M is None:
+        M = fit_event_model(E, before, use_video=True, epa_prior=epa_prior)
     red, blue = m["teams"]["red"], m["teams"]["blue"]
     S = simulate(M, red, blue, n=sims, seed=seed)
     S["counterfactual_auto"] = {
@@ -233,6 +235,7 @@ def build_preview(E, key, asof="prior", sims=8000, seed=0):
         "time": m["time"], "played": m["played"], "generated": int(time.time()),
         "data": {"asof": asof if m["played"] else "all_played", "before_time": before, "n_matches_used": M.n_matches,
                  "video_matches_used": M.video_matches,
+                 "epa_prior": bool(getattr(M, "epa_prior", None)),
                  "model": {c: {"mu": _r(M.comp[c]["mu"], 1), "beta": _r(M.comp[c]["beta"], 1),
                                "beta_sd": _r(M.comp[c]["beta_sd"], 1), "sigma": _r(math.sqrt(M.comp[c]["sigma2"]), 1),
                                "tau": _r(math.sqrt(M.comp[c]["tau2"]), 1), "hp_alliance": _r(M.h[c], 1)}
@@ -275,10 +278,16 @@ def main(argv=None):
     ap.add_argument("--out")
     ap.add_argument("--asof", choices=["prior", "all"], default="prior")
     ap.add_argument("--sims", type=int, default=8000)
+    ap.add_argument("--epa-prior", choices=["none", "cache", "fetch"], default="cache",
+                    help="pre-event EPA prior (epa.py): cache = cached files only (default), fetch = may use the network")
     a = ap.parse_args(argv)
     E = load_event(a.data_dir, a.event)
     key = a.match if "_" in a.match else f"{E['event']}_{a.match}"
-    P = build_preview(E, key, a.asof, a.sims)
+    prior = None
+    if a.epa_prior != "none":
+        from .epa import pre_event_prior
+        prior = pre_event_prior(E["paths"]["root"], E, offline=a.epa_prior == "cache")
+    P = build_preview(E, key, a.asof, a.sims, epa_prior=prior)
     s = json.dumps(P, indent=1)
     if a.out:
         open(a.out, "w").write(s)

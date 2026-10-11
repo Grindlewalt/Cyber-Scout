@@ -51,8 +51,9 @@ def _profile_marglik(y, F, Z, lam, base_var):
     return ll, s2
 
 
-def fit_hyper(c, rows_tba, teams, h):
-    """sigma^2 (robot match noise) and tau^2 (between-team spread) from TBA alliance rows (team_list, won_auto, y, w)."""
+def fit_hyper(c, rows_tba, teams, h, prior_hyper=None):
+    """sigma^2 (robot match noise) and tau^2 (between-team spread) from TBA alliance rows (team_list, won_auto, y, w).
+    prior_hyper (from the EPA prior's earlier events) replaces the generic guesses while the event has < 6 rows."""
     T = {t: i for i, t in enumerate(teams)}
     nT = len(teams)
     use_beta = c != "auto"
@@ -74,6 +75,9 @@ def fit_hyper(c, rows_tba, teams, h):
                 best = (lp, lam, s2)
         _, lam, s2 = best
         s2 *= n / max(n - nf, 1.0)      # REML-style df correction for the profiled fixed effects
+    elif prior_hyper:
+        s2 = float(prior_hyper["sigma2"])
+        lam = float(prior_hyper["tau2"]) / s2
     elif n >= 2:
         yy = np.array([r[2] for r in rows_tba], float)
         lam = 1.0
@@ -82,7 +86,7 @@ def fit_hyper(c, rows_tba, teams, h):
         lam = 1.0
         s2 = (0.6 * DEFAULT_ALLIANCE[c]) ** 2 / 6.0
     mean_all = np.mean([r[2] for r in rows_tba]) if rows_tba else DEFAULT_ALLIANCE[c]
-    return {"sigma2": float(s2), "tau2": float(lam * s2), "lam": float(lam), "mu0": (mean_all - h) / 3.0}
+    return {"sigma2": float(s2), "tau2": float(lam * s2), "lam": float(lam), "mu0": (mean_all - h) / 3.0, "n_rows": n}
 
 
 def team_theta(comp, team):
@@ -114,8 +118,10 @@ def _prior(E, before, max_order=None):
     return out
 
 
-def fit_event_model(E, before=None, use_video=True, recency_halflife=None):
-    """Fit everything from matches played before `before` (unix time; None = all played)."""
+def fit_event_model(E, before=None, use_video=True, recency_halflife=None, epa_prior=None):
+    """Fit everything from matches played before `before` (unix time; None = all played).
+    epa_prior (epa.pre_event_prior): pre-event per-team component means/sds replace the "event mean" shrinkage target
+    (team effects start at the team's EPA instead of 0) and set the mu/beta/hyper priors until the event has data."""
     prior = _prior(E, before)
     keys = {m["key"] for m in prior}
     teams = E["teams"]
@@ -125,6 +131,7 @@ def fit_event_model(E, before=None, use_video=True, recency_halflife=None):
     M.n_matches = len(prior)
     M.teams = teams
     M.use_video = use_video
+    M.epa_prior = epa_prior
     # recency weights (optional): weight 0.5 ** (age in matches / halflife)
     order = {m["key"]: i for i, m in enumerate(prior)}
     nprior = len(prior)
@@ -165,8 +172,10 @@ def fit_event_model(E, before=None, use_video=True, recency_halflife=None):
         rows_tba_post = [(m["teams"][a], m[a]["won_auto"], float(m[a]["comp"][c]), rw(m["key"]))
                          for m in prior for a in ("red", "blue") if (m["key"], a) not in used]
         # hyperparameters from all TBA rows; posterior from TBA rows (non-video) + video blocks
-        hyp = fit_hyper(c, rows_all, teams, M.h[c])
-        comp = fit_posterior(c, hyp, rows_tba_post, blocks, teams, M.h[c])
+        ph = (epa_prior or {}).get("hyper", {}).get(c)
+        hyp = fit_hyper(c, rows_all, teams, M.h[c], prior_hyper=ph)
+        comp = fit_posterior(c, hyp, rows_tba_post, blocks, teams, M.h[c], epa_prior=epa_prior,
+                             rows_tba_all=rows_all if blocks else None)
         M.comp[c] = comp
     # ---- residual correlation across components (alliance level), shrunk toward identity
     M.R = _resid_corr(M, prior)
@@ -185,7 +194,7 @@ def fit_event_model(E, before=None, use_video=True, recency_halflife=None):
                     fr["13"].append(f["shift1"] / s)
     M.first_active_frac = {k: (float((np.sum(v) + 0.5 * 4) / (len(v) + 4))) for k, v in fr.items()}
     # ---- climbs
-    M.climb = _fit_climbs(prior, teams)
+    M.climb = _fit_climbs(prior, teams, epa_prior)
     # ---- fouls: empirical distribution of foul points per alliance-match
     M.fouls = np.array([m[a]["fouls"] for m in prior for a in ("red", "blue")], float)
     # ---- descriptive robot model (video)
@@ -194,24 +203,44 @@ def fit_event_model(E, before=None, use_video=True, recency_halflife=None):
     return M
 
 
-def fit_posterior(c, hyp, rows_tba, blocks, teams, h):
-    """posterior with hyperparameters fixed from `hyp`."""
-    sigma2, tau2 = hyp["sigma2"], hyp["tau2"]
+def _prior_terms(c, hyp, teams, h, epa_prior):
+    """prior mean m0 and precision P0 over [mu, (beta), delta_teams]."""
     T = {t: i for i, t in enumerate(teams)}
     nT = len(teams)
     use_beta = c != "auto"
     nf = 2 if use_beta else 1
     p = nf + nT
     m0 = np.zeros(p)
-    m0[0] = hyp["mu0"]
     P0 = np.zeros((p, p))
+    m0[0] = hyp["mu0"]
     P0[0, 0] = 1.0 / (0.5 * DEFAULT_ALLIANCE[c] / 3.0) ** 2   # pre-event guess, +-50% (matters only with ~no data)
     if use_beta:
         P0[1, 1] = 1.0 / (40.0 ** 2)
     for i in range(nT):
-        P0[nf + i, nf + i] = 1.0 / tau2
-    A = P0.copy()
-    b = P0 @ m0
+        P0[nf + i, nf + i] = 1.0 / hyp["tau2"]
+    pt = (epa_prior or {}).get("team") or {}
+    if pt:
+        mbar = epa_prior["event_mean"][c]
+        if hyp.get("n_rows", 0) < 6:      # no event data yet: the EPA field mean is the best guess for mu
+            m0[0] = mbar - h / 3.0
+        P0[0, 0] = 1.0 / max(0.3 * abs(mbar), 1.0) ** 2
+        bp = ((epa_prior.get("hyper") or {}).get(c) or {}).get("beta")
+        if use_beta and bp:
+            m0[1] = bp[0]
+            P0[1, 1] = 1.0 / bp[1] ** 2
+        for t, d in pt.items():
+            if t not in T:
+                continue
+            m, sd = d["comp"][c]
+            m0[nf + T[t]] = m - mbar
+            P0[nf + T[t], nf + T[t]] = 1.0 / max(sd, 1e-3) ** 2
+    return m0, P0, T, nf, p
+
+
+def _rows_info(c, rows_tba, sigma2, T, nf, p, h):
+    use_beta = nf == 2
+    A = np.zeros((p, p))
+    b = np.zeros(p)
     for (tl, wa, yv, wt) in rows_tba:
         x = np.zeros(p)
         x[0] = 3.0
@@ -222,6 +251,22 @@ def fit_posterior(c, hyp, rows_tba, blocks, teams, h):
         prec = wt / (3.0 * sigma2)
         A += prec * np.outer(x, x)
         b += prec * x * (yv - h)
+    return A, b
+
+
+def _theta_var(cov, nf, j):
+    return float(cov[0, 0] + cov[nf + j, nf + j] + 2 * cov[0, nf + j])
+
+
+def fit_posterior(c, hyp, rows_tba, blocks, teams, h, epa_prior=None, rows_tba_all=None):
+    """posterior with hyperparameters fixed from `hyp`.  Also returns, per team, the share of the posterior precision
+    of theta (= mu + delta) that comes from the prior (EPA or event-mean shrinkage), the event's TBA rows and video."""
+    sigma2, tau2 = hyp["sigma2"], hyp["tau2"]
+    m0, P0, T, nf, p = _prior_terms(c, hyp, teams, h, epa_prior)
+    use_beta = nf == 2
+    A_t, b_t = _rows_info(c, rows_tba, sigma2, T, nf, p, h)
+    A = P0 + A_t
+    b = P0 @ m0 + b_t
     for (tl, wa, yv, V, wt) in blocks:
         X = np.zeros((3, p))
         X[:, 0] = 1.0
@@ -236,10 +281,26 @@ def fit_posterior(c, hyp, rows_tba, blocks, teams, h):
         b += X.T @ Si @ yv
     cov = np.linalg.inv(A)
     mean = cov @ b
+    # ---- information shares per team (precision of theta_team)
+    cov_p = np.linalg.inv(P0)
+    if blocks and rows_tba_all is not None:
+        A_all, _ = _rows_info(c, rows_tba_all, sigma2, T, nf, p, h)
+        cov_nv = np.linalg.inv(P0 + A_all)
+    else:
+        cov_nv = cov
+    shares = {}
+    for t, j in T.items():
+        i_full = 1.0 / _theta_var(cov, nf, j)
+        i_prior = 1.0 / _theta_var(cov_p, nf, j)
+        i_nv = 1.0 / _theta_var(cov_nv, nf, j)
+        vid = max(0.0, i_full - i_nv) / i_full
+        pri = min(1.0, i_prior / i_full)
+        shares[t] = {"prior": pri, "video": min(vid, 1.0 - pri), "tba": max(0.0, 1.0 - pri - vid)}
     return {"mu": float(mean[0]), "beta": float(mean[1]) if use_beta else 0.0,
             "beta_sd": float(math.sqrt(cov[1, 1])) if use_beta else 0.0,
             "sigma2": sigma2, "tau2": tau2, "lam": hyp["lam"], "h": float(h), "nf": nf,
-            "mean": mean, "cov": cov, "team_index": T, "n_tba_rows": len(rows_tba), "n_video_blocks": len(blocks)}
+            "mean": mean, "cov": cov, "team_index": T, "n_tba_rows": len(rows_tba), "n_video_blocks": len(blocks),
+            "info_shares": shares, "prior_mean": m0, "epa_prior": bool((epa_prior or {}).get("team"))}
 
 
 def _resid_corr(M, prior, n0=10.0):
@@ -268,10 +329,11 @@ def _resid_corr(M, prior, n0=10.0):
     return C / np.outer(d, d)
 
 
-def _fit_climbs(prior, teams):
+def _fit_climbs(prior, teams, epa_prior=None):
     n = defaultdict(int)
     auto_k = defaultdict(int)
     end_k = defaultdict(lambda: np.zeros(4))
+    pc = {t: d["climb"] for t, d in ((epa_prior or {}).get("team") or {}).items() if d.get("climb")}
     for m in prior:
         for a in ("red", "blue"):
             for s, t in enumerate(m["teams"][a]):
@@ -284,6 +346,15 @@ def _fit_climbs(prior, teams):
     out = {"event_auto": float(p_auto), "event_end": p_end.tolist(), "team": {}}
     for t in teams:
         k = n.get(t, 0)
+        q = pc.get(t)
+        if q:       # earlier events this season: down-weighted pseudo-observations
+            kk = k + q["n"]
+            pa = (auto_k.get(t, 0) + q["auto"] + CLIMB_K * p_auto) / (kk + CLIMB_K)
+            pe = (end_k[t] + np.asarray(q["end"]) + CLIMB_K * p_end) / (kk + CLIMB_K)
+            out["team"][t] = {"n": k, "auto_l1": float(pa), "end": [float(x) for x in pe],
+                              "auto_obs": int(auto_k.get(t, 0)), "end_obs": [int(x) for x in end_k[t]] if t in end_k else [0, 0, 0, 0],
+                              "prior_n": q["n"]}
+            continue
         pa = (auto_k.get(t, 0) + CLIMB_K * p_auto) / (k + CLIMB_K)
         pe = (end_k[t] + CLIMB_K * p_end) / (k + CLIMB_K) if t in end_k else p_end.copy()
         out["team"][t] = {"n": k, "auto_l1": float(pa), "end": [float(x) for x in pe],

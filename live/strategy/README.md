@@ -5,7 +5,12 @@ Pure numpy/scipy. Reads data only, writes nothing outside the `--out` path you g
 ```
 python -m live.strategy.backtest DATA_DIR [--event EV] [--out bt.json]          # honest backtest, ~10 s
 python -m live.strategy.preview  DATA_DIR qm15 [--asof prior|all] [--out p.json] # match preview JSON
+python -m live.strategy.dashboard DATA_DIR [EV] [--team frc4911] [--asof TS] [--out d.json]  # dashboard JSON (DASHBOARD.md)
+python -m live.strategy.dashboard DATA_DIR [EV] --site [--snapshots --only-missing]           # site files
 ```
+backtest and preview take `--epa-prior none|cache|fetch` (default `cache`: use the pre-event EPA prior if its cached
+inputs exist under DATA_DIR/cache/tba_prior; `fetch` may call TBA with TBA_KEY). Without a cache they behave exactly
+like phase 1.
 `DATA_DIR` is the production data root (`/opt/stacks/cyber-scout/data`) or a copy with the same layout:
 `tba/event__<ev>__matches.json`, `site/api/<ev>/{m,t}/*.json`. The event is inferred if there is only one.
 
@@ -17,6 +22,18 @@ python -m live.strategy.preview  DATA_DIR qm15 [--asof prior|all] [--out p.json]
 | `baselines.py` | TBA-only baselines: ridge OPR and an EPA-style rating, both with a prequential normal win probability |
 | `backtest.py` | predicts every qual using only matches played before it; Brier, log loss, accuracy, MAE; subsets and bootstrap CIs |
 | `preview.py` | preview JSON (schema below) with plain-English key factors |
+| `epa.py` | EPA: pre-event component prior from the teams' earlier events this season (TBA, cached) or Statbotics; as-of EPA for display (Statbotics team_match history or local running EPA) |
+| `rank.py` | 2026 RP rules + TBA tiebreakers (reproduces the final Sammamish table exactly); Monte Carlo rank projection |
+| `dashboard.py` | dashboard JSON (contract `DASHBOARD.md`): as-of view, blended ratings + video_weight, projection, next-match plan, levers, schedule, replay snapshots |
+
+## EPA prior (phase 2)
+`fit_event_model(..., epa_prior=P)` with `P = epa.pre_event_prior(...)` starts each team effect at the team's rating
+from its earlier events this season, instead of at 0 (the event mean). That rating comes from the same model fitted
+TBA-only to those events. Its variance is the prior-event posterior variance plus between-event drift
+(0.5·tau)². The mu, beta and (sigma, tau) priors also come from those events until this event has data. The event's TBA rows
+and trusted video then update it as before. Backtest (58 quals, prior-only), Brier: sim_full .159 → sim_epa .118;
+warm 48: .155 → .123; early 10: .176 → .095. Video still adds on top of the prior (sim_epa − sim_epa_tba −.014,
+90% CI [−.029, −.000]). The placebo with permuted robot identity gives +.001/+.002/−.009.
 
 ## Model in one paragraph
 For each FUEL component c, a robot's counted FUEL in a match is modelled as

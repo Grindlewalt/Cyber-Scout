@@ -85,7 +85,11 @@ def load_tba(path):
         played = bool(sb) and al["red"]["score"] is not None and al["red"]["score"] >= 0
         rec = {"key": m["key"], "comp_level": m["comp_level"], "order": match_num(m["key"]),
                "time": m.get("actual_time") or m.get("time") or m.get("predicted_time") or 0,
-               "teams": teams, "played": played}
+               "teams": teams, "played": played,
+               "sched_time": m.get("time"), "predicted_time": m.get("predicted_time"),
+               "post_time": m.get("post_result_time"),
+               "surrogates": {a: list(al[a].get("surrogate_team_keys") or []) for a in ("red", "blue")},
+               "dqs": {a: list(al[a].get("dq_team_keys") or []) for a in ("red", "blue")}}
         if played:
             hs = {a: sb[a].get("hubScore") or {} for a in ("red", "blue")}
             auto = {a: hs[a].get("autoCount", 0) for a in ("red", "blue")}
@@ -113,6 +117,12 @@ def load_tba(path):
                     "fouls": sbA.get("foulPoints") or 0,
                     "score": al[a]["score"],
                     "fuel_pts": h.get("totalPoints", h.get("totalCount", 0)),
+                    "fuel_count": h.get("totalCount", sum(fuel[p] for p in PERIODS)),
+                    "rp": sbA.get("rp"),
+                    "bonus": {"energized": bool(sbA.get("energizedAchieved")),
+                              "supercharged": bool(sbA.get("superchargedAchieved")),
+                              "traversal": bool(sbA.get("traversalAchieved"))},
+                    "tower_total": sbA.get("totalTowerPoints", (sbA.get("autoTowerPoints") or 0) + (sbA.get("endGameTowerPoints") or 0)),
                 }
             rs, bs = al["red"]["score"], al["blue"]["score"]
             rec["red_win"] = 1.0 if rs > bs else 0.0 if rs < bs else 0.5
@@ -362,5 +372,13 @@ def load_event(data_dir, event=None):
     by_key = {m["key"]: m for m in tba}
     vid = load_video(p["site"], by_key)
     teams = sorted({t for m in tba for a in ("red", "blue") for t in m["teams"][a]}, key=lambda s: int(s[3:]))
+    info = {}
+    ip = os.path.join(p["root"], "tba", f"event__{p['event']}.json")
+    if os.path.exists(ip):
+        try:
+            raw = json.load(open(ip))
+            info = raw.get("data", raw) if isinstance(raw, dict) else {}
+        except Exception:
+            info = {}
     return {"event": p["event"], "paths": p, "tba": tba, "by_key": by_key, "video": vid, "teams": teams,
-            "routines": load_routines(p["site"])}
+            "routines": load_routines(p["site"]), "info": info}
