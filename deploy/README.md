@@ -3,47 +3,92 @@
 Watches FRC events on The Blue Alliance. Every time a match is played and its video
 shows up on YouTube, it downloads the video, tracks all six robots from the overhead
 field camera, works out which robot is which team, and publishes everything to a
-scouting site: http://atomosserver:7560 (LAN/Tailscale only).
+scouting site that your team signs in to.
+
+## Install (any Linux box with Docker; NVIDIA GPU recommended)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Grindlewalt/Cyber-Scout/main/deploy/install.sh | bash
+```
+
+The installer checks Docker + Compose (and the NVIDIA Container Toolkit; without it it warns and runs CPU-only,
+~4x slower per match), clones the code into `/opt/cyber-scout/app` (asks; or `CS_DIR=...`), writes `.env` with
+infrastructure settings only (port, file owner, time zone, media dir), runs `docker compose up -d --build`, and
+prints the URL and a **one-time setup code**. Re-run it any time to update. Options: see the top of `install.sh`
+(`CS_PORT`, `CS_MODEL_URL` for the robot detector, `CS_CPU=1`, `CS_YES=1`, ...).
+
+## First run
+
+Open the printed URL (LAN or Tailscale; plain HTTP is fine). The setup wizard asks for:
+
+1. the setup code (`cat /opt/cyber-scout/data/setup-code.txt` if you lost it) and an **admin account**;
+2. a **TBA Read API key** (thebluealliance.com/account; checked with TBA, stored only on the server);
+3. your **team number**, 4. your **season goal** (win an event / DCMP / Worlds / ...);
+5. the **event(s)** to follow (your team's events listed first) -> then set up the video for each event.
+
+Then **Admin -> Teammates**: give each teammate a login and a role
+(viewer = read-only, scout = + notes and identity fixes, strategist = + shared picklist, admin = everything).
+Everything after that (key, team, events, GPU / hub-cam options) is changed in **Admin**, not in files; the worker
+picks changes up on its next poll without a restart.
 
 ```
-/opt/stacks/cyber-scout/
-  docker-compose.yml   two containers: worker (GPU) + web (nginx, port 7560)
-  .env                 TBA_KEY, EVENTS, POLL_SECONDS, PUID/PGID   <- back up (secret)
+/opt/cyber-scout/
+  docker-compose.yml   worker (GPU) + api (accounts/settings) + web (nginx, port 7560)
+  docker-compose.cpu.yml   CPU-only override (enabled via COMPOSE_FILE in .env)
+  .env                 infra only: WEB_PORT, PUID/PGID, TZ, MEDIA_DIR
   app/                 the code (git: github.com/Grindlewalt/Cyber-Scout)
-  data/                ALL state                              <- back up
-    models/robot.onnx    the trained robot detector (irreplaceable-ish: ~2 h to retrain)
+  data/                ALL state                                  <- back up
+    app.db               accounts, settings (incl. the TBA key), picklists, notes   (secret)
+    config/worker.json   the worker's copy of the settings (written by the api)     (secret)
+    models/robot.onnx    the trained robot detector
     events/<key>/        camera.json (calibration), matches/*.json (processed tracks),
                          status.json, overrides.json (manual team fixes)
-    site/api/            generated site JSON (rebuilt automatically)
-    training/            public datasets (from Roboflow, once), event labels, checkpoints
-    tba/ cache/          disposable
+    site/api/            generated site JSON (rebuilt automatically; served to signed-in users)
+    media/               kept match videos (unless MEDIA_DIR points elsewhere)
+    training/ tba/ cache/   disposable / re-downloadable
 ```
 
-## Restore on a fresh machine
+## Backup and restore
 
-1. Install Docker (+ NVIDIA container toolkit if there's an NVIDIA GPU).
-2. Copy the backed-up `/opt/stacks/cyber-scout` folder back into place.
-3. `cd /opt/stacks/cyber-scout && docker compose up -d --build`
+**Backup = the install folder** (`/opt/cyber-scout`, really just `data/` + `.env`). `data/app.db` holds the TBA
+key and password hashes, so keep backups private. For a consistent copy of the database while running:
+`sqlite3 data/app.db ".backup data/app.db.bak"` (or stop the stack first: `docker compose stop`).
 
-That's it. Already-processed matches are not redone (they're in `data/events/*/matches`).
-No GPU? Delete the `deploy:` block in `docker-compose.yml`; it runs on CPU, ~4x slower.
+Restore on a fresh machine: install Docker (+ NVIDIA container toolkit), copy the folder back, then
+`cd /opt/cyber-scout && docker compose up -d --build`. Already-processed matches are not redone.
+
+## Security notes
+
+* Only the login / setup shell is public; site JSON (`/api/`) and videos (`/media/`) need a signed-in user
+  (nginx `auth_request` against the api). The api container isn't published on any port.
+* Sessions: http-only, SameSite=Lax cookies, CSRF token on every change, 7 days idle / 30 days max; logins are
+  rate-limited; passwords are argon2id hashes, 10+ characters.
+* Meant for a LAN / Tailscale. Behind a TLS reverse proxy (Caddy, Tailscale serve, ...) forward to the web port and
+  pass `X-Forwarded-Proto: https`; cookies then get `Secure` automatically. Note: the login rate limit is per
+  client IP, which behind a proxy is the proxy's.
+* Locked out? On the server: `docker compose exec api python -m server.manage users`, then
+  `... server.manage reset-password <username>` (prints a new password) or `... server.manage make-admin <username>`.
 
 ## Day to day
 
 ```bash
 docker compose logs -f worker          # what it's doing
-docker compose restart worker          # pick up .env changes
+docker compose logs -f api             # sign-ins / settings problems
+docker compose up -d --build           # after changing .env or pulling code (or just re-run install.sh)
 ```
 
-* **Follow a different / live event:** set `EVENTS=2026xxxx` (comma-separate several) in
-  `.env`, then `docker compose up -d`. The event needs a camera calibration first (below).
-* **A robot is labelled as the wrong team:** add to `data/events/<event>/overrides.json`
+* **Follow a different / live event:** Admin -> Events. The event needs a camera calibration / video setup first.
+* **A robot is labelled as the wrong team:** a scout fixes it in the app (`PUT /app/v1/events/<ev>/overrides/<match>`),
+  which writes `data/events/<event>/overrides.json`; hand edits still work:
   ```json
   {"2026wasam_qm12": {"red": {"0": "frc1983", "1": "frc9442", "2": "frc2903"}}}
   ```
   keys are the track numbers (`idx`) shown in the match JSON (`data/site/api/<event>/m/<match>.json`).
   The labelling re-solves the whole event on the next poll, so one fix also improves other matches.
 * **Re-process a match:** delete `data/events/<event>/matches/<match>.json`.
+* **Upgrading a stack that predates accounts** (settings in `.env`): add the new compose file, `docker compose up -d
+  --build`; on first start the api imports `TBA_KEY` and `EVENTS` from `.env` once, then run setup in the browser
+  (setup code in `data/setup-code.txt`) to create the admin. After that, manage them in the app.
 
 ## How it works
 

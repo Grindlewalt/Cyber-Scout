@@ -1,0 +1,2022 @@
+{
+ "openapi": "3.1.0",
+ "info": {
+  "title": "Cyber-Scout API",
+  "description": "Accounts, roles, settings and shared scouting data. Cookie session auth; send X-CSRF-Token (= cs_csrf cookie) on mutating requests. Roles: viewer < scout < strategist < admin. Site JSON (/api/*) and media (/media/*) are served by nginx, gated by GET /app/v1/auth/check.",
+  "version": "1.0.0"
+ },
+ "paths": {
+  "/app/v1/health": {
+   "get": {
+    "tags": [
+     "meta"
+    ],
+    "summary": "Liveness (no auth)",
+    "operationId": "health_app_v1_health_get",
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     }
+    }
+   }
+  },
+  "/app/v1/session": {
+   "get": {
+    "tags": [
+     "auth"
+    ],
+    "summary": "Who am I / is setup needed (always 200)",
+    "operationId": "session_app_v1_session_get",
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/SessionOut"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/app/v1/setup": {
+   "post": {
+    "tags": [
+     "auth"
+    ],
+    "summary": "First run only: create the admin account and sign in",
+    "operationId": "setup_app_v1_setup_post",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/SetupIn"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/SessionOut"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/app/v1/auth/login": {
+   "post": {
+    "tags": [
+     "auth"
+    ],
+    "summary": "Sign in (rate-limited); sets the http-only session cookie",
+    "operationId": "login_app_v1_auth_login_post",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/LoginIn"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/SessionOut"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/app/v1/auth/logout": {
+   "post": {
+    "tags": [
+     "auth"
+    ],
+    "summary": "Sign out (ends this session)",
+    "operationId": "logout_app_v1_auth_logout_post",
+    "responses": {
+     "204": {
+      "description": "Successful Response"
+     }
+    }
+   }
+  },
+  "/app/v1/auth/password": {
+   "post": {
+    "tags": [
+     "auth"
+    ],
+    "summary": "Change your own password (signs out your other sessions)",
+    "operationId": "change_password_app_v1_auth_password_post",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/PasswordIn"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "204": {
+      "description": "Successful Response"
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/app/v1/auth/check": {
+   "get": {
+    "tags": [
+     "auth"
+    ],
+    "summary": "nginx auth_request: 204 if signed in (viewer+), else 401",
+    "operationId": "check_app_v1_auth_check_get",
+    "responses": {
+     "204": {
+      "description": "Successful Response"
+     }
+    }
+   }
+  },
+  "/app/v1/users": {
+   "get": {
+    "tags": [
+     "users"
+    ],
+    "summary": "List accounts (admin)",
+    "operationId": "list_users_app_v1_users_get",
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "items": {
+          "$ref": "#/components/schemas/UserOut"
+         },
+         "type": "array",
+         "title": "Response List Users App V1 Users Get"
+        }
+       }
+      }
+     }
+    }
+   },
+   "post": {
+    "tags": [
+     "users"
+    ],
+    "summary": "Create a teammate account (admin)",
+    "operationId": "create_user_app_v1_users_post",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/UserCreate"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "201": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/UserOut"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/app/v1/users/{uid}": {
+   "patch": {
+    "tags": [
+     "users"
+    ],
+    "summary": "Change role / name / disable / reset password (admin)",
+    "operationId": "patch_user_app_v1_users__uid__patch",
+    "parameters": [
+     {
+      "name": "uid",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "integer",
+       "title": "Uid"
+      }
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/UserPatch"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/UserOut"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   },
+   "delete": {
+    "tags": [
+     "users"
+    ],
+    "summary": "Delete an account (admin; not yourself, not the last admin)",
+    "operationId": "delete_user_app_v1_users__uid__delete",
+    "parameters": [
+     {
+      "name": "uid",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "integer",
+       "title": "Uid"
+      }
+     }
+    ],
+    "responses": {
+     "204": {
+      "description": "Successful Response"
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/app/v1/settings": {
+   "get": {
+    "tags": [
+     "settings"
+    ],
+    "summary": "Team settings (viewer+; secrets omitted)",
+    "operationId": "get_settings_app_v1_settings_get",
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/SettingsOut"
+        }
+       }
+      }
+     }
+    }
+   },
+   "patch": {
+    "tags": [
+     "settings"
+    ],
+    "summary": "Update team number / season goal / options (admin)",
+    "operationId": "patch_settings_app_v1_settings_patch",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/SettingsPatch"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/SettingsOut"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/app/v1/settings/tba-key": {
+   "put": {
+    "tags": [
+     "settings"
+    ],
+    "summary": "Validate against TBA and store the key (admin)",
+    "operationId": "put_tba_key_app_v1_settings_tba_key_put",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/KeyIn"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/SettingsOut"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   },
+   "delete": {
+    "tags": [
+     "settings"
+    ],
+    "summary": "Remove the stored TBA key (admin)",
+    "operationId": "delete_tba_key_app_v1_settings_tba_key_delete",
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/SettingsOut"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/app/v1/tba/team/{number}": {
+   "get": {
+    "tags": [
+     "settings"
+    ],
+    "summary": "Look up a team on TBA (admin)",
+    "operationId": "tba_team_app_v1_tba_team__number__get",
+    "parameters": [
+     {
+      "name": "number",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "integer",
+       "title": "Number"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/app/v1/tba/events": {
+   "get": {
+    "tags": [
+     "settings"
+    ],
+    "summary": "Events for a season: your team's first, then all (admin)",
+    "operationId": "tba_events_app_v1_tba_events_get",
+    "parameters": [
+     {
+      "name": "year",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "integer",
+         "maximum": 2100,
+         "minimum": 1992
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Year"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/app/v1/events": {
+   "get": {
+    "tags": [
+     "events"
+    ],
+    "summary": "Followed events (viewer+)",
+    "operationId": "list_events_app_v1_events_get",
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "items": {
+          "$ref": "#/components/schemas/EventOut"
+         },
+         "type": "array",
+         "title": "Response List Events App V1 Events Get"
+        }
+       }
+      }
+     }
+    }
+   },
+   "post": {
+    "tags": [
+     "events"
+    ],
+    "summary": "Follow an event (admin; checked on TBA)",
+    "operationId": "add_event_app_v1_events_post",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/EventIn"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "201": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/EventOut"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/app/v1/events/{ev}": {
+   "delete": {
+    "tags": [
+     "events"
+    ],
+    "summary": "Stop following an event (admin; its data is kept)",
+    "operationId": "remove_event_app_v1_events__ev__delete",
+    "parameters": [
+     {
+      "name": "ev",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Ev"
+      }
+     }
+    ],
+    "responses": {
+     "204": {
+      "description": "Successful Response"
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/app/v1/events/{ev}/picklists": {
+   "get": {
+    "tags": [
+     "scouting"
+    ],
+    "summary": "All picklists for an event (viewer+)",
+    "operationId": "list_picklists_app_v1_events__ev__picklists_get",
+    "parameters": [
+     {
+      "name": "ev",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Ev"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "array",
+         "items": {
+          "$ref": "#/components/schemas/PicklistOut"
+         },
+         "title": "Response List Picklists App V1 Events  Ev  Picklists Get"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/app/v1/events/{ev}/picklists/{name}": {
+   "get": {
+    "tags": [
+     "scouting"
+    ],
+    "summary": "One picklist (viewer+; 404 if none yet)",
+    "operationId": "get_picklist_app_v1_events__ev__picklists__name__get",
+    "parameters": [
+     {
+      "name": "name",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Name"
+      }
+     },
+     {
+      "name": "ev",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Ev"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/PicklistOut"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   },
+   "put": {
+    "tags": [
+     "scouting"
+    ],
+    "summary": "Create/replace a picklist (strategist+)",
+    "operationId": "put_picklist_app_v1_events__ev__picklists__name__put",
+    "parameters": [
+     {
+      "name": "name",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Name"
+      }
+     },
+     {
+      "name": "ev",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Ev"
+      }
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/PicklistIn"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/PicklistOut"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   },
+   "delete": {
+    "tags": [
+     "scouting"
+    ],
+    "summary": "Delete a picklist (strategist+)",
+    "operationId": "delete_picklist_app_v1_events__ev__picklists__name__delete",
+    "parameters": [
+     {
+      "name": "name",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Name"
+      }
+     },
+     {
+      "name": "ev",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Ev"
+      }
+     }
+    ],
+    "responses": {
+     "204": {
+      "description": "Successful Response"
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/app/v1/events/{ev}/notes": {
+   "get": {
+    "tags": [
+     "scouting"
+    ],
+    "summary": "Notes, optionally for one team / match (viewer+)",
+    "operationId": "list_notes_app_v1_events__ev__notes_get",
+    "parameters": [
+     {
+      "name": "ev",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Ev"
+      }
+     },
+     {
+      "name": "team",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Team"
+      }
+     },
+     {
+      "name": "match",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Match"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "array",
+         "items": {
+          "$ref": "#/components/schemas/NoteOut"
+         },
+         "title": "Response List Notes App V1 Events  Ev  Notes Get"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   },
+   "post": {
+    "tags": [
+     "scouting"
+    ],
+    "summary": "Add a note (scout+)",
+    "operationId": "add_note_app_v1_events__ev__notes_post",
+    "parameters": [
+     {
+      "name": "ev",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Ev"
+      }
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/NoteIn"
+       }
+      }
+     }
+    },
+    "responses": {
+     "201": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/NoteOut"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/app/v1/notes/{nid}": {
+   "patch": {
+    "tags": [
+     "scouting"
+    ],
+    "summary": "Edit a note (author, or strategist+)",
+    "operationId": "edit_note_app_v1_notes__nid__patch",
+    "parameters": [
+     {
+      "name": "nid",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "integer",
+       "title": "Nid"
+      }
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/NotePatch"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/NoteOut"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   },
+   "delete": {
+    "tags": [
+     "scouting"
+    ],
+    "summary": "Delete a note (author, or strategist+)",
+    "operationId": "delete_note_app_v1_notes__nid__delete",
+    "parameters": [
+     {
+      "name": "nid",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "integer",
+       "title": "Nid"
+      }
+     }
+    ],
+    "responses": {
+     "204": {
+      "description": "Successful Response"
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/app/v1/events/{ev}/overrides": {
+   "get": {
+    "tags": [
+     "scouting"
+    ],
+    "summary": "Identity overrides for an event + recent change log (viewer+)",
+    "operationId": "get_overrides_app_v1_events__ev__overrides_get",
+    "parameters": [
+     {
+      "name": "ev",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Ev"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/app/v1/events/{ev}/overrides/{match}": {
+   "put": {
+    "tags": [
+     "scouting"
+    ],
+    "summary": "Set the robot->team fixes for one match (scout+)",
+    "operationId": "put_override_app_v1_events__ev__overrides__match__put",
+    "parameters": [
+     {
+      "name": "match",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Match"
+      }
+     },
+     {
+      "name": "ev",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Ev"
+      }
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/OverrideIn"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   },
+   "delete": {
+    "tags": [
+     "scouting"
+    ],
+    "summary": "Clear one match's fixes (scout+)",
+    "operationId": "delete_override_app_v1_events__ev__overrides__match__delete",
+    "parameters": [
+     {
+      "name": "match",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Match"
+      }
+     },
+     {
+      "name": "ev",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Ev"
+      }
+     }
+    ],
+    "responses": {
+     "204": {
+      "description": "Successful Response"
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  }
+ },
+ "components": {
+  "schemas": {
+   "EventIn": {
+    "properties": {
+     "key": {
+      "type": "string",
+      "maxLength": 24,
+      "minLength": 5,
+      "title": "Key",
+      "description": "TBA event key, e.g. 2026wasam"
+     }
+    },
+    "type": "object",
+    "required": [
+     "key"
+    ],
+    "title": "EventIn"
+   },
+   "EventOut": {
+    "properties": {
+     "key": {
+      "type": "string",
+      "title": "Key"
+     },
+     "name": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Name"
+     },
+     "year": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Year"
+     },
+     "start_date": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Start Date"
+     },
+     "added_at": {
+      "type": "number",
+      "title": "Added At"
+     }
+    },
+    "type": "object",
+    "required": [
+     "key",
+     "name",
+     "year",
+     "start_date",
+     "added_at"
+    ],
+    "title": "EventOut"
+   },
+   "HTTPValidationError": {
+    "properties": {
+     "detail": {
+      "items": {
+       "$ref": "#/components/schemas/ValidationError"
+      },
+      "type": "array",
+      "title": "Detail"
+     }
+    },
+    "type": "object",
+    "title": "HTTPValidationError"
+   },
+   "KeyIn": {
+    "properties": {
+     "key": {
+      "type": "string",
+      "maxLength": 128,
+      "minLength": 20,
+      "title": "Key"
+     }
+    },
+    "type": "object",
+    "required": [
+     "key"
+    ],
+    "title": "KeyIn"
+   },
+   "LoginIn": {
+    "properties": {
+     "username": {
+      "type": "string",
+      "maxLength": 64,
+      "minLength": 1,
+      "title": "Username"
+     },
+     "password": {
+      "type": "string",
+      "maxLength": 256,
+      "minLength": 1,
+      "title": "Password"
+     }
+    },
+    "type": "object",
+    "required": [
+     "username",
+     "password"
+    ],
+    "title": "LoginIn"
+   },
+   "NoteIn": {
+    "properties": {
+     "team": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Team",
+      "description": "frc4911"
+     },
+     "match": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Match",
+      "description": "2026wasam_qm12"
+     },
+     "text": {
+      "type": "string",
+      "maxLength": 4000,
+      "minLength": 1,
+      "title": "Text"
+     }
+    },
+    "type": "object",
+    "required": [
+     "text"
+    ],
+    "title": "NoteIn"
+   },
+   "NoteOut": {
+    "properties": {
+     "id": {
+      "type": "integer",
+      "title": "Id"
+     },
+     "event": {
+      "type": "string",
+      "title": "Event"
+     },
+     "team": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Team"
+     },
+     "match": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Match"
+     },
+     "text": {
+      "type": "string",
+      "title": "Text"
+     },
+     "author": {
+      "anyOf": [
+       {
+        "additionalProperties": true,
+        "type": "object"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Author"
+     },
+     "created_at": {
+      "type": "number",
+      "title": "Created At"
+     },
+     "updated_at": {
+      "type": "number",
+      "title": "Updated At"
+     }
+    },
+    "type": "object",
+    "required": [
+     "id",
+     "event",
+     "team",
+     "match",
+     "text",
+     "author",
+     "created_at",
+     "updated_at"
+    ],
+    "title": "NoteOut"
+   },
+   "NotePatch": {
+    "properties": {
+     "text": {
+      "type": "string",
+      "maxLength": 4000,
+      "minLength": 1,
+      "title": "Text"
+     }
+    },
+    "type": "object",
+    "required": [
+     "text"
+    ],
+    "title": "NotePatch"
+   },
+   "Options": {
+    "properties": {
+     "poll_seconds": {
+      "anyOf": [
+       {
+        "type": "integer",
+        "maximum": 3600.0,
+        "minimum": 30.0
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Poll Seconds",
+      "description": "seconds between TBA polls"
+     },
+     "gpu_device": {
+      "anyOf": [
+       {
+        "type": "integer",
+        "maximum": 15.0,
+        "minimum": 0.0
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Gpu Device",
+      "description": "CUDA device index inside the worker container"
+     },
+     "cpu_only": {
+      "anyOf": [
+       {
+        "type": "boolean"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Cpu Only",
+      "description": "force CPU inference (no GPU)"
+     },
+     "hubcam": {
+      "anyOf": [
+       {
+        "type": "boolean"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Hubcam",
+      "description": "optional driver-station camera pass (~1-2 min/match extra)"
+     }
+    },
+    "type": "object",
+    "title": "Options",
+    "description": "Worker options; null = use the worker's default / its .env value."
+   },
+   "OverrideIn": {
+    "properties": {
+     "red": {
+      "additionalProperties": {
+       "type": "string"
+      },
+      "type": "object",
+      "title": "Red",
+      "description": "track idx -> team, e.g. {\"0\": \"frc1983\"}"
+     },
+     "blue": {
+      "additionalProperties": {
+       "type": "string"
+      },
+      "type": "object",
+      "title": "Blue"
+     }
+    },
+    "type": "object",
+    "title": "OverrideIn"
+   },
+   "PasswordIn": {
+    "properties": {
+     "current_password": {
+      "type": "string",
+      "maxLength": 256,
+      "title": "Current Password"
+     },
+     "new_password": {
+      "type": "string",
+      "maxLength": 256,
+      "title": "New Password"
+     }
+    },
+    "type": "object",
+    "required": [
+     "current_password",
+     "new_password"
+    ],
+    "title": "PasswordIn"
+   },
+   "PicklistIn": {
+    "properties": {
+     "data": {
+      "additionalProperties": true,
+      "type": "object",
+      "title": "Data",
+      "description": "client-defined JSON object (web/event.js: {stars:[team], dnp:[team], weights:{metric:w}})"
+     },
+     "base_version": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Base Version",
+      "description": "optimistic concurrency: 409 if the stored version differs"
+     }
+    },
+    "type": "object",
+    "required": [
+     "data"
+    ],
+    "title": "PicklistIn"
+   },
+   "PicklistOut": {
+    "properties": {
+     "event": {
+      "type": "string",
+      "title": "Event"
+     },
+     "name": {
+      "type": "string",
+      "title": "Name"
+     },
+     "data": {
+      "additionalProperties": true,
+      "type": "object",
+      "title": "Data"
+     },
+     "version": {
+      "type": "integer",
+      "title": "Version"
+     },
+     "updated_at": {
+      "type": "number",
+      "title": "Updated At"
+     },
+     "updated_by": {
+      "anyOf": [
+       {
+        "additionalProperties": true,
+        "type": "object"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Updated By"
+     }
+    },
+    "type": "object",
+    "required": [
+     "event",
+     "name",
+     "data",
+     "version",
+     "updated_at",
+     "updated_by"
+    ],
+    "title": "PicklistOut"
+   },
+   "SessionOut": {
+    "properties": {
+     "setup_required": {
+      "type": "boolean",
+      "title": "Setup Required",
+      "description": "no users yet: the UI must show the first-run wizard"
+     },
+     "setup_code_required": {
+      "type": "boolean",
+      "title": "Setup Code Required",
+      "description": "setup needs the one-time code from DATA/setup-code.txt"
+     },
+     "user": {
+      "anyOf": [
+       {
+        "additionalProperties": true,
+        "type": "object"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "User",
+      "description": "{id, username, display_name, role} or null when signed out"
+     },
+     "csrf": {
+      "type": "string",
+      "title": "Csrf",
+      "description": "send as X-CSRF-Token on POST/PUT/PATCH/DELETE (also in the cs_csrf cookie)"
+     },
+     "configured": {
+      "type": "boolean",
+      "title": "Configured",
+      "description": "TBA key set and at least one followed event (setup wizard finished)"
+     }
+    },
+    "type": "object",
+    "required": [
+     "setup_required",
+     "setup_code_required",
+     "user",
+     "csrf",
+     "configured"
+    ],
+    "title": "SessionOut"
+   },
+   "SettingsOut": {
+    "properties": {
+     "team_number": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Team Number"
+     },
+     "team_name": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Team Name"
+     },
+     "season_goal": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Season Goal"
+     },
+     "tba_key_set": {
+      "type": "boolean",
+      "title": "Tba Key Set"
+     },
+     "tba_key_hint": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Tba Key Hint",
+      "description": "admin only: '\u2022\u2022\u2022\u2022abcd'"
+     },
+     "options": {
+      "anyOf": [
+       {
+        "$ref": "#/components/schemas/Options"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "description": "admin only"
+     }
+    },
+    "type": "object",
+    "required": [
+     "team_number",
+     "team_name",
+     "season_goal",
+     "tba_key_set"
+    ],
+    "title": "SettingsOut"
+   },
+   "SettingsPatch": {
+    "properties": {
+     "team_number": {
+      "anyOf": [
+       {
+        "type": "integer",
+        "maximum": 99999.0,
+        "minimum": 1.0
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Team Number"
+     },
+     "season_goal": {
+      "anyOf": [
+       {
+        "type": "string",
+        "maxLength": 40
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Season Goal",
+      "description": "e.g. \"DCMP\", \"Worlds\", \"Win event\""
+     },
+     "options": {
+      "anyOf": [
+       {
+        "$ref": "#/components/schemas/Options"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     }
+    },
+    "type": "object",
+    "title": "SettingsPatch"
+   },
+   "SetupIn": {
+    "properties": {
+     "setup_code": {
+      "anyOf": [
+       {
+        "type": "string",
+        "maxLength": 64
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Setup Code"
+     },
+     "username": {
+      "type": "string",
+      "maxLength": 32,
+      "minLength": 2,
+      "title": "Username"
+     },
+     "password": {
+      "type": "string",
+      "maxLength": 256,
+      "title": "Password"
+     },
+     "display_name": {
+      "type": "string",
+      "maxLength": 64,
+      "title": "Display Name",
+      "default": ""
+     }
+    },
+    "type": "object",
+    "required": [
+     "username",
+     "password"
+    ],
+    "title": "SetupIn"
+   },
+   "UserCreate": {
+    "properties": {
+     "username": {
+      "type": "string",
+      "maxLength": 32,
+      "minLength": 2,
+      "title": "Username"
+     },
+     "display_name": {
+      "type": "string",
+      "maxLength": 64,
+      "title": "Display Name",
+      "default": ""
+     },
+     "password": {
+      "type": "string",
+      "maxLength": 256,
+      "title": "Password"
+     },
+     "role": {
+      "type": "string",
+      "enum": [
+       "viewer",
+       "scout",
+       "strategist",
+       "admin"
+      ],
+      "title": "Role",
+      "default": "viewer"
+     }
+    },
+    "type": "object",
+    "required": [
+     "username",
+     "password"
+    ],
+    "title": "UserCreate"
+   },
+   "UserOut": {
+    "properties": {
+     "id": {
+      "type": "integer",
+      "title": "Id"
+     },
+     "username": {
+      "type": "string",
+      "title": "Username"
+     },
+     "display_name": {
+      "type": "string",
+      "title": "Display Name"
+     },
+     "role": {
+      "type": "string",
+      "enum": [
+       "viewer",
+       "scout",
+       "strategist",
+       "admin"
+      ],
+      "title": "Role"
+     },
+     "disabled": {
+      "type": "boolean",
+      "title": "Disabled"
+     },
+     "created_at": {
+      "type": "number",
+      "title": "Created At"
+     },
+     "last_login": {
+      "anyOf": [
+       {
+        "type": "number"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Last Login"
+     },
+     "active_sessions": {
+      "type": "integer",
+      "title": "Active Sessions"
+     }
+    },
+    "type": "object",
+    "required": [
+     "id",
+     "username",
+     "display_name",
+     "role",
+     "disabled",
+     "created_at",
+     "last_login",
+     "active_sessions"
+    ],
+    "title": "UserOut"
+   },
+   "UserPatch": {
+    "properties": {
+     "display_name": {
+      "anyOf": [
+       {
+        "type": "string",
+        "maxLength": 64
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Display Name"
+     },
+     "role": {
+      "anyOf": [
+       {
+        "type": "string",
+        "enum": [
+         "viewer",
+         "scout",
+         "strategist",
+         "admin"
+        ]
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Role"
+     },
+     "disabled": {
+      "anyOf": [
+       {
+        "type": "boolean"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Disabled"
+     },
+     "password": {
+      "anyOf": [
+       {
+        "type": "string",
+        "maxLength": 256
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Password",
+      "description": "admin password reset; signs the user out"
+     }
+    },
+    "type": "object",
+    "title": "UserPatch"
+   },
+   "ValidationError": {
+    "properties": {
+     "loc": {
+      "items": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "integer"
+        }
+       ]
+      },
+      "type": "array",
+      "title": "Location"
+     },
+     "msg": {
+      "type": "string",
+      "title": "Message"
+     },
+     "type": {
+      "type": "string",
+      "title": "Error Type"
+     },
+     "input": {
+      "title": "Input"
+     },
+     "ctx": {
+      "type": "object",
+      "title": "Context"
+     }
+    },
+    "type": "object",
+    "required": [
+     "loc",
+     "msg",
+     "type"
+    ],
+    "title": "ValidationError"
+   }
+  }
+ }
+}

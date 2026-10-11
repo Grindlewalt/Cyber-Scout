@@ -1,7 +1,8 @@
 """Cyber-Scout worker: poll TBA, process each newly published match, publish JSON.
 
-Environment:
-  TBA_KEY        TBA read key (required)
+Configuration comes from the web app (DATA/config/worker.json, written by the api service; see load_config);
+the environment is the fallback for anything not set there:
+  TBA_KEY        TBA read key
   EVENTS         comma-separated event keys, e.g. 2026wasam
   DATA           state directory (default /data)
   MODEL          ONNX detector (default $DATA/models/robot.onnx)
@@ -420,6 +421,17 @@ def build_site(ev, tba):
                             "--snapshots", "--only-missing"], cwd=REPO, timeout=900, check=False)
         except Exception:
             traceback.print_exc()
+    try:                                               # rankings, district points, season goal, schedule
+        sys.path.insert(0, REPO)
+        from live.strategy import goals
+        goals.site_build(DATA, ev, team=os.environ.get("DASH_TEAM", "frc4911"))
+    except Exception:
+        traceback.print_exc()
+    try:                                               # team spec sheets + defense library
+        import scouting
+        scouting.site_build_extra(DATA, ev, log=log)
+    except Exception:
+        traceback.print_exc()
     log(f"{ev}: site rebuilt ({n_done}/{len(match_rows)} matches tracked)")
 
 
@@ -447,21 +459,70 @@ def sync(ev, tba, max_new=None):
         build_site(ev, tba)
 
 
+# ------------------------------------------------------------------ config (platform agent)
+WORKER_CONF = os.path.join(DATA, "config", "worker.json")   # written by the api service on every settings change
+_ENV0 = {k: os.environ.get(k) for k in ("TBA_KEY", "GPU_DEVICE", "FORCE_CPU")}
+
+
+def _setenv(k, v):
+    if v is None: os.environ.pop(k, None)
+    else: os.environ[k] = v
+
+
+def load_config():
+    """-> (tba_key, events). App settings (DATA/config/worker.json, see server/workerconf.py) win; anything unset
+    there falls back to the .env (TBA_KEY, EVENTS, POLL_SECONDS, HUBCAM, GPU_DEVICE). Called every poll, so a
+    settings change applies on the next poll without a restart. Also updates POLL / HUBCAM and the env that
+    downstream code reads (TBA_KEY for event_ctx + strategy, GPU_DEVICE / FORCE_CPU for the detector)."""
+    global POLL, HUBCAM
+    c = jload(WORKER_CONF, {}) or {}
+    o = c.get("options") or {}
+    key = c.get("tba_key") or _ENV0["TBA_KEY"] or ""
+    events = c.get("events")
+    if events is None:
+        events = [e.strip() for e in os.environ.get("EVENTS", "").split(",") if e.strip()]
+    POLL = int(o["poll_seconds"]) if o.get("poll_seconds") else int(os.environ.get("POLL_SECONDS", "120"))
+    HUBCAM = bool(o["hubcam"]) if o.get("hubcam") is not None else os.environ.get("HUBCAM", "0") == "1"
+    _setenv("TBA_KEY", key or None)
+    _setenv("GPU_DEVICE", str(int(o["gpu_device"])) if o.get("gpu_device") is not None else _ENV0["GPU_DEVICE"])
+    _setenv("FORCE_CPU", ("1" if o["cpu_only"] else None) if o.get("cpu_only") is not None else _ENV0["FORCE_CPU"])
+    return key, list(events)
+
+
+def _conf_mtime():
+    try: return os.path.getmtime(WORKER_CONF)
+    except OSError: return None
+
+
+def _sleep(seconds):
+    """Sleep, but wake early when the app settings change (e.g. an event was just added)."""
+    m0, t_end = _conf_mtime(), time.time() + seconds
+    while time.time() < t_end:
+        time.sleep(min(5, max(0.1, t_end - time.time())))
+        if _conf_mtime() != m0: return
+
+
 def main():
-    key = os.environ.get("TBA_KEY")
-    if not key: sys.exit("TBA_KEY is not set")
-    events = [e.strip() for e in os.environ.get("EVENTS", "").split(",") if e.strip()]
-    if not events: sys.exit("EVENTS is empty")
-    tba = TBA(key, os.path.join(DATA, "tba"))
-    if not os.path.exists(MODEL): sys.exit(f"model not found: {MODEL}")
+    tba, waiting = None, None
     while True:
+        key, events = load_config()
+        why = ("no TBA key (finish setup in the web app, or set TBA_KEY)" if not key else
+               "no events followed (add one in the web app, or set EVENTS)" if not events else
+               f"model not found: {MODEL}" if not os.path.exists(MODEL) else None)
+        if why:
+            if os.environ.get("ONCE") == "1": sys.exit(why)
+            if why != waiting: log("waiting:", why)
+            waiting = why; _sleep(30); continue
+        if waiting: log("configured: following", ", ".join(events)); waiting = None
+        if tba is None or tba.key != key:
+            tba = TBA(key, os.path.join(DATA, "tba"))
         for ev in events:
             try:
                 sync(ev, tba, int(os.environ["MAX_NEW"]) if os.environ.get("MAX_NEW") else None)
             except Exception:
                 traceback.print_exc()
         if os.environ.get("ONCE") == "1": break
-        time.sleep(POLL)
+        _sleep(POLL)
 
 
 if __name__ == "__main__":

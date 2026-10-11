@@ -1,12 +1,15 @@
-# Cyber-Scout -- lives in /opt/stacks/cyber-scout (app/ = this repo, data/ = all state)
+# Cyber-Scout -- lives in e.g. /opt/cyber-scout (or /opt/stacks/cyber-scout): app/ = this repo, data/ = all state
 #   docker compose up -d --build        start / update
 #   docker compose logs -f worker       watch matches being processed
-name: cyber-scout
+# Settings (TBA key, team, events, options) live in the web app, not here; .env holds only infra values.
+# No NVIDIA GPU? Use the CPU override: COMPOSE_FILE=docker-compose.yml:docker-compose.cpu.yml in .env
+# (install.sh does this for you).
+name: ${CS_PREFIX:-cyber-scout}
 services:
   worker:
     build: ./app
-    image: cyber-scout-worker:latest
-    container_name: cyber-scout-worker
+    image: ${CS_PREFIX:-cyber-scout}-worker:latest
+    container_name: ${CS_PREFIX:-cyber-scout}-worker
     restart: unless-stopped
     env_file: .env
     environment:
@@ -14,8 +17,7 @@ services:
     volumes:
       - ./data:/data
       - ${MEDIA_DIR:-./data/media}:/media     # kept match videos for the interactive player
-    # GPU makes a match take ~3-6 min instead of ~20. On a machine without an
-    # NVIDIA GPU, delete this block; the worker falls back to CPU by itself.
+    # GPU makes a match take ~3-6 min instead of ~20 (removed by docker-compose.cpu.yml).
     deploy:
       resources:
         reservations:
@@ -24,15 +26,36 @@ services:
               count: all
               capabilities: [gpu]
 
+  api:
+    build:
+      context: ./app
+      dockerfile: server/Dockerfile
+    image: ${CS_PREFIX:-cyber-scout}-api:latest
+    container_name: ${CS_PREFIX:-cyber-scout}-api
+    restart: unless-stopped
+    environment:
+      DATA: /data
+      PUID: ${PUID:-1000}
+      PGID: ${PGID:-1000}
+      TZ: ${TZ:-UTC}
+      COOKIE_SECURE: ${COOKIE_SECURE:-auto}
+      # legacy: if set, imported ONCE into the app on first start (then manage them in the app)
+      TBA_KEY: ${TBA_KEY:-}
+      EVENTS: ${EVENTS:-}
+    volumes:
+      - ./data:/data
+    # not published: only reachable through the web container (nginx) at /app/v1/
+
   web:
     build:
       context: ./app
       dockerfile: web/Dockerfile
-    image: cyber-scout-web:latest
-    container_name: cyber-scout-web
+    image: ${CS_PREFIX:-cyber-scout}-web:latest
+    container_name: ${CS_PREFIX:-cyber-scout}-web
     restart: unless-stopped
+    depends_on: [api]
     ports:
-      - "7560:80"
+      - "${WEB_PORT:-7560}:80"
     volumes:
       - ./data/site/api:/usr/share/nginx/html/api:ro
       - ${MEDIA_DIR:-./data/media}:/usr/share/nginx/html/media:ro

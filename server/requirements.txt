@@ -1,0 +1,6 @@
+# runtime (pinned; tested together)
+fastapi==0.143.0
+starlette==1.7.0
+pydantic==2.14.1
+uvicorn==0.54.0
+argon2-cffi==25.1.0

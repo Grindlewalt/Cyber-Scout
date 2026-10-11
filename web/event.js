@@ -92,13 +92,53 @@ async function comparePane(el, d, ev, arg) {
 }
 
 // ------------------------------------------------------------------ picklist
+// Storage: one shared picklist per event on the server (app/v1/events/<ev>/picklists/main; strategists and admins
+// edit, everyone signed in reads), cached in localStorage under the old key (teamsTable / quant.js read the stars
+// from there). No server (legacy static site) or not allowed to edit -> localStorage only, as before.
+const PL_NAME = "main", plMeta = {}, plTimers = {};
+const plKey = ev => "cyberscout:picks:" + ev;
+const plShared = () => !!(window.CS && CS.platform && CS.user);
+async function plLoad(ev) {
+  if (!plShared()) return lsGet(plKey(ev), {});
+  try {
+    const r = await CS.app("GET", `events/${ev}/picklists/${PL_NAME}`);
+    plMeta[ev] = { version: r.version, by: r.updated_by, at: r.updated_at };
+    lsSet(plKey(ev), r.data);
+    return r.data;
+  } catch (e) {
+    if (e.status === 404) plMeta[ev] = { version: null };      // none yet: the first save creates it from this browser's list
+    return lsGet(plKey(ev), {});
+  }
+}
+function plSave(ev, st, onConflict) {
+  lsSet(plKey(ev), st);
+  if (!plShared() || !CS.can("strategist")) return;
+  clearTimeout(plTimers[ev]);
+  plTimers[ev] = setTimeout(async () => {
+    const m = plMeta[ev] || {};
+    try {
+      const r = await CS.app("PUT", `events/${ev}/picklists/${PL_NAME}`, { data: st, base_version: m.version ?? undefined });
+      plMeta[ev] = { version: r.version, by: r.updated_by, at: r.updated_at };
+    } catch (e) {
+      const cur = e.status === 409 && e.data && e.data.detail && e.data.detail.current;
+      if (cur) {        // someone else saved first: take theirs (re-apply your change if you still want it)
+        plMeta[ev] = { version: cur.version, by: cur.updated_by, at: cur.updated_at };
+        lsSet(plKey(ev), cur.data);
+        onConflict && onConflict(cur.data, cur.updated_by);
+      } else console.warn("picklist not saved to the server:", e.message);
+    }
+  }, 500);
+}
 const PL_DEFAULT = { made: 3, acc: 2, climb: 1.5, automade: 1, cycle: 0.5, dead: 2, defs: 0, fire: 0, volley: 0, intakes: 0, speed: 0 };
 async function picklistPane(el, d, ev) {
   el.innerHTML = `<div class="loading">Loading team stats…</div>`;
   const rows = (await loadRows(d, ev)).filter(r => r.q);
-  const st = Object.assign({ stars: [], dnp: [], weights: { ...PL_DEFAULT } }, lsGet("cyberscout:picks:" + ev, {}));
+  const st = Object.assign({ stars: [], dnp: [], weights: { ...PL_DEFAULT } }, await plLoad(ev));
   st.weights = { ...PL_DEFAULT, ...st.weights };
-  const save = () => lsSet("cyberscout:picks:" + ev, st);
+  const save = () => plSave(ev, st, cur => {
+    Object.assign(st, { stars: [], dnp: [] }, cur); st.weights = { ...PL_DEFAULT, ...cur.weights };
+    if (el.isConnected) render();
+  });
   const keys = QCOLS.filter(c => c[4] !== 0 && c[0] !== "n" && c[0] !== "att" && c[0] !== "pins" && c[0] !== "dist");
   const range = {}; keys.forEach(c => { const v = rows.map(r => c[2](r.q)).filter(has); range[c[0]] = [Math.min(...v), Math.max(...v)]; });
   let only = "all";

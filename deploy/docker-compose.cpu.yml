@@ -1,0 +1,7 @@
+# CPU-only override (no NVIDIA GPU / container toolkit): drops the GPU reservation. ~4x slower per match.
+# Enable with COMPOSE_FILE=docker-compose.yml:docker-compose.cpu.yml in .env (needs Docker Compose >= 2.24).
+services:
+  worker:
+    deploy: !reset {}
+    environment:
+      FORCE_CPU: "1"
