@@ -193,9 +193,10 @@ async function teamPage(ev, tk) {
     </div>`;
 
   document.querySelectorAll(".jump a").forEach(a => a.onclick = ev_ => { ev_.preventDefault(); const s = document.getElementById("s-" + a.dataset.j); s && s.scrollIntoView({ behavior: "smooth", block: "start" }); });
-  document.getElementById("star").onclick = e_ => {
-    const p = lsGet("cyberscout:picks:" + ev, {}); p.stars = p.stars || [];
-    const i = p.stars.indexOf(tk); i >= 0 ? p.stars.splice(i, 1) : p.stars.push(tk); lsSet("cyberscout:picks:" + ev, p);
+  document.getElementById("star").onclick = async e_ => {     // shared picklist (event.js) when signed in
+    const p = typeof plLoad === "function" ? await plLoad(ev) : lsGet("cyberscout:picks:" + ev, {}); p.stars = p.stars || [];
+    const i = p.stars.indexOf(tk); i >= 0 ? p.stars.splice(i, 1) : p.stars.push(tk);
+    typeof plSave === "function" ? plSave(ev, p) : lsSet("cyberscout:picks:" + ev, p);
     e_.target.classList.toggle("on", i < 0); e_.target.textContent = i < 0 ? "★ Starred" : "☆ Star";
   };
 

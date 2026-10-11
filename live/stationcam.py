@@ -40,6 +40,36 @@ SCORE_REGION = (450, 0, 1470, 160)       # scoreboard graphic
 CLOCK_BOX = (912, 72, 1008, 116)         # match clock digits (process.CLOCK_BOX)
 IN = 0.0254
 TAG_SIZE = 6.5 * IN                      # 2026 FRC AprilTags (36h11), black square edge
+# The constants above are the 2026 FIRST Washington layout.  Other broadcasts: the event's layout.json
+# (live/layout.py, drawn in the box editor) gives the inset rectangles / clock box / shared region; the
+# station calibration's own "crop" always wins for the inset it was calibrated in.  No layout and no
+# crop = the constants above (unchanged behaviour).
+
+
+def rects_for(event_dir=None, cams=None):
+    """{"red": box, "blue": box} for an event: per camera its calibration's "crop", else the event
+    layout's station inset, else RECTS."""
+    out = dict(RECTS)
+    try:
+        import layout as LY
+        lr = LY.station_rects(LY.find(event_dir=event_dir)) if event_dir else None
+    except Exception:
+        lr = None
+    for w in RECTS:
+        crop = ((cams or {}).get(w).raw.get("crop") if (cams or {}).get(w) is not None else None)
+        if crop and len(crop) == 4: out[w] = tuple(int(v) for v in crop)
+        elif lr and w in lr: out[w] = tuple(lr[w])
+    return out
+
+
+def layout_regions(event_dir=None):
+    """(sync region, clock box) for an event: from its layout.json, else SYNC_REGION / CLOCK_BOX."""
+    try:
+        import layout as LY
+        L = LY.find(event_dir=event_dir) if event_dir else None
+        return tuple(LY.sync_region(L, SYNC_REGION)), tuple(LY.station_clock_box(L, CLOCK_BOX))
+    except Exception:
+        return SYNC_REGION, CLOCK_BOX
 
 
 # ---------------------------------------------------------------- 1. which upload
@@ -73,13 +103,13 @@ def find_inset_video(match_tba, meta_cache, meta_fn=None):
 
 
 # ---------------------------------------------------------------- 2. sync
-def _thumbs(video, t0=0.0, t1=None, scale=4):
+def _thumbs(video, t0=0.0, t1=None, scale=4, region=None, clock_box=None):
     """Grey thumbnails (1/scale) of SYNC_REGION + the clock box at 1/2 scale, every decoded frame."""
     c = av.open(video); s = c.streams.video[0]; s.thread_type = "AUTO"
     if t0 > 1:
         c.seek(int((t0 - 1) / s.time_base), stream=s)
-    x0, y0, x1, y1 = SYNC_REGION
-    cx0, cy0, cx1, cy1 = CLOCK_BOX
+    x0, y0, x1, y1 = region or SYNC_REGION
+    cx0, cy0, cx1, cy1 = clock_box or CLOCK_BOX
     ts, th, ck = [], [], []
     for f in c.decode(s):
         if f.time is None or f.time < t0 - 1e-6: continue
@@ -130,12 +160,12 @@ def _coarse(ta, A, tb, B):
     return float(grid_b[lag] - ta[0]), float(r[lag])
 
 
-def _window(wide_video, inset_video, a0, a1, guess=None, max_lag=30.0):
-    ta, A, _ = _thumbs(inset_video, a0, a1)
+def _window(wide_video, inset_video, a0, a1, guess=None, max_lag=30.0, region=None, clock_box=None):
+    ta, A, _ = _thumbs(inset_video, a0, a1, region=region, clock_box=clock_box)
     if len(ta) < 60: return None
     lag = max_lag if guess is None else 1.0
     g = 0.0 if guess is None else guess
-    tb, B, _ = _thumbs(wide_video, max(0.0, a0 + g - lag), a1 + g + lag)
+    tb, B, _ = _thumbs(wide_video, max(0.0, a0 + g - lag), a1 + g + lag, region=region, clock_box=clock_box)
     if len(tb) < 60: return None
     co, corr = _coarse(ta, A, tb, B)
     if guess is not None and abs(co - guess) > 0.5:
@@ -151,7 +181,8 @@ def _window(wide_video, inset_video, a0, a1, guess=None, max_lag=30.0):
                 ok=bool(e1 - e0 > 0.1 and corr > 0.4))
 
 
-def sync_offset(wide_video, inset_video, first=(5.0, 45.0), every=40.0, span=15.0, max_lag=30.0, log=None):
+def sync_offset(wide_video, inset_video, first=(5.0, 45.0), every=40.0, span=15.0, max_lag=30.0, log=None,
+                region=None, clock_box=None):
     """Map inset-video time -> wide-video time by matching the region the two uploads share
     (overhead picture + scoreboard, y < 700): coarse cross-correlation of per-frame motion energy
     (+-max_lag s) on the first window, then frame-by-frame comparison (fine) in windows every
@@ -159,10 +190,11 @@ def sync_offset(wide_video, inset_video, first=(5.0, 45.0), every=40.0, span=15.
     from the same encoder) have ONE constant offset; FIRST HQ re-encodes (59.94p, e.g. 2026wasam
     qm19's wide video) drift by ~0.25 % and get a piecewise-linear map.
     Returns dict(offset (median, s to ADD to inset time), knots [[t_inset, offset]...], constant,
-    windows [...], err / err_pm1 / conf of the first window, ok).  Use wide_time(sync, t)."""
+    windows [...], err / err_pm1 / conf of the first window, ok).  Use wide_time(sync, t).
+    region / clock_box: the shared area / clock digits (default SYNC_REGION / CLOCK_BOX; layout_regions())."""
     c = av.open(inset_video); s = c.streams.video[0]
     dur = float(s.duration * s.time_base) if s.duration else float(c.duration / 1e6); c.close()
-    w0 = _window(wide_video, inset_video, first[0], first[1], None, max_lag)
+    w0 = _window(wide_video, inset_video, first[0], first[1], None, max_lag, region, clock_box)
     wins = [w0] if w0 else []
     t = first[1] + every - span
     while t + span < dur - 2:
@@ -172,7 +204,7 @@ def sync_offset(wide_video, inset_video, first=(5.0, 45.0), every=40.0, span=15.
             g = float(np.polyval(pa, t + span / 2))
         else:
             g = good[-1]["offset"] if good else (w0["offset"] if w0 else None)
-        w = _window(wide_video, inset_video, t, t + span, g, max_lag)
+        w = _window(wide_video, inset_video, t, t + span, g, max_lag, region, clock_box)
         if w: wins.append(w)
         t += every
     # reject windows that matched poorly (err well above the others: replays, end cards, a cut)
@@ -227,16 +259,16 @@ def inset_time(sync, t_wide):
     return t
 
 
-def verify_sync(wide_video, inset_video, sync, t0=0.0, t1=None, thr=5.0):
+def verify_sync(wide_video, inset_video, sync, t0=0.0, t1=None, thr=5.0, region=None, clock_box=None):
     """Clock-digit check over [t0, t1] (inset time) after alignment.  For each candidate shift
     (map + k/60 s, k = -3..3) count frames where the inset clock box differs from the wide one
     (mean abs grey diff > thr): digits must match everywhere except while a digit is changing.
     Finding (2026wasam): the scoreboard graphic is 60p while the camera picture is 30p (every
     other frame duplicated); between the two uploads the graphic aligns one 60p frame later than
     the picture, i.e. within half a content frame."""
-    ta, A, CA = _thumbs(inset_video, t0, t1)
+    ta, A, CA = _thumbs(inset_video, t0, t1, region=region, clock_box=clock_box)
     tw = wide_time(sync, ta)
-    tb, B, CB = _thumbs(wide_video, max(0, float(tw[0]) - 1), float(tw[-1]) + 1)
+    tb, B, CB = _thumbs(wide_video, max(0, float(tw[0]) - 1), float(tw[-1]) + 1, region=region, clock_box=clock_box)
     dt = float(np.median(np.diff(ta)))
     dcb = np.r_[0, np.abs(np.diff(CB, axis=0)).mean((1, 2))]
     out = dict(ticks=int((dcb > 8).sum()), shifts={})
@@ -497,7 +529,7 @@ def check_station_pose(cam, inset_video, which, tag_csv, t_from=8.0, t_to=170.0,
     knocked away / covered) or the corrected pose still misfits (rms > bad_rms px)."""
     C = _calib()
     poses = C.load_tag_poses(tag_csv)
-    x0, y0, x1, y1 = RECTS[which]
+    x0, y0, x1, y1 = (cam.raw.get("crop") if cam.raw.get("crop") and len(cam.raw["crop"]) == 4 else RECTS[which])
     c = av.open(inset_video); s = c.streams.video[0]; s.thread_type = "AUTO"
     grays, nxt = [], t_from
     for f in c.decode(s):
@@ -581,7 +613,10 @@ class StationCams:
         self.event_dir, self.inset_video = event_dir, inset_video
         self.match = json.load(open(match_json)) if isinstance(match_json, str) else match_json
         if sync is None:
-            sync = sync_offset(wide_video, inset_video, log=log)
+            region, clk = layout_regions(event_dir)
+            sync = sync_offset(wide_video, inset_video, log=log,
+                               region=None if region == SYNC_REGION else region,
+                               clock_box=None if clk == CLOCK_BOX else clk)
         self.sync = sync
         tag_csv = tag_csv or os.path.join(HERE, "field", "2026-rebuilt-welded.csv")
         self.cam, self.usable, self.pose_info = {}, {}, {}
@@ -596,6 +631,7 @@ class StationCams:
                 info = {"checked": False}
             self.cam[w], self.pose_info[w] = cam, info
             self.usable[w] = bool(info.get("usable", True))
+        self.rects = rects_for(event_dir, self.cam)          # inset rectangles (RECTS for 2026wasam)
 
     # time
     def wide_time(self, t_inset):
@@ -619,7 +655,7 @@ class StationCams:
                 if step is not None and tw - last < step - 1e-3: continue
                 last = tw
                 im = f.to_ndarray(format="bgr24")
-                yield tw, self.crop(im, "red"), self.crop(im, "blue")
+                yield tw, self.crop(im, "red", self.rects), self.crop(im, "blue", self.rects)
         finally:
             c.close()
 
@@ -629,8 +665,8 @@ class StationCams:
         return None, None
 
     @staticmethod
-    def crop(full_bgr, w):
-        x0, y0, x1, y1 = RECTS[w]
+    def crop(full_bgr, w, rects=None):
+        x0, y0, x1, y1 = (rects or RECTS)[w]
         return full_bgr[y0:y1, x0:x1]
 
     # geometry
@@ -648,7 +684,7 @@ class StationCams:
                 & (q[:, 1] >= -margin) & (q[:, 1] < cam.H + margin))
 
     def to_full(self, uv, w):
-        x0, y0 = RECTS[w][:2]
+        x0, y0 = getattr(self, "rects", RECTS)[w][:2]
         return np.asarray(uv, float) + [x0, y0]
 
     def ray(self, uv, w):
