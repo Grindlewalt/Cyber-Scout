@@ -38,7 +38,8 @@ function teamsTable(el, d, ev) {
   const picks = lsGet("autoscout:picks:" + ev, {}), stars = new Set(picks.stars || []);
   let sk = "rank", dir = 1, rows = null, showCfg = false;
   const base = [["rank", "Rank", r => r.t.rank ?? "–", true, r => r.t.rank], ["number", "Team", r => `<a class="team" href="#/${ev}/t/${r.t.key}">${r.t.number}</a>${stars.has(r.t.key) ? ' <span class="starm">★</span>' : ""}`, false, r => r.t.number],
-    ["nickname", "Name", r => esc(r.t.nickname), false, r => r.t.nickname || ""], ["opr", "OPR", r => fx(r.t.opr), true, r => r.t.opr]];
+    ["nickname", "Name", r => esc(r.t.nickname), false, r => r.t.nickname || ""], ["opr", "OPR", r => fx(r.t.opr), true, r => r.t.opr],
+    ["idc", "ID", r => idPill(r.t.team_conf ?? r.t.id_conf) || "–", true, r => r.t.team_conf ?? r.t.id_conf, "identity confidence: mean over the team's tracked matches (how sure we are the tracked robot is this team). Below 60% the team's stats may include another robot."]];
   const cols = () => [...base, ...QCOLS.filter(c => vis[c[0]]).map(c => [c[0], c[1], r => r.q ? (c[3] === "s" ? esc(r.q.role || "–") : fmtV(c[2](r.q), c[3])) : "–", c[3] !== "s", r => r.q ? c[2](r.q) : null, c[6]])];
   const render = () => {
     const cs = cols(), arr = [...(rows || d.teams.map(t => ({ t, q: t.q || null })))];
@@ -47,7 +48,7 @@ function teamsTable(el, d, ev) {
     el.innerHTML = `<div class="controls"><button id="cfg" class="${showCfg ? "on" : ""}">Columns</button><span class="muted small">${rows ? "" : "loading team stats… "}tap a header to sort</span></div>
       ${showCfg ? `<div class="cfg">${QCOLS.map(c => `<label title="${esc(c[6])}"><input type="checkbox" data-c="${c[0]}" ${vis[c[0]] ? "checked" : ""}> ${c[1]}</label>`).join("")}</div>` : ""}
       <div class="tablewrap"><table><thead><tr>${cs.map(([k, t, , n, , tip]) => `<th data-k="${k}" title="${esc(tip || "")}" class="${n ? "num" : ""}">${t}${sk === k ? (dir > 0 ? " ▲" : " ▼") : ""}</th>`).join("")}</tr></thead>
-      <tbody>${arr.map(r => `<tr>${cs.map(([, , f, n]) => `<td class="${n ? "num" : ""}">${f(r)}</td>`).join("")}</tr>`).join("")}</tbody></table></div>
+      <tbody>${arr.map(r => `<tr class="${(r.t.team_conf ?? r.t.id_conf) != null && (r.t.team_conf ?? r.t.id_conf) < IDC.low ? "lowid" : ""}">${cs.map(([, , f, n]) => `<td class="${n ? "num" : ""}">${f(r)}</td>`).join("")}</tr>`).join("")}</tbody></table></div>
       <div class="note">Per-match means over tracked matches (n). Accuracy is pooled made / attempted; Cycle is time between volleys; Dead is the share of matches the robot stopped
       mid-match. Hover a header for its definition. Open a team for confidence and detail.</div>`;
     el.querySelector("#cfg").onclick = () => { showCfg = !showCfg; render(); };

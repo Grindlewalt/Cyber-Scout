@@ -9,10 +9,18 @@ Videos matching `reject` (e.g. layouts with picture-in-picture insets) are skipp
 import json, os, re, subprocess
 
 YTDLP = os.environ.get("YTDLP", "yt-dlp")
+# The server's IPv6 egress gets "Sign in to confirm you're not a bot" while IPv4 works, so force IPv4
+# first (YT_FORCE_IPV4=0 disables; the last download attempt always tries without it as a fallback).
+IPV4 = os.environ.get("YT_FORCE_IPV4", "1") != "0"
+POLITE = ["--sleep-requests", "1", "--retry-sleep", "5"]
+
+
+def _net(v4=True):
+    return ["-4"] if (IPV4 and v4) else []
 
 
 def meta(vid):
-    r = subprocess.run([YTDLP, "--skip-download", "--no-warnings", "--print",
+    r = subprocess.run([YTDLP, *_net(), "--skip-download", "--no-warnings", "--print",
                         "%(channel)s\t%(title)s\t%(duration)s\t%(height)s", f"https://youtu.be/{vid}"],
                        capture_output=True, text=True, timeout=120)
     if r.returncode != 0 or "\t" not in r.stdout:
@@ -78,7 +86,7 @@ def download(vid, out, attempts=4):
     import time, random
     tmp = out + ".part.mp4"; err = ""
     for i in range(attempts):
-        r = subprocess.run([YTDLP, "-q", "--no-warnings", "-f", "bv*[height<=1080][ext=mp4]/bv*[height<=1080]",
+        r = subprocess.run([YTDLP, *_net(i < attempts - 1 or attempts == 1), *POLITE, "-q", "--no-warnings", "-f", "bv*[height<=1080][ext=mp4]/bv*[height<=1080]",
                             "-o", tmp, "--force-overwrites", f"https://youtu.be/{vid}"],
                            capture_output=True, text=True, timeout=1800)
         if r.returncode == 0 and os.path.exists(tmp):

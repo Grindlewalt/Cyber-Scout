@@ -128,6 +128,10 @@ async function teamPage(ev, tk) {
   const tr = fn => an.map(a => { try { return a ? fn(a) : null; } catch (x) { return null; } });
   const starred = (lsGet("autoscout:picks:" + ev, {}).stars || []).includes(tk);
   const role = ag && ag.role;
+  const mcf = m => m.team_conf != null ? m.team_conf : m.conf;
+  const cfs = ms.map(mcf).filter(x => x != null), idMean = d.team_conf != null ? d.team_conf : cfs.length ? cfs.reduce((a, b) => a + b, 0) / cfs.length : null;
+  const nLow = cfs.filter(x => x < IDC.low).length;
+  const idHead = idMean == null ? "" : `<span class="idhead ${idMean >= IDC.hi ? "good" : idMean >= IDC.mid ? "warn" : "bad"}" title="Mean identity confidence over this team's tracked matches: how sure we are the tracked robot really is this team. ${ID_CAL}">Identity ${Math.round(idMean * 100)}%${nLow ? ` · ${nLow} shaky match${nLow > 1 ? "es" : ""}` : ""}</span>`;
   const navs = [["scoring", "Scoring"], ["shots", "Shot chart"], ["intake", "Intake"], ["auto", "Auto"], ["move", "Movement"], ["def", "Defense"], ["end", "Endgame"], ["rel", "Reliability"], ["matches", "Matches"]];
 
   const levels = EG.levels || {}, nL = Object.values(levels).reduce((a, b) => a + b, 0) || 1;
@@ -136,7 +140,7 @@ async function teamPage(ev, tk) {
   $app.innerHTML = `<div class="titlebar"><div><h1>${d.number} <span class="muted" style="font-weight:500">${esc(d.nickname || "")}</span></h1>
     <div class="sub">${d.rank ? `Rank ${d.rank} · ` : ""}${d.opr != null ? `OPR ${fx(d.opr)} · ` : ""}${d.tracked} matches tracked
       ${role ? ` · <span class="pill role">${ROLE_TXT[val(role)] || val(role)}</span>` : ""}
-      · <a href="https://www.thebluealliance.com/team/${d.number}/${(e && e.year) || ""}" target="_blank" rel="noopener">TBA</a></div></div>
+      · ${idHead} · <a href="https://www.thebluealliance.com/team/${d.number}/${(e && e.year) || ""}" target="_blank" rel="noopener">TBA</a></div></div>
     <button id="star" class="${starred ? "on" : ""}">${starred ? "★ Starred" : "☆ Star"}</button></div>
     <nav class="jump">${navs.map(([k, l]) => `<a href="#" data-j="${k}">${l}</a>`).join("")}</nav>
     ${ag ? "" : `<div class="card empty">No quantitative analytics for this team yet.</div>`}
@@ -179,12 +183,12 @@ async function teamPage(ev, tk) {
         ${tile("Avg dead time", RL.mean_dead_s, "1", " s")}${tile("Low-coverage matches", has(RL.low_coverage_matches) ? RL.low_coverage_matches : null, "0")}</div>
       <div>${role ? `<h3>Role <span class="pill role">${ROLE_TXT[val(role)] || val(role)}</span> ${confBar(mc(role), "role confidence")} <span class="muted small">n=${mn(role)}</span></h3>${role.scores ? bars(Object.entries(role.scores).sort((a, b) => b[1] - a[1]).map(([k, v]) => [ROLE_TXT[k] || k, v, 1, pct(v)])) : ""}` : ""}</div></div>`)}
     ${section("matches", "Matches", `<div class="tablewrap"><table><thead><tr><th>Match</th><th>All.</th><th class="num">Made/Att</th><th class="num">Acc</th><th class="num">Fire /s</th><th class="num">Volley</th><th class="num">Cycle s</th>
-      <th class="num">Intakes</th><th>Auto</th><th class="num">Auto made</th><th>Climb</th><th class="num">Def s</th><th class="num">Cont.</th><th class="num">Pins</th><th class="num">Dist m</th><th>Flags</th></tr></thead>
-      <tbody>${ms.map((m, i) => { const a = an[i]; return `<tr><td><a href="#/${ev}/m/${m.match}">${esc(m.short)}</a></td><td class="${m.alliance[0]}">${m.alliance[0].toUpperCase()}</td>` + (a ? `
+      <th class="num">Intakes</th><th>Auto</th><th class="num">Auto made</th><th>Climb</th><th class="num">Def s</th><th class="num">Cont.</th><th class="num">Pins</th><th class="num">Dist m</th><th title="identity confidence in this match">ID</th><th>Flags</th></tr></thead>
+      <tbody>${ms.map((m, i) => { const a = an[i]; const lo = mcf(m) != null && mcf(m) < IDC.low; return `<tr class="${lo ? "lowid" : ""}" ${lo ? 'title="Low identity confidence: this robot may be mislabelled in this match, treat its stats with care"' : ""}><td><a href="#/${ev}/m/${m.match}">${esc(m.short)}</a></td><td class="${m.alliance[0]}">${m.alliance[0].toUpperCase()}</td>` + (a ? `
         <td class="num">${a.scoring.made}/${a.scoring.attempts}</td><td class="num">${fmtV(a.scoring.accuracy, "p")}</td><td class="num">${fmtV(a.scoring.fire_rate)}</td><td class="num">${fmtV(a.scoring.volley_size, "0")}</td><td class="num">${fmtV(a.scoring.cycle_s)}</td>
         <td class="num">${a.collection.intakes}</td><td>${esc(a.auto.routine || "–")}</td><td class="num">${a.auto.made}/${a.auto.shots}</td><td>${a.endgame.level ? "L" + a.endgame.level : a.endgame.attempted ? "failed" : "–"}</td>
-        <td class="num">${fmtV(a.defense.time_s)}</td><td class="num">${a.defense.contacts}</td><td class="num">${a.defense.pins}</td><td class="num">${fmtV(a.movement.distance_m, "0")}</td>
-        <td>${a.reliability.dead ? '<span class="pill failed">dead</span>' : ""}${a.reliability.low_coverage ? '<span class="pill no_video">low cov.</span>' : ""}</td>` : `<td colspan="14" class="muted">no analytics</td>`) + `</tr>`; }).join("")
+        <td class="num">${fmtV(a.defense.time_s)}</td><td class="num">${a.defense.contacts}</td><td class="num">${a.defense.pins}</td><td class="num">${fmtV(a.movement.distance_m, "0")}</td><td>${idPill(mcf(m))}</td>
+        <td>${a.reliability.dead ? '<span class="pill failed">dead</span>' : ""}${a.reliability.low_coverage ? '<span class="pill no_video">low cov.</span>' : ""}</td>` : `<td colspan="13" class="muted">no analytics</td><td>${idPill(mcf(m))}</td>`) + `</tr>`; }).join("")
         || `<tr><td colspan="16" class="empty">No tracked matches yet</td></tr>`}</tbody></table></div>`)}
     </div>`;
 

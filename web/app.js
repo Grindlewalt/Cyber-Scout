@@ -32,6 +32,14 @@
  *   autos[].routine  routine id;  routines[] {id,name,n,of,freq,matches[short],xy (representative, cm),start_xy,end_xy,shots_avg,
  *                made_avg,neutral_cross_rate,climb_rate,consistency}
  *
+ * IDENTITY (tracker v2, all optional; absent => falls back to id_conf / v1 behaviour)
+ *   tracks[]  team, team_conf (overall 0..1), conf[] (per replay frame @hz, 0 = unknown/"limbo")
+ *   identity  {method, n_reads, per_team_reads:{team:n}, corrections:[{kind:"cut"|"relink", frame, t, t_video, teams[], tracks[],
+ *              evidence:[[frame,team,lp,weight]], encounter:{dist_m,xy?}, motion_link?:{frames,jump_m}, conf, anchored, unresolved?:[f0,f1]}]}
+ *   shots[]   team:null + unattributed:"low_identity_conf" => quarantined (shooter identity conf < 0.5 at launch), credited to no team
+ *   t/<team>.json  team_conf (optional mean) and matches[].team_conf (else matches[].conf); event.json teams[].team_conf|id_conf
+ * Calibration: conf 0.8-0.95 ~97% right, >=0.95 ~99%, 0.5-0.8 ~85%, <0.5 unreliable.
+ *
  * event.json  teams[].q (recommended, avoids fetching every team file for the table; otherwise derived from t/*.json analytics):
  *   {n,acc,made,att,fire,volley,cycle,intakes,climb,defs,pins,automade,dead (share of matches),role,speed,dist,conf}
  * ============================================================================================ */
@@ -59,6 +67,16 @@ function confBar(c, what = "team label confidence") {
   if (c == null) return "";
   const col = c > 0.7 ? "var(--good)" : c > 0.35 ? "var(--warn)" : "var(--bad)";
   return `<span class="conf" title="${what} ${Math.round(c * 100)}%"><i style="width:${Math.round(c * 100)}%;background:${col}"></i></span>`;
+}
+// ---- identity helpers (tracker v2)
+const IDC = { hi: 0.8, mid: 0.5, low: 0.6 };      // label tiers; low = team-level "flag this match" threshold
+const tconf = t => t.team_conf != null ? t.team_conf : t.id_conf;
+const UNATTR_TIP = "Shots whose shooter identity confidence was below 50% at launch. The robot could not be identified reliably, so these are not credited to any team (they still count toward the alliance).";
+const ID_CAL = "Calibration: 80-95% confidence is right about 97% of the time, 95%+ about 99%, 50-80% about 85%; under 50% is unreliable.";
+function idPill(c, n) {
+  if (c == null) return "";
+  const cls = c >= IDC.hi ? "good" : c >= IDC.mid ? "warn" : "bad";
+  return `<span class="idp ${cls}" title="identity confidence ${Math.round(c * 100)}%${n != null ? `, ${n} bumper-number reads` : ""}. ${ID_CAL}">${Math.round(c * 100)}%</span>`;
 }
 function crumbs(parts) {
   $crumbs.innerHTML = parts.map(([t, h]) => h ? `<a href="${h}">${esc(t)}</a>` : `<span>${esc(t)}</span>`).join(" / ");
@@ -148,7 +166,7 @@ function matchesTable(el, d, ev) {
         <span class="muted">–</span> <span class="score b ${m.winner === "blue" ? "win" : ""}">${m.blue.score ?? "–"}</span></td>
       <td>${tl(m.blue.teams, "blue")}</td>
       <td>${statusPill(m)}</td>
-      <td>${confBar(m.id_conf)}</td></tr>`).join("")}</tbody></table></div>`;
+      <td>${confBar(m.team_conf ?? m.id_conf)}</td></tr>`).join("")}</tbody></table></div>`;
 }
 
 // ------------------------------------------------------------------ match replay
@@ -184,8 +202,9 @@ async function matchPage(ev, key) {
     const vh = s.v0 ? Math.hypot(s.v0[0], s.v0[1]) : 0, tf = Math.max(.35, Math.min(2.5, vh > .5 ? dist / vh : .3 + dist * .12));
     const ti = s.shooter && s.shooter.track_idx;
     return { ...s, ft, tf, tr: tracks[ti], ti };
-  }).filter(s => s.tr).sort((a, b) => a.ft - b.ft);
-  const hasShots = SH.length > 0, an = d.analytics || null;
+  }).filter(s => s.tr && !s.unattributed).sort((a, b) => a.ft - b.ft);
+  const SHU = (d.shots || []).filter(s => s.unattributed).map(s => ({ ...s, ft: s.t - v0, al: (s.shooter && s.shooter.alliance) || "red" })).sort((a, b) => a.ft - b.ft);
+  const hasShots = SH.length > 0 || SHU.length > 0, an = d.analytics || null;
   const $ = id => document.getElementById(id);
 
   $app.innerHTML = `<h1>${esc(d.label)}</h1>
@@ -195,12 +214,15 @@ async function matchPage(ev, key) {
      ${d.feed_ok < 0.98 ? ` · <span class="pill no_video" title="the field camera was missing from the broadcast for part of this match; stats use only the filmed part">camera footage ${Math.round(d.feed_ok * 100)}%</span>` : ""}</div>
     <div class="match-layout">
       <div class="stack"><div class="video"><div id="yt"></div></div>
-        <div class="card"><h2>Robots</h2><div class="tablewrap"><table><thead><tr><th></th><th>Team</th><th class="num">Dist (m)</th><th class="num">Auto (m)</th><th class="num">Top (m/s)</th><th class="num">Own</th><th class="num">Neutral</th><th class="num">Opp.</th><th class="num">Seen</th><th>Label</th></tr></thead>
+        <div class="card"><h2>Robots</h2><div class="tablewrap"><table><thead><tr><th></th><th>Team</th><th class="num">Dist (m)</th><th class="num">Auto (m)</th><th class="num">Top (m/s)</th><th class="num">Own</th><th class="num">Neutral</th><th class="num">Opp.</th><th class="num">Seen</th><th title="team label confidence (tracker v2)">ID conf</th><th class="num" title="bumper-number OCR reads of this team in this match">OCR reads</th></tr></thead>
           <tbody>${tracks.map(t => `<tr><td><span class="sw" style="background:${t.color}"></span></td>
             <td>${t.team ? `<a class="team ${t.alliance[0]}" href="#/${ev}/t/${t.team}">${num(t.team)}</a>` : `<span class="muted">${t.label}</span>`}</td>
             <td class="num">${fx(t.stats.distance_m, 0)}</td><td class="num">${fx(t.stats.auto_distance_m)}</td><td class="num">${fx(t.stats.max_speed)}</td>
             <td class="num">${pct(t.stats.time_own_zone)}</td><td class="num">${pct(t.stats.time_neutral)}</td><td class="num">${pct(t.stats.time_opp_zone)}</td>
-            <td class="num">${pct(t.stats.observed)}</td><td>${t.manual ? '<span class="pill">manual</span>' : confBar(t.id_conf)}</td></tr>`).join("")}</tbody></table></div>
+            <td class="num">${pct(t.stats.observed)}</td><td>${t.manual ? '<span class="pill">manual</span>' : confBar(tconf(t)) + " " + idPill(tconf(t))}</td>
+            <td class="num">${(d.identity && d.identity.per_team_reads && t.team) ? (d.identity.per_team_reads[t.team] || 0) : "–"}</td></tr>`).join("")}</tbody></table></div>
+          ${d.identity ? `<div class="note">Identity: ${esc(d.identity.method || "")}, ${d.identity.n_reads ?? "?"} number reads, ${(d.identity.corrections || []).length} identity corrections
+            (${(d.identity.corrections || []).filter(c => c.anchored).length} anchored by a read). <a href="#/${ev}/a/${key}">See them in Analyze</a>.</div>` : ""}
           <div class="note">"Seen" is the share of the match the robot was directly detected; elsewhere its path is
           interpolated (drawn faded). Team labels are inferred across the event; low-confidence ones may be swapped
           within an alliance.</div></div>
@@ -225,7 +247,7 @@ async function matchPage(ev, key) {
           <span class="muted small">arc colour = shooter</span></div><div id="sb" class="sb"></div>` : ""}
         <div class="legend">${tracks.map((t, i) => `<label><input type="checkbox" data-i="${i}" checked>
           <span class="sw" style="background:${t.color}"></span><span class="team ${t.alliance[0]}">${t.label}</span>
-          ${t.team ? confBar(t.id_conf) : ""}</label>`).join("")}</div></div></div>
+          ${t.team ? confBar(tconf(t)) : ""}</label>`).join("")}</div></div></div>
     </div>`;
   const F = fieldCanvas(document.getElementById("fw"));
   let f = 0, playing = false, last = 0, trail = true, full = false, speed = 1, sync = true, player = null, alive = true;
@@ -270,11 +292,14 @@ async function matchPage(ev, key) {
       if (s.outcome === "pass") { k.p++; continue; }
       const au = s.period === "auto"; if (s.outcome === "made") au ? k.am++ : k.tm++; if (s.outcome === "made" || s.outcome === "missed") au ? k.aa++ : k.ta++;
     }
-    const key = JSON.stringify(cnt); if (key === sbKey) return; sbKey = key;
+    const un = { red: { m: 0, a: 0, n: 0 }, blue: { m: 0, a: 0, n: 0 } };
+    for (const s of SHU) { if (s.ft > ft) break; const u = un[s.al] || un.red; u.n++; if (s.outcome === "made") u.m++; if (s.outcome === "made" || s.outcome === "missed") u.a++; }
+    const key = JSON.stringify([cnt, un]); if (key === sbKey) return; sbKey = key;
     const col = al => { const idx = tracks.map((t, i) => t.alliance === al ? i : -1).filter(i => i >= 0), sum = f => idx.reduce((a, i) => a + cnt[i][f], 0);
-      return `<div class="sbcol ${al}"><div class="sbh"><b>${al.toUpperCase()}</b><span>fuel made <b>${sum("am") + sum("tm")}</b>/${sum("aa") + sum("ta")}</span></div>
+      return `<div class="sbcol ${al}"><div class="sbh"><b>${al.toUpperCase()}</b><span>fuel made <b>${sum("am") + sum("tm") + un[al].m}</b>/${sum("aa") + sum("ta") + un[al].a}</span></div>
         <table><thead><tr><th></th><th class="num">Auto</th><th class="num">Teleop</th><th class="num">Total</th><th class="num">Pass</th></tr></thead><tbody>
         ${idx.map(i => { const k = cnt[i], t = tracks[i]; return `<tr><td><span class="sw" style="background:${t.color}"></span> <span class="team ${al[0]}">${t.label}</span></td><td class="num">${k.am}/${k.aa}</td><td class="num">${k.tm}/${k.ta}</td><td class="num"><b>${k.am + k.tm}</b>/${k.aa + k.ta}</td><td class="num">${k.p || ""}</td></tr>`; }).join("")}
+        ${SHU.length ? `<tr class="unattr" title="${esc(UNATTR_TIP)}"><td><span class="muted">unattributed</span> <span class="info">i</span></td><td class="num" colspan="2">${un[al].n} shot${un[al].n === 1 ? "" : "s"}</td><td class="num"><b>${un[al].m}</b>/${un[al].a}</td><td></td></tr>` : ""}
         </tbody></table></div>`; };
     $("sb").innerHTML = col("red") + col("blue");
   }

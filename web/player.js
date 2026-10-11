@@ -40,7 +40,7 @@ const PL = {
   layers: [
     ["robots", "Robots", "r", 1], ["labels", "Labels", "l", 1], ["trails", "Trails", "t", 1], ["arcs", "Shot arcs", "a", 1],
     ["history", "Shot history", "h", 1], ["fuel", "Raw fuel tracks", "f", 0], ["minimap", "Minimap", "m", 1],
-    ["score", "Scoreboard", "s", 1], ["tba", "Traced vs TBA", "b", 0], ["grid", "Calibration grid", "g", 0], ["clock", "Period bar", "c", 1],
+    ["identity", "Identity", "i", 1], ["score", "Scoreboard", "s", 1], ["tba", "Traced vs TBA", "b", 0], ["grid", "Calibration grid", "g", 0], ["clock", "Period bar", "c", 1],
   ],
 };
 const plLS = {
@@ -56,8 +56,11 @@ async function analyzePage(ev, key) {
   const N = d.tracks.length ? d.tracks[0].xy.length : 0;
   const tracks = d.tracks.map((t, i) => {
     const k = d.tracks.filter(x => x.alliance === t.alliance).indexOf(t);
-    return { ...t, i, color: COLORS[t.alliance][k % 3], label: t.team ? num(t.team) : `${t.alliance[0].toUpperCase()}${k + 1}` };
+    return { ...t, i, color: COLORS[t.alliance][k % 3], label: t.team ? num(t.team) : `${t.alliance[0].toUpperCase()}${k + 1}`, tc: tconf(t) };
   });
+  const ID = d.identity || null, COR = ((ID && ID.corrections) || []).map((c, i) => ({ ...c, i })).sort((a, b) => a.t_video - b.t_video);
+  const confAt = (tr, T) => { if (!tr.conf) return null; const i = Math.max(0, Math.min(tr.conf.length - 1, Math.round((T - v0) * hz))); return tr.conf[i]; };
+  const UNK = "rgba(160,170,185,.9)";
   const mt2vt = mt => mt < 20 ? d.t_start + mt : v0 + ts0 + (mt - 20);
   const PER = (d.periods || []).map(p => ({ ...p, v0: mt2vt(p.t0), v1: mt2vt(p.t1) }));
   const shots = (d.shots || []).map((s, i) => {
@@ -70,7 +73,7 @@ async function analyzePage(ev, key) {
     const e = shotPos(s, tauEnd, [0, 0, 0]);
     const tr = s.shooter && s.shooter.track_idx != null ? tracks[s.shooter.track_idx] : null;
     const al = (s.shooter && s.shooter.alliance) || (tr && tr.alliance) || "red";
-    return { ...s, i, te: s.t + tauEnd, tauEnd, end: e, tr, al, color: tr ? tr.color : COLORS[al][0], team: s.team || (tr && tr.team) };
+    return { ...s, i, te: s.t + tauEnd, tauEnd, end: e, tr, al, color: tr ? tr.color : COLORS[al][0], unattr: !!s.unattributed, team: s.unattributed ? null : (s.team || (tr && tr.team)) };
   }).sort((a, b) => a.t - b.t);
   const sIdx = shots.map(s => s.t);
 
@@ -101,10 +104,14 @@ async function analyzePage(ev, key) {
       <select id="fTeam"><option value="">all teams</option>${tracks.map(t => `<option value="${t.i}">${esc(t.label)} (${t.alliance[0]})</option>`).join("")}</select>
       <select id="fAl"><option value="">both alliances</option><option value="red">red</option><option value="blue">blue</option></select>
       <select id="fOut"><option value="">all outcomes</option><option>made</option><option>missed</option><option>pass</option></select></div></div>
+    ${COR.length || ID ? `<div class="card"><h2>Identity <span class="muted small">(${COR.length} correction${COR.length === 1 ? "" : "s"})</span></h2><div class="an-list" id="anId" style="max-height:200px"></div></div>` : ""}
     <div class="card"><h2>Shots <span class="muted small" id="anShotN"></span></h2><div class="an-list" id="anList"></div></div>
    </div></div>`;
   const $ = id => document.getElementById(id), stage = $("anStage"), cv = $("anCv"), ctx = cv.getContext("2d"), vid = $("anVid");
   const msg = $("anMsg");
+  const unhot = {};
+  for (const al of ["red", "blue"]) { const h = document.createElement("div"); h.className = "an-unhot"; h.style.display = "none"; h.title = UNATTR_TIP; stage.appendChild(h); unhot[al] = h; }
+  const idcard = document.createElement("div"); idcard.className = "an-idcard"; idcard.style.display = "none"; stage.appendChild(idcard);
 
   // ---- clock abstraction (video, or free-running when no video)
   const clock = { t: t0m, playing: false, last: 0, dur: d.t_start + 170 };
@@ -119,7 +126,7 @@ async function analyzePage(ev, key) {
   const lay = $("anLay");
   lay.innerHTML = PL.layers.map(l => `<button data-l="${l[0]}" title="key ${l[2]}">${l[1]} <kbd>${l[2]}</kbd></button>`).join("");
   function syncLayerBtns() { lay.querySelectorAll("button").forEach(b => b.classList.toggle("on", !!S.layers[b.dataset.l])); }
-  function toggleLayer(k) { S.layers[k] = !S.layers[k]; plLS.set("layer." + k, S.layers[k]); syncLayerBtns(); if (k === "fuel") loadFuel(); draw(); }
+  function toggleLayer(k) { S.layers[k] = !S.layers[k]; plLS.set("layer." + k, S.layers[k]); syncLayerBtns(); if (k === "identity") scrub.classList.toggle("noid", !S.layers.identity); if (k === "fuel") loadFuel(); draw(); }
   lay.onclick = e => { const b = e.target.closest("button"); if (b) toggleLayer(b.dataset.l); };
   syncLayerBtns();
   $("anTrailV").textContent = S.trailS;
@@ -186,15 +193,16 @@ async function analyzePage(ev, key) {
     return cur;
   }
   function counts(t) {  // per track + alliance made/attempts split by auto|teleop, plus per-alliance per-period made
-    const c = tracks.map(() => ({ am: 0, aa: 0, tm: 0, ta: 0 })), al = { red: { m: 0 }, blue: { m: 0 } }, per = { red: {}, blue: {} };
+    const c = tracks.map(() => ({ am: 0, aa: 0, tm: 0, ta: 0 })), al = { red: { m: 0 }, blue: { m: 0 } }, per = { red: {}, blue: {} }, un = { red: { n: 0, m: 0, a: 0 }, blue: { n: 0, m: 0, a: 0 } };
     for (const s of shots) {
       if (s.t > t) break;
       if (s.outcome === "made") { al[s.al].m++; per[s.al][s.period] = (per[s.al][s.period] || 0) + 1; }
+      if (s.unattr) { const u = un[s.al]; u.n++; if (s.outcome === "made") u.m++; if (s.outcome === "made" || s.outcome === "missed") u.a++; continue; }
       if (!s.tr) continue;
       const x = c[s.tr.i], a = s.period === "auto";
       if (a) { x.aa++; if (s.outcome === "made") x.am++; } else { x.ta++; if (s.outcome === "made") x.tm++; }
     }
-    return { c, al, per };
+    return { c, al, per, un };
   }
 
   // ---- drawing
@@ -217,9 +225,12 @@ async function analyzePage(ev, key) {
     }
     const cn = (L.score || L.tba) ? counts(T) : null;
     if (L.minimap || !vid) drawMini(T, !vid);
+    for (const al in unhot) if (!L.score) unhot[al].style.display = "none";
     if (L.score) drawScore(cn);
     if (L.tba) drawTBA(T, cn);
     if (L.clock) drawClock(T);
+    if (cam && vid && L.identity) drawEncounter(T);
+    updIdCard(T);
     $("anTime").textContent = fmtT(curT()) + " / " + fmtT(clock.dur) + "  frame " + Math.round(curT() * PL.FPS) + (periodAt(T) ? "  " + periodAt(T).name : "");
     moveHead();
   }
@@ -246,19 +257,23 @@ async function analyzePage(ev, key) {
       if (!trackVisible(tr)) continue;
       const p = robotAt(tr, T); if (!p) continue;
       const cor = [[p[0] - h, p[1] - h], [p[0] + h, p[1] - h], [p[0] + h, p[1] + h], [p[0] - h, p[1] + h]];
-      ctx.strokeStyle = tr.color; ctx.fillStyle = tr.color + "30"; ctx.lineWidth = 2.5;
-      ctx.setLineDash(p[2] ? [] : [7, 5]);
+      const cf = confAt(tr, T), unk = cf != null && cf < IDC.mid;
+      ctx.globalAlpha = cf == null ? 1 : cf <= 0 ? 0.18 : unk ? 0.5 : 1;
+      ctx.strokeStyle = unk ? UNK : tr.color; ctx.fillStyle = (unk ? UNK : tr.color) + "30"; ctx.lineWidth = 2.5;
+      ctx.setLineDash(p[2] && !unk ? [] : [7, 5]);
       poly(cor.map(c => [c[0], c[1], 0]), true); ctx.fill(); ctx.stroke();
       ctx.lineWidth = 1.2; poly(cor.map(c => [c[0], c[1], zt]), true); ctx.stroke();
       ctx.setLineDash([]);
       for (const c of cor) { poly([[c[0], c[1], 0], [c[0], c[1], zt]]); ctx.stroke(); }
-      if (S.layers.labels) {
-        const q = PJ(p[0], p[1], zt + 0.15); if (!q) continue;
-        const txt = tr.label + (tr.team && tr.id_conf != null && tr.id_conf < 0.5 ? "?" : "");
-        ctx.font = "bold 13px system-ui,sans-serif"; const w = ctx.measureText(txt).width + 8;
+      if (S.layers.labels && !(cf != null && cf <= 0)) {   // conf 0 = identity/position unknown: no label at all
+        const q = PJ(p[0], p[1], zt + 0.15); if (!q) { ctx.globalAlpha = 1; continue; }
+        const txt = cf == null ? tr.label : cf >= IDC.hi ? tr.label : cf >= IDC.mid ? tr.label + " ?" : "unknown";
+        ctx.font = (unk ? "italic 12px" : "bold 13px") + " system-ui,sans-serif"; const w = ctx.measureText(txt).width + 8;
         ctx.fillStyle = "rgba(0,0,0,.65)"; ctx.fillRect(q[0] - w / 2, q[1] - 17, w, 17);
-        ctx.fillStyle = tr.color; ctx.textAlign = "center"; ctx.fillText(txt, q[0], q[1] - 4); ctx.textAlign = "left";
+        if (cf != null && cf >= IDC.mid && cf < IDC.hi) { ctx.strokeStyle = "#ffd43b"; ctx.lineWidth = 1; ctx.setLineDash([3, 2]); ctx.strokeRect(q[0] - w / 2, q[1] - 17, w, 17); ctx.setLineDash([]); }
+        ctx.fillStyle = unk ? UNK : tr.color; ctx.textAlign = "center"; ctx.fillText(txt, q[0], q[1] - 4); ctx.textAlign = "left";
       }
+      ctx.globalAlpha = 1;
     }
   }
   function drawTrails(T) {
@@ -336,20 +351,28 @@ async function analyzePage(ev, key) {
       if (!trackVisible(tr)) continue;
       const p = robotAt(tr, T); if (!p) continue;
       const q = field2mini(p[0], p[1], m), r = PL.FOOT * sc;
-      ctx.fillStyle = tr.color + (p[2] ? "cc" : "55"); ctx.strokeStyle = tr.color; ctx.fillRect(q[0] - r / 2, q[1] - r / 2, r, r); ctx.strokeRect(q[0] - r / 2, q[1] - r / 2, r, r);
-      ctx.fillStyle = "#fff"; ctx.font = "9px system-ui"; ctx.textAlign = "center"; ctx.fillText(tr.label, q[0], q[1] + 3); ctx.textAlign = "left";
+      const cf = confAt(tr, T), unk = cf != null && cf < IDC.mid;
+      ctx.globalAlpha = cf != null && cf <= 0 ? 0.2 : 1;
+      ctx.fillStyle = (unk ? "#a0aab9" : tr.color) + (p[2] && !unk ? "cc" : "55"); ctx.strokeStyle = unk ? "#a0aab9" : tr.color; ctx.fillRect(q[0] - r / 2, q[1] - r / 2, r, r); ctx.strokeRect(q[0] - r / 2, q[1] - r / 2, r, r);
+      if (!(cf != null && cf <= 0)) { ctx.fillStyle = "#fff"; ctx.font = "9px system-ui"; ctx.textAlign = "center"; ctx.fillText(unk ? "?" : tr.label + (cf != null && cf < IDC.hi ? "?" : ""), q[0], q[1] + 3); ctx.textAlign = "left"; }
+      ctx.globalAlpha = 1;
     }
   }
   function drawScore(cn) {
     ctx.font = "11px ui-monospace,Menlo,monospace";
     for (const al of ["red", "blue"]) {
-      const rows = tracks.filter(t => t.alliance === al), x = al === "red" ? 8 : CW - 198, y = 130 * K + 6;
-      ctx.fillStyle = "rgba(10,14,20,.78)"; ctx.fillRect(x, y, 190, 18 + rows.length * 14);
+      const rows = tracks.filter(t => t.alliance === al), x = al === "red" ? 8 : CW - 198, y = 130 * K + 6, hasU = shots.some(s => s.unattr);
+      ctx.fillStyle = "rgba(10,14,20,.78)"; ctx.fillRect(x, y, 190, 18 + (rows.length + (hasU ? 1 : 0)) * 14);
       ctx.fillStyle = COLORS[al][0]; ctx.fillText(`${al.toUpperCase()} made ${cn.al[al].m}  auto|tele`, x + 5, y + 12);
       rows.forEach((t, i) => {
         const c = cn.c[t.i]; ctx.fillStyle = t.color;
         ctx.fillText(`${t.label.padEnd(5)} ${c.am}/${c.aa} | ${c.tm}/${c.ta}`, x + 5, y + 26 + i * 14);
       });
+      if (hasU) {
+        const u = cn.un[al], yy = y + 26 + rows.length * 14; ctx.fillStyle = "rgba(160,170,185,.95)"; ctx.font = "italic 11px ui-monospace,Menlo,monospace";
+        ctx.fillText(`unattrib. ${u.n} shots ${u.m}/${u.a}`, x + 5, yy); ctx.font = "11px ui-monospace,Menlo,monospace";
+        const h = unhot[al]; h.style.display = ""; h.style.left = x + "px"; h.style.top = yy - 11 + "px";
+      }
     }
   }
   function drawTBA(T, cn) {
@@ -375,13 +398,63 @@ async function analyzePage(ev, key) {
     ctx.textAlign = "left";
   }
 
+  // ---- identity: corrections (card, encounter ring, side list)
+  const mmss = t => `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, "0")}`;
+  const vtOf = f => v0 + f / hz;                                  // video time of replay frame
+  const corrNear = T => { let best = null, bd = 3.0001; for (const c of COR) { const dd = Math.abs(c.t_video - T); if (dd < bd) { bd = dd; best = c; } } return best; };
+  function bestEvidence(c) {   // strongest read, ties -> nearest to the correction
+    return (c.evidence || []).slice().sort((a, b) => (b[3] - a[3]) || (Math.abs(a[0] - c.frame) - Math.abs(b[0] - c.frame)))[0] || null;
+  }
+  const lab = tm => num(tm);
+  function corrText(c) {
+    const [a, b] = (c.teams || []).map(lab), when = mmss(c.t_video);
+    const head = c.kind === "relink" ? `Swap fixed: ${a} &harr; ${b} at ${when}` : `Identity cut: ${a} / ${b} at ${when}`;
+    const ev = (c.evidence || []).slice().sort((x, y) => (y[3] - x[3]) || (Math.abs(x[0] - c.frame) - Math.abs(y[0] - c.frame))).slice(0, 3);
+    return { head, ev: ev.map(e => `read ${lab(e[1])} at ${mmss(vtOf(e[0]))}${e[3] != null && e[3] < 1 ? ` (weight ${e[3]})` : ""}`).join("; "),
+      tail: `${c.anchored ? "anchored by a read" : "not anchored by a read (lower trust)"}, confidence ${Math.round(c.conf * 100)}%${c.unresolved ? `, unresolved ${mmss(vtOf(c.unresolved[0]))}-${mmss(vtOf(c.unresolved[1]))}` : ""}` };
+  }
+  const seekC = (c, lead) => seek(c.t_video - lead + S.offset);
+  let cardFor = null;
+  function updIdCard(T) {
+    const c = S.layers.identity ? corrNear(T) : null;
+    if (!c) { idcard.style.display = "none"; cardFor = null; return; }
+    idcard.style.display = ""; idcard.className = "an-idcard" + (c.anchored ? "" : " un");
+    if (cardFor !== c.i) {
+      cardFor = c.i; const x = corrText(c), e = bestEvidence(c);
+      idcard.innerHTML = `<b>${x.head}</b><div class="small" style="color:#cfd6e0">${x.ev ? "evidence: " + x.ev + ". " : ""}${x.tail}.${c.encounter && c.encounter.dist_m != null ? ` Robots ${fx(c.encounter.dist_m, 1)} m apart.` : ""}</div>
+        <button data-a="enc">Go to encounter</button>${e ? `<button data-a="ev">Go to evidence read</button>` : ""}`;
+      idcard.onclick = ev2 => { const b = ev2.target.closest("button"); if (!b) return; ev2.stopPropagation(); if (vid) vid.pause();
+        if (b.dataset.a === "enc") seekC(c, 0); else { const e2 = bestEvidence(c); if (e2) seek(vtOf(e2[0]) + S.offset); } };
+    }
+  }
+  idcard.addEventListener("pointerdown", e => e.stopPropagation());
+  idcard.style.pointerEvents = "auto";
+  function drawEncounter(T) {
+    const c = corrNear(T); if (!c || !c.encounter || !c.encounter.xy) return;
+    const dd = Math.abs(c.t_video - T); if (dd > 1.5) return;
+    const q = PJ(c.encounter.xy[0], c.encounter.xy[1], 0.02); if (!q) return;
+    ctx.strokeStyle = c.anchored ? "#ffd43b" : "#8896a8"; ctx.lineWidth = 2; ctx.setLineDash([6, 4]);
+    ctx.beginPath(); ctx.ellipse(q[0], q[1], 70 * K, 38 * K, 0, 0, 6.3); ctx.stroke(); ctx.setLineDash([]);
+  }
+  function buildIdSide() {
+    const box = $("anId"); if (!box) return;
+    const reads = ID && ID.per_team_reads;
+    box.innerHTML = `${COR.length ? COR.map(c => { const x = corrText(c); return `<div class="an-idrow ${c.anchored ? "" : "un"}" data-i="${c.i}" title="${esc(x.ev + ". " + x.tail)}"><b>${mmss(c.t_video)}</b> ${c.kind === "relink" ? "swap fixed" : "cut"} ${c.teams.map(lab).join(" / ")}
+        <span class="muted small">${c.anchored ? "anchored" : "unanchored"} ${Math.round(c.conf * 100)}%</span></div>`; }).join("") : '<div class="muted small">No identity corrections in this match.</div>'}
+      ${reads ? `<div class="an-reads" title="bumper-number OCR reads per team">reads (${ID.n_reads ?? "?"}): ${tracks.map(t => t.team ? `${num(t.team)}&times;${reads[t.team] || 0}` : "").filter(Boolean).join(" &middot; ")}</div>` : ""}
+      <div class="an-reads">labels: solid &ge;80% &middot; "?" 50-80% &middot; grey "unknown" &lt;50% &middot; hidden when unknown</div>`;
+    box.onclick = e => { const r = e.target.closest(".an-idrow"); if (!r) return; seekC(COR.find(c => c.i === +r.dataset.i), 2); };
+  }
+
   // ---- scrubber: period timeline + shot ticks
   const scrub = $("anScrub");
   function buildScrub() {
     const D = clock.dur;
     scrub.innerHTML = PER.map(p => `<div class="seg" style="left:${p.v0 / D * 100}%;width:${(p.v1 - p.v0) / D * 100}%" title="${p.name}"><span>${p.name}</span>
       <i class="r ${p.active.red ? "on" : ""}"></i><i class="b ${p.active.blue ? "on" : ""}"></i></div>`).join("") +
-      shots.map(s => `<u class="${s.al[0]} ${s.outcome}" style="left:${s.t / D * 100}%"></u>`).join("") + `<div class="head" id="anHead"></div>`;
+      shots.map(s => `<u class="${s.al[0]} ${s.outcome}" style="left:${s.t / D * 100}%"></u>`).join("") +
+      COR.map(c => `<b class="idm ${c.anchored ? "" : "un"}" data-i="${c.i}" style="left:${c.t_video / D * 100}%" title="${esc(corrText(c).head.replace("&harr;", "<->"))}"></b>`).join("") + `<div class="head" id="anHead"></div>`;
+    scrub.classList.toggle("noid", !S.layers.identity);
   }
   function moveHead() { const h = $("anHead"); if (h) h.style.left = curT() / clock.dur * 100 + "%"; }
   function scrubTo(e) { const r = scrub.getBoundingClientRect(); seek((e.clientX - r.left) / r.width * clock.dur); }
@@ -395,7 +468,7 @@ async function analyzePage(ev, key) {
     const rows = shots.filter(shotVisible);
     $("anShotN").textContent = `(${rows.length})`;
     $("anList").innerHTML = rows.map(s => `<div class="an-row" data-i="${s.i}"><span class="sw" style="background:${s.color}"></span>
-      <b>${fmtT(s.t)}</b> <span style="color:${OUTC[s.outcome]}">${MARK[s.outcome]} ${s.outcome}</span> ${s.team ? num(s.team) : s.shooter && s.shooter.kind}
+      <b>${fmtT(s.t)}</b> <span style="color:${OUTC[s.outcome]}">${MARK[s.outcome]} ${s.outcome}</span> ${s.unattr ? `<i class="muted" title="${esc(UNATTR_TIP)}">unattributed</i>` : s.team ? num(s.team) : s.shooter && s.shooter.kind}
       <span class="muted small">${s.period}${s.conf != null ? " " + Math.round(s.conf * 100) + "%" : ""}</span></div>`).join("");
   }
   $("anList").onclick = e => { const r = e.target.closest(".an-row"); if (!r) return; const s = shots.find(x => x.i === +r.dataset.i); seek(s.t - 1 + S.offset); };
@@ -443,7 +516,7 @@ async function analyzePage(ev, key) {
     vid.addEventListener("click", togglePlay);
     stage.style.aspectRatio = "16 / 9";
   } else { stage.style.aspectRatio = "2.05 / 1"; clock.t = t0m; }
-  buildScrub(); refreshList(); resize(); updPlay();
+  buildScrub(); buildIdSide(); refreshList(); resize(); updPlay();
   window.__an = { S, seek, draw, vid, shots, tracks, cam, step, toggleLayer };
   cleanup.push(() => { dead = true; document.removeEventListener("keydown", onKey); ro.disconnect(); cancelAnimationFrame(raf); if (vid) { vid.pause(); vid.removeAttribute("src"); vid.load(); } delete window.__an; });
 }
