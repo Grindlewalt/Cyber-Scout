@@ -51,3 +51,9 @@ Run heavy jobs on atomosserver (`/mnt/nas/autoscout-scratch`, `rtenv` Python, GP
 ## web/ — v2 UI (done, against mock data)
 - Data contract at the top of `web/app.js`; `live/sitev2.py` adapts analytics → contract. Mock generator
   `.work/web/mock.py`. Compare tab and match-page shot arcs not yet checked with real data.
+
+## intakes.py — floor pickups (done, v0)
+- 5 Hz floor-ball density map (static yellow projected to carpet, robot prisms masked) → net ball loss in a 0.75 m
+  disc around each robot between [t-1.4,t-0.6] and [t+0.6,t+1.4] s, minus balls shoved aside; blur/cut gating essential.
+- ~7 s/match. Precision ~0.88 (68 labelled events), recall ~0.45 (tiny sample) — robots parked on balls are missed.
+  Treat intake counts as a LOWER BOUND. Rolling-ball and outpost-chute signals exist but are off (not validated).

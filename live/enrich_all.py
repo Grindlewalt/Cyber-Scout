@@ -13,7 +13,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE); sys.path.insert(0, os.path.join(os.path.dirname(HERE), "src"))
 
 
-def one(data, ev, key, scratch):
+def one(data, ev, key, scratch, media=None):
     import enrich, videos, shots
     evd = os.path.join(data, "events", ev)
     res = json.load(open(os.path.join(evd, "matches", f"{key}.json")))
@@ -32,7 +32,12 @@ def one(data, ev, key, scratch):
     except Exception:
         return key, "FAILED " + traceback.format_exc()[-400:] + " | " + " / ".join(logs[-3:])
     finally:
-        if os.path.exists(vp): os.remove(vp)
+        if os.path.exists(vp):
+            if media:                                            # keep it for the in-browser player
+                os.makedirs(os.path.join(media, ev), exist_ok=True)
+                os.replace(vp, os.path.join(media, ev, f"{key}.mp4"))
+            else:
+                os.remove(vp)
 
 
 if __name__ == "__main__":
@@ -40,13 +45,17 @@ if __name__ == "__main__":
     ap.add_argument("data"); ap.add_argument("event")
     ap.add_argument("--jobs", type=int, default=6); ap.add_argument("--force", action="store_true")
     ap.add_argument("--scratch", default="/mnt/nas/autoscout-scratch/enrich-tmp")   # root disk is nearly full
+    ap.add_argument("--only", default="", help="comma-separated match keys (e.g. a dev set)")
+    ap.add_argument("--media", default="", help="keep videos here (MEDIA_DIR) instead of deleting them")
     a = ap.parse_args()
     os.makedirs(a.scratch, exist_ok=True)
     md = os.path.join(a.data, "events", a.event, "matches")
     keys = sorted(f[:-5] for f in os.listdir(md) if f.endswith(".json"))
-    todo = [k for k in keys if a.force or not os.path.exists(os.path.join(a.data, "events", a.event, "shots", f"{k}.json"))]
+    only = {x.strip() for x in a.only.split(",") if x.strip()}
+    todo = [k for k in keys if (not only or k in only) and
+            (a.force or not os.path.exists(os.path.join(a.data, "events", a.event, "shots", f"{k}.json")))]
     print(f"{len(todo)} of {len(keys)} matches to enrich, {a.jobs} jobs", flush=True)
     with ProcessPoolExecutor(a.jobs) as ex:
-        futs = [ex.submit(one, a.data, a.event, k, a.scratch) for k in todo]
+        futs = [ex.submit(one, a.data, a.event, k, a.scratch, a.media or None) for k in todo]
         for f in as_completed(futs):
             k, msg = f.result(); print(k, msg, flush=True)

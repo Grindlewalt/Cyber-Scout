@@ -13,6 +13,7 @@ services:
       DATA: /data
     volumes:
       - ./data:/data
+      - ${MEDIA_DIR:-./data/media}:/media     # kept match videos for the interactive player
     # GPU makes a match take ~3-6 min instead of ~20. On a machine without an
     # NVIDIA GPU, delete this block; the worker falls back to CPU by itself.
     deploy:
@@ -34,3 +35,4 @@ services:
       - "7560:80"
     volumes:
       - ./data/site/api:/usr/share/nginx/html/api:ro
+      - ${MEDIA_DIR:-./data/media}:/usr/share/nginx/html/media:ro

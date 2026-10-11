@@ -34,6 +34,8 @@ TAG_CSV = os.path.join(HERE, "field", "2026-rebuilt-welded.csv")
 API = os.path.join(DATA, "site", "api")
 RETRY_NO_VIDEO = 300
 V2 = os.environ.get("V2", "1") == "1"            # fuel/shot/analytics enrichment
+MEDIA = os.environ.get("MEDIA", "/media")         # kept match videos, served at /media/ (NAS-backed)
+KEEP_VIDEO = os.environ.get("KEEP_VIDEO", "1") == "1"
 MAX_ATTEMPTS = 3
 
 
@@ -113,6 +115,12 @@ def process_match(ev, m, cfg, status, meta_cache):
                               log=lambda *a: log(m["key"], *a))
             except Exception:
                 traceback.print_exc()                     # v1 data still published
+        if KEEP_VIDEO and os.path.isdir(MEDIA):
+            try:
+                dst = os.path.join(MEDIA, ev, f"{m['key']}.mp4"); os.makedirs(os.path.dirname(dst), exist_ok=True)
+                shutil.move(best_path, dst)
+            except Exception as e:
+                log(f"{m['key']}: could not keep video: {e}")
         st.update(state="done", at=time.time(), error=None, video=best["video"]["id"])
         log(f"{m['key']}: done ({best['video']['id']}, coverage {best['feed_ok']:.0%})")
         return True
@@ -223,8 +231,9 @@ def build_site(ev, tba):
                     who = sh.get("shooter") or {}
                     ti = who.get("track_idx")
                     team = team_of.get(ti) if who.get("kind") == "robot" else None
-                    shots_out.append({kk: sh.get(kk) for kk in ("t", "match_t", "period", "shooter", "origin", "v0", "landing",
-                                                               "target", "outcome", "hub_active", "conf", "apex_z")}
+                    shots_out.append({kk: sh.get(kk) for kk in ("t", "match_t", "period", "shooter", "origin", "v0", "acc", "drag",
+                                                               "landing", "target", "outcome", "hub_active", "conf",
+                                                               "apex_z", "t_entry", "t_obs", "outcome_conf")}
                                      | {"team": team})
                     if team in per_team and sh.get("origin"):
                         al = alli_of.get(ti, "red")
@@ -263,6 +272,17 @@ def build_site(ev, tba):
                     for mm_ in per_team.get(t["team"], {}).get("matches", [])[-1:]:
                         if mm_["match"] == k and w: mm_["analytics"] = w
                 v2["analytics"] = web
+            cal = jload(ev_file(ev, "camera.json"), {}) or {}
+            if cal:
+                pose = r.get("camera_pose") or {}
+                v2["camera"] = {"W": cal["W"], "H": cal["H"], "K": cal["K"], "dist": cal["dist"],
+                                "rvec": pose.get("rvec", cal["rvec"]), "tvec": pose.get("tvec", cal["tvec"])}
+            fu = jload(os.path.join(ev_dir(ev), "fuel", f"{k}.json"))
+            if fu is not None:
+                jsave(os.path.join(out_dir, "m", f"{k}.fuel.json"), fu)
+                v2["fuel_url"] = f"{k}.fuel.json"
+            if os.path.exists(os.path.join(MEDIA, ev, f"{k}.mp4")):
+                v2["video_local"] = f"media/{ev}/{k}.mp4"
             sb = m.get("score_breakdown") or {}
             jsave(os.path.join(out_dir, "m", f"{k}.json"), dict(**v2,
                 key=k, label=row["label"], short=row["short"], event=ev, hz=r["hz"], frames=r["frames"],

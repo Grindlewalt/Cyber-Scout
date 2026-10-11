@@ -73,12 +73,17 @@ def match_fields(m):
     return dict(name=name, set=m["set_number"], num=m["match_number"], level=lv)
 
 
-def download(vid, out):
-    tmp = out + ".part.mp4"
-    r = subprocess.run([YTDLP, "-q", "--no-warnings", "-f", "bv*[height<=1080][ext=mp4]/bv*[height<=1080]",
-                        "-o", tmp, "--force-overwrites", f"https://youtu.be/{vid}"],
-                       capture_output=True, text=True, timeout=1800)
-    if r.returncode != 0 or not os.path.exists(tmp):
-        raise RuntimeError(f"yt-dlp failed for {vid}: {r.stderr[-400:]}")
-    os.replace(tmp, out)
-    return out
+def download(vid, out, attempts=4):
+    """yt-dlp with retries: YouTube intermittently answers 403 (rate limits, stale player JS)."""
+    import time, random
+    tmp = out + ".part.mp4"; err = ""
+    for i in range(attempts):
+        r = subprocess.run([YTDLP, "-q", "--no-warnings", "-f", "bv*[height<=1080][ext=mp4]/bv*[height<=1080]",
+                            "-o", tmp, "--force-overwrites", f"https://youtu.be/{vid}"],
+                           capture_output=True, text=True, timeout=1800)
+        if r.returncode == 0 and os.path.exists(tmp):
+            os.replace(tmp, out)
+            return out
+        err = r.stderr[-400:]
+        time.sleep(10 * (i + 1) + random.uniform(0, 10))
+    raise RuntimeError(f"yt-dlp failed for {vid} after {attempts} attempts: {err}")

@@ -8,6 +8,7 @@ Outputs live next to the match JSON:
                                            themselves (~10 MB) are not kept
   data/events/<ev>/analytics/<match>.json  analytics.match_analytics() (team-agnostic; labels are
                                            joined at site build time)
+  data/events/<ev>/fuel/<match>.json       airborne fuel tracks (image px) for the interactive player
 """
 import json, os, time
 import numpy as np
@@ -46,9 +47,21 @@ def run_fuel_and_shots(video, cam_path, res, tba_match, log=print):
     except Exception as e:                                       # never lose a match over intakes
         log(f"  intakes failed: {e}")
     ev["timing"] = {"fuel_s": round(b - a), "shots_s": round(c - b), "fuel_tracks": len(fuel.get("tracks", []))}
+    ev["_fuel_air"] = airborne_tracks(fuel)
     n_made = sum(1 for s in ev.get("shots", []) if s.get("outcome") == "made")
     log(f"  shots: {len(ev.get('shots', []))} ({n_made} made) fuel {b - a:.0f}s shots {c - b:.0f}s")
     return ev
+
+
+def airborne_tracks(fuel, min_score=0.5):
+    """Compact airborne fuel tracks for the interactive player: what the tracker actually saw."""
+    out = []
+    for t in fuel.get("tracks", []):
+        if t.get("airborne_score", 0) < min_score or not t.get("view_ok", 1) or len(t.get("t", [])) < 3:
+            continue
+        out.append({"id": t["id"], "t": [round(x, 3) for x in t["t"]],
+                    "uv": [[round(u), round(v)] for u, v in t["uv"]], "s": round(t["airborne_score"], 2)})
+    return out
 
 
 def analytics_for(res, events, tba_match):
@@ -67,6 +80,7 @@ def _jsave(p, obj):
 def enrich(ev_dir, key, video, cam_path, res, tba_match, log=print):
     """Full v2 enrichment for one processed match; writes shots/ and analytics/ files."""
     events = run_fuel_and_shots(video, cam_path, res, tba_match, log)
+    _jsave(os.path.join(ev_dir, "fuel", f"{key}.json"), {"tracks": events.pop("_fuel_air", [])})
     _jsave(os.path.join(ev_dir, "shots", f"{key}.json"), events)
     _jsave(os.path.join(ev_dir, "analytics", f"{key}.json"), analytics_for(res, events, tba_match))
     return events
