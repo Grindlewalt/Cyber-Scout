@@ -92,9 +92,10 @@ def process_match(ev, m, cfg, status, meta_cache):
                 log(f"{m['key']}: processing")
                 t0 = time.time()
                 pose_p = os.path.join(ev_dir(ev), "pose_latest.json")
+                extra = station_reads(ev, m, vpath, meta_cache) if HUBCAM else None
                 res = process.process(vpath, ev_file(ev, "camera.json"), MODEL, TAG_CSV,
                                       log=lambda *a: log(m["key"], *a), start_hint=start_hint(ev, v),
-                                      pose_guess=jload(pose_p), teams=match_teams(m))
+                                      pose_guess=jload(pose_p), teams=match_teams(m), extra_reads=extra)
                 pc = res.get("pose", {})
                 if pc.get("tags", 0) >= 3 and (pc.get("applied") or (pc.get("moved_px") or 99) < 2.0):
                     jsave(pose_p, res["camera_pose"])          # verified pose: next match starts here
@@ -140,6 +141,25 @@ def process_match(ev, m, cfg, status, meta_cache):
         for vp in paths:
             if os.path.exists(vp): os.remove(vp)
         jsave(os.path.join(ev_dir(ev), "status.json"), status)
+
+
+def station_reads(ev, m, wide_path, meta_cache):
+    """HUBCAM: fetch the "Match N" inset upload (kept in MEDIA/<ev>/insets) and return the station-camera
+    bumper-OCR callable for the tracker -- ~3x more reads, 95.6% -> 98.5% answered identity on the dev set.
+    Never fails the match: no inset -> no extra reads."""
+    try:
+        import stationcam, station_ocr
+        inset = os.path.join(MEDIA, ev, "insets", f"{m['key']}.mp4")
+        if not os.path.exists(inset):
+            v = stationcam.find_inset_video(m, meta_cache)
+            if not v:
+                return None
+            os.makedirs(os.path.dirname(inset), exist_ok=True)
+            videos.download(v["id"], inset)
+        cal = os.path.dirname(ev_file(ev, "station_red.json"))
+        return station_ocr.extra_reads_fn(cal, inset, wide_video=wide_path)
+    except Exception:
+        traceback.print_exc(); return None
 
 
 def match_teams(m):

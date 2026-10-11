@@ -193,6 +193,56 @@ def read_weight(lp, margin, amb):
     return w * np.where(amb > 0, 0.7, 1.0)
 
 
+X_TOL_S = float(E("X_TOL_S", "0.05"))      # s, extra read <-> detection frame time tolerance
+X_GATE = float(E("X_GATE", "2.5"))         # max normalised distance read -> detection
+X_AMB_DROP = float(E("X_AMB_DROP", "1.0")) # runner-up within this (normalised) of the best: drop
+X_AMB_FLAG = float(E("X_AMB_FLAG", "2.0")) # runner-up within this: keep, flagged ambiguous
+X_W = float(E("X_W", "1.0"))               # weight multiplier of extra (e.g. station-camera) reads
+
+
+def attribute_extra(det, xy, extra, tol_s=None, gate=None):
+    """Field-located reads from other cameras -> read rows [det idx, cand, lp, margin, ambiguous]
+    on the detections `det` (cols: frame, t_video, ...; positions xy).
+
+    extra rows: [t_video, cand, lp, margin, x, y, dir_x, dir_y, sig_along, sig_perp, ...]: the
+    reader's estimate of the robot centre with an anisotropic uncertainty (dir = the viewing
+    direction, along which a low camera's depth is poor; dir 0,0 = isotropic sig_perp).  Each read
+    goes to the detection of the nearest overhead frame (|dt| <= tol_s) at the smallest normalised
+    distance; dropped beyond `gate` or when a second detection is about as near (ambiguity guard,
+    like the overhead reads' two-bumper-regions flag)."""
+    tol_s = X_TOL_S if tol_s is None else tol_s
+    gate = X_GATE if gate is None else gate
+    extra = np.asarray(extra, float).reshape(len(extra), -1) if len(extra) else np.zeros((0, 10))
+    out, stats = [], dict(n=len(extra), no_frame=0, far=0, amb_drop=0, amb=0)
+    if not len(extra) or not len(det): return np.zeros((0, 5)), stats
+    tv = det[:, 1]; order = np.argsort(tv, kind="stable"); ts = tv[order]
+    for r in extra:
+        t = r[0]
+        k = np.searchsorted(ts, t)
+        near = [ts[i] for i in (k - 1, k) if 0 <= i < len(ts)]
+        tn = min(near, key=lambda x: abs(x - t)) if near else None
+        if tn is None or abs(tn - t) > tol_s:
+            stats["no_frame"] += 1; continue
+        g = order[np.searchsorted(ts, tn - 1e-6):np.searchsorted(ts, tn + 1e-6)]
+        v = xy[g] - r[4:6]
+        dvec = r[6:8]; nd = np.linalg.norm(dvec)
+        if nd > 1e-6:
+            dvec = dvec / nd; a = v @ dvec; q = v @ np.array([-dvec[1], dvec[0]])
+            D = np.hypot(a / r[8], q / r[9])
+        else:
+            D = np.linalg.norm(v, axis=1) / r[9]
+        o = np.argsort(D); b = o[0]
+        if D[b] > gate:
+            stats["far"] += 1; continue
+        d2 = D[o[1]] if len(o) > 1 else np.inf
+        if d2 - D[b] < X_AMB_DROP:
+            stats["amb_drop"] += 1; continue
+        amb = int(d2 - D[b] < X_AMB_FLAG)
+        stats["amb"] += amb
+        out.append([g[b], r[1], r[2], r[3], amb])
+    return np.array(out, float).reshape(-1, 5), stats
+
+
 class LTk:
     """Tracklet of the labeled pipeline: per-frame arrays (one representative detection
     per frame in gi; every member detection in gall) + read and colour evidence."""
@@ -489,14 +539,25 @@ def _link_conf(links, i, j):
     return float(np.exp(-c) / z)
 
 
-def run_labeled(det, xy, cov, hs, ex, nf, LEN, WID, reads, teams, log=print):
+def run_labeled(det, xy, cov, hs, ex, nf, LEN, WID, reads, teams, log=print, extra_reads=None):
     """reads: (R, 5+) rows [det idx, team idx, lp, margin, ambiguous] (det idx into det).
     teams: six team keys in output order (red 1-3, blue 1-3).
+    extra_reads: optional field-located reads from other cameras (station_ocr rows, see
+    attribute_extra): attributed to the nearest detection, weighted X_W x read_weight.
     -> list of six dicts {team, alliance, xy (nf,2), v, obs, conf (nf,), det_idx, height,
        team_conf, n_reads}."""
     nt = len(teams); team_al = np.array([1] * (nt // 2) + [2] * (nt - nt // 2))
     det = det.copy(); colour = det[:, 8].astype(int).copy()
+    reads = np.asarray(reads, float).reshape(len(reads), -1) if len(reads) else np.zeros((0, 5))
     w = read_weight(reads[:, 2], reads[:, 3], reads[:, 4]) if len(reads) else np.zeros(0)
+    n_main, x_stats = len(reads), None
+    if extra_reads is not None and len(extra_reads):
+        xr, x_stats = attribute_extra(det, xy, extra_reads)
+        if len(xr):
+            wx = read_weight(xr[:, 2], xr[:, 3], xr[:, 4]) * X_W
+            reads = np.r_[reads[:, :5], xr]; w = np.r_[w, wx]
+        log(f"  extra reads: {x_stats['n']} -> {len(xr)} attributed ({int((wx > 0).sum()) if len(xr) else 0} usable; "
+            f"no frame {x_stats['no_frame']}, far {x_stats['far']}, ambiguous dropped {x_stats['amb_drop']} / flagged {x_stats['amb']})")
     rd_by_det = {}
     for r, wi in zip(reads, w):
         if wi <= 0: continue
@@ -603,6 +664,10 @@ def run_labeled(det, xy, cov, hs, ex, nf, LEN, WID, reads, teams, log=print):
                 for t in range(nt)}
     identity = dict(method="ocr-ilp", n_reads=nr_used, per_team_reads=per_team,
                     n_tracklets=len(tks), n_cuts=len(cuts), corrections=corr)
+    if x_stats is not None:
+        we = w[n_main:]; rx = reads[n_main:]
+        identity.update(n_reads_extra=int((we > 0).sum()), n_reads_extra_raw=int(x_stats["n"]),
+                        per_team_reads_extra={teams[t]: int(((rx[:, 1] == t) & (we > 0)).sum()) for t in range(nt)})
     return out, identity
 
 

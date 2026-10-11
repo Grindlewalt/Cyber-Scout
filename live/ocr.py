@@ -28,6 +28,9 @@ BUCKETS = (192, 256, 320, 384, 448, 512)   # detector input sizes (square, pad)
 MIN_LP = -8.0            # CTC log-prob floor for a read to be reported
 MAX_DET = int(os.environ.get("OCR_MAX_DET", "512"))      # px, longest side of a detector input
 ANGLES = tuple(float(a) for a in os.environ.get("OCR_ANGLES", "0,45,-45").split(","))
+# glyphs the recogniser emits for digits in bumper fonts (e.g. 4911's "1" reads as "i"/"l"):
+# with confusable=True a digit's per-step probability is the sum over its look-alikes.
+CONFUSABLE = {"0": "OoDQ", "1": "lIi|!]Jj", "2": "Zz", "4": "Hh", "5": "Ss", "6": "bG", "8": "B", "9": "gqSs"}
 
 
 class Read:
@@ -46,7 +49,7 @@ def _find_models():
 
 
 class BumperOCR:
-    def __init__(self, model_dir=None, device=None, threads=2):
+    def __init__(self, model_dir=None, device=None, threads=2, confusable=False):
         import onnxruntime as ort
         d = model_dir or _find_models()
         so = ort.SessionOptions(); so.log_severity_level = 3; so.intra_op_num_threads = threads
@@ -66,6 +69,9 @@ class BumperOCR:
         for i, ch in enumerate(chars): self.cidx.setdefault(ch, i)
         self._lab = {}
         self.n_crops = self.n_boxes = 0
+        self.confusable = confusable
+        self._conf = [(self.cidx[d], [self.cidx[c] for c in alts if c in self.cidx])
+                      for d, alts in CONFUSABLE.items() if d in self.cidx]
 
     # ------------------------------------------------------------ detection
     def _det_batch(self, ims, thr=0.25, box_thr=0.4, unclip=1.8):
@@ -153,6 +159,13 @@ class BumperOCR:
             self._lab[key] = (ext, valid, skip, last)
         return self._lab[key]
 
+    def merge_confusable(self, lp):
+        """Per-step log probs with each digit's column = log sum over the digit and its look-alikes."""
+        lp = lp.copy()
+        for d, alts in self._conf:
+            if alts: lp[:, d] = np.logaddexp(lp[:, d], np.logaddexp.reduce(lp[:, alts], axis=1))
+        return lp
+
     def ctc(self, lp, cands):
         """log P(candidate | per-step log probs) for every candidate at once."""
         ext, valid, skip, last = self._labels(cands)
@@ -170,14 +183,17 @@ class BumperOCR:
         return np.logaddexp(a[r, last], a[r, last - 1])
 
     # ------------------------------------------------------------ API
-    def read_many(self, crops, cands, offsets=None, up=UP, min_lp=MIN_LP, angles=None):
+    def read_many(self, crops, cands, offsets=None, up=UP, min_lp=MIN_LP, angles=None, confusable=None):
         """crops: BGR images (robot bumper regions); cands: candidate number strings.
         offsets: optional (x0, y0) of each crop in the frame -> Read.uv in frame pixels.
         angles: also detect text in the crop rotated by these degrees (bumper numbers on
         a robot seen at 45 deg are slanted and the text detector misses most of them;
         (0, 45, -45) doubles the readable crops at ~2.5x the cost).
+        confusable: score digits together with their look-alike glyphs (CONFUSABLE); default
+        self.confusable (False = the measured overhead behaviour).
         Returns per crop a list of Read (one per text box that matches a candidate)."""
         angles = ANGLES if angles is None else angles
+        confusable = self.confusable if confusable is None else confusable
         big, inv, own, ups = [], [], [], []
         for i, c in enumerate(crops):
             for ang in angles:
@@ -202,6 +218,7 @@ class BumperOCR:
         out = [[] for _ in crops]
         if not owner: return out
         lps = self._rec_batch(lines)
+        if confusable: lps = [self.merge_confusable(x) for x in lps]
         for k, (b, r) in enumerate(owner):
             s = np.maximum(self.ctc(lps[2 * k], cands), self.ctc(lps[2 * k + 1], cands))
             o = np.argsort(-s); j = int(o[0])

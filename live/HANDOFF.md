@@ -107,3 +107,13 @@ Run heavy jobs on atomosserver (`/mnt/nas/autoscout-scratch`, `rtenv` Python, GP
   unchanged (0.892); reconciliation unchanged. ~45% of hub shots get no station match (edge of view, occlusion).
   Cost ~137 s/match (105 s sync+pose — reuse station_export's sync to cut to ~30 s).
 - Verdict: a confidence booster, not an accuracy fix. Integrate later if the per-match cost is worth it.
+
+## station_ocr.py — bumper reads from the station cams (done; in pipeline under HUBCAM=1)
+- Insets at 5 fps (synced; station leads overhead by 0.08 s). Each overhead detection within 11 m of a camera is
+  projected with a ±0.85 m, 0–0.6 m box, upscaled 3x, OCR'd (upright, look-alike glyphs on: 4911's font reads as
+  "4S11"/"HS11"). Text centre back-projected to z=0.12 m, pushed 0.40 m from the camera, anisotropic uncertainty,
+  per-camera median bias removed. fuse.attribute_extra assigns reads to the nearest overhead detection with an
+  ambiguity guard; reads join the ILP evidence (X_W=1).
+- Dev set (10 matches, 563 GT samples): 88.1% → 91.7% of all samples; answered 95.6% → 98.5%; wrong 23 → 8;
+  station reads 202/202 correct. Never-read teams now get 25–330 reads/match. Cost ~1–2 min/match (GPU OCR).
+- Tuning hint (not applied): with station reads, W_R=0.2 / J_LIMBO=24 scored higher — check on held-out first.

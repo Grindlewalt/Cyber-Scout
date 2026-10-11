@@ -335,7 +335,7 @@ def track_stats(xy, obs, alliance_name, t_auto_end, LEN, live=None):
 
 # ---------------------------------------------------------------- main
 def process(video, cam_path, onnx, tag_csv=None, log=print, start_hint=None, pose_guess=None,
-            teams=None, hooks=(), dump=None):
+            teams=None, hooks=(), dump=None, extra_reads=None):
     """start_hint: typical match-start offset for this kind of upload, used only
     when neither the clock nor robot motion gives one.  pose_guess: {rvec, tvec} of
     the camera as last seen (a bump persists across matches).
@@ -344,7 +344,11 @@ def process(video, cam_path, onnx, tag_csv=None, log=print, start_hint=None, pos
     (tracks ordered red 1-3, blue 1-3; .team, .team_conf, per-frame .conf); without it
     (or if OCR can't run) tracks are the unlabelled v1 output.
     hooks: frame hooks passed to detect_video (fuel tracker).  dump: pickle path for
-    the post-detection state (development: re-run finish() without the video)."""
+    the post-detection state (development: re-run finish() without the video).
+    extra_reads: bumper reads from other cameras for the identity solve -- an array of
+    field-located rows (fuse.attribute_extra) or a callable (st, teams, log) -> rows run after
+    prepare() (it gets the overhead detections; e.g. station_ocr.extra_reads_fn(...)).
+    Ignored without teams; None = overhead reads only (unchanged behaviour)."""
     raw = json.load(open(cam_path))
     if pose_guess:
         raw = dict(raw, rvec=pose_guess["rvec"], tvec=pose_guess["tvec"])
@@ -372,6 +376,11 @@ def process(video, cam_path, onnx, tag_csv=None, log=print, start_hint=None, pos
     st = prepare(det, chas, body, n, clock, feed, reads, cam, log, start_hint)
     st.update(camera_pose=dict(rvec=cam.rvec.tolist(), tvec=cam.tvec.tolist()), pose=pose,
               cam_raw=cam.raw, teams=team_list, ocr_ok=sampler is not None)
+    if extra_reads is not None and team_list and sampler is not None:
+        try:
+            st["extra_reads"] = np.asarray(extra_reads(st, team_list, log) if callable(extra_reads) else extra_reads, float)
+        except Exception as e:                                  # never lose the match over extra reads
+            log(f"  extra reads failed ({e!r}): overhead reads only")
     if dump:
         import pickle
         pickle.dump(st, open(dump, "wb"))
@@ -443,7 +452,7 @@ def finish(st, log=print):
         t0 = time.time()
         try:
             tracks, identity = fuse.run_labeled(d, xy, cov, hs, chn, nf, CAMM.LEN, CAMM.WID, st["reads"],
-                                                team_list, log=log)
+                                                team_list, log=log, extra_reads=st.get("extra_reads"))
             identity["seconds"] = round(time.time() - t0, 1)
             identity["n_reads_raw"] = int(st.get("n_raw_reads", 0))
             v0 = st["t_start"] - 0.5
