@@ -440,6 +440,11 @@ def sync(ev, tba, max_new=None):
     ms = sorted(tba.matches(ev), key=lambda m: (m.get("actual_time") or m.get("time") or 0, sort_key(m)))
     status = jload(os.path.join(ev_dir(ev), "status.json"), {})
     cfg = jload(ev_file(ev, "event.json"), {}) or {}
+    try:                                               # admin-configured video sources (Video page) -> which uploads to use
+        import sources
+        cfg = sources.video_config(sources.load(ev_dir(ev)), cfg, jload(os.path.join(ev_dir(ev), "layout.json"), None))
+    except Exception:
+        traceback.print_exc()
     meta_cache = jload(os.path.join(DATA, "cache", "ytmeta.json"), {}) or {}
     has_cam = os.path.exists(ev_file(ev, "camera.json"))
     done_any = False; n = 0
@@ -503,10 +508,16 @@ def _sleep(seconds):
 
 
 def main():
+    try:                                               # Video page jobs: frame grabs, layout suggestions, calibration fits
+        import threading, sources
+        threading.Thread(target=sources.job_loop, args=(DATA,), kwargs={"log": log}, daemon=True).start()
+    except Exception:
+        traceback.print_exc()
     tba, waiting = None, None
     while True:
         key, events = load_config()
-        why = ("no TBA key (finish setup in the web app, or set TBA_KEY)" if not key else
+        why = ("match processing paused (PAUSE_PROCESSING=1)" if os.environ.get("PAUSE_PROCESSING") == "1" else
+               "no TBA key (finish setup in the web app, or set TBA_KEY)" if not key else
                "no events followed (add one in the web app, or set EVENTS)" if not events else
                f"model not found: {MODEL}" if not os.path.exists(MODEL) else None)
         if why:

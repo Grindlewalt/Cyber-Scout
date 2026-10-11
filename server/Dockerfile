@@ -5,6 +5,7 @@ WORKDIR /srv
 COPY server/requirements.txt server/requirements.txt
 RUN pip install -r server/requirements.txt
 COPY server/ server/
+COPY live/sources.py live/layout.py live/
 RUN rm -rf server/tests
 EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s \

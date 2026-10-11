@@ -190,3 +190,446 @@ def camera_dict(p, W, H, **extra):
              tvec=tv.ravel().tolist(), C=C.tolist())
     d.update(extra)
     return d
+
+
+# ---------------------------------------------------------------------------------------------
+# Calibration wizard (server/routers/sources.py + web/sources.js).  Additive: nothing above uses it.
+#   1. detect_tags_frames(grays)          AprilTags anywhere in a region (tiled, upscaled), median over frames
+#   2. NAMED_POINTS                       field landmarks the user can click when tags are not enough
+#   3. wizard_fit(W, H, tags, points)     focal sweep + PnP init -> staged least squares (pose, f, k1, c, k2)
+#      refine_with_lines(...)             + the white centre line found near its predicted position
+#   4. overlay_lines(p, W, H)             projected field outline / lines / 1 m grid / hubs / tags
+#   5. wizard_camera(p, W, H, crop, ...)  camera JSON (full-frame pixels for the overhead camera; inset
+#                                         pixels + "crop" for station cameras, as stationcam expects)
+import os as _os
+_HERE = _os.path.dirname(_os.path.abspath(__file__))
+TAG_CSV = _os.path.join(_HERE, "field", "2026-rebuilt-welded.csv")
+RULES = _os.path.join(_HERE, "field", "rebuilt_rules.json")
+_WTAGDET = None
+
+
+def _unpack_w(p):
+    """wizard vector [f, aspect, cx, cy, k1, k2, rvec(3), C(3), (k3)] -> K, dist, rvec, tvec, R, C"""
+    K, D, rv, tv, R, C = unpack_pinhole(p[:12])
+    if len(p) > 12: D = np.array([D[0], D[1], 0, 0, p[12]])
+    return K, D, rv, tv, R, C
+
+
+def wproj(p, P):
+    """Project field points with a wizard vector (NaN behind the camera)."""
+    if len(p) <= 12: return proj_pinhole(p, P)
+    K, D, rv, tv, R, C = _unpack_w(p)
+    P = np.asarray(P, float).reshape(-1, 3)
+    q, _ = cv2.projectPoints(P.reshape(-1, 1, 3), rv, tv, K, D)
+    q = q.reshape(-1, 2)
+    q[(P - C) @ R[2] <= 0.1] = np.nan
+    return q
+
+
+def _wtagdet():
+    # one detector per process: pupil_apriltags' destructor intermittently segfaults (see process.py)
+    global _WTAGDET
+    if _WTAGDET is None:
+        from pupil_apriltags import Detector
+        _WTAGDET = Detector(families="tag36h11", quad_decimate=1.0, decode_sharpening=0.25)
+    return _WTAGDET
+
+
+def detect_tags_gray(gray, scale=None, tile=480, overlap=96, min_margin=15, valid=None):
+    """{id: (4x2 corners, decision margin)} in `gray` px.  Small regions (station insets) are upscaled
+    whole; big frames in overlapping tiles (tags on a 1080p wide shot are ~8-20 px)."""
+    H, W = gray.shape[:2]
+    if scale is None:
+        scale = 4.0 if W * H <= 700 * 420 else 3.0
+    out = {}
+    tiles = [(0, 0, W, H)] if W * H <= 700 * 420 else \
+        [(x, y, min(W, x + tile), min(H, y + tile)) for y in range(0, max(1, H - overlap), tile - overlap)
+         for x in range(0, max(1, W - overlap), tile - overlap)]
+    det = _wtagdet()
+    for x0, y0, x1, y1 in tiles:
+        sub = gray[y0:y1, x0:x1]
+        if sub.size == 0 or sub.std() < 8: continue
+        up = cv2.resize(sub, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+        for d in det.detect(up):
+            if d.hamming != 0 or d.decision_margin < min_margin: continue
+            tid = int(d.tag_id)
+            if valid is not None and tid not in valid: continue
+            c = d.corners / scale + [x0, y0]
+            if tid not in out or d.decision_margin > out[tid][1]:
+                out[tid] = (c, float(d.decision_margin))
+    return out
+
+
+def detect_tags_frames(grays, tag_csv=TAG_CSV, min_frac=0.34, **kw):
+    """Per-frame detection over several frames (a median plate blurs tiny tags) -> {id: {"corners": 4x2,
+    "center": [u, v], "n": frames seen, "margin": median margin, "spread_px": corner scatter}} for tags
+    seen in >= min_frac of the frames (and >= 2)."""
+    valid = set(load_tag_poses(tag_csv))
+    hits = {}
+    for g in grays:
+        for tid, (c, m) in detect_tags_gray(g, valid=valid, **kw).items():
+            hits.setdefault(tid, []).append((c, m))
+    need = max(2, int(np.ceil(min_frac * len(grays)))) if len(grays) > 1 else 1
+    out = {}
+    for tid, v in hits.items():
+        if len(v) < need: continue
+        C = np.array([c for c, _ in v]); med = np.median(C, 0)
+        out[tid] = dict(corners=med.tolist(), center=med.mean(0).tolist(), n=len(v),
+                        margin=round(float(np.median([m for _, m in v])), 1),
+                        spread_px=round(float(np.median(np.linalg.norm(C - med, axis=2))), 2))
+    return out
+
+
+def detect_tags_predicted(grays, p, W, H, tag_csv=TAG_CSV, have=(), win=40, scale=4.0, min_hits=2):
+    """Second pass after a first fit: look for the remaining tags around their predicted pixels."""
+    poses = load_tag_poses(tag_csv)
+    det = _wtagdet(); hits = {}
+    for tid, pose in poses.items():
+        if tid in have: continue
+        u, v = wproj(p, pose[0][None])[0]
+        if not (np.isfinite(u) and win <= u < W - win and win <= v < H - win): continue
+        # facing the camera? (tag normal vs view direction)
+        K, D, rv, tv, R, C = _unpack_w(p)
+        n = np.array([np.cos(pose[1]), np.sin(pose[1]), 0.0])
+        if n @ (C - pose[0]) <= 0: continue
+        x0, y0 = int(u) - win, int(v) - win
+        for g in grays:
+            roi = cv2.resize(g[y0:y0 + 2 * win, x0:x0 + 2 * win], None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+            for d in det.detect(roi):
+                if d.tag_id == tid and d.hamming == 0 and d.decision_margin > 15:
+                    hits.setdefault(tid, []).append(d.corners / scale + [x0, y0])
+    out = {}
+    for tid, v in hits.items():
+        if len(v) < min(min_hits, len(grays)): continue
+        med = np.median(np.array(v), 0)
+        out[tid] = dict(corners=med.tolist(), center=med.mean(0).tolist(), n=len(v), margin=None,
+                        spread_px=round(float(np.median(np.linalg.norm(np.array(v) - med, axis=2))), 2), predicted=True)
+    return out
+
+
+def _rules():
+    import json as _json
+    try:
+        return _json.load(open(RULES))
+    except Exception:
+        return {}
+
+
+def named_points():
+    """Clickable field landmarks {name: {"xyz": [X, Y, Z] m, "label": str, "group": str}}.  Field frame:
+    blue alliance wall at X = 0, red at X = 16.541; the BLUE outpost is near Y = 0, the RED outpost near
+    Y = 8.069 (use the outposts / human-player chutes to tell the two long sides apart)."""
+    L2, W = LEN / 2, WID
+    P = {
+        "corner_blue_bo": ((0, 0, 0), "Blue wall corner, blue-outpost side", "field"),
+        "corner_blue_ro": ((0, W, 0), "Blue wall corner, red-outpost side", "field"),
+        "corner_red_ro": ((LEN, W, 0), "Red wall corner, red-outpost side", "field"),
+        "corner_red_bo": ((LEN, 0, 0), "Red wall corner, blue-outpost side", "field"),
+        "centre_bo": ((L2, 0, 0), "Centre line end, blue-outpost side", "lines"),
+        "centre_ro": ((L2, W, 0), "Centre line end, red-outpost side", "lines"),
+        "centre": ((L2, W / 2, 0), "Field centre (centre line midpoint)", "lines"),
+    }
+    R = _rules()
+    zx = (R.get("zones") or {})
+    bx, rx = zx.get("blue_alliance_x_max", 4.028), zx.get("red_alliance_x_min", 12.513)
+    P.update({
+        "line_blue_bo": ((bx, 0, 0), "Blue alliance-zone line end, blue-outpost side", "lines"),
+        "line_blue_ro": ((bx, W, 0), "Blue alliance-zone line end, red-outpost side", "lines"),
+        "line_red_ro": ((rx, W, 0), "Red alliance-zone line end, red-outpost side", "lines"),
+        "line_red_bo": ((rx, 0, 0), "Red alliance-zone line end, blue-outpost side", "lines"),
+    })
+    hub = (R.get("hub") or {})
+    hc = hub.get("centers") or {"red": [11.915, 4.035], "blue": [4.626, 4.035]}
+    hs = (hub.get("footprint_m") or [1.194, 1.194])[0] / 2
+    for side in ("blue", "red"):
+        cx, cy = hc[side]
+        for sx, sy, nm in ((-1, -1, "blue-wall side, blue-outpost side"), (-1, 1, "blue-wall side, red-outpost side"),
+                           (1, 1, "red-wall side, red-outpost side"), (1, -1, "red-wall side, blue-outpost side")):
+            P[f"hub_{side}_{'b' if sx < 0 else 'r'}{'bo' if sy < 0 else 'ro'}"] = (
+                (cx + sx * hs, cy + sy * hs, 0), f"{side.title()} hub base corner ({nm})", "hubs")
+    out = {k: dict(xyz=[float(a) for a in v[0]], label=v[1], group=v[2]) for k, v in P.items()}
+    for tid, (c, yaw) in load_tag_poses(TAG_CSV).items():
+        out[f"tag_{tid}"] = dict(xyz=c.tolist(), label=f"AprilTag {tid} centre", group="tags")
+    return out
+
+
+def named_lines():
+    """Straight field edges / tape lines the user can click ANY points along (no need to see the ends):
+    {name: {"ends": [[X, Y, Z], [X, Y, Z]], "label", "group": "lines"}}."""
+    R = _rules(); zx = R.get("zones") or {}
+    bx, rx = zx.get("blue_alliance_x_max", 4.028), zx.get("red_alliance_x_min", 12.513)
+    L = {"edge_ro": ((0, WID, 0), (LEN, WID, 0), "Carpet edge along the red-outpost side (long wall)"),
+         "edge_bo": ((0, 0, 0), (LEN, 0, 0), "Carpet edge along the blue-outpost side (long wall)"),
+         "edge_blue": ((0, 0, 0), (0, WID, 0), "Carpet edge at the blue alliance wall"),
+         "edge_red": ((LEN, 0, 0), (LEN, WID, 0), "Carpet edge at the red alliance wall"),
+         "centerline": ((LEN / 2, 0, 0), (LEN / 2, WID, 0), "Centre line (white tape)"),
+         "zone_blue": ((bx, 0, 0), (bx, WID, 0), "Blue alliance-zone line"),
+         "zone_red": ((rx, 0, 0), (rx, WID, 0), "Red alliance-zone line")}
+    return {k: dict(ends=[list(map(float, a)), list(map(float, b))], label=lbl, group="lines") for k, (a, b, lbl) in L.items()}
+
+
+def clicked_lines(line_clicks, sigma=2.0):
+    """{line name: [[u, v], ...]} (>= 2 clicks each) -> wizard_fit `lines` [(world polyline, image pts, sigma)]."""
+    NL = named_lines(); out = []
+    for k, pts in (line_clicks or {}).items():
+        pts = [p for p in (pts or []) if p and len(p) == 2]
+        if k not in NL or len(pts) < 2: continue
+        a, b = np.array(NL[k]["ends"], float)
+        Pw = a + np.linspace(-0.03, 1.03, 400)[:, None] * (b - a)
+        out.append((Pw, np.asarray(pts, float), sigma, k))
+    return out
+
+
+def _corr(tags, points, tag_csv=TAG_CSV, sig_corner=0.6, sig_centre=1.5, sig_click=3.0):
+    """Correspondence groups [(P, uv, sigma)] + flat lists for reporting."""
+    poses = load_tag_poses(tag_csv); NP = named_points()
+    groups, rep = [], []
+    for tid, t in (tags or {}).items():
+        tid = int(tid)
+        if tid not in poses: continue
+        c = np.asarray(t["corners"] if isinstance(t, dict) and t.get("corners") is not None else
+                       (t["center"] if isinstance(t, dict) else t), float)
+        if c.shape == (4, 2):
+            groups.append((tag_corners(poses[tid]), c, sig_corner)); rep.append(("tag", tid, poses[tid][0], c.mean(0)))
+        else:
+            c = c.reshape(-1)[:2]
+            groups.append((poses[tid][0][None], c[None], sig_centre)); rep.append(("tag", tid, poses[tid][0], c))
+    for name, uv in (points or {}).items():
+        if name not in NP or uv is None: continue
+        X = np.array(NP[name]["xyz"], float)
+        groups.append((X[None], np.asarray(uv, float).reshape(1, 2), sig_click)); rep.append(("point", name, X, np.asarray(uv, float)))
+    return groups, rep
+
+
+def _line_pairs(lines):
+    """For PnP initialisation only: nothing -- clicked line points have no fixed world position."""
+    return []
+
+
+def _init_pose(W, H, groups, lines=()):
+    """Focal sweep: PnP (SQPNP) on all point correspondences for each focal guess; with clicked lines the
+    8 best candidates get a short pose + focal refinement including the lines and the cheapest wins."""
+    P = np.concatenate([g[0] for g in groups]); U = np.concatenate([g[1] for g in groups])
+    if len(P) < 4: return None
+    cands = []
+    for f in np.geomspace(0.3 * W, 4.0 * W, 40):
+        K = np.array([[f, 0, W / 2], [0, f, H / 2], [0, 0, 1.0]])
+        try:
+            ok, rv, tv = cv2.solvePnP(P.reshape(-1, 1, 3), U.reshape(-1, 1, 2), K, None, flags=cv2.SOLVEPNP_SQPNP)
+        except cv2.error:
+            continue
+        if not ok: continue
+        R, _ = cv2.Rodrigues(rv); C = (-R.T @ tv).ravel()
+        p = np.r_[f, 1.0, W / 2, H / 2, 0, 0, rv.ravel(), C, 0.0]
+        e = wproj(p, P) - U
+        if not np.isfinite(e).all(): continue
+        cands.append((float(np.sqrt((e ** 2).sum(1).mean())), p))
+    if not cands: return None
+    cands.sort(key=lambda c: c[0])
+    if not lines: return cands[0][1]
+    from scipy.optimize import least_squares
+    best = None
+    for _, p0 in cands[:8]:
+        free = np.r_[0, 6:12]
+
+        def res(q):
+            p = p0.copy(); p[free] = q
+            r = []
+            for Pg, uv, sg in groups:
+                e = wproj(p, Pg) - uv; e[~np.isfinite(e)] = 100.0; r.append((e / sg).ravel())
+            for ln in lines:
+                poly = wproj(p, ln[0]); poly = poly[np.isfinite(poly).all(1)]
+                r.append(seg_dist(ln[1], poly) / ln[2] if len(poly) >= 2 else np.full(len(ln[1]), 100.0))
+            return np.concatenate(r)
+        sol = least_squares(res, p0[free], loss="soft_l1", f_scale=2.0, max_nfev=200)
+        p = p0.copy(); p[free] = sol.x
+        if best is None or sol.cost < best[0]: best = (sol.cost, p)
+    return best[1]
+
+
+def _fit_lines(p0, free, groups, lines, W, H, sig_c, sig_k):
+    """fit_points + straight world lines: lines = [(world polyline Nx3, image points Mx2, sigma)]."""
+    from scipy.optimize import least_squares
+
+    def res(q):
+        p = p0.copy(); p[free] = q
+        r = []
+        for P, uv, s in groups:
+            e = wproj(p, P) - uv; e[~np.isfinite(e)] = 100.0
+            r.append((e / s).ravel())
+        for ln in lines:
+            Pw, pts, s = ln[:3]
+            poly = wproj(p, Pw); poly = poly[np.isfinite(poly).all(1)]
+            if len(poly) < 2 or not len(pts): continue
+            r.append(seg_dist(pts, poly) / s)
+        r.append([(p[2] - W / 2) / sig_c, (p[3] - H / 2) / sig_c, (p[1] - 1) / 0.02, p[4] / sig_k, p[5] / sig_k,
+                  p[12] / sig_k])
+        return np.concatenate(r)
+    s = least_squares(res, p0[free], loss="soft_l1", f_scale=2.0, max_nfev=4000)
+    p = p0.copy(); p[free] = s.x
+    return p
+
+
+def wizard_fit(W, H, tags=None, points=None, lines=None, tag_csv=TAG_CSV, p_init=None):
+    """Fit [f, aspect, cx, cy, k1, k2, rvec, C] to tag corners + clicked points (+ line samples).
+    tags {id: {"corners": 4x2} | [u, v]}; points {name: [u, v]}; lines [(world Nx3, image Mx2, sigma)].
+    Stages: pose + f -> + k1 (>= 12 points) -> + principal point, k2 (>= 40 points).
+    Returns (p, report) or (None, {"error": ...})."""
+    groups, rep = _corr(tags, points, tag_csv)
+    n = sum(len(g[0]) for g in groups)
+    lines = lines or []
+    nl = sum(len(l[1]) for l in lines if len(l) > 3)            # clicked line points (each ~ half a point)
+    if n + nl // 2 < 4 or (len(groups) < 2 and n + nl // 2 < 6):
+        return None, {"error": f"need more correspondences ({n} points): mark more tags or click field points"}
+    p = np.asarray(p_init, float) if p_init is not None else _init_pose(W, H, groups, lines)
+    if p is None:
+        return None, {"error": "pose initialisation failed"}
+    if len(p) == 12: p = np.r_[p, 0.0]
+    n += nl // 2
+    sig_c, sig_k = 0.03 * W, 0.3
+    stages = [np.r_[0, 6:12]]
+    if n >= 8 or lines: stages.append(np.r_[0, 4, 6:12])
+    if n >= 14 or lines: stages.append(np.r_[0, 2, 3, 4, 5, 6:12])
+    if n >= 30 and lines: stages.append(np.r_[0, 2, 3, 4, 5, 6:12, 12])
+    for free in stages:
+        p = _fit_lines(p, free, groups, lines, W, H, sig_c, sig_k)
+    return p, report(p, W, H, rep, lines)
+
+
+def report(p, W, H, rep=(), lines=()):
+    K, D, rv, tv, R, C = _unpack_w(p)
+    items = []
+    for kind, ident, X, uv in rep:
+        q = wproj(p, np.asarray(X)[None])[0]
+        items.append(dict(kind=kind, id=ident, uv=np.round(uv, 2).tolist(),
+                          pred=np.round(q, 2).tolist() if np.isfinite(q).all() else None,
+                          err_px=round(float(np.linalg.norm(q - uv)), 2) if np.isfinite(q).all() else None))
+    errs = [i["err_px"] for i in items if i["err_px"] is not None]
+    tag_e = [i["err_px"] for i in items if i["kind"] == "tag" and i["err_px"] is not None]
+    pt_e = [i["err_px"] for i in items if i["kind"] == "point" and i["err_px"] is not None]
+    ln, by_line = [], {}
+    for li in lines:
+        Pw, pts, s = li[:3]
+        poly = wproj(p, Pw); poly = poly[np.isfinite(poly).all(1)]
+        if len(poly) >= 2 and len(pts):
+            d = seg_dist(pts, poly); ln.append(float(np.median(d)))
+            if len(li) > 3: by_line[li[3]] = round(float(np.median(d)), 2)
+    warn = []
+    if C[2] < 0.5: warn.append("camera below 0.5 m: check the clicked points")
+    if errs and np.sqrt(np.mean(np.square(errs))) > 4: warn.append("large residuals: some point is probably mislabelled")
+    n_line = sum(len(li[1]) for li in lines if len(li) > 3 and "(auto)" not in str(li[3]))
+    tids = [ident for kind, ident, X, uv in rep if kind == "tag"]
+    if tids and len(tids) == len(rep) and not n_line:
+        poses = load_tag_poses(TAG_CSV)
+        faces = {(round(float(np.degrees(poses[i][1]))) % 360, round(float(poses[i][0] @ [np.cos(poses[i][1]), np.sin(poses[i][1]), 0]), 1))
+                 for i in tids if i in poses}
+        if len(faces) <= 1:
+            warn.append("all tags are on one flat face: focal length and distance are not determined -- click field points or lines")
+    if len(rep) + n_line / 2 < 6: warn.append("few correspondences: check the grid carefully on the whole field")
+    return dict(f=round(float(K[0, 0]), 1), c=[round(float(K[0, 2]), 1), round(float(K[1, 2]), 1)],
+                k1=round(float(D[0]), 4), k2=round(float(D[1]), 5), k3=round(float(D[4]), 5), C=np.round(C, 3).tolist(),
+                n_tags=len(tag_e), n_points=len(pt_e),
+                tag_rms_px=round(float(np.sqrt(np.mean(np.square(tag_e)))), 2) if tag_e else None,
+                point_rms_px=round(float(np.sqrt(np.mean(np.square(pt_e)))), 2) if pt_e else None,
+                line_med_px=round(float(np.median(ln)), 2) if ln else None, lines=by_line,
+                items=items, warnings=warn)
+
+
+def line_world(name, n=120):
+    """World polylines the wizard can snap to (white tape on the carpet)."""
+    if name == "centerline":
+        return np.c_[np.full(n, LEN / 2), np.linspace(0.05, WID - 0.05, n), np.zeros(n)]
+    raise KeyError(name)
+
+
+def find_line_pixels(gray, p, name="centerline", search=20, min_contrast=40):
+    """Bright-tape pixels near the predicted world line, searched along the image normal (a robot-free
+    median plate works best).  -> Mx2 image points."""
+    Pw = line_world(name)
+    q = wproj(p, Pw)
+    H, W = gray.shape[:2]
+    g = cv2.GaussianBlur(gray, (3, 3), 0).astype(np.float32)
+    pts = []
+    for i in range(1, len(q) - 1):
+        if not (np.isfinite(q[i - 1:i + 2]).all()): continue
+        t = q[i + 1] - q[i - 1]; t /= max(np.linalg.norm(t), 1e-6); nrm = np.array([-t[1], t[0]])
+        s = np.arange(-search, search + 1)
+        xy = q[i] + s[:, None] * nrm
+        if (xy[:, 0] < 1).any() or (xy[:, 0] > W - 2).any() or (xy[:, 1] < 1).any() or (xy[:, 1] > H - 2).any(): continue
+        v = cv2.remap(g, xy[:, 0].astype(np.float32).reshape(1, -1), xy[:, 1].astype(np.float32).reshape(1, -1),
+                      cv2.INTER_LINEAR).ravel()
+        k = int(v.argmax())
+        if v[k] - np.median(v) < min_contrast or k in (0, len(v) - 1): continue
+        w = np.clip(v - np.median(v), 0, None); w[np.abs(s - s[k]) > 3] = 0
+        pts.append(q[i] + float((s * w).sum() / w.sum()) * nrm)
+    return np.array(pts).reshape(-1, 2)
+
+
+def refine_with_lines(p, gray, W, H, tags=None, points=None, tag_csv=TAG_CSV, names=("centerline",), sigma=1.0, extra=None):
+    """Re-fit with the white lines found near their predicted positions (two rounds); `extra` = clicked lines."""
+    rep = None
+    for _ in range(2):
+        lines = list(extra or [])
+        for nm in names:
+            pts = find_line_pixels(gray, p, nm)
+            if len(pts) >= 10: lines.append((line_world(nm, 400), pts, sigma, nm + " (auto)"))
+        if len(lines) == len(extra or []): break
+        p2, rep2 = wizard_fit(W, H, tags, points, lines, tag_csv, p_init=p)
+        if p2 is None: break
+        p, rep = p2, rep2
+    return p, rep
+
+
+def overlay_lines(p, W, H, grid=1.0):
+    """Projected field geometry for the accept/reject overlay: [{"kind", "name", "pts": [[u, v] | null...]}]
+    (null breaks a polyline: behind the camera)."""
+    R = _rules()
+    out = []
+
+    def add(kind, name, P, n=80):
+        P = np.asarray(P, float)
+        dense = np.concatenate([np.linspace(P[i], P[i + 1], n) for i in range(len(P) - 1)])
+        q = wproj(p, dense)
+        pts = [None if not np.isfinite(a).all() or abs(a[0]) > 4 * W or abs(a[1]) > 4 * H else [round(float(a[0]), 1), round(float(a[1]), 1)] for a in q]
+        out.append(dict(kind=kind, name=name, pts=pts))
+    if grid:
+        for x in np.arange(grid, LEN, grid):
+            add("grid", f"x={x:.0f}", [(x, 0, 0), (x, WID, 0)], 30)
+        for y in np.arange(grid, WID, grid):
+            add("grid", f"y={y:.0f}", [(0, y, 0), (LEN, y, 0)], 60)
+    add("field", "boundary", [(0, 0, 0), (LEN, 0, 0), (LEN, WID, 0), (0, WID, 0), (0, 0, 0)])
+    add("line", "centre line", [(LEN / 2, 0, 0), (LEN / 2, WID, 0)])
+    zx = R.get("zones") or {}
+    for x in (zx.get("blue_alliance_x_max", 4.028), zx.get("red_alliance_x_min", 12.513)):
+        add("line", "alliance line", [(x, 0, 0), (x, WID, 0)])
+    hub = R.get("hub") or {}
+    hc = hub.get("centers") or {"red": [11.915, 4.035], "blue": [4.626, 4.035]}
+    hs = (hub.get("footprint_m") or [1.194, 1.194])[0] / 2
+    hz = hub.get("opening_height_m", 1.829)
+    for side, (cx, cy) in hc.items():
+        sq = [(cx - hs, cy - hs), (cx + hs, cy - hs), (cx + hs, cy + hs), (cx - hs, cy + hs), (cx - hs, cy - hs)]
+        add("hub_" + side, f"{side} hub base", [(x, y, 0) for x, y in sq], 20)
+        add("hub_" + side, f"{side} hub top", [(x, y, hz) for x, y in sq], 20)
+        for x, y in sq[:4]:
+            add("hub_" + side, f"{side} hub edge", [(x, y, 0), (x, y, hz)], 10)
+    for tid, pose in load_tag_poses(TAG_CSV).items():
+        c = tag_corners(pose)
+        add("tag", str(tid), list(c) + [c[0]], 4)
+    return out
+
+
+def wizard_camera(p, W, H, crop=None, full_frame=False, frame_wh=None, **extra):
+    """Camera JSON.  Station cameras: inset pixels + "crop" (stationcam convention).  The overhead
+    camera (full_frame=True): converted to full-frame pixels (principal point shifted by the crop
+    offset) because the tracker works on the whole frame."""
+    d = camera_dict(p[:12], W, H, **extra)
+    if len(p) > 12 and abs(p[12]) > 0: d["dist"] = [float(p[4]), float(p[5]), 0.0, 0.0, float(p[12])]
+    if crop is not None and full_frame:
+        x0, y0 = crop[:2]
+        K = np.array(d["K"]); K[0, 2] += x0; K[1, 2] += y0
+        d["K"] = K.tolist()
+        if frame_wh: d["W"], d["H"] = int(frame_wh[0]), int(frame_wh[1])
+        d["picture"] = list(crop)
+    elif crop is not None:
+        d["crop"] = [int(v) for v in crop]
+    return d

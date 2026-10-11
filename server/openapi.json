@@ -1198,6 +1198,952 @@
      }
     }
    }
+  },
+  "/app/v1/events/{ev}/sources": {
+   "get": {
+    "tags": [
+     "sources"
+    ],
+    "summary": "Video sources of an event (viewer+)",
+    "operationId": "list_sources_app_v1_events__ev__sources_get",
+    "parameters": [
+     {
+      "name": "ev",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Ev"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   },
+   "post": {
+    "tags": [
+     "sources"
+    ],
+    "summary": "Add a pasted source (admin)",
+    "operationId": "add_source_app_v1_events__ev__sources_post",
+    "parameters": [
+     {
+      "name": "ev",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Ev"
+      }
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/SourceIn"
+       }
+      }
+     }
+    },
+    "responses": {
+     "201": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/app/v1/events/{ev}/sources/discover": {
+   "post": {
+    "tags": [
+     "sources"
+    ],
+    "summary": "Discover sources from TBA (admin)",
+    "operationId": "discover_app_v1_events__ev__sources_discover_post",
+    "parameters": [
+     {
+      "name": "ev",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Ev"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/app/v1/events/{ev}/sources/{sid}": {
+   "patch": {
+    "tags": [
+     "sources"
+    ],
+    "summary": "Edit a source: role, primary, coverage, ... (admin)",
+    "operationId": "patch_source_app_v1_events__ev__sources__sid__patch",
+    "parameters": [
+     {
+      "name": "sid",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Sid"
+      }
+     },
+     {
+      "name": "ev",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Ev"
+      }
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/SourcePatch"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   },
+   "delete": {
+    "tags": [
+     "sources"
+    ],
+    "summary": "Remove a source (admin; its layout is kept)",
+    "operationId": "delete_source_app_v1_events__ev__sources__sid__delete",
+    "parameters": [
+     {
+      "name": "sid",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Sid"
+      }
+     },
+     {
+      "name": "ev",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Ev"
+      }
+     }
+    ],
+    "responses": {
+     "204": {
+      "description": "Successful Response"
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/app/v1/events/{ev}/sources/{sid}/frame": {
+   "post": {
+    "tags": [
+     "sources"
+    ],
+    "summary": "Grab a sample frame (admin; job)",
+    "operationId": "grab_frame_app_v1_events__ev__sources__sid__frame_post",
+    "parameters": [
+     {
+      "name": "sid",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Sid"
+      }
+     },
+     {
+      "name": "ev",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Ev"
+      }
+     }
+    ],
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "additionalProperties": true,
+        "default": {},
+        "title": "Body"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/app/v1/events/{ev}/sources/{sid}/frame.jpg": {
+   "get": {
+    "tags": [
+     "sources"
+    ],
+    "summary": "The last grabbed frame of a source (admin)",
+    "operationId": "frame_jpg_app_v1_events__ev__sources__sid__frame_jpg_get",
+    "parameters": [
+     {
+      "name": "sid",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Sid"
+      }
+     },
+     {
+      "name": "ev",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Ev"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/app/v1/events/{ev}/layout": {
+   "get": {
+    "tags": [
+     "sources"
+    ],
+    "summary": "Layout boxes per source + defaults (viewer+)",
+    "operationId": "get_layout_app_v1_events__ev__layout_get",
+    "parameters": [
+     {
+      "name": "ev",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Ev"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/app/v1/events/{ev}/layout/{sid}": {
+   "put": {
+    "tags": [
+     "sources"
+    ],
+    "summary": "Save the boxes of one source (admin)",
+    "operationId": "put_layout_app_v1_events__ev__layout__sid__put",
+    "parameters": [
+     {
+      "name": "sid",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Sid"
+      }
+     },
+     {
+      "name": "ev",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Ev"
+      }
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/LayoutIn"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   },
+   "delete": {
+    "tags": [
+     "sources"
+    ],
+    "summary": "Forget the boxes of one source (admin)",
+    "operationId": "delete_layout_app_v1_events__ev__layout__sid__delete",
+    "parameters": [
+     {
+      "name": "sid",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Sid"
+      }
+     },
+     {
+      "name": "ev",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Ev"
+      }
+     }
+    ],
+    "responses": {
+     "204": {
+      "description": "Successful Response"
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/app/v1/events/{ev}/layout/{sid}/suggest": {
+   "post": {
+    "tags": [
+     "sources"
+    ],
+    "summary": "Suggest boxes from the video (admin; job)",
+    "operationId": "suggest_app_v1_events__ev__layout__sid__suggest_post",
+    "parameters": [
+     {
+      "name": "sid",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Sid"
+      }
+     },
+     {
+      "name": "ev",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Ev"
+      }
+     }
+    ],
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "additionalProperties": true,
+        "default": {},
+        "title": "Body"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/app/v1/events/{ev}/calibration": {
+   "get": {
+    "tags": [
+     "sources"
+    ],
+    "summary": "Calibration status per camera (viewer+)",
+    "operationId": "calibration_app_v1_events__ev__calibration_get",
+    "parameters": [
+     {
+      "name": "ev",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Ev"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/app/v1/events/{ev}/calibration/{target}/detect": {
+   "post": {
+    "tags": [
+     "sources"
+    ],
+    "summary": "Wizard step 1: frames + AprilTags (admin; job)",
+    "operationId": "calib_detect_app_v1_events__ev__calibration__target__detect_post",
+    "parameters": [
+     {
+      "name": "target",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Target"
+      }
+     },
+     {
+      "name": "ev",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Ev"
+      }
+     }
+    ],
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "additionalProperties": true,
+        "default": {},
+        "title": "Body"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/app/v1/events/{ev}/calibration/{target}/fit": {
+   "post": {
+    "tags": [
+     "sources"
+    ],
+    "summary": "Wizard step 2: fit tags + clicked points (admin; job)",
+    "operationId": "calib_fit_app_v1_events__ev__calibration__target__fit_post",
+    "parameters": [
+     {
+      "name": "target",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Target"
+      }
+     },
+     {
+      "name": "ev",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Ev"
+      }
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/FitIn"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/app/v1/events/{ev}/calibration/{target}/frame.jpg": {
+   "get": {
+    "tags": [
+     "sources"
+    ],
+    "summary": "The wizard frame of a camera (admin)",
+    "operationId": "calib_frame_app_v1_events__ev__calibration__target__frame_jpg_get",
+    "parameters": [
+     {
+      "name": "target",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Target"
+      }
+     },
+     {
+      "name": "ev",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Ev"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/app/v1/events/{ev}/calibration/{target}/wizard": {
+   "get": {
+    "tags": [
+     "sources"
+    ],
+    "summary": "Wizard state: tags, last fit (admin)",
+    "operationId": "calib_state_app_v1_events__ev__calibration__target__wizard_get",
+    "parameters": [
+     {
+      "name": "target",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Target"
+      }
+     },
+     {
+      "name": "ev",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Ev"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/app/v1/events/{ev}/calibration/{target}/overlay": {
+   "post": {
+    "tags": [
+     "sources"
+    ],
+    "summary": "Overlay of the saved calibration (admin; job)",
+    "operationId": "calib_overlay_app_v1_events__ev__calibration__target__overlay_post",
+    "parameters": [
+     {
+      "name": "target",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Target"
+      }
+     },
+     {
+      "name": "ev",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Ev"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/app/v1/events/{ev}/calibration/{target}/accept": {
+   "post": {
+    "tags": [
+     "sources"
+    ],
+    "summary": "Save the fitted camera for the pipeline (admin)",
+    "operationId": "calib_accept_app_v1_events__ev__calibration__target__accept_post",
+    "parameters": [
+     {
+      "name": "target",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Target"
+      }
+     },
+     {
+      "name": "ev",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Ev"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/app/v1/events/{ev}/jobs/{jid}": {
+   "get": {
+    "tags": [
+     "sources"
+    ],
+    "summary": "Job state / result (admin)",
+    "operationId": "job_app_v1_events__ev__jobs__jid__get",
+    "parameters": [
+     {
+      "name": "jid",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Jid"
+      }
+     },
+     {
+      "name": "ev",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Ev"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
   }
  },
  "components": {
@@ -1272,6 +2218,73 @@
     ],
     "title": "EventOut"
    },
+   "FitIn": {
+    "properties": {
+     "points": {
+      "additionalProperties": {
+       "anyOf": [
+        {
+         "items": {
+          "type": "number"
+         },
+         "type": "array"
+        },
+        {
+         "type": "null"
+        }
+       ]
+      },
+      "type": "object",
+      "title": "Points",
+      "description": "named field point -> [u, v] (target px)"
+     },
+     "drop_tags": {
+      "items": {
+       "type": "integer"
+      },
+      "type": "array",
+      "title": "Drop Tags"
+     },
+     "line_clicks": {
+      "additionalProperties": {
+       "items": {
+        "items": {
+         "type": "number"
+        },
+        "type": "array"
+       },
+       "type": "array"
+      },
+      "type": "object",
+      "title": "Line Clicks",
+      "description": "field line -> [[u, v], ...] (any points along it, >= 2)"
+     },
+     "tags": {
+      "anyOf": [
+       {
+        "additionalProperties": true,
+        "type": "object"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Tags"
+     },
+     "auto_lines": {
+      "type": "boolean",
+      "title": "Auto Lines",
+      "default": true
+     },
+     "more_tags": {
+      "type": "boolean",
+      "title": "More Tags",
+      "default": true
+     }
+    },
+    "type": "object",
+    "title": "FitIn"
+   },
    "HTTPValidationError": {
     "properties": {
      "detail": {
@@ -1300,6 +2313,48 @@
     ],
     "title": "KeyIn"
    },
+   "LayoutIn": {
+    "properties": {
+     "W": {
+      "type": "integer",
+      "maximum": 8192.0,
+      "exclusiveMinimum": 0.0,
+      "title": "W"
+     },
+     "H": {
+      "type": "integer",
+      "maximum": 8192.0,
+      "exclusiveMinimum": 0.0,
+      "title": "H"
+     },
+     "regions": {
+      "items": {
+       "$ref": "#/components/schemas/Region"
+      },
+      "type": "array",
+      "maxItems": 60,
+      "title": "Regions"
+     },
+     "frame": {
+      "anyOf": [
+       {
+        "additionalProperties": true,
+        "type": "object"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Frame"
+     }
+    },
+    "type": "object",
+    "required": [
+     "W",
+     "H"
+    ],
+    "title": "LayoutIn"
+   },
    "LoginIn": {
     "properties": {
      "username": {
@@ -1311,14 +2366,13 @@
      "password": {
       "type": "string",
       "maxLength": 256,
-      "minLength": 1,
-      "title": "Password"
+      "title": "Password",
+      "default": ""
      }
     },
     "type": "object",
     "required": [
-     "username",
-     "password"
+     "username"
     ],
     "title": "LoginIn"
    },
@@ -1620,6 +2674,64 @@
     ],
     "title": "PicklistOut"
    },
+   "Region": {
+    "properties": {
+     "id": {
+      "anyOf": [
+       {
+        "type": "string",
+        "maxLength": 40
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Id"
+     },
+     "kind": {
+      "type": "string",
+      "title": "Kind"
+     },
+     "label": {
+      "anyOf": [
+       {
+        "type": "string",
+        "maxLength": 120
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Label"
+     },
+     "box": {
+      "items": {
+       "type": "number"
+      },
+      "type": "array",
+      "maxItems": 4,
+      "minItems": 4,
+      "title": "Box"
+     },
+     "light_on_dark": {
+      "anyOf": [
+       {
+        "type": "boolean"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Light On Dark"
+     }
+    },
+    "type": "object",
+    "required": [
+     "kind",
+     "box"
+    ],
+    "title": "Region"
+   },
    "SessionOut": {
     "properties": {
      "setup_required": {
@@ -1653,7 +2765,7 @@
      "configured": {
       "type": "boolean",
       "title": "Configured",
-      "description": "TBA key set and at least one followed event (setup wizard finished)"
+      "description": "TBA key set, at least one followed event, and the setup wizard finished"
      }
     },
     "type": "object",
@@ -1717,6 +2829,12 @@
       "title": "Tba Key Hint",
       "description": "admin only: '\u2022\u2022\u2022\u2022abcd'"
      },
+     "setup_complete": {
+      "type": "boolean",
+      "title": "Setup Complete",
+      "description": "an admin finished the setup wizard (imported .env values don't count)",
+      "default": false
+     },
      "options": {
       "anyOf": [
        {
@@ -1775,6 +2893,17 @@
         "type": "null"
        }
       ]
+     },
+     "setup_complete": {
+      "anyOf": [
+       {
+        "type": "boolean"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Setup Complete"
      }
     },
     "type": "object",
@@ -1819,6 +2948,143 @@
     ],
     "title": "SetupIn"
    },
+   "SourceIn": {
+    "properties": {
+     "url": {
+      "type": "string",
+      "maxLength": 2000,
+      "title": "Url",
+      "description": "YouTube/Twitch URL (video, livestream, playlist, channel), direct .mp4/.m3u8 URL, or a file path under the media/data dir"
+     },
+     "role": {
+      "type": "string",
+      "title": "Role",
+      "description": "wide | dynamic | alliance-side",
+      "default": "wide"
+     },
+     "label": {
+      "anyOf": [
+       {
+        "type": "string",
+        "maxLength": 200
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Label"
+     },
+     "primary": {
+      "type": "boolean",
+      "title": "Primary",
+      "default": false
+     },
+     "coverage": {
+      "anyOf": [
+       {
+        "additionalProperties": true,
+        "type": "object"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Coverage"
+     }
+    },
+    "type": "object",
+    "required": [
+     "url"
+    ],
+    "title": "SourceIn"
+   },
+   "SourcePatch": {
+    "properties": {
+     "role": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Role"
+     },
+     "primary": {
+      "anyOf": [
+       {
+        "type": "boolean"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Primary"
+     },
+     "enabled": {
+      "anyOf": [
+       {
+        "type": "boolean"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Enabled"
+     },
+     "label": {
+      "anyOf": [
+       {
+        "type": "string",
+        "maxLength": 200
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Label"
+     },
+     "coverage": {
+      "anyOf": [
+       {
+        "additionalProperties": true,
+        "type": "object"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Coverage"
+     },
+     "sample": {
+      "anyOf": [
+       {
+        "additionalProperties": true,
+        "type": "object"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Sample"
+     },
+     "notes": {
+      "anyOf": [
+       {
+        "type": "string",
+        "maxLength": 2000
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Notes"
+     }
+    },
+    "type": "object",
+    "title": "SourcePatch"
+   },
    "UserCreate": {
     "properties": {
      "username": {
@@ -1836,7 +3102,9 @@
      "password": {
       "type": "string",
       "maxLength": 256,
-      "title": "Password"
+      "title": "Password",
+      "description": "optional for non-admins",
+      "default": ""
      },
      "role": {
       "type": "string",
@@ -1852,8 +3120,7 @@
     },
     "type": "object",
     "required": [
-     "username",
-     "password"
+     "username"
     ],
     "title": "UserCreate"
    },
@@ -1903,6 +3170,10 @@
      "active_sessions": {
       "type": "integer",
       "title": "Active Sessions"
+     },
+     "has_password": {
+      "type": "boolean",
+      "title": "Has Password"
      }
     },
     "type": "object",
@@ -1914,7 +3185,8 @@
      "disabled",
      "created_at",
      "last_login",
-     "active_sessions"
+     "active_sessions",
+     "has_password"
     ],
     "title": "UserOut"
    },
@@ -1971,7 +3243,7 @@
        }
       ],
       "title": "Password",
-      "description": "admin password reset; signs the user out"
+      "description": "admin password reset ('' = no password, non-admins only); signs the user out"
      }
     },
     "type": "object",
