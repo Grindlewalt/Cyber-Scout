@@ -29,7 +29,11 @@ Run heavy jobs on atomosserver (`/mnt/nas/autoscout-scratch`, `rtenv` Python, GP
   alternating); fuel entering ≤3 s after deactivation counts for the previous period.
 - Results: held-out 11 matches traced/TBA made = 0.91 (per alliance-match median 0.92, r=0.96); tuning 0.93.
   Attribution ~96% on checkable shots; made calls ~90%; missed ~60%. ~560 shots/match (335 made, 180 missed, 45 pass).
-- OPEN: blue hub ratio ~0.85 vs red ~1.00 (track ends cluster just outside the projected blue opening: camera pose at
+- UPDATE (shots2 agent): blue undercount fixed (held-out blue 0.853→~0.94, red ~1.00): cause was far-side blue HP
+  throws toward the camera ending in the funnel below the near rim, funnel-start veto, track breaks behind blue net
+  poles; missed-vs-pass accuracy 0.69→0.83 (labels .work/shots2/labels_*.json). New per-shot pass_kind/receiver_idx.
+  Remaining: dense frc8032-style streams lose balls in fuel.py; feeds barely validated; red HP makes slightly over.
+- (old) OPEN: blue hub ratio ~0.85 vs red ~1.00 (track ends cluster just outside the projected blue opening: camera pose at
   rim height on image-right? dense blue volleys losing balls?); missed vs pass vs feed-to-teammate; intakes not
   implemented; cross-alliance attributions (6%) are upstream robot identity swaps.
 - Data: events in `.work/shots/ev_v14` (tuning), `ev_hold` (held-out: qm21,22,24,25,26,29,30,31,34,35,36);

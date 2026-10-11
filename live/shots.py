@@ -40,6 +40,18 @@ Method
      >= 3 m from launch away from hubs.  Flights that start and end on one robot (hopper
      churn), end low at a robot (intake), travel < 1.2 m, or are short/ill-conditioned are not
      shots.  Fragments of one flight are joined when one ballistic fit explains all pieces.
+     Track repair before deciding: a hub-ending track that fits no single arc (ball in hand at the
+     start, tracker switched balls) keeps its longest clean tail (split_bad); a short piece that
+     re-appears in the funnel after passing behind the hub-net poles is appended to the flight
+     whose arc predicts it (join_continuations); a ball still seen falling INSIDE the clear funnel
+     is anchored below the rim too (end_anchors).  Human-player lobs need an end inside the
+     opening only when flying away from the camera (or into an inactive hub).
+     Missed vs pass (labelled by eye, .work/shots2/labels_*.json): a flight near a hub is a
+     missed shot only if launched by a robot from that hub's alliance zone (+0.5 m) -- lobs from
+     the neutral zone over / into the hub towards the alliance zone and human-player throws are
+     passes; a pass ending at / landing within 1 m of a teammate is a feed (pass_kind "feed",
+     receiver_idx).  Short (< 0.45 s), low-and-slow, off-field-landing and badly fitting
+     non-scoring flights are dropped as junk.
   4. Period on the match clock (analytics.match_clock; the auto->teleop pause counts as auto).
      Hub active per shift from TBA (auto winner -> inactive in shift 1, then alternating; tie
      -> per-shift counts); fuel entering <= 3 s after a hub deactivates counts for the
@@ -77,11 +89,13 @@ HUB_POLY_R = 0.65             # m, image test: a track ENDING inside this circle
 FUNNEL_DZ = 0.20              # m, ... and up to this far above the rim (last sighting while dropping in)
 FUNNEL_Z0 = 1.60              # m, ... or inside the clear funnel below it, down to this height
 END_Z, END_SXY, END_SZ = 1.80, 0.30, 0.25
+END_Z_DEEP = (1.55, 1.35)     # m, extra hub-entry anchors: last seen falling inside the clear funnel
 HUB_OPEN_R = 0.55             # m, opening radius (hexagon ~1.06 m across)         # 3D anchor of a hub entry (last observation)
 MADE_DC_INACTIVE = 8.0        # ... into a hub that is inactive at that moment
+FUNNEL_POP_DZ = 0.35          # m, ... unless its arc rises this far above the rim
 START_OUT_PX = 20.0           # px, a made flight must start this far outside the hub funnel
 LAND_MARGIN = 8.0             # hub entry must not be worse than 'lands behind the hub' by more
-MADE_DC_HP = 8.0              # ... thrown by a human player
+MADE_DC_HP = 20.0             # ... thrown by a human player
 MADE_DC = 25.0                # max cost increase of the hub-entry anchored fit vs the free best
 HUB_R_NEAR = 1.6              # m, "aimed at the hub" if the descending arc passes this close
 MIN_APEX, MIN_SPEED = 1.0, 3.0   # below either: a hop / kicked ball, not a shot
@@ -90,7 +104,15 @@ END_AT_ROBOT = 0.9            # m, a flight ending low this close to a robot = i
 PASS_MIN_RANGE, PASS_MIN_APEX = 3.0, 1.5
 MISS_PX = 40.0                # px, a flight passing this close to an opening was aimed at it
 MAX_SPEED = 16.0              # m/s, faster launches are fit failures
-MIN_DUR_OUTCOME = 0.35        # s, shorter non-scoring flights are dropped
+MIN_DUR_OUTCOME = 0.45        # s, shorter non-scoring flights are dropped (labelled: all junk)
+HOP_APEX, HOP_SPEED = 1.9, 6.0  # m, m/s: non-scoring flights below BOTH are pop-ups / hops
+LAND_OUT_M = 0.5              # m, non-scoring flights landing further outside the field are junk
+JUNK_RMS = 20.0               # px, non-scoring flights fitting this badly are junk
+ZONE_MARGIN = 0.5             # m, 'launched from the hub's alliance zone' tolerance
+FEED_R = 1.0                  # m, a pass landing this close to a teammate = feed
+SPLIT_RMS = 6.0               # px, a hub-ending track fitting worse than this is split ...
+SPLIT_TAILS = (1.0, 0.8, 0.6, 0.45)   # s, ... keeping the longest tail that is one clean arc
+SPLIT_TAIL_RMS = 4.5          # px
 MAX_RMS = 6.0                 # px, worse fits -> shooter unknown
 JOIN_GAP = 0.8                # s, max gap when joining fragments of one flight
 BOUNCE_DT, BOUNCE_PX = 0.25, 30.0
@@ -101,6 +123,9 @@ MIN_AIR_HUB = 0.15            # ... of candidates that end in a hub opening
 MIN_VIEW = 0.5
 MIN_N = 6
 DUP_R = 1.4                   # duplicate tracks: closer than this many ball radii
+CONT_MIN_N = 3                # continuation piece (re-appearing in the funnel after an occluder): min samples
+CONT_GAP = 0.35               # s, max gap before the continuation piece
+CONT_NEAR_PX = 60.0           # px, the flight must end this close to an opening (funnel hull)
 
 
 # ============================================================================ helpers
@@ -370,12 +395,27 @@ class Reconstructor:
         """Fraction of each period with live feed inside the fuel-tracked window."""
         out = {}
         f0, f1 = float(fuel.get("t_from", -1e9)), float(fuel.get("t_to", 1e9))
+        # camera moving / wrong view (fuel tracks with view_ok = 0): nothing is traced there, so
+        # those seconds are not covered either (0.5 s bins where view-bad tracks dominate)
+        bad_bins = set()
+        nb, ng = {}, {}
+        for tr in fuel.get("tracks", []):
+            b = int(math.floor(float(tr["t"][0]) / 0.5))
+            if tr.get("view_ok", 1) < MIN_VIEW:
+                nb[b] = nb.get(b, 0) + 1
+            else:
+                ng[b] = ng.get(b, 0) + 1
+        for b, v in nb.items():
+            if v > ng.get(b, 0):
+                bad_bins.update((b - 1, b, b + 1))
         for n, _, _ in self.F.periods:
             a, b = self.period_window(n)
             ts = np.linspace(a, b, 200)
             ok = (ts >= f0) & (ts <= f1)
             for g0, g1 in self.feed_gaps:
                 ok &= ~((ts >= g0) & (ts <= g1))
+            if bad_bins:
+                ok &= ~np.isin(np.floor(ts / 0.5).astype(int), list(bad_bins))
             out[n] = round(float(ok.mean()), 3)
         return out
 
@@ -585,6 +625,18 @@ class Reconstructor:
         th, chi2, pc, X = self.fit.solve(tau, xn)
         return dict(th=th[0], tL=float(T[0]), chi2=float(chi2[0]), cost=float(chi2[0] + pc[0]))
 
+    def end_anchors(self, al, uv_end):
+        """Anchors of a hub entry: the last sighting at rim height (end_anchor) and, since a
+        ball is often still visible falling INSIDE the clear funnel below the rim, points
+        lower down the same viewing ray that are still inside the hub."""
+        out = [self.end_anchor(al, uv_end)]
+        c = self.F.hub[al]
+        for z in END_Z_DEEP:
+            P = self.cam.img_to_plane(uv_end[None], z)[0]
+            if np.isfinite(P).all() and np.linalg.norm(P - c) < HUB_OPEN_R:
+                out.append((al, np.r_[P, z], np.array([END_SXY, END_SXY, 0.12])))
+        return out
+
     def end_anchor(self, al, uv_end):
         """3D anchor of a hub entry: the point on the last observation's viewing ray, at
         rim height, that lies in the opening (closest to its centre if none does)."""
@@ -647,12 +699,52 @@ class Reconstructor:
         hyps = self.fit_hyps(T, uv)
         c.update(free=free, hyps=hyps, end_al=al_end, hyps_end=None)
         if al_end is not None:
-            c["hyps_end"] = self.fit_hyps(T, uv, self.end_anchor(al_end, uv[-1]))
+            best = None
+            for anc in self.end_anchors(al_end, uv[-1]):
+                hy = self.fit_hyps(T, uv, anc)
+                if best is None or hy[0]["cost"] < best[0]["cost"]:
+                    best = hy
+            c["hyps_end"] = best
             # alternative: the ball came down on the carpet BEHIND the hub (same pixel)
             g = self.cam.img_to_plane(uv[-1:], 0.1)[0]
             if np.isfinite(g).all():
                 c["hyps_land"] = self.fit_hyps(T, uv, (None, np.r_[g, 0.1], np.array([0.3, 0.3, 0.12])))
         return c
+
+    def _rms(self, h, n):
+        return math.sqrt(h["chi2"] * SIG_PX ** 2 / max(1, n))
+
+    def split_bad(self, cands):
+        """A long track that ends in a hub opening but fits no single flight (the 2D tracker
+        switched balls mid-track, or a throw from behind the alliance wall bounced off the net)
+        loses that hub entry.  Keep the longest TAIL that is one clean ballistic arc as the
+        flight (the earlier part becomes its own candidate)."""
+        out, n = [], 0
+        for c in cands:
+            T, uv = c["T"], c["uv"]
+            if c["end_al"] is None or len(T) < 2 * MIN_N:
+                out.append(c); continue
+            best = min([c["hyps"][0]] + ([c["hyps_end"][0]] if c["hyps_end"] else []), key=lambda h: h["cost"])
+            if self._rms(best, len(T)) <= SPLIT_RMS:
+                out.append(c); continue
+            cut = None
+            for w in SPLIT_TAILS:
+                i0 = int(np.searchsorted(T, T[-1] - w))
+                if len(T) - i0 < MIN_N or i0 == 0:
+                    continue
+                f = self.free_fit(T[i0:], uv[i0:])
+                if f["chi2"] < 1e8 and self._rms(f, len(T) - i0) < SPLIT_TAIL_RMS:
+                    cut = i0
+                    break
+            if cut is None:
+                out.append(c); continue
+            n += 1
+            for a, b in ((0, cut), (cut, len(T))):
+                if b - a >= MIN_N:
+                    out.append(self.analyse(dict(ids=list(c["ids"]), T=T[a:b], uv=uv[a:b], r=c["r"], air=c["air"],
+                                                 split=True)))
+        out.sort(key=lambda c: c["T"][0])
+        return out, n
 
     def join_fragments(self, cands):
         """Join A -> B when B starts after A ended and A's fitted arc (best hypothesis)
@@ -674,6 +766,8 @@ class Reconstructor:
                 B = cands[j]
                 if B["T"][0] <= A["T"][-1] - 0.02:
                     continue
+                if set(A["ids"]) & set(B["ids"]):
+                    continue                   # pieces of a track split_bad() cut apart
                 k = min(4, len(B["T"]))
                 p = self._pred_px(h, B["T"][:k])
                 gap = B["T"][0] - tA
@@ -719,6 +813,53 @@ class Reconstructor:
             out.append(c)
         return out, njoin
 
+    def join_continuations(self, cands, all_tracks):
+        """A ball passing behind a hub-net pole / frame just above the opening loses its track;
+        the piece that re-appears inside the funnel is often too short (< MIN_N samples) or too
+        weakly airborne to be a candidate itself.  Append such a non-candidate piece to the flight
+        whose fitted arc predicts it, when the piece ends in a hub opening."""
+        used = {i for c in cands for i in c["ids"]}
+        st = sorted((tr for tr in all_tracks if tr["id"] not in used and len(tr["t"]) >= CONT_MIN_N
+                     and tr.get("view_ok", 1) >= MIN_VIEW), key=lambda tr: tr["t"][0])
+        if not st:
+            return cands, 0
+        t0s = np.array([tr["t"][0] for tr in st])
+        taken, out, n = set(), [], 0
+        for c in cands:
+            if c["end_al"] is not None:
+                out.append(c); continue
+            T, uv = c["T"], c["uv"]
+            # only flights whose end is close to an opening (image)
+            e = (float(uv[-1, 0]), float(uv[-1, 1]))
+            if max(self.cv2.pointPolygonTest(p, e, True) for p in self.hub_funnel.values()) < -CONT_NEAR_PX:
+                out.append(c); continue
+            h = c["hyps"][0]
+            lo, hi = np.searchsorted(t0s, T[-1] - 0.02), np.searchsorted(t0s, T[-1] + CONT_GAP)
+            best, bd = None, None
+            for j in range(lo, hi):
+                if j in taken:
+                    continue
+                B = st[j]
+                TB, UB = np.asarray(B["t"], float), np.asarray(B["uv"], float)
+                if TB[0] <= T[-1] - 0.02 or self.end_hub(TB, UB) is None:
+                    continue
+                k = min(3, len(TB))
+                d = float(np.median(np.linalg.norm(self._pred_px(h, TB[:k]) - UB[:k], axis=1)))
+                if d < 12 + 60 * (TB[0] - T[-1]) and (bd is None or d < bd):
+                    best, bd = j, d
+            if best is None:
+                out.append(c); continue
+            B = st[best]
+            TT = np.r_[T, np.asarray(B["t"], float)]; UU = np.r_[uv, np.asarray(B["uv"], float)]
+            o = np.argsort(TT, kind="stable")
+            c2 = self.analyse(dict(ids=c["ids"] + [B["id"]], T=TT[o], uv=UU[o], r=c["r"], air=c["air"]))
+            if c2["end_al"] is None:
+                out.append(c); continue
+            taken.add(best); n += 1
+            c2["cont"] = B["id"]
+            out.append(c2)
+        return out, n
+
     def decide(self, c):
         """-> shot dict fields or None (not a shot)."""
         T, uv = c["T"], c["uv"]
@@ -736,14 +877,25 @@ class Reconstructor:
                 # long, flat human-player lobs often die on the far rim / net: demand a clean
                 # fit and an end inside the opening itself (not the funnel below it)
                 thr = min(thr, MADE_DC_HP)
+                # ... when the lob flies AWAY from the camera: the far rim / net then projects
+                # into the funnel image.  A lob coming TOWARDS the camera (the far-side outpost)
+                # is last seen dropping into the funnel below the near rim -> funnel end is fine.
                 e = (float(uv[-1, 0]), float(uv[-1, 1]))
-                if self.cv2.pointPolygonTest(self.hub_poly[c["end_al"]], e, False) < 0:
+                away = float(he["th"][3:5] @ (self.F.hub[c["end_al"]] - self.cam.C[:2])) > 0
+                inactive = thr == MADE_DC_INACTIVE
+                if (away or inactive) and self.cv2.pointPolygonTest(self.hub_poly[c["end_al"]], e, False) < 0:
                     thr = -1e9
             # balls rolling INSIDE the hub (already scored) start in the funnel too
             s0 = (float(uv[0, 0]), float(uv[0, 1]))
+            # (they stay low; a ball that first appears near the funnel image but then flies well
+            # above the rim is a real shot launched behind / beyond the hub -- common at the
+            # far-side hub, whose funnel image reaches up to where those flights are first seen)
             if (he["src"][0] == "floor"
                     and self.cv2.pointPolygonTest(self.hub_funnel[c["end_al"]], s0, True) > -START_OUT_PX):
-                thr = -1e9
+                tsf, Xf, _ = self.arc(he)
+                zf = Xf[:min(len(tsf) - 1, int(np.searchsorted(tsf, T[-1]))) + 1, 2].max()
+                if zf < self.F.hub_z + FUNNEL_POP_DZ:
+                    thr = -1e9
             # ... and must explain the track better than a ball coming down on the carpet
             # behind the hub along the same line of sight
             if c.get("hyps_land"):
@@ -769,6 +921,7 @@ class Reconstructor:
         speed = float(np.linalg.norm(v0))
         outc, target, oconf, t_entry = None, None, 0.5, None
         if h["src"][0] == "floor" and not made_ok:
+            c["why"] = "floor"
             return None
         if made_ok and not c.get("bounced"):
             outc, target, t_entry = "made", f"{c['end_al']}_hub", float(T[-1])
@@ -776,40 +929,81 @@ class Reconstructor:
         else:
             # not a hub entry: real shot / pass or just a hop / bounce?
             if apex < MIN_APEX or speed < MIN_SPEED:
+                c["why"] = "apex_speed"
                 return None
             # the OBSERVED flight must carry the ball away from where it started, and not
             # just drop it into a robot (balls churning in a hopper, intakes, hops)
             Xo = traj(h["th"], T - h["tL"])
             d_obs = float(np.linalg.norm(Xo[-1, :2] - h["th"][0:2]))
             if d_obs < MIN_TRAVEL:
+                c["why"] = "travel"
                 return None
             if h["src"][0] not in ("robot", "human"):
+                c["why"] = "unattributed"
                 return None                    # unattributed non-scoring flight: not useful, mostly junk
             if self.in_hopper(T, uv):
+                c["why"] = "hopper"
                 return None
             te = T[-1]
+            kind, sal, sk = h["src"]
+            rms = math.sqrt(h["chi2"] * SIG_PX ** 2 / max(1, len(T)))
+            receiver = None
             for k in range(self.rob.n):
                 if (np.linalg.norm(Xo[-1, :2] - self.rob.pos(k, te)) < END_AT_ROBOT
                         and Xo[-1, 2] < 1.3):
+                    # a ball dropping into a TEAMMATE's hopper after a real lob is a feed;
+                    # anything else ending low at a robot is an intake / hopper churn
+                    if (kind == "robot" and k != sk and self.rob.alliance[k] == sal
+                            and d_obs >= PASS_MIN_RANGE and apex >= PASS_MIN_APEX):
+                        receiver = k
+                        break
+                    c["why"] = "end_at_robot"
                     return None
             land = X[-1, :2]
-            implausible = (speed > MAX_SPEED or land[0] < -1 or land[0] > self.F.L + 1
-                           or land[1] < -1 or land[1] > self.F.W + 1)
+            m_ = LAND_OUT_M
+            implausible = (speed > MAX_SPEED or land[0] < -m_ or land[0] > self.F.L + m_
+                           or land[1] < -m_ or land[1] > self.F.W + m_ or rms > JUNK_RMS)
             if implausible or T[-1] - T[0] < MIN_DUR_OUTCOME:
                 # short / ill-conditioned non-scoring fragments are (on inspection) almost
                 # all hops, hopper churn, balls handled off-field -> not shots
+                c["why"] = "implausible_short"
                 return None
-            if self.img_near_hub(uv) is not None or (nh is not None and nh["dmin"] < HUB_R_NEAR):
-                hal = self.img_near_hub(uv) or nh["hub"]
+            if apex < HOP_APEX and speed < HOP_SPEED:
+                c["why"] = "hop"                # low, slow pop-ups next to robots
+                return None
+            near = self.img_near_hub(uv) is not None or (nh is not None and nh["dmin"] < HUB_R_NEAR)
+            hal = (self.img_near_hub(uv) or nh["hub"]) if near else None
+            o = h["th"][0:3]
+            if near and kind == "robot" and not c.get("bounced") and rms <= MAX_RMS:
+                # the hubs only take fuel launched from their alliance zone (the rear net blocks
+                # the neutral side): a launch from outside it that comes near the hub is a lob
+                # over / into the net towards the alliance zone = a pass, not a missed shot
+                in_zone = (o[0] < self.F.blue_x + ZONE_MARGIN) if hal == "blue" else (o[0] > self.F.red_x - ZONE_MARGIN)
+                if not in_zone:
+                    near = False
+            if near and kind == "human" and not c.get("bounced"):
+                near = False                    # human-player throws are feeds into the field
+            if near:
                 outc, target = "missed", f"{hal}_hub"
                 oconf = 0.75 if c.get("bounced") or T[-1] >= nh["t_near"] - 0.1 else 0.5
                 if c.get("bounced"):
                     oconf = 0.8
             else:
-                if np.linalg.norm(land - h["th"][0:2]) < PASS_MIN_RANGE or apex < PASS_MIN_APEX:
+                if receiver is None and (np.linalg.norm(land - h["th"][0:2]) < PASS_MIN_RANGE
+                                         or apex < PASS_MIN_APEX):
+                    c["why"] = "pass_short"
                     return None
                 outc, target = "pass", None
                 oconf = 0.6
+                if receiver is None and kind == "robot":
+                    # landing next to a teammate (its intake) -> feed
+                    tl = ts[-1]
+                    for k in range(self.rob.n):
+                        if (k != sk and self.rob.alliance[k] == sal
+                                and np.linalg.norm(land - self.rob.pos(k, tl)) < FEED_R):
+                            receiver = k
+                            break
+                c["receiver"] = receiver
         return dict(h=h, alt=alt, arc=(ts, X), nh=nh, outcome=outc, target=target, oconf=oconf,
                     t_entry=t_entry, apex=apex, speed=speed)
 
@@ -855,7 +1049,9 @@ class Reconstructor:
         cands = self.candidates(fuel)
         n_raw = len(cands)
         cands = [self.analyse(c) for c in cands]
+        cands, nsplit = self.split_bad(cands)
         cands, njoin = self.join_fragments(cands)
+        cands, ncont = self.join_continuations(cands, fuel["tracks"])
         self.mark_bounces(cands, fuel["tracks"])
         bounce_ids = {c["bounced"] for c in cands if c.get("bounced")}
         shots, n_hop = [], 0
@@ -872,7 +1068,7 @@ class Reconstructor:
         ev = dict(shots=shots, intakes=[], first_inactive=self.first_inactive,
                   hub_active={al: v for al, v in self.sched.items()})
         ev["reconcile"] = reconcile(shots, self.tba, self.sched, self.coverage(fuel))
-        ev["stats"] = dict(candidates=n_raw, duplicates=getattr(self, "n_dups", 0), joined=njoin, hops=n_hop, bounce_outs=len(bounce_ids),
+        ev["stats"] = dict(candidates=n_raw, duplicates=getattr(self, "n_dups", 0), joined=njoin, continued=ncont, split=nsplit, hops=n_hop, bounce_outs=len(bounce_ids),
                            shots=len(shots), made=sum(s["outcome"] == "made" for s in shots),
                            wall_s=round(time.time() - t0, 1))
         self.log(f"  shots: {n_raw} candidate flights ({njoin} joined, {n_hop} hops) -> {len(shots)} shots "
@@ -930,6 +1126,8 @@ class Reconstructor:
             made_dc=None if c.get("made_dc") is None else round(c["made_dc"], 1),
             land_dc=None if c.get("land_dc") is None else round(c["land_dc"], 1),
             bounced=c.get("bounced"),
+            pass_kind=(("feed" if c.get("receiver") is not None else "floor") if d["outcome"] == "pass" else None),
+            receiver_idx=c.get("receiver") if d["outcome"] == "pass" else None,
             cross_alliance=bool(kind == "robot" and hub_al is not None and al != hub_al), **(rx or {}))
 
     def volleys(self, shots, gap=VOLLEY_GAP):
