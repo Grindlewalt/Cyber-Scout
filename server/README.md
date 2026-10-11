@@ -17,7 +17,9 @@ or live at `/app/v1/docs` and `/app/v1/openapi.json`.
   page JS; also returned as `csrf` by `GET /session`). Signed in, it must also equal the session's own token.
   `CS.app()` in `web/setup.js` does this for you.
 * **Roles** (ascending): `viewer` < `scout` < `strategist` < `admin`. 401 = not signed in, 403 = role too low / CSRF.
-* **Passwords**: argon2id, min 10 chars (`PASSWORD_MIN`), not equal to the username. Login: generic error for bad
+* **Passwords**: argon2id. Admins: min 10 chars (`PASSWORD_MIN`), not equal to the username. Everyone else:
+  optional (blank = sign in with the username), min 4 chars if set (`MEMBER_PASSWORD_MIN`); promoting someone to
+  admin needs an admin-grade password first (`users.pw_strength`). Login: generic error for bad
   user/password; rate limit 10 failures per (IP, username) and 30 per IP per 15 min -> 429 + `Retry-After`.
 * **First run**: no users -> `GET /session` says `setup_required`; `POST /setup` creates the admin once, with the
   one-time code in `DATA/setup-code.txt` (0600; printed by `deploy/install.sh`; `SETUP_CODE_REQUIRED=0` disables).
@@ -95,4 +97,4 @@ python -m pytest server/tests            # 42 tests: auth, sessions, CSRF, rate 
 DATA=/tmp/cs uvicorn server.main:app --port 8000   # one process (rate limiter is in memory)
 ```
 Env: `DATA`, `PUID/PGID` (container), `SETUP_CODE_REQUIRED`, `SESSION_IDLE_DAYS`, `SESSION_MAX_DAYS`,
-`COOKIE_SECURE` (auto|1|0), `PASSWORD_MIN`, `TBA_BASE`, and legacy `TBA_KEY` / `EVENTS` (imported once).
+`COOKIE_SECURE` (auto|1|0), `PASSWORD_MIN`, `MEMBER_PASSWORD_MIN`, `TBA_BASE`, and legacy `TBA_KEY` / `EVENTS` (imported once).

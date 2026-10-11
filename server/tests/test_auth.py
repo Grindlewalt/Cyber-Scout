@@ -159,3 +159,33 @@ def test_seed_from_env(data, monkeypatch):
         pass
     wc = json.loads((data / "config" / "worker.json").read_text())
     assert wc["tba_key"] == GOOD_KEY and sorted(wc["events"]) == ["2026cmptx", "2026wasam"]
+
+
+def test_optional_passwords_for_non_admins(admin, app):
+    from .conftest import new_client
+    # no password: sign in with just the username
+    r = admin.post("/users", {"username": "kid", "role": "scout"})
+    assert r.status_code == 201 and r.json()["has_password"] is False
+    c = new_client(app)
+    assert c.login("kid", "").status_code == 200
+    assert new_client(app).login("kid", "guess").status_code == 401
+    # short passwords are fine for teammates, too-short (<4) is not
+    assert admin.post("/users", {"username": "kid2", "password": "abc", "role": "viewer"}).status_code == 422
+    r = admin.post("/users", {"username": "kid3", "password": "abcd", "role": "strategist"})
+    assert r.status_code == 201 and r.json()["has_password"] is True
+    # admins still need the long password
+    assert admin.post("/users", {"username": "boss", "role": "admin"}).status_code == 422
+    assert admin.post("/users", {"username": "boss", "password": "abcd", "role": "admin"}).status_code == 422
+    # promoting a no/short-password teammate needs a real password first (or in the same request)
+    kid3 = r.json()["id"]
+    assert admin.patch(f"/users/{kid3}", {"role": "admin"}).status_code == 409
+    assert admin.patch(f"/users/{kid3}", {"role": "admin", "password": "abcd"}).status_code == 422
+    assert admin.patch(f"/users/{kid3}", {"role": "admin", "password": "long enough now"}).status_code == 200
+    # a teammate can add (and remove) their own password
+    assert c.post("/auth/password", {"current_password": "", "new_password": "mine"}).status_code == 204
+    assert new_client(app).login("kid", "mine").status_code == 200
+    assert new_client(app).login("kid", "").status_code == 401
+    # the admin can clear a teammate's password
+    kid = [u for u in admin.get("/users").json() if u["username"] == "kid"][0]["id"]
+    assert admin.patch(f"/users/{kid}", {"password": ""}).status_code == 200
+    assert new_client(app).login("kid", "").status_code == 200

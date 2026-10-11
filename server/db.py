@@ -17,7 +17,8 @@ CREATE TABLE IF NOT EXISTS users (
   disabled INTEGER NOT NULL DEFAULT 0,
   created_at REAL NOT NULL,
   updated_at REAL NOT NULL,
-  last_login REAL
+  last_login REAL,
+  pw_strength INTEGER NOT NULL DEFAULT 2   -- 0 no password, 1 short (member rules), 2 meets the admin rules
 );
 CREATE TABLE IF NOT EXISTS sessions (
   token_hash TEXT PRIMARY KEY,           -- sha256 of the cookie value; the raw token is never stored
@@ -93,6 +94,9 @@ def init():
     try:
         c.execute("PRAGMA journal_mode=WAL")
         c.executescript(CORE_SCHEMA)
+        if "pw_strength" not in {r[1] for r in c.execute("PRAGMA table_info(users)")}:
+            # older DBs: every existing password was set under the admin-grade rule
+            c.execute("ALTER TABLE users ADD COLUMN pw_strength INTEGER NOT NULL DEFAULT 2")
         for sql in _extra:
             c.executescript(sql)
     finally:

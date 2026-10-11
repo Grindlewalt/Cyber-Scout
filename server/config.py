@@ -18,7 +18,8 @@ class Config:
         self.SESSION_IDLE_DAYS = float(e("SESSION_IDLE_DAYS", "7"))      # signed out after a week unused
         self.SESSION_MAX_DAYS = float(e("SESSION_MAX_DAYS", "30"))       # ... and after 30 days regardless
         self.COOKIE_SECURE = e("COOKIE_SECURE", "auto")                  # auto: Secure iff X-Forwarded-Proto=https
-        self.PASSWORD_MIN = int(e("PASSWORD_MIN", "10"))
+        self.PASSWORD_MIN = int(e("PASSWORD_MIN", "10"))                 # admins
+        self.MEMBER_PASSWORD_MIN = int(e("MEMBER_PASSWORD_MIN", "4"))    # everyone else: optional, but this long if set
         self.TBA_BASE = e("TBA_BASE", "https://www.thebluealliance.com/api/v3")
         # legacy .env values, imported into the DB once on first start (upgrade path for existing stacks)
         self.SEED_TBA_KEY = e("TBA_KEY", "")

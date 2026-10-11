@@ -30,7 +30,7 @@ class SetupIn(BaseModel):
 
 class LoginIn(BaseModel):
     username: str = Field(min_length=1, max_length=64)
-    password: str = Field(min_length=1, max_length=256)
+    password: str = Field("", max_length=256)     # empty for teammates without a password
 
 
 class PasswordIn(BaseModel):
@@ -38,11 +38,24 @@ class PasswordIn(BaseModel):
     new_password: str = Field(max_length=256)
 
 
-def check_password_policy(pw: str, username: str = ""):
-    if len(pw) < cfg.PASSWORD_MIN:
-        raise HTTPException(422, f"password must be at least {cfg.PASSWORD_MIN} characters")
-    if username and pw.lower() == username.lower():
-        raise HTTPException(422, "password must not be the username")
+def password_strength(pw: str, username: str = "") -> int:
+    """0 = none, 1 = meets the teammate rule only, 2 = meets the admin rule."""
+    if not pw:
+        return 0
+    return 2 if len(pw) >= cfg.PASSWORD_MIN and pw.lower() != (username or "").lower() else 1
+
+
+def check_password_policy(pw: str, username: str = "", role: str = "admin") -> int:
+    """Admins need PASSWORD_MIN+ characters (not the username). Everyone else: optional, MEMBER_PASSWORD_MIN+ if set.
+    Returns the strength to store in users.pw_strength."""
+    if role == "admin":
+        if len(pw) < cfg.PASSWORD_MIN:
+            raise HTTPException(422, f"admin passwords must be at least {cfg.PASSWORD_MIN} characters")
+        if username and pw.lower() == username.lower():
+            raise HTTPException(422, "password must not be the username")
+    elif pw and len(pw) < cfg.MEMBER_PASSWORD_MIN:
+        raise HTTPException(422, f"password must be at least {cfg.MEMBER_PASSWORD_MIN} characters (or leave it blank)")
+    return password_strength(pw, username)
 
 
 def check_username(u: str):
@@ -121,7 +134,8 @@ def setup(body: SetupIn, request: Request, response: Response, db=Depends(DB.get
                 login_limiter.fail(ip, "#setup")
                 raise HTTPException(403, "wrong setup code (see data/setup-code.txt on the server)")
         now = time.time()
-        uid = db.execute("INSERT INTO users(username,display_name,pw_hash,role,created_at,updated_at) VALUES(?,?,?,?,?,?)",
+        uid = db.execute("INSERT INTO users(username,display_name,pw_hash,role,created_at,updated_at,pw_strength) "
+                         "VALUES(?,?,?,?,?,?,2)",
                          (body.username, body.display_name.strip(), hash_password(body.password), "admin", now, now)).lastrowid
         csrf = start_session(db, request, response, uid)
     ensure_setup_code(db)
@@ -168,10 +182,11 @@ def change_password(body: PasswordIn, request: Request, response: Response,
     if not ok:
         login_limiter.fail(client_ip(request), user.username)
         raise HTTPException(403, "current password is wrong")
-    check_password_policy(body.new_password, user.username)
+    strength = check_password_policy(body.new_password, user.username, user.role)
     keep = token_hash(request.cookies.get(SESSION_COOKIE, ""))
     with DB.tx(db):
-        db.execute("UPDATE users SET pw_hash=?, updated_at=? WHERE id=?", (hash_password(body.new_password), time.time(), user.id))
+        db.execute("UPDATE users SET pw_hash=?, pw_strength=?, updated_at=? WHERE id=?",
+                   (hash_password(body.new_password), strength, time.time(), user.id))
         db.execute("DELETE FROM sessions WHERE user_id=? AND token_hash<>?", (user.id, keep))
     return None
 

@@ -180,10 +180,10 @@
     $app.innerHTML = `<div class="card authcard"><h1>Sign in</h1><div class="sub">Cyber-Scout. Ask your team's admin for an account.</div>
       <form class="csform" autocomplete="on">
         <label>Username<input name="username" autocomplete="username" required maxlength="32" autocapitalize="none" spellcheck="false"></label>
-        <label>Password<input name="password" type="password" autocomplete="current-password" required></label>
+        <label>Password<input name="password" type="password" autocomplete="current-password" placeholder="blank if you don't have one"></label>
         <button type="submit" class="primary">Sign in</button><div class="cserr"></div></form></div>`;
     form($app, async d => {
-      CS.session = await CS.app("POST", "auth/login", { username: d.username.trim(), password: d.password });
+      CS.session = await CS.app("POST", "auth/login", { username: d.username.trim(), password: d.password || "" });
       CS.user = CS.session.user;
       afterAuth();
     });
@@ -196,14 +196,14 @@
     const u = CS.user;
     $app.innerHTML = `<h1>${esc(u.display_name || u.username)}</h1><div class="sub">Signed in as <b>${esc(u.username)}</b> · role <b>${esc(u.role)}</b> (${esc(ROLE_TIP[u.role])})</div>
       <div class="card" style="max-width:480px"><h2>Change password</h2>
-      <form class="csform"><label>Current password<input name="current_password" type="password" autocomplete="current-password" required></label>
-        <label>New password<input name="new_password" type="password" autocomplete="new-password" minlength="10" required></label>
+      <form class="csform"><label>Current password<input name="current_password" type="password" autocomplete="current-password" placeholder="blank if you don't have one"></label>
+        <label>New password${u.role === "admin" ? " (10+ characters)" : " (optional: 4+ characters, blank = none)"}<input name="new_password" type="password" autocomplete="new-password" ${u.role === "admin" ? 'minlength="10" required' : 'minlength="4"'}></label>
         <label>Repeat new password<input name="again" type="password" autocomplete="new-password" required></label>
         <button type="submit" class="primary">Change password</button><div class="cserr"></div><div class="csok"></div></form>
       <div class="note">Changing your password signs you out everywhere else.</div></div>`;
     form($app, async (d, f) => {
       if (d.new_password !== d.again) throw new Error("the new passwords don't match");
-      await CS.app("POST", "auth/password", { current_password: d.current_password, new_password: d.new_password });
+      await CS.app("POST", "auth/password", { current_password: d.current_password || "", new_password: d.new_password || "" });
       f.reset(); $app.querySelector(".csok").textContent = "Password changed.";
     });
   });

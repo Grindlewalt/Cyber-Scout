@@ -19,12 +19,13 @@
   });
 
   // ---------------------------------------------------------------- users
+  const MIN_ADMIN = 10, MIN_MEMBER = 4;   // server: PASSWORD_MIN / MEMBER_PASSWORD_MIN
   async function users(el) {
     const list = await CS.app("GET", "users");
     const me = CS.user.id;
     el.innerHTML = `<div class="grid2" style="align-items:start">
       <div class="card"><h2>Teammates</h2><div class="tablewrap"><table><thead><tr><th>User</th><th>Role</th><th>Last sign-in</th><th></th></tr></thead><tbody>
-      ${list.map(u => `<tr data-id="${u.id}" class="${u.disabled ? "dnp" : ""}"><td><b>${esc(u.username)}</b>${u.id === me ? ' <span class="pill">you</span>' : ""}<div class="muted small">${esc(u.display_name)}</div></td>
+      ${list.map(u => `<tr data-id="${u.id}" class="${u.disabled ? "dnp" : ""}"><td><b>${esc(u.username)}</b>${u.id === me ? ' <span class="pill">you</span>' : ""}${u.has_password === false ? ' <span class="pill" title="signs in with just the username">no password</span>' : ""}<div class="muted small">${esc(u.display_name)}</div></td>
         <td><select data-role ${u.id === me ? "disabled" : ""}>${CS.ROLES.map(r => `<option value="${r}" ${r === u.role ? "selected" : ""}>${r}</option>`).join("")}</select></td>
         <td class="small">${u.disabled ? '<span class="pill failed">disabled</span>' : when(u.last_login)}${u.active_sessions ? `<div class="muted small">${u.active_sessions} session${u.active_sessions > 1 ? "s" : ""}</div>` : ""}</td>
         <td style="white-space:nowrap">${u.id === me ? `<a href="#/account" class="small">change password</a>` : `<button data-act="reset" title="set a new password (signs them out)">Reset password</button>
@@ -35,15 +36,22 @@
         <form class="csform"><label>Username<input name="username" required minlength="2" maxlength="32" pattern="[A-Za-z0-9][A-Za-z0-9._-]+" autocapitalize="none" spellcheck="false" autocomplete="off"></label>
           <label>Name<input name="display_name" maxlength="64" autocomplete="off"></label>
           <label>Role<select name="role">${CS.ROLES.map(r => `<option value="${r}" ${r === "scout" ? "selected" : ""}>${r}: ${esc(CS.ROLE_TIP[r])}</option>`).join("")}</select></label>
-          <label>Temporary password<div class="row"><input name="password" required minlength="10" autocomplete="new-password" spellcheck="false"><button type="button" id="gen" style="flex:none">Generate</button></div></label>
+          <label><span id="pwlabel"></span><div class="row"><input name="password" autocomplete="new-password" spellcheck="false"><button type="button" id="gen" style="flex:none">Generate</button></div></label>
           <button type="submit" class="primary">Create account</button><div class="cserr"></div><div class="csok"></div></form>
-        <div class="note">Share the username + password with them in person; they can change the password under their name (top right).</div></div></div>`;
+        <div class="note">Passwords are optional for everyone except admins (${MIN_ADMIN}+ characters). Share the username (+ password) with them in person; they can set or change it under their name (top right).</div></div></div>`;
     const f = el.querySelectorAll(".card")[1];
+    const roleSel = f.querySelector("[name=role]"), pwIn = f.querySelector("[name=password]");
+    const pwRule = () => {                    // admins: required, 10+; everyone else: optional
+      const adm = roleSel.value === "admin";
+      pwIn.required = adm; pwIn.minLength = adm ? MIN_ADMIN : MIN_MEMBER;
+      f.querySelector("#pwlabel").textContent = adm ? `Password (${MIN_ADMIN}+ characters)` : "Password (optional)";
+    };
+    roleSel.onchange = pwRule; pwRule();
     f.querySelector("#gen").onclick = () => { f.querySelector("[name=password]").value = CS.genPassword(); };
     CS.form(f, async (d, fm) => {
       const u = await CS.app("POST", "users", { username: d.username.trim(), display_name: d.display_name || "", role: d.role, password: d.password });
       await users(el);
-      el.querySelector("#uok").textContent = `Created ${u.username} (${u.role}). Password: ${d.password}`;
+      el.querySelector("#uok").textContent = `Created ${u.username} (${u.role}). ` + (d.password ? `Password: ${d.password}` : "No password: they sign in with just the username.");
     });
     const msg = (t, ok) => { el.querySelector("#uerr").textContent = ok ? "" : t; el.querySelector("#uok").textContent = ok ? t : ""; };
     el.querySelectorAll("tr[data-id]").forEach(tr => {
@@ -60,9 +68,12 @@
             if (!confirm(`Delete ${u.username}? Their notes are kept. (Disable instead to keep the account.)`)) return;
             await CS.app("DELETE", "users/" + id); await users(el);
           } else if (b.dataset.act === "reset") {
-            const pw = prompt(`New password for ${u.username} (10+ characters). They'll be signed out.`, CS.genPassword());
-            if (!pw) return;
-            await CS.app("PATCH", "users/" + id, { password: pw }); await users(el); msg(`New password for ${u.username}: ${pw}`, true);
+            const adm = u.role === "admin";
+            const pw = prompt(adm ? `New password for ${u.username} (${MIN_ADMIN}+ characters). They'll be signed out.`
+                                  : `New password for ${u.username} (optional: leave blank for none). They'll be signed out.`, adm ? CS.genPassword() : "");
+            if (pw === null) return;
+            await CS.app("PATCH", "users/" + id, { password: pw }); await users(el);
+            msg(pw ? `New password for ${u.username}: ${pw}` : `${u.username} now signs in with just the username.`, true);
           }
         } catch (e) { msg(e.message); }
       });
