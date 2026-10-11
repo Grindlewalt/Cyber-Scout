@@ -21,7 +21,7 @@ inputs are a fixed 48x320 batch.
 import os, sys, threading, numpy as np, cv2
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-MODEL_DIRS = [os.environ.get("AUTOSCOUT_OCR_DIR", ""), os.path.join(HERE, "models", "ocr"),
+MODEL_DIRS = [os.environ.get("CYBERSCOUT_OCR_DIR", ""), os.path.join(HERE, "models", "ocr"),
               os.path.join(os.path.dirname(HERE), ".work", "identity", "models")]
 UP = 3.0                 # crop upscale before text detection (numbers are ~10-20 px tall)
 BUCKETS = (192, 256, 320, 384, 448, 512)   # detector input sizes (square, pad)
@@ -42,7 +42,7 @@ def _find_models():
     for d in MODEL_DIRS:
         if d and os.path.exists(os.path.join(d, "ch_PP-OCRv3_rec_infer.onnx")):
             return d
-    raise FileNotFoundError("OCR models not found (live/models/ocr or $AUTOSCOUT_OCR_DIR)")
+    raise FileNotFoundError("OCR models not found (live/models/ocr or $CYBERSCOUT_OCR_DIR)")
 
 
 class BumperOCR:

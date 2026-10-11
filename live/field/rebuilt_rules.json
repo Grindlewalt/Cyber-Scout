@@ -507,6 +507,6 @@
     "https://firstfrc.blob.core.windows.net/frc2026/Manual/TeamUpdates/REBUILT_TeamUpdate-Combined.pdf (TU22 final, Apr 21 2026)",
     "https://firstfrc.blob.core.windows.net/frc2026/FieldAssets/2026-field-dimension-dwgs.pdf (FE-2026 sheets 2, 11, 22, 25)",
     "https://www.firstinspires.org/hubfs/web/volunteer/frc/2026-rebuilt-game-overview.pdf (not read, binary-only in fetch)",
-    "/Users/grant/Projects/autoscout/live/field/2026-rebuilt-welded.json (tag positions, welded)"
+    "live/field/2026-rebuilt-welded.json (tag positions, welded)"
   ]
 }

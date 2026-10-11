@@ -1,12 +1,12 @@
-# autoscout-live -- lives in /opt/stacks/autoscout (app/ = this repo, data/ = all state)
+# Cyber-Scout -- lives in /opt/stacks/cyber-scout (app/ = this repo, data/ = all state)
 #   docker compose up -d --build        start / update
 #   docker compose logs -f worker       watch matches being processed
-name: autoscout
+name: cyber-scout
 services:
   worker:
     build: ./app
-    image: autoscout-worker:latest
-    container_name: autoscout-worker
+    image: cyber-scout-worker:latest
+    container_name: cyber-scout-worker
     restart: unless-stopped
     env_file: .env
     environment:
@@ -28,8 +28,8 @@ services:
     build:
       context: ./app
       dockerfile: web/Dockerfile
-    image: autoscout-web:latest
-    container_name: autoscout-web
+    image: cyber-scout-web:latest
+    container_name: cyber-scout-web
     restart: unless-stopped
     ports:
       - "7560:80"

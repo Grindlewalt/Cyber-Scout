@@ -1,4 +1,4 @@
-# autoscout-live v2 — fully autonomous quantitative scouting
+# Cyber-Scout v2 — fully autonomous quantitative scouting
 
 Goal: from the overhead broadcast camera alone (+ TBA), produce every data point a
 scouting team would want about every robot, with honest confidence on each.

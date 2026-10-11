@@ -43,7 +43,7 @@
  * event.json  teams[].q (recommended, avoids fetching every team file for the table; otherwise derived from t/*.json analytics):
  *   {n,acc,made,att,fire,volley,cycle,intakes,climb,defs,pins,automade,dead (share of matches),role,speed,dist,conf}
  * ============================================================================================ */
-// autoscout-live front end: hash-routed, reads the JSON the worker writes under api/.
+// Cyber-Scout front end: hash-routed, reads the JSON the worker writes under api/.
 const $app = document.getElementById("app");
 const $crumbs = document.getElementById("crumbs");
 const $updated = document.getElementById("updated");

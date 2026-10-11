@@ -3,7 +3,7 @@
 Condensed from each module's build report, so a fresh agent can pick a piece up
 without the original agent's context. Contracts: `live/SPEC_V2.md`.
 Run heavy jobs on atomosserver (`/mnt/nas/autoscout-scratch`, `rtenv` Python, GPU 1 only,
-`nice -n 10`, detached). Never touch `/opt/stacks/autoscout` (production) or GPU 0.
+`nice -n 10`, detached). Never touch `/opt/stacks/cyber-scout` (production) or GPU 0.
 
 ## fuel.py — moving-fuel detection + 2D tracking (done)
 - Videos are 30p content in a 60p container (every other frame a duplicate) — handled; tracker works in seconds.

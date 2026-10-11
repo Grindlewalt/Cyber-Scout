@@ -1,4 +1,4 @@
-"""autoscout-live worker: poll TBA, process each newly published match, publish JSON.
+"""Cyber-Scout worker: poll TBA, process each newly published match, publish JSON.
 
 Environment:
   TBA_KEY        TBA read key (required)

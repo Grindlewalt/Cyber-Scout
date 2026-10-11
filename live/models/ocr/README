@@ -9,4 +9,4 @@ RapidOCR are both Apache License 2.0; https://github.com/PaddlePaddle/PaddleOCR,
 https://github.com/RapidAI/RapidOCR).  Unmodified.
 
 Note: the repo .gitignore ignores *.onnx -- add "!live/models/ocr/*.onnx" (or ship them
-next to the detector model and set AUTOSCOUT_OCR_DIR).
+next to the detector model and set CYBERSCOUT_OCR_DIR).

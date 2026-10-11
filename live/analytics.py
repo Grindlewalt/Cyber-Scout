@@ -1,4 +1,4 @@
-"""autoscout-live v2 robot analytics (movement-derived + event-derived metrics).
+"""Cyber-Scout robot analytics (movement-derived + event-derived metrics).
 
 Public API
 ----------

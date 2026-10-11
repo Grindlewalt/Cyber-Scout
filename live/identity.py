@@ -466,7 +466,7 @@ def assign_event(results, tba_matches, overrides=None):
 
 
 # ------------------------------------------------------------------ feature extraction (video pass)
-OCR_DIRS = [os.environ.get("AUTOSCOUT_OCR_DIR", ""),
+OCR_DIRS = [os.environ.get("CYBERSCOUT_OCR_DIR", ""),
             os.path.join(os.path.dirname(os.path.abspath(__file__)), "models", "ocr"),
             os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".work", "identity", "models")]
 _OCR = {}
@@ -478,12 +478,12 @@ def _ocr_sessions():
     import onnxruntime as ort
     d = next((p for p in OCR_DIRS if p and os.path.exists(os.path.join(p, "ch_PP-OCRv3_rec_infer.onnx"))), None)
     if d is None:
-        raise FileNotFoundError("OCR models not found; set AUTOSCOUT_OCR_DIR (see identity.py)")
+        raise FileNotFoundError("OCR models not found; set CYBERSCOUT_OCR_DIR (see identity.py)")
     so = ort.SessionOptions(); so.log_severity_level = 3
-    so.intra_op_num_threads = int(os.environ.get("AUTOSCOUT_OCR_THREADS", "2"))
+    so.intra_op_num_threads = int(os.environ.get("CYBERSCOUT_OCR_THREADS", "2"))
     prov = ["CPUExecutionProvider"]
-    if os.environ.get("AUTOSCOUT_OCR_CUDA") is not None and "CUDAExecutionProvider" in ort.get_available_providers():
-        prov = [("CUDAExecutionProvider", {"device_id": int(os.environ["AUTOSCOUT_OCR_CUDA"])}), "CPUExecutionProvider"]
+    if os.environ.get("CYBERSCOUT_OCR_CUDA") is not None and "CUDAExecutionProvider" in ort.get_available_providers():
+        prov = [("CUDAExecutionProvider", {"device_id": int(os.environ["CYBERSCOUT_OCR_CUDA"])}), "CPUExecutionProvider"]
     _OCR["det"] = ort.InferenceSession(os.path.join(d, "ch_PP-OCRv3_det_infer.onnx"), so, providers=prov)
     _OCR["rec"] = ort.InferenceSession(os.path.join(d, "ch_PP-OCRv3_rec_infer.onnx"), so, providers=prov)
     chars = ["<b>"] + _OCR["rec"].get_modelmeta().custom_metadata_map["character"].splitlines() + [" "]

@@ -1,4 +1,4 @@
-# autoscout-live
+# Cyber-Scout
 
 Watches FRC events on The Blue Alliance. Every time a match is played and its video
 shows up on YouTube, it downloads the video, tracks all six robots from the overhead
@@ -6,10 +6,10 @@ field camera, works out which robot is which team, and publishes everything to a
 scouting site: http://atomosserver:7560 (LAN/Tailscale only).
 
 ```
-/opt/stacks/autoscout/
+/opt/stacks/cyber-scout/
   docker-compose.yml   two containers: worker (GPU) + web (nginx, port 7560)
   .env                 TBA_KEY, EVENTS, POLL_SECONDS, PUID/PGID   <- back up (secret)
-  app/                 the code (git: ~/Projects/autoscout, branch `live`)
+  app/                 the code (git: github.com/Grindlewalt/Cyber-Scout)
   data/                ALL state                              <- back up
     models/robot.onnx    the trained robot detector (irreplaceable-ish: ~2 h to retrain)
     events/<key>/        camera.json (calibration), matches/*.json (processed tracks),
@@ -22,8 +22,8 @@ scouting site: http://atomosserver:7560 (LAN/Tailscale only).
 ## Restore on a fresh machine
 
 1. Install Docker (+ NVIDIA container toolkit if there's an NVIDIA GPU).
-2. Copy the backed-up `/opt/stacks/autoscout` folder back into place.
-3. `cd /opt/stacks/autoscout && docker compose up -d --build`
+2. Copy the backed-up `/opt/stacks/cyber-scout` folder back into place.
+3. `cd /opt/stacks/cyber-scout && docker compose up -d --build`
 
 That's it. Already-processed matches are not redone (they're in `data/events/*/matches`).
 No GPU? Delete the `deploy:` block in `docker-compose.yml`; it runs on CPU, ~4x slower.
@@ -53,7 +53,7 @@ docker compose restart worker          # pick up .env changes
 2. `live/process.py`: checks the camera hasn't been bumped (AprilTags + the white centre
    line; re-solves the pose if it moved, and carries it to the next match), runs the YOLO
    robot detector (ONNX, GPU) at 30 Hz on the field, reads the match start off the broadcast
-   clock (or robot motion), and tracks with autoscout's tracker (`src/track.py`, `fit6.py`,
+   clock (or robot motion), and tracks with the tracker from autoscout (`src/track.py`, `fit6.py`,
    `assign.py`; wide-camera path of `fuse_track.py` in `live/fuse.py`).
    Broadcast glitches are handled: red/blue-swapped frames are un-swapped, and stretches where
    the field camera is missing from the video are marked (the next upload of the same match is

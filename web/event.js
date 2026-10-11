@@ -34,8 +34,8 @@ const QCOLS = [
   ["role", "Role", q => q.role, "s", 0, 1, "classified role"], ["n", "n", q => q.n, "0", 1, 1, "matches the stats are based on"]];
 
 function teamsTable(el, d, ev) {
-  const vis = lsGet("autoscout:cols", null) || Object.fromEntries(QCOLS.map(c => [c[0], !!c[5]]));
-  const picks = lsGet("autoscout:picks:" + ev, {}), stars = new Set(picks.stars || []);
+  const vis = lsGet("cyberscout:cols", null) || Object.fromEntries(QCOLS.map(c => [c[0], !!c[5]]));
+  const picks = lsGet("cyberscout:picks:" + ev, {}), stars = new Set(picks.stars || []);
   let sk = "rank", dir = 1, rows = null, showCfg = false;
   const base = [["rank", "Rank", r => r.t.rank ?? "–", true, r => r.t.rank], ["number", "Team", r => `<a class="team" href="#/${ev}/t/${r.t.key}">${r.t.number}</a>${stars.has(r.t.key) ? ' <span class="starm">★</span>' : ""}`, false, r => r.t.number],
     ["nickname", "Name", r => esc(r.t.nickname), false, r => r.t.nickname || ""], ["opr", "OPR", r => fx(r.t.opr), true, r => r.t.opr],
@@ -52,7 +52,7 @@ function teamsTable(el, d, ev) {
       <div class="note">Per-match means over tracked matches (n). Accuracy is pooled made / attempted; Cycle is time between volleys; Dead is the share of matches the robot stopped
       mid-match. Hover a header for its definition. Open a team for confidence and detail.</div>`;
     el.querySelector("#cfg").onclick = () => { showCfg = !showCfg; render(); };
-    el.querySelectorAll(".cfg input").forEach(i => i.onchange = () => { vis[i.dataset.c] = i.checked; lsSet("autoscout:cols", vis); render(); });
+    el.querySelectorAll(".cfg input").forEach(i => i.onchange = () => { vis[i.dataset.c] = i.checked; lsSet("cyberscout:cols", vis); render(); });
     el.querySelectorAll("th").forEach(th => th.onclick = () => {
       const k = th.dataset.k; if (sk === k) dir = -dir; else { sk = k; const q = QCOLS.find(c => c[0] === k); dir = ["rank", "number", "nickname", "cycle", "dead"].includes(k) ? 1 : -1; if (q && q[4] === -1) dir = 1; }
       render();
@@ -64,13 +64,13 @@ function teamsTable(el, d, ev) {
 
 // ------------------------------------------------------------------ compare
 async function comparePane(el, d, ev, arg) {
-  let sel = (arg ? arg.split(",") : lsGet("autoscout:cmp:" + ev, [])).filter(k => d.teams.some(t => t.key === k || t.key === "frc" + k)).map(k => k.startsWith("frc") ? k : "frc" + k).slice(0, 3);
+  let sel = (arg ? arg.split(",") : lsGet("cyberscout:cmp:" + ev, [])).filter(k => d.teams.some(t => t.key === k || t.key === "frc" + k)).map(k => k.startsWith("frc") ? k : "frc" + k).slice(0, 3);
   const opts = d.teams.map(t => `<option value="${t.key}">${t.number} ${esc(t.nickname || "")}</option>`).join("");
   el.innerHTML = `<div class="controls">${[0, 1, 2].map(i => `<select data-i="${i}"><option value="">${i < 2 ? "choose team" : "(optional) third team"}</option>${opts}</select>`).join("")}</div>
     <div id="cmpbody" class="cmp"></div>`;
   const body = el.querySelector("#cmpbody");
   const selects = [...el.querySelectorAll("select")];
-  selects.forEach((s, i) => { s.value = sel[i] || ""; s.onchange = () => { sel = selects.map(x => x.value).filter(Boolean); lsSet("autoscout:cmp:" + ev, sel); build(); }; });
+  selects.forEach((s, i) => { s.value = sel[i] || ""; s.onchange = () => { sel = selects.map(x => x.value).filter(Boolean); lsSet("cyberscout:cmp:" + ev, sel); build(); }; });
   async function build() {
     if (!sel.length) { body.innerHTML = `<div class="empty">Pick 2–3 teams to compare shot charts, autos and key metrics side by side.</div>`; return; }
     const ts = await Promise.all(sel.map(k => getTeam(ev, k)));
@@ -96,9 +96,9 @@ const PL_DEFAULT = { made: 3, acc: 2, climb: 1.5, automade: 1, cycle: 0.5, dead:
 async function picklistPane(el, d, ev) {
   el.innerHTML = `<div class="loading">Loading team stats…</div>`;
   const rows = (await loadRows(d, ev)).filter(r => r.q);
-  const st = Object.assign({ stars: [], dnp: [], weights: { ...PL_DEFAULT } }, lsGet("autoscout:picks:" + ev, {}));
+  const st = Object.assign({ stars: [], dnp: [], weights: { ...PL_DEFAULT } }, lsGet("cyberscout:picks:" + ev, {}));
   st.weights = { ...PL_DEFAULT, ...st.weights };
-  const save = () => lsSet("autoscout:picks:" + ev, st);
+  const save = () => lsSet("cyberscout:picks:" + ev, st);
   const keys = QCOLS.filter(c => c[4] !== 0 && c[0] !== "n" && c[0] !== "att" && c[0] !== "pins" && c[0] !== "dist");
   const range = {}; keys.forEach(c => { const v = rows.map(r => c[2](r.q)).filter(has); range[c[0]] = [Math.min(...v), Math.max(...v)]; });
   let only = "all";

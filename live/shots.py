@@ -1,5 +1,5 @@
 """Shot reconstruction: who launched every FUEL flight, from where, with what 3D arc,
-and whether it was made / missed / a pass (autoscout-live v2, see SPEC_V2.md "Events").
+and whether it was made / missed / a pass (Cyber-Scout v2, see SPEC_V2.md "Events").
 
     reconstruct(fuel, match, cam, rules, tba_match=None, log=print) -> Events
     python live/shots.py FUEL.json MATCH.json CAMERA.json RULES.json OUT.json [TBA_MATCHES.json]

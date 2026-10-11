@@ -126,7 +126,7 @@ async function teamPage(ev, tk) {
   const ag = d.analytics, S = ag && ag.scoring || {}, MV = ag && ag.movement || {}, DF = ag && ag.defense || {}, EG = ag && ag.endgame || {}, RL = ag && ag.reliability || {};
   const ms = d.matches || [], an = ms.map(m => m.analytics || null);
   const tr = fn => an.map(a => { try { return a ? fn(a) : null; } catch (x) { return null; } });
-  const starred = (lsGet("autoscout:picks:" + ev, {}).stars || []).includes(tk);
+  const starred = (lsGet("cyberscout:picks:" + ev, {}).stars || []).includes(tk);
   const role = ag && ag.role;
   const mcf = m => m.team_conf != null ? m.team_conf : m.conf;
   const cfs = ms.map(mcf).filter(x => x != null), idMean = d.team_conf != null ? d.team_conf : cfs.length ? cfs.reduce((a, b) => a + b, 0) / cfs.length : null;
@@ -194,8 +194,8 @@ async function teamPage(ev, tk) {
 
   document.querySelectorAll(".jump a").forEach(a => a.onclick = ev_ => { ev_.preventDefault(); const s = document.getElementById("s-" + a.dataset.j); s && s.scrollIntoView({ behavior: "smooth", block: "start" }); });
   document.getElementById("star").onclick = e_ => {
-    const p = lsGet("autoscout:picks:" + ev, {}); p.stars = p.stars || [];
-    const i = p.stars.indexOf(tk); i >= 0 ? p.stars.splice(i, 1) : p.stars.push(tk); lsSet("autoscout:picks:" + ev, p);
+    const p = lsGet("cyberscout:picks:" + ev, {}); p.stars = p.stars || [];
+    const i = p.stars.indexOf(tk); i >= 0 ? p.stars.splice(i, 1) : p.stars.push(tk); lsSet("cyberscout:picks:" + ev, p);
     e_.target.classList.toggle("on", i < 0); e_.target.textContent = i < 0 ? "★ Starred" : "☆ Star";
   };
 

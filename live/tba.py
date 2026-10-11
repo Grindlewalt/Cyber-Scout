@@ -20,7 +20,7 @@ class TBA:
         if cached and max_age and time.time() - cached.get("fetched", 0) < max_age:
             return cached["data"]
         req = urllib.request.Request(BASE + ep, headers={"X-TBA-Auth-Key": self.key,
-                                                         "User-Agent": "autoscout-live"})
+                                                         "User-Agent": "cyber-scout"})
         if cached and cached.get("etag"):
             req.add_header("If-None-Match", cached["etag"])
         try:
