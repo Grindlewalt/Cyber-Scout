@@ -8,13 +8,14 @@ scouting site: http://atomosserver:7560 (LAN/Tailscale only).
 ```
 /opt/stacks/autoscout/
   docker-compose.yml   two containers: worker (GPU) + web (nginx, port 7560)
-  .env                 TBA_KEY, EVENTS, POLL_SECONDS          <- back up (secret)
+  .env                 TBA_KEY, EVENTS, POLL_SECONDS, PUID/PGID   <- back up (secret)
   app/                 the code (git: ~/Projects/autoscout, branch `live`)
   data/                ALL state                              <- back up
     models/robot.onnx    the trained robot detector (irreplaceable-ish: ~2 h to retrain)
     events/<key>/        camera.json (calibration), matches/*.json (processed tracks),
                          status.json, overrides.json (manual team fixes)
     site/api/            generated site JSON (rebuilt automatically)
+    training/            public datasets (from Roboflow, once), event labels, checkpoints
     tba/ cache/          disposable
 ```
 
@@ -49,10 +50,14 @@ docker compose restart worker          # pick up .env changes
 1. `live/worker.py` polls TBA (ETag-cached) for played matches and picks the full-frame
    field-camera video (FIRST Washington "Wide Match N", else FIRST HQ's per-match upload),
    configurable per event via `events/<key>/event.json` (`prefer`, `reject`, `allow_channels`).
-2. `live/process.py`: checks the camera hasn't moved (AprilTags), runs the YOLO robot
-   detector (ONNX, GPU) at 30 Hz on the field, reads the match start off the broadcast clock
-   (or robot motion), and tracks with autoscout's tracker (`src/track.py`, `fit6.py`,
+2. `live/process.py`: checks the camera hasn't been bumped (AprilTags + the white centre
+   line; re-solves the pose if it moved, and carries it to the next match), runs the YOLO
+   robot detector (ONNX, GPU) at 30 Hz on the field, reads the match start off the broadcast
+   clock (or robot motion), and tracks with autoscout's tracker (`src/track.py`, `fit6.py`,
    `assign.py`; wide-camera path of `fuse_track.py` in `live/fuse.py`).
+   Broadcast glitches are handled: red/blue-swapped frames are un-swapped, and stretches where
+   the field camera is missing from the video are marked (the next upload of the same match is
+   tried; stats only count filmed time; the site shows "partial footage").
 3. `live/identity.py` labels robots with teams by solving the whole event at once: a team's
    robot looks the same, starts in a similar spot and climbs (or not, per TBA) in every match.
 4. The worker writes `data/site/api/**.json`; `web/` is a static app that reads it.
