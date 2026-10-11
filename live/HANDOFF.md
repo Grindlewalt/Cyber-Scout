@@ -39,7 +39,26 @@ Run heavy jobs on atomosserver (`/mnt/nas/autoscout-scratch`, `rtenv` Python, GP
 - Data: events in `.work/shots/ev_v14` (tuning), `ev_hold` (held-out: qm21,22,24,25,26,29,30,31,34,35,36);
   server `/mnt/nas/autoscout-scratch/agents/shots/{fuel,vids,ev_*}` (fuel results for 34 matches).
 
-## identity — bumper OCR (done) → tracker v2 (in progress)
+## tracker v2 — OCR-anchored identity (done; integrated by lead)
+- live/ocr.py: OcrSampler picks detections (conf≥0.3) not tried for 0.3 s, ≤3/frame; bumper crop (±0.6 m, z 0–0.5 m)
+  → PP-OCRv3 det at 0°/±45° + rec in 4 worker processes (GPU via OCR_GPU, default GPU_DEVICE); CTC-scored against
+  the 6 TBA teams; ~99.5% of reads right. Models live/models/ocr/ (Apache-2.0).
+- live/fuse.py run_labeled: reads set alliance before tracklets; tracklets cut where reads change team; merge never
+  across conflicting reads; one ILP (scipy milp) over 6 team paths with "limbo" (untracked, no position claim);
+  per-frame conf (reads posterior × alliance, propagated along links; contradicting-read windows capped).
+- Results vs hand GT (19 matches, position metric): 87.6% of samples (95.3% of answered, 8% abstain) vs old 32.5%;
+  conf≥0.8 → 98.9%. Ghost frames 11.5%→0.9%. Calibrated: 0.8–0.95 → 97.5%, ≥0.95 → 99.3%.
+- Output: tracks ordered red1-3, blue1-3 with team/team_conf/conf[@10Hz]; match.identity {method, n_reads,
+  per_team_reads, corrections[...] (cut/relink with evidence, encounter, conf, anchored, unresolved)}.
+  Limbo frames: obs=0, conf=0 → treat as unknown.
+- process(..., teams={"red":[...],"blue":[...]}) — without teams it falls back to v1 output.
+- ~200 s/match on the server GPU. Weak spots: robots whose numbers OCR never reads (fonts/angles, e.g. 4469, 949) —
+  identity from linking only, conf 0.3–0.7. Next ideas: more angles/digit detector, pre-match frames, appearance
+  prototypes learned from read-anchored tracklets, margin-based conf, TensorRT for OCR.
+- libapriltag destructor segfault (intermittent) fixed by a single module-level detector in process.check_pose.
+- Scratch: .work/tracker/ (eval_new.py, refit.py, corr_sheet.py); server agents/tracker/{code2,work/out,out4}.
+
+## identity — bumper OCR (done) → superseded by tracker v2 above
 - Hand ground truth: `.work/identity/ground_truth.json` (20 matches, 114 confident tracks, per-crop reads with
   replay frames). Old labels were chance level (32% per-frame); 67% of old tracks swap robots; some follow opponents.
 - PP-OCRv3 det+rec (onnxruntime, ~13 MB, Apache-2.0 via rapidocr_onnxruntime 1.2.3), reads matched against the 6 match

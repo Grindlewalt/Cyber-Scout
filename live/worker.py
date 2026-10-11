@@ -36,6 +36,7 @@ RETRY_NO_VIDEO = 300
 V2 = os.environ.get("V2", "1") == "1"            # fuel/shot/analytics enrichment
 MEDIA = os.environ.get("MEDIA", "/media")         # kept match videos, served at /media/ (NAS-backed)
 KEEP_VIDEO = os.environ.get("KEEP_VIDEO", "1") == "1"
+ID_CONF_MIN = float(os.environ.get("ID_CONF_MIN", "0.5"))   # below: shots/frames are not credited to a team
 MAX_ATTEMPTS = 3
 
 
@@ -92,7 +93,7 @@ def process_match(ev, m, cfg, status, meta_cache):
                 pose_p = os.path.join(ev_dir(ev), "pose_latest.json")
                 res = process.process(vpath, ev_file(ev, "camera.json"), MODEL, TAG_CSV,
                                       log=lambda *a: log(m["key"], *a), start_hint=start_hint(ev, v),
-                                      pose_guess=jload(pose_p))
+                                      pose_guess=jload(pose_p), teams=match_teams(m))
                 pc = res.get("pose", {})
                 if pc.get("tags", 0) >= 3 and (pc.get("applied") or (pc.get("moved_px") or 99) < 2.0):
                     jsave(pose_p, res["camera_pose"])          # verified pose: next match starts here
@@ -132,6 +133,11 @@ def process_match(ev, m, cfg, status, meta_cache):
         for vp in paths:
             if os.path.exists(vp): os.remove(vp)
         jsave(os.path.join(ev_dir(ev), "status.json"), status)
+
+
+def match_teams(m):
+    """TBA station order: red 1-3, blue 1-3 (the tracker labels its paths with these)."""
+    return {a: m["alliances"][a]["team_keys"] for a in ("red", "blue")}
 
 
 def start_hint(ev, v):
@@ -197,7 +203,9 @@ def build_site(ev, tba):
                 a = lab.get(t["alliance"], {})
                 team = a.get("labels", {}).get(t["idx"])
                 tracks.append(dict(alliance=t["alliance"], idx=t["idx"], team=team,
-                                   id_conf=a.get("confidence"), manual=a.get("manual", False),
+                                   id_conf=t.get("team_conf", a.get("confidence")), manual=a.get("manual", False),
+                                   team_conf=t.get("team_conf"), conf=t.get("conf"),
+                                   reads=((r.get("identity") or {}).get("per_team_reads") or {}).get(team),
                                    xy=t["xy"], obs=t["obs"], stats=t["stats"],
                                    height=t["feat"].get("height")))
                 if team in per_team:
@@ -223,6 +231,7 @@ def build_site(ev, tba):
             evs = jload(os.path.join(ev_dir(ev), "shots", f"{k}.json"))
             an = jload(os.path.join(ev_dir(ev), "analytics", f"{k}.json"))
             team_of = {t["idx"]: t["team"] for t in tracks}
+            conf_of = {t["idx"]: t.get("conf") for t in tracks}
             alli_of = {t["idx"]: t["alliance"] for t in tracks}
             v2 = {}
             if evs:
@@ -231,10 +240,17 @@ def build_site(ev, tba):
                     who = sh.get("shooter") or {}
                     ti = who.get("track_idx")
                     team = team_of.get(ti) if who.get("kind") == "robot" else None
+                    unattr = None
+                    if team is not None:
+                        cf = conf_of.get(ti)
+                        if cf:                                   # per-frame identity conf at launch
+                            fi = int(round((sh["t"] - (r["t_start"] - 0.5)) * r["hz"]))
+                            if cf[max(0, min(len(cf) - 1, fi))] < ID_CONF_MIN:
+                                team, unattr = None, "low_identity_conf"
                     shots_out.append({kk: sh.get(kk) for kk in ("t", "match_t", "period", "shooter", "origin", "v0", "acc", "drag",
                                                                "landing", "target", "outcome", "hub_active", "conf",
                                                                "apex_z", "t_entry", "t_obs", "outcome_conf")}
-                                     | {"team": team})
+                                     | {"team": team, "unattributed": unattr})
                     if team in per_team and sh.get("origin"):
                         al = alli_of.get(ti, "red")
                         o = sitev2.team_frame(sh["origin"], al); ld = sitev2.team_frame(sh.get("landing") or sh["origin"], al)
@@ -292,7 +308,7 @@ def build_site(ev, tba):
                 field=r["field"], red=row["red"], blue=row["blue"], winner=row["winner"],
                 breakdown={a: {kk: vv for kk, vv in (sb.get(a) or {}).items() if not isinstance(vv, dict)}
                            for a in ("red", "blue")},
-                tracks=tracks))
+                tracks=tracks, identity=r.get("identity")))
         match_rows.append(row)
 
     try:

@@ -34,3 +34,4 @@ kaggle_pkg/
 *.mkv
 .env
 .work/
+!live/models/ocr/*.onnx

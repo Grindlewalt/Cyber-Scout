@@ -1,0 +1,12 @@
+Bumper-number OCR models used by live/ocr.py (robot identity from bumper numbers).
+
+  ch_PP-OCRv3_det_infer.onnx   PP-OCRv3 DB text detector        (2.4 MB)
+  ch_PP-OCRv3_rec_infer.onnx   PP-OCRv3 SVTR/CTC text recogniser (10.7 MB; charset in model metadata)
+
+Source: the ONNX exports shipped in the rapidocr_onnxruntime 1.2.3 wheel (PyPI), which
+are conversions of PaddleOCR's PP-OCRv3 models.  License: Apache-2.0 (PaddleOCR and
+RapidOCR are both Apache License 2.0; https://github.com/PaddlePaddle/PaddleOCR,
+https://github.com/RapidAI/RapidOCR).  Unmodified.
+
+Note: the repo .gitignore ignores *.onnx -- add "!live/models/ocr/*.onnx" (or ship them
+next to the detector model and set AUTOSCOUT_OCR_DIR).

@@ -64,9 +64,25 @@ def airborne_tracks(fuel, min_score=0.5):
     return out
 
 
+ID_CONF_MIN = float(os.environ.get("ID_CONF_MIN", "0.5"))
+
+
+def quarantine(res, thr=ID_CONF_MIN):
+    """Copy of the match where frames with identity conf < thr are unobserved: a team's
+    stats then only use stretches where we are confident it is that team."""
+    out = dict(res); tr = []
+    for t in res["tracks"]:
+        cf = t.get("conf")
+        if cf and len(cf) == len(t["obs"]):
+            t = dict(t, obs=[int(o and c >= thr) for o, c in zip(t["obs"], cf)])
+        tr.append(t)
+    out["tracks"] = tr
+    return out
+
+
 def analytics_for(res, events, tba_match):
     rules = json.load(open(RULES))
-    return AN.match_analytics(res, events, rules, tba_match)
+    return AN.match_analytics(quarantine(res), events, rules, tba_match)
 
 
 def _jsave(p, obj):

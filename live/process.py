@@ -46,6 +46,9 @@ def hsv_desc(img, x0, y0, x1, y1):
 
 
 # ---------------------------------------------------------------- camera check
+_TAGDET = None
+
+
 def check_pose(video, cam, tag_csv, log=print):
     """AprilTags near their predicted pixels in ~28 frames -> re-solve pose
     (intrinsics fixed) when the camera moved.  Returns (cam, info)."""
@@ -68,7 +71,12 @@ def check_pose(video, cam, tag_csv, log=print):
     if len(frames) < 5:
         return cam, {"checked": False}
     # per-frame detection (a median plate blurs the tiny tags), median of the hits
-    det = TagDet(families="tag36h11", quad_decimate=1.0, decode_sharpening=0.25)
+    # one detector for the process lifetime: pupil_apriltags' destructor intermittently
+    # segfaults (libapriltag, seen twice in 40 runs right after the pose check)
+    global _TAGDET
+    if _TAGDET is None:
+        _TAGDET = TagDet(families="tag36h11", quad_decimate=1.0, decode_sharpening=0.25)
+    det = _TAGDET
     hits = {}
     for g in frames:
         for tid, P in tags.items():
@@ -187,35 +195,47 @@ def cam_len():
     return CAMM.LEN
 
 
-def detect_video(video, cam, model, t1=SCAN_T1, log=print):
+def detect_video(video, cam, model, t1=SCAN_T1, log=print, hooks=(), ocr=None):
+    """Robot detection at FPS (30 Hz) over the field ROI.  `hooks` get EVERY decoded
+    frame (full video rate, colour-swap fixed, no-feed frames skipped) via
+    hook.push(video_frame_idx, t, bgr) -- the fuel tracker needs 60 fps.
+    `ocr`: optional ocr.OcrSampler -- reads robots' bumper numbers from the detection
+    frames (its reads index the returned detection rows); the caller closes it."""
     x0, y0, x1, y1 = cam.roi()
     swapped = swap_check(cam); n_swap = 0
     feed = []                       # per processed frame: True if the field camera is live
     c = av.open(video); s = c.streams.video[0]; s.thread_type = "AUTO"
     rows, chas, body = [], [], []
     clock = []                      # (t, binarised clock digits) for the first 45 s
-    n = 0; nxt = 0.0; t0 = time.time()
+    n = 0; nxt = 0.0; t0 = time.time(); k = -1
     for f in c.decode(s):
+        k += 1
         if f.time is None: continue
         if f.time > t1: break
-        if f.time + 1e-6 < nxt: continue
-        nxt = (n + 1) / FPS
+        sample = f.time + 1e-6 >= nxt
+        if not sample and not hooks: continue
         im = f.to_ndarray(format="bgr24")
         live = float(im[y0:y1:16, x0:x1:16].mean()) > NO_FEED_LEVEL
+        if live and swapped(im):
+            im = np.ascontiguousarray(im[:, :, ::-1]); n_swap += 1
+        if live:
+            for h in hooks: h.push(k, float(f.time), im)
+        if not sample: continue
+        nxt = (n + 1) / FPS
         feed.append(live)
         if not live:                # camera feed missing (black field): nothing to detect
             n += 1; continue
-        if swapped(im):
-            im = np.ascontiguousarray(im[:, :, ::-1]); n_swap += 1
         if f.time < 45:
             cx0, cy0, cx1, cy1 = CLOCK_BOX
             g = cv2.cvtColor(im[cy0:cy1, cx0:cx1], cv2.COLOR_BGR2GRAY)
             clock.append((float(f.time), g))
         crop = im[y0:y1, x0:x1]
         b, sc = model(crop, conf=CONF_KEEP)
-        for k in range(len(b)):
-            bx = b[k] + [x0, y0, x0, y0]
-            rows.append([n, float(f.time), -1.0, *bx, float(sc[k]), alliance(im, bx)])
+        if ocr is not None and len(b):
+            ocr.frame(float(f.time), im, b + [x0, y0, x0, y0], np.asarray(sc), len(rows))
+        for j in range(len(b)):
+            bx = b[j] + [x0, y0, x0, y0]
+            rows.append([n, float(f.time), -1.0, *bx, float(sc[j]), alliance(im, bx)])
             hgt = bx[3] - bx[1]
             chas.append(hsv_desc(im, *bx))
             body.append(hsv_desc(im, bx[0], bx[1], bx[2], bx[1] + 0.6 * hgt))
@@ -314,10 +334,17 @@ def track_stats(xy, obs, alliance_name, t_auto_end, LEN, live=None):
 
 
 # ---------------------------------------------------------------- main
-def process(video, cam_path, onnx, tag_csv=None, log=print, start_hint=None, pose_guess=None):
+def process(video, cam_path, onnx, tag_csv=None, log=print, start_hint=None, pose_guess=None,
+            teams=None, hooks=(), dump=None):
     """start_hint: typical match-start offset for this kind of upload, used only
     when neither the clock nor robot motion gives one.  pose_guess: {rvec, tvec} of
-    the camera as last seen (a bump persists across matches)."""
+    the camera as last seen (a bump persists across matches).
+    teams: {"red": [3 team keys], "blue": [3 team keys]} in TBA station order.  With
+    it, bumper numbers are read during detection and every output track is one team
+    (tracks ordered red 1-3, blue 1-3; .team, .team_conf, per-frame .conf); without it
+    (or if OCR can't run) tracks are the unlabelled v1 output.
+    hooks: frame hooks passed to detect_video (fuel tracker).  dump: pickle path for
+    the post-detection state (development: re-run finish() without the video)."""
     raw = json.load(open(cam_path))
     if pose_guess:
         raw = dict(raw, rvec=pose_guess["rvec"], tvec=pose_guess["tvec"])
@@ -326,21 +353,41 @@ def process(video, cam_path, onnx, tag_csv=None, log=print, start_hint=None, pos
     if tag_csv:
         cam, pose = check_pose(video, cam, tag_csv, log)
     CAMM.install_geom_shim(cam)
-    import fuse, track as T
-    T.DT = 1 / FPS
 
+    team_list = None
+    if teams and len(teams.get("red") or []) == 3 and len(teams.get("blue") or []) == 3:
+        team_list = list(teams["red"]) + list(teams["blue"])
     model = Detector(onnx)
+    sampler = None
+    if team_list:
+        try:
+            import ocr as OCRM
+            sampler = OCRM.OcrSampler(cam, team_list, log)
+        except Exception as e:
+            log(f"  bumper OCR unavailable ({e!r}): tracking without team identity")
     t0 = time.time()
-    det, chas, body, n, clock, feed = detect_video(video, cam, model, log=log)
+    det, chas, body, n, clock, feed = detect_video(video, cam, model, log=log, hooks=hooks, ocr=sampler)
+    reads = sampler.close() if sampler else np.zeros((0, 7))
     log(f"  detection: {n} frames, {len(det)} raw dets in {time.time() - t0:.0f}s")
+    st = prepare(det, chas, body, n, clock, feed, reads, cam, log, start_hint)
+    st.update(camera_pose=dict(rvec=cam.rvec.tolist(), tvec=cam.tvec.tolist()), pose=pose,
+              cam_raw=cam.raw, teams=team_list, ocr_ok=sampler is not None)
+    if dump:
+        import pickle
+        pickle.dump(st, open(dump, "wb"))
+    return finish(st, log)
 
+
+def prepare(det, chas, body, n, clock, feed, reads, cam, log=print, start_hint=None):
+    """Raw detections -> tracking inputs inside the match window (+ match start)."""
+    idx = np.arange(len(det))
     keep = det[:, 7] >= CONF_TRACK
-    d, ch, bo = det[keep], chas[keep], body[keep]
+    d, ch, bo, idx = det[keep], chas[keep], body[keep], idx[keep]
     xy = cam.box_to_field(d[:, 3:7])
     ok = np.isfinite(xy).all(1) & CAMM.in_field(xy)
-    d, ch, bo, xy = d[ok], ch[ok], bo[ok], xy[ok]
+    d, ch, bo, xy, idx = d[ok], ch[ok], bo[ok], xy[ok], idx[ok]
     nms = CAMM.field_nms(d[:, 0], xy, d[:, 7])
-    d, ch, bo, xy = d[nms], ch[nms], bo[nms], xy[nms]
+    d, ch, bo, xy, idx = d[nms], ch[nms], bo[nms], xy[nms], idx[nms]
 
     t_clock = clock_start(clock, log)
     t_motion, found = match_start(d, xy, cam.cov(xy, su=2.0, sv=2.5), n, log, fallback=start_hint)
@@ -353,12 +400,61 @@ def process(video, cam_path, onnx, tag_csv=None, log=print, start_hint=None, pos
     nf = min(n - f0, int(math.ceil((MATCH_S + 1.0) * FPS)))
     fw = np.ones(nf, bool); seg = feed[f0:f0 + nf]; fw[:len(seg)] = seg
     w = (d[:, 0] >= f0) & (d[:, 0] < f0 + nf)
-    d, ch, bo, xy = d[w].copy(), ch[w], bo[w], xy[w]
+    d, ch, bo, xy, idx = d[w].copy(), ch[w], bo[w], xy[w], idx[w]
     d[:, 0] -= f0
+    # reads: raw detection row -> kept detection (a read on an NMS-suppressed duplicate
+    # moves to the kept detection of that robot in the same frame)
+    rd = np.zeros((0, 7))
+    if len(reads):
+        lut = np.full(len(det), -1); lut[idx] = np.arange(len(idx))
+        out = []
+        byf = {}
+        for k, f in enumerate(d[:, 0].astype(int)): byf.setdefault(f, []).append(k)
+        for r in reads:
+            g = lut[int(r[0])]
+            if g < 0:
+                f = int(det[int(r[0]), 0]) - f0
+                if not (0 <= f < nf) or det[int(r[0]), 7] < 0.1: continue
+                p = cam.box_to_field(det[int(r[0]), 3:7][None])[0]
+                ks = byf.get(f, [])
+                if not ks or not np.isfinite(p).all(): continue
+                dd = np.linalg.norm(xy[ks] - p, axis=1)
+                if dd.min() > 0.7: continue
+                g = ks[int(dd.argmin())]
+            out.append([g, *r[1:]])
+        rd = np.array(out, float).reshape(-1, 7)
+    return dict(d=d, ch=ch, bo=bo, xy=xy, reads=rd, nf=nf, fw=fw, f0=f0, t_start=t_start, found=found,
+                how=how, n_raw_reads=len(reads))
+
+
+def finish(st, log=print):
+    """Tracking (+ identity) and the per-match JSON from prepare()'s state."""
+    cam = CAMM.Camera(st["cam_raw"]); CAMM.install_geom_shim(cam)
+    import fuse, track as T
+    T.DT = 1 / FPS
+    d, ch, bo, xy, nf, fw = st["d"], st["ch"], st["bo"], st["xy"], st["nf"], st["fw"]
     cov = cam.cov(xy, su=2.0, sv=2.5)
     hs = cam.heights(d[:, 3:7], xy)
     chn = ch / np.maximum(ch.sum(1, keepdims=True), 1e-9)
-    tracks = fuse.run(d, xy, cov, hs, chn, nf, CAMM.LEN, CAMM.WID, log=log)
+    team_list = st.get("teams")
+    identity = None
+    tracks = None
+    if team_list and st.get("ocr_ok"):
+        t0 = time.time()
+        try:
+            tracks, identity = fuse.run_labeled(d, xy, cov, hs, chn, nf, CAMM.LEN, CAMM.WID, st["reads"],
+                                                team_list, log=log)
+            identity["seconds"] = round(time.time() - t0, 1)
+            identity["n_reads_raw"] = int(st.get("n_raw_reads", 0))
+            v0 = st["t_start"] - 0.5
+            for c in identity.get("corrections", []):          # add video time for review
+                c["t_video"] = round(v0 + c["frame"] / OUT_HZ, 2)
+        except Exception as e:                                  # never lose the match over identity
+            import traceback; traceback.print_exc()
+            log(f"  labelled tracking failed ({e!r}): falling back to unlabelled tracks")
+            tracks, identity = None, None
+    if tracks is None:
+        tracks = fuse.run(d, xy, cov, hs, chn, nf, CAMM.LEN, CAMM.WID, log=log)
 
     # per-robot appearance for cross-match identity: body histogram from frames
     # where the robot is isolated (>1.5 m from everyone), so it is not polluted
@@ -375,7 +471,7 @@ def process(video, cam_path, onnx, tag_csv=None, log=print, start_hint=None, pos
         sel = np.array(iso if len(iso) >= 20 else di, int)
         hist = bo[sel].mean(0) if len(sel) else np.zeros(bo.shape[1])
         wpx = np.median(d[sel, 5] - d[sel, 3]) if len(sel) else np.nan
-        out_tracks.append(dict(
+        row = dict(
             alliance=tr["alliance"], idx=k,
             xy=np.round(tr["xy"][::step] * 100).astype(int).tolist(),      # cm @ OUT_HZ
             obs=tr["obs"][::step].astype(int).tolist(),
@@ -385,7 +481,11 @@ def process(video, cam_path, onnx, tag_csv=None, log=print, start_hint=None, pos
                       box_w_px=None if not np.isfinite(wpx) else float(wpx),
                       start_xy=np.round(tr["xy"][int(0.5 * FPS)], 2).tolist(),
                       auto_end_xy=np.round(tr["xy"][min(len(tr["xy"]) - 1, int(t_auto_end * FPS))], 2).tolist(),
-                      end_xy=np.round(tr["xy"][-1], 2).tolist())))
+                      end_xy=np.round(tr["xy"][-1], 2).tolist()))
+        if "team" in tr:
+            row.update(team=tr["team"], team_conf=round(float(tr["team_conf"]), 3),
+                       conf=np.round(tr["conf"][::step], 2).tolist())
+        out_tracks.append(row)
     gaps, i = [], 0
     while i < nf:
         if not fw[i]:
@@ -395,18 +495,25 @@ def process(video, cam_path, onnx, tag_csv=None, log=print, start_hint=None, pos
         else:
             i += 1
     if gaps: log(f"  camera feed missing for {(~fw).sum() / FPS:.0f}s: {gaps}")
-    return dict(t_start=round(t_start, 2), start_detected=found, start_source=how,
-                camera_pose=dict(rvec=cam.rvec.tolist(), tvec=cam.tvec.tolist()),
-                feed_ok=round(float(fw.mean()), 3), feed_gaps=gaps,
-                auto_feed_ok=round(float(fw[:int(t_auto_end * FPS)].mean()), 3), frames=nf, hz=OUT_HZ,
-                t_auto_end=t_auto_end, t_teleop_start=0.5 + AUTO_S + PAUSE_S,
-                pose=pose, n_dets=int(len(d)), tracks=out_tracks,
-                field=dict(length=CAMM.LEN, width=CAMM.WID))
+    res = dict(t_start=round(st["t_start"], 2), start_detected=st["found"], start_source=st["how"],
+               camera_pose=st["camera_pose"],
+               feed_ok=round(float(fw.mean()), 3), feed_gaps=gaps,
+               auto_feed_ok=round(float(fw[:int(t_auto_end * FPS)].mean()), 3), frames=nf, hz=OUT_HZ,
+               t_auto_end=t_auto_end, t_teleop_start=0.5 + AUTO_S + PAUSE_S,
+               pose=st["pose"], n_dets=int(len(d)), tracks=out_tracks,
+               field=dict(length=CAMM.LEN, width=CAMM.WID))
+    if identity is not None:
+        res["identity"] = identity
+    return res
 
 
 if __name__ == "__main__":
     video, cam_path, onnx, out = sys.argv[1:5]
     tag_csv = sys.argv[5] if len(sys.argv) > 5 else None
-    res = process(video, cam_path, onnx, tag_csv)
+    teams = None
+    if len(sys.argv) > 6:          # red1,red2,red3 blue1,blue2,blue3 (team keys or numbers)
+        key = lambda s: s if s.startswith("frc") else "frc" + s
+        teams = {"red": [key(s) for s in sys.argv[6].split(",")], "blue": [key(s) for s in sys.argv[7].split(",")]}
+    res = process(video, cam_path, onnx, tag_csv, teams=teams)
     json.dump(res, open(out, "w"))
     print("wrote", out)
