@@ -401,14 +401,19 @@ async function analyzePage(ev, key) {
   // ---- identity: corrections (card, encounter ring, side list)
   const mmss = t => `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, "0")}`;
   const vtOf = f => v0 + f / hz;                                  // video time of replay frame
-  const corrNear = T => { let best = null, bd = 3.0001; for (const c of COR) { const dd = Math.abs(c.t_video - T); if (dd < bd) { bd = dd; best = c; } } return best; };
+  let corrAll = false;   // "show all" toggle: un-anchored relinks with conf < 0.2 are hidden by default
+  const corrWeak = c => c.kind === "relink" && (c.conf || 0) < 0.2;
+  const corrVis = () => corrAll ? COR : COR.filter(c => !corrWeak(c));
+  const corrClose = c => c.encounter && c.encounter.dist_m != null && c.encounter.dist_m < 1.5;
+  const corrNear = T => { let best = null, bd = 3.0001; for (const c of corrVis()) { const dd = Math.abs(c.t_video - T); if (dd < bd) { bd = dd; best = c; } } return best; };
   function bestEvidence(c) {   // strongest read, ties -> nearest to the correction
     return (c.evidence || []).slice().sort((a, b) => (b[3] - a[3]) || (Math.abs(a[0] - c.frame) - Math.abs(b[0] - c.frame)))[0] || null;
   }
   const lab = tm => num(tm);
   function corrText(c) {
     const [a, b] = (c.teams || []).map(lab), when = mmss(c.t_video);
-    const head = c.kind === "relink" ? `Swap fixed: ${a} &harr; ${b} at ${when}` : `Identity cut: ${a} / ${b} at ${when}`;
+    const head = c.kind === "relink" ? `Re-linked: ${a} / ${b} tracks (OCR overrode motion) at ${when}`
+      : corrClose(c) ? `Swap fixed: ${a} &harr; ${b} at ${when}` : `Identity cut: ${a} / ${b} at ${when}`;
     const ev = (c.evidence || []).slice().sort((x, y) => (y[3] - x[3]) || (Math.abs(x[0] - c.frame) - Math.abs(y[0] - c.frame))).slice(0, 3);
     return { head, ev: ev.map(e => `read ${lab(e[1])} at ${mmss(vtOf(e[0]))}${e[3] != null && e[3] < 1 ? ` (weight ${e[3]})` : ""}`).join("; "),
       tail: `${c.anchored ? "anchored by a read" : "not anchored by a read (lower trust)"}, confidence ${Math.round(c.conf * 100)}%${c.unresolved ? `, unresolved ${mmss(vtOf(c.unresolved[0]))}-${mmss(vtOf(c.unresolved[1]))}` : ""}` };
@@ -421,7 +426,7 @@ async function analyzePage(ev, key) {
     idcard.style.display = ""; idcard.className = "an-idcard" + (c.anchored ? "" : " un");
     if (cardFor !== c.i) {
       cardFor = c.i; const x = corrText(c), e = bestEvidence(c);
-      idcard.innerHTML = `<b>${x.head}</b><div class="small" style="color:#cfd6e0">${x.ev ? "evidence: " + x.ev + ". " : ""}${x.tail}.${c.encounter && c.encounter.dist_m != null ? ` Robots ${fx(c.encounter.dist_m, 1)} m apart.` : ""}</div>
+      idcard.innerHTML = `<b>${x.head}</b><div class="small" style="color:#cfd6e0">${x.ev ? "evidence: " + x.ev + ". " : ""}${x.tail}.${c.encounter && c.encounter.dist_m != null && (c.kind !== "relink" || c.encounter.dist_m < 3) ? ` Robots ${fx(c.encounter.dist_m, 1)} m apart.` : ""}${c.kind === "relink" && c.motion_link ? ` Motion alone would have linked them (${c.motion_link.frames} frames, ${fx(c.motion_link.jump_m, 1)} m jump).` : ""}</div>
         <button data-a="enc">Go to encounter</button>${e ? `<button data-a="ev">Go to evidence read</button>` : ""}`;
       idcard.onclick = ev2 => { const b = ev2.target.closest("button"); if (!b) return; ev2.stopPropagation(); if (vid) vid.pause();
         if (b.dataset.a === "enc") seekC(c, 0); else { const e2 = bestEvidence(c); if (e2) seek(vtOf(e2[0]) + S.offset); } };
@@ -439,11 +444,14 @@ async function analyzePage(ev, key) {
   function buildIdSide() {
     const box = $("anId"); if (!box) return;
     const reads = ID && ID.per_team_reads;
-    box.innerHTML = `${COR.length ? COR.map(c => { const x = corrText(c); return `<div class="an-idrow ${c.anchored ? "" : "un"}" data-i="${c.i}" title="${esc(x.ev + ". " + x.tail)}"><b>${mmss(c.t_video)}</b> ${c.kind === "relink" ? "swap fixed" : "cut"} ${c.teams.map(lab).join(" / ")}
+    const vis = corrVis(), hid = COR.length - vis.length;
+    box.innerHTML = `${vis.length ? vis.map(c => { const x = corrText(c); return `<div class="an-idrow ${c.anchored ? "" : "un"}" data-i="${c.i}" title="${esc(x.ev + ". " + x.tail)}"><b>${mmss(c.t_video)}</b> ${c.kind === "relink" ? "re-linked" : corrClose(c) ? "swap fixed" : "cut"} ${c.teams.map(lab).join(" / ")}
         <span class="muted small">${c.anchored ? "anchored" : "unanchored"} ${Math.round(c.conf * 100)}%</span></div>`; }).join("") : '<div class="muted small">No identity corrections in this match.</div>'}
+      ${hid || corrAll && COR.some(corrWeak) ? `<div class="an-reads"><a href="#" id="anIdAll">${corrAll ? "hide low-confidence relinks" : `show all (${hid} hidden)`}</a></div>` : ""}
       ${reads ? `<div class="an-reads" title="bumper-number OCR reads per team">reads (${ID.n_reads ?? "?"}): ${tracks.map(t => t.team ? `${num(t.team)}&times;${reads[t.team] || 0}` : "").filter(Boolean).join(" &middot; ")}</div>` : ""}
       <div class="an-reads">labels: solid &ge;80% &middot; "?" 50-80% &middot; grey "unknown" &lt;50% &middot; hidden when unknown</div>`;
-    box.onclick = e => { const r = e.target.closest(".an-idrow"); if (!r) return; seekC(COR.find(c => c.i === +r.dataset.i), 2); };
+    box.onclick = e => { if (e.target.id === "anIdAll") { e.preventDefault(); corrAll = !corrAll; cardFor = null; buildIdSide(); buildScrub(); return; }
+      const r = e.target.closest(".an-idrow"); if (!r) return; seekC(COR.find(c => c.i === +r.dataset.i), 2); };
   }
 
   // ---- scrubber: period timeline + shot ticks
@@ -453,7 +461,7 @@ async function analyzePage(ev, key) {
     scrub.innerHTML = PER.map(p => `<div class="seg" style="left:${p.v0 / D * 100}%;width:${(p.v1 - p.v0) / D * 100}%" title="${p.name}"><span>${p.name}</span>
       <i class="r ${p.active.red ? "on" : ""}"></i><i class="b ${p.active.blue ? "on" : ""}"></i></div>`).join("") +
       shots.map(s => `<u class="${s.al[0]} ${s.outcome}" style="left:${s.t / D * 100}%"></u>`).join("") +
-      COR.map(c => `<b class="idm ${c.anchored ? "" : "un"}" data-i="${c.i}" style="left:${c.t_video / D * 100}%" title="${esc(corrText(c).head.replace("&harr;", "<->"))}"></b>`).join("") + `<div class="head" id="anHead"></div>`;
+      corrVis().map(c => `<b class="idm ${c.anchored ? "" : "un"}" data-i="${c.i}" style="left:${c.t_video / D * 100}%" title="${esc(corrText(c).head.replace("&harr;", "<->"))}"></b>`).join("") + `<div class="head" id="anHead"></div>`;
     scrub.classList.toggle("noid", !S.layers.identity);
   }
   function moveHead() { const h = $("anHead"); if (h) h.style.left = curT() / clock.dur * 100 + "%"; }
