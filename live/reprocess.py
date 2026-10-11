@@ -13,7 +13,7 @@ REPO = os.path.dirname(HERE)
 sys.path.insert(0, HERE); sys.path.insert(0, os.path.join(REPO, "src"))
 
 
-def one(data, media, ev, key, gpu, model):
+def one(data, media, ev, key, gpu, model, hubcam=False):
     os.environ["GPU_DEVICE"] = str(gpu); os.environ.setdefault("OCR_GPU", str(gpu))
     import process, enrich, shots
     evd = os.path.join(data, "events", ev)
@@ -25,17 +25,27 @@ def one(data, media, ev, key, gpu, model):
     logs = []; L = lambda *a: logs.append(" ".join(map(str, a)))
     try:
         t0 = time.time()
+        extra = None
+        inset = os.path.join(media, ev, "insets", f"{key}.mp4")
+        if hubcam and os.path.exists(inset):              # station-camera bumper reads -> tracker
+            import station_ocr
+            caldir = evd if os.path.exists(os.path.join(evd, "station_red.json")) else os.path.join(REPO, "events", ev)
+            extra = station_ocr.extra_reads_fn(caldir, inset, wide_video=video)
         res = process.process(video, cam, model, os.path.join(HERE, "field", "2026-rebuilt-welded.csv"),
                               log=L, pose_guess=old.get("camera_pose"),
-                              teams={a: tba["alliances"][a]["team_keys"] for a in ("red", "blue")})
+                              teams={a: tba["alliances"][a]["team_keys"] for a in ("red", "blue")},
+                              extra_reads=extra)
         res.update(key=key, video=old["video"], processed_at=time.time(), seconds=round(time.time() - t0))
         enrich._jsave(os.path.join(evd, "matches", f"{key}.json"), res)
         t1 = time.time()
         ev_ = enrich.enrich(evd, key, video, cam, res, tba, log=L)
+        if hubcam and os.path.exists(inset):              # station export + hub-cam shot verification
+            enrich.station_pass(data, media, ev, key, res, tba, log=L)
+            ev_ = json.load(open(os.path.join(evd, "shots", f"{key}.json")))
         idn = res.get("identity") or {}
         made = sum(1 for s in ev_.get("shots", []) if s.get("outcome") == "made")
         return key, (f"ok track {t1 - t0:.0f}s enrich {time.time() - t1:.0f}s | identity {idn.get('method')} "
-                     f"reads {idn.get('n_reads')} corrections {len(idn.get('corrections') or [])} | "
+                     f"reads {idn.get('n_reads')} (+{idn.get('n_reads_extra', 0)} station) corrections {len(idn.get('corrections') or [])} | "
                      f"team_conf {[round(t.get('team_conf') or 0, 2) for t in res['tracks']]} | {made} made")
     except Exception:
         return key, "FAILED " + traceback.format_exc()[-600:] + " | " + " / ".join(logs[-4:])
@@ -46,6 +56,7 @@ if __name__ == "__main__":
     ap.add_argument("data"); ap.add_argument("media"); ap.add_argument("event")
     ap.add_argument("--only", required=True); ap.add_argument("--jobs", type=int, default=2)
     ap.add_argument("--gpus", default="0,1"); ap.add_argument("--model", default=None)
+    ap.add_argument("--hubcam", action="store_true", help="also use the driver-station cameras (inset uploads)")
     a = ap.parse_args()
     model = a.model or os.path.join(a.data, "models", "robot.onnx")
     keys = [k.strip() for k in a.only.split(",") if k.strip()]
@@ -53,6 +64,6 @@ if __name__ == "__main__":
     print(f"{len(keys)} matches, {a.jobs} jobs, GPUs {gpus}", flush=True)
     import multiprocessing as mp
     with ProcessPoolExecutor(a.jobs, mp_context=mp.get_context("spawn")) as ex:
-        futs = [ex.submit(one, a.data, a.media, a.event, k, gpus[i % len(gpus)], model) for i, k in enumerate(keys)]
+        futs = [ex.submit(one, a.data, a.media, a.event, k, gpus[i % len(gpus)], model, a.hubcam) for i, k in enumerate(keys)]
         for f in as_completed(futs):
             k, msg = f.result(); print(k, msg, flush=True)
