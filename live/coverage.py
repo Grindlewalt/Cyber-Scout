@@ -115,6 +115,8 @@ def load_matches(match_dir):
     "last" in play order should sort by the match's TBA time."""
     out = []
     for p in sorted(glob.glob(os.path.join(match_dir, "*.json"))):
+        if p.endswith(".fuel.json"):          # fuel tracks sidecar, not a match
+            continue
         try:
             with open(p) as f:
                 out.append(json.load(f))

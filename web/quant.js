@@ -120,13 +120,15 @@ function section(id, title, body, note = "") {
   return `<section class="card sect" id="s-${id}"><h2>${title}</h2>${body}${note ? `<div class="note">${note}</div>` : ""}</section>`;
 }
 
+// start spot in words (team frame: own wall at x = 16.54 m, driver's left = low y), not raw metres
+const spotTxt = xy => { if (!xy) return "–"; const x = xy[0] / 100, y = xy[1] / 100, d = 16.541 - x; return `${y < 2.7 ? "driver's left" : y > 5.4 ? "driver's right" : "centre"}, ${d < 0 ? 0 : d.toFixed(1)} m off own wall`; };
 const label_ = c => `n=${c.n}${c.of ? "/" + c.of : ""} (${(c.keys || []).map(shortKey).join(", ")})`;
 async function teamPage(ev, tk) {
   const [d, e, scd] = await Promise.all([getTeam(ev, tk), api(`${ev}/event.json`).catch(() => null), scoutData(ev)]);
   const SR = (scd && scd.by[tk]) || {}, SV = SR.video || {}, RT = SR.rating || {}, CV = SR.coverage || { n: 0, keys: [] };
   const vkeys = new Set(CV.keys || []), vshort = new Set((CV.keys || []).map(shortKey));
   d.matches = (d.matches || []).map(m => ({ ...m, verified: vkeys.has(m.match) }));
-  const tainted = d.matches.some(m => !m.verified);
+  const tainted = !d.verified_only && d.matches.some(m => !m.verified);   // t-file not yet rebuilt by sitev2.verified_team_files
   d.shots_map = (d.shots_map || []).filter(p => vshort.has(p.m));
   d.autos = (d.autos || []).filter(a => vshort.has(a.short));
   if (tainted) { d.routines = []; d.heat = null; d.intakes_map = []; }
@@ -165,17 +167,18 @@ async function teamPage(ev, tk) {
         <div><b>${SR.trend && SR.trend.blend ? spark(SR.trend.blend.map(x => x[1]), { color: "#7cb4ff" }) : "–"}</b><span>Blend over the event${SR.trend && SR.trend.blend ? ` (${fx(SR.trend.blend[0][1], 0)} → ${fx(SR.trend.blend.slice(-1)[0][1], 0)})` : ""}</span></div>
       </div>
       ${(SR.flags || []).length ? `<div class="note">${SR.flags.map(f => esc(f.text)).join("<br>")}</div>` : ""}
+      ${!tainted && d.matches.some(m => !m.verified) ? `<div class="note">All sections below use verified matches only (${CV.n}); ${esc(d.matches.filter(m => !m.verified).map(m => m.short).join(", "))} were tracked without verified identity and are replay-only.</div>` : ""}
       ${tainted ? `<div class="note">Matches tracked without verified identity (${esc(d.matches.filter(m => !m.verified).map(m => m.short).join(", "))}) are replay-only: excluded from the shot chart, autos and trends; the intake map, heatmap and routine clusters are hidden because they mix them in.</div>` : ""}</section>
     <div class="trends" style="${ms.filter(m => m.verified).length < 3 ? "display:none" : ""}">${trend("Accuracy", tr(a => a.scoring.accuracy), "p", C_MADE)}${trend("Made", tr(a => a.scoring.made), "0", "#7cb4ff")}${trend("Attempts", tr(a => a.scoring.attempts), "0", "#7cb4ff")}
       ${trend("Cycle s", tr(a => a.scoring.cycle_s), "1", "#fbbf24")}${trend("Dist m", tr(a => a.movement.distance_m), "0", "#a78bfa")}${trend("Defense s", tr(a => a.defense.time_s), "1", "#fb7185")}</div>
     <div class="stackv">
     ${tainted ? section("scoring", "Scoring", `<div class="muted small">Per-team aggregates from the tracker file mix in unverified matches, so they are not shown; the canonical values are in Scouting truth above and the per-match rows (verified only) are in Matches below.</div>`) : ""}
     ${tainted ? "" : section("scoring", "Scoring", `<div class="tiles">
-        ${tile("Accuracy", has(S.accuracy_pooled) ? { ...(S.accuracy || {}), v: S.accuracy_pooled } : S.accuracy, "p", "", "made / attempted fuel (pooled over matches)")}
-        ${tile("Made / match", S.made, "1")}${tile("Attempts / match", S.attempts, "1")}${tile("Passes / match", S.passes, "1")}
+        ${SV.acc ? tile("Accuracy", { v: SV.acc.v, n: SV.acc.n }, "p", "", "canonical (same as every page): made / (made+missed), shrunk toward the event; raw " + fmtV(SV.acc.raw, "p")) : tile("Accuracy", has(S.accuracy_pooled) ? { ...(S.accuracy || {}), v: S.accuracy_pooled } : S.accuracy, "p", "", "made / attempted fuel (pooled over matches)")}
+        ${SV.made_pm ? tile("Made / match" + (SV.made_pm.lower_bound ? " (≥)" : ""), { v: SV.made_pm.v, n: SV.made_pm.n }, "1", "", "canonical (same as every page): TBA-reconciled, shrunk; raw " + fmtV(SV.made_pm.raw)) : tile("Made / match", S.made, "1")}${tile("Attempts / match", S.attempts, "1")}${tile("Passes / match", S.passes, "1")}
         ${tile("Points / match", S.points, "1", "", "made into an ACTIVE hub")}${tile("Uncounted / match", S.uncounted, "1", "", "made into an inactive hub")}
         ${tile("Fire rate", S.fire_rate, "1", " /s", "balls per second inside a volley")}${tile("Volley size", S.volley_size, "0", "", "max balls in a volley ≈ hopper capacity")}
-        ${tile("Volleys / match", S.volleys, "1")}${tile("Cycle time", S.cycle_s, "1", " s", "time between volleys")}
+        ${tile("Volleys / match", S.volleys, "1")}${SV.cycle_s ? tile("Cycle time", { v: SV.cycle_s.v, n: SV.cycle_s.n }, "1", " s", "canonical (same as every page): median time between teleop volley starts") : tile("Cycle time", S.cycle_s, "1", " s", "time between volleys")}
         ${tile("Shot distance", S.dist_mean, "1", " m")}${tile("Shoot on move", S.on_move_rate, "p", "", "share of shots launched while moving")}
         ${tile("1st shot (auto)", S.first_shot_auto, "1", " s")}${tile("1st shot (teleop)", S.first_shot_teleop, "1", " s")}</div>
       <h3>By period <span class="muted small">(made / attempts per match)</span></h3>${S.by_period ? periodBars(S.by_period) : ""}`,
@@ -247,7 +250,7 @@ async function teamPage(ev, tk) {
   const rdiv = document.getElementById("routines");
   const drawR = () => {
     rdiv.innerHTML = routines.length ? `<div class="tablewrap"><table><thead><tr><th>Routine</th><th class="num">Used</th><th class="num">Shots</th><th class="num">Made</th><th class="num">Neutral</th><th class="num">Consist.</th></tr></thead><tbody>
-      ${routines.map(r => `<tr class="${r.id === selR ? "sel" : ""} clk" data-r="${r.id}"><td><b>${esc(r.name || r.id)}</b><div class="small muted">start ${r.start_xy ? `(${fx(r.start_xy[0] / 100)}, ${fx(r.start_xy[1] / 100)})` : "–"} · ${esc((r.matches || []).join(", "))}</div></td>
+      ${routines.map(r => `<tr class="${r.id === selR ? "sel" : ""} clk" data-r="${r.id}"><td><b>${esc(r.name || r.id)}</b><div class="small muted">start ${spotTxt(r.start_xy)} · ${esc((r.matches || []).join(", "))}</div></td>
       <td class="num">${r.n}/${r.of}<div class="bartiny"><i style="width:${100 * (r.freq ?? r.n / r.of)}%"></i></div></td><td class="num">${fx(r.shots_avg)}</td><td class="num">${fx(r.made_avg)}</td><td class="num">${pct(r.neutral_cross_rate)}</td><td class="num">${pct(r.consistency)}</td></tr>`).join("")}</tbody></table></div>`
       : `<div class="empty">No routines clustered yet.</div>`;
     rdiv.querySelectorAll("tr.clk").forEach(tr => tr.onclick = () => { selR = tr.dataset.r; drawR(); AC.redraw(); });

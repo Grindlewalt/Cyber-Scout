@@ -59,7 +59,9 @@
       const w = Math.abs(p.delta || 0) / mx * 50, up = (p.delta || 0) >= 0;
       const act = ["shift1", "shift2", "shift3", "shift4"].includes(p.period)
         ? `<span class="act ${p.our_active_p >= 0.5 ? "on" : ""}" title="our hub active in ${Math.round(p.our_active_p * 100)}% of sims"></span>` : "";
-      return `<div class="per"><span>${act}${H(p.label)}</span>
+      const tw = p.tower, lab = tw ? `${p.label}${(tw.ours || 0) + (tw.theirs || 0) >= 1 ? "" : " FUEL"}` : p.label;
+      const tip = tw ? `${p.label}: FUEL us ${n0((p.ours ?? 0) - (tw.ours || 0), 1)} / them ${n0((p.theirs ?? 0) - (tw.theirs || 0), 1)}; tower (climb) us ${n0(tw.ours, 1)} / them ${n0(tw.theirs, 1)}` : "";
+      return `<div class="per" title="${H(tip)}"><span>${act}${H(lab)}</span>
         <div class="dvb"><span class="mid"></span><i class="${up ? "up" : "dn"}" style="${up ? `left:50%;width:${w}%` : `right:50%;width:${w}%`}"></i></div>
         <span class="${us === "red" ? "t r" : "t b"}" style="text-align:right">${n0(p.ours, 1)}</span><span class="t ${them === "red" ? "r" : "b"}" style="text-align:right">${n0(p.theirs, 1)}</span>
         <b class="${up ? "pos" : "neg"}" style="text-align:right">${sg(p.delta, 1)}</b></div>`;
@@ -70,7 +72,7 @@
           <span>Score <b>${n0(b.score?.ours)}</b> – ${n0(b.score?.theirs)}</span><span>Margin <b>${sg(b.score?.margin)}</b> ± ${n0(b.score?.margin_sd)}</span>
           <span>Fouls to us/them <b>${n0(b.fouls?.ours)}</b>/${n0(b.fouls?.theirs)}</span></div></div>
       <div><div class="per hd"><span>Period</span><span></span><span style="text-align:right">Us</span><span style="text-align:right">Them</span><span style="text-align:right">Δ</span></div>${rows}
-        <div class="muted small" style="margin-top:6px"><span class="act on"></span>our hub likely active (auto loser has shifts 1 and 3). Auto includes the auto climb; endgame includes the climb. Points incl. human player.</div></div></div>`;
+        <div class="muted small" style="margin-top:6px"><span class="act on"></span>our hub likely active (auto loser has shifts 1 and 3). Points per period, incl. human-player FUEL; Auto and Endgame also include tower (climb) points, split out on hover.</div></div></div>`;
   }
 
   function rowHtml(m, team) {

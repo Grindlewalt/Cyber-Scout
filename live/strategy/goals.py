@@ -685,7 +685,7 @@ def replay(data_dir, district, team_set, times, goal="DCMP", n=600, log=print, o
 # ------------------------------------------------------------------------------------------------- per-match where-you'll-be-beaten
 PERIODS = ["auto", "transition", "shift1", "shift2", "shift3", "shift4", "endgame"]
 PLABEL = {"auto": "Auto", "transition": "Transition", "shift1": "Shift 1", "shift2": "Shift 2", "shift3": "Shift 3",
-          "shift4": "Shift 4", "endgame": "Endgame"}
+          "shift4": "Shift 4", "endgame": "Endgame"}      # endgame row = endgame FUEL + climb; split in row["tower"]
 
 
 def period_breakdown(M, red, blue, us, sims=3000, seed=0):
@@ -717,7 +717,11 @@ def period_breakdown(M, red, blue, us, sims=3000, seed=0):
             act, act_them = float(we_won_auto.mean()), float((~we_won_auto).mean())
         else:
             act = act_them = 1.0
-        rows.append({"period": p, "label": PLABEL[p], "ours": _r(a.mean()), "theirs": _r(b.mean()),
+        if p in ("auto", "endgame"):     # tower (climb) points inside this row, so labels can say FUEL vs climb
+            tw = {"ours": _r(float(np.mean(extra_a))), "theirs": _r(float(np.mean(extra_b)))}
+        else:
+            tw = None
+        rows.append({"period": p, "label": PLABEL[p], "ours": _r(a.mean()), "theirs": _r(b.mean()), "tower": tw,
                      "delta": _r((a - b).mean()), "p_ours_ahead": _r(float((a > b).mean()), 2),
                      "our_active_p": _r(act, 2), "their_active_p": _r(act_them, 2),
                      "ours_if_won_auto": _r(a[we_won_auto].mean()) if we_won_auto.any() else None,
@@ -762,7 +766,12 @@ def narrative(b):
     parts.append(f"Your hub is likely active in {likely_active}: {d_act:+.0f} there, {d_in:+.0f} in {other} (opponent's active shifts).")
     e = rows["endgame"]["delta"]
     if e is not None and abs(e) >= 2:
-        parts.append(f"Endgame/climb {e:+.0f}.")
+        tw = rows["endgame"].get("tower") or {}
+        td = (tw.get("ours") or 0) - (tw.get("theirs") or 0)
+        if abs(td) >= 2:
+            parts.append(f"Endgame {e:+.0f} (FUEL {e - td:+.0f}, climb {td:+.0f}).")
+        else:
+            parts.append(f"Endgame FUEL {e - td:+.0f} (climbs even).")
     worst = min(loses, key=lambda r: r["delta"]) if loses else None
     if worst and worst["delta"] <= -3 and worst["period"] != "auto":
         parts.append(f"Biggest deficit: {worst['label']} ({worst['delta']:+.0f}).")

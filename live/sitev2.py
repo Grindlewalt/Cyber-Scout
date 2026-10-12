@@ -161,3 +161,146 @@ def event_q(team_web):
             "dead": round(rel.get("dead_matches", 0) / max(1, rel.get("n") or 1), 2) if rel else None,
             "role": _g(a, "role", "v"), "speed": v("movement", "p95_speed"), "dist": v("movement", "distance_m"),
             "conf": team_web.get("id_conf")}
+
+
+# ------------------------------------------------------------------------------------------------ verified-only team files
+def _imp():
+    try:
+        from live import analytics as AN, coverage as COV
+    except ImportError:          # worker context: live/ on sys.path
+        import analytics as AN
+        import coverage as COV
+    return AN, COV
+
+
+def verified_team_files(DATA, ev, log=print):
+    """Rewrite site/api/<ev>/t/<team>.json aggregates from VERIFIED matches only (trust rule in live/coverage.py: v2 tracker
+    and team_conf >= 0.6).  Unverified matches stay in `matches[]` (flag verified: false, replay links) but feed nothing:
+    analytics, shots_map, intakes_map, heat, autos and routines are rebuilt from the verified ones; event.json teams[].q too.
+    Pure post-processing of the files build_site wrote (+ DATA/events/<ev>/analytics/<k>.json for the raw per-track metrics)."""
+    import json
+    import os
+    AN, COV = _imp()
+    api = os.path.join(DATA, "site", "api", ev)
+    rd = lambda p: json.load(open(p)) if os.path.exists(p) else None
+
+    def wr(p, o):
+        tmp = p + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(o, f, separators=(",", ":"))
+        os.replace(tmp, p)
+    mdir, tdir = os.path.join(api, "m"), os.path.join(api, "t")
+    if not os.path.isdir(tdir):
+        return 0
+    ms = {}
+    for fn in os.listdir(mdir) if os.path.isdir(mdir) else []:
+        if fn.endswith(".json") and not fn.endswith(".fuel.json"):
+            d = rd(os.path.join(mdir, fn))
+            if d and d.get("key"):
+                ms[d["key"]] = d
+    ver = {k: COV.verified_teams(d) for k, d in ms.items()}
+    raw = {}
+
+    def raw_an(k):
+        if k not in raw:
+            raw[k] = (rd(os.path.join(DATA, "events", ev, "analytics", f"{k}.json")) or {}).get("tracks") or {}
+        return raw[k]
+    L, W, G = LEN, WID, 0.5
+    nx, ny = int(np.ceil(L / G)), int(np.ceil(W / G))
+    teams, auto_paths = {}, {}
+    for fn in os.listdir(tdir):
+        if not fn.endswith(".json"):
+            continue
+        tf = rd(os.path.join(tdir, fn))
+        if not tf or not tf.get("key"):
+            continue
+        tk = tf["key"]
+        keys = sorted((k for k, v in ver.items() if tk in v), key=COV.match_order)
+        an, an_web, confs, shorts, intakes, heat, paths = [], [], [], set(), [], None, []
+        for k in keys:
+            d = ms[k]
+            tr = [t for t in d.get("tracks") or [] if t.get("team") == tk]
+            if not tr:
+                continue
+            t = max(tr, key=lambda t: t.get("team_conf") or 0)
+            pos = d["tracks"].index(t)
+            idx = t.get("idx", pos)
+            confs.append(t.get("team_conf") or 0.0)
+            shorts.add(d.get("short"))
+            a_ = raw_an(k).get(str(idx)) or raw_an(k).get(idx)
+            w = (d.get("analytics") or [None] * (pos + 1))[pos] if pos < len(d.get("analytics") or []) else None
+            if a_:
+                a_.setdefault("meta", {})["team"] = tk
+                an.append(a_)
+                an_web.append(w)
+                au = a_.get("auto") or {}
+                if au.get("path"):
+                    paths.append({"match": k, "alliance": t["alliance"], "path": au["path"], "coverage": au.get("coverage") or 0})
+            for it in d.get("intakes") or []:
+                if it.get("track_idx") == idx and it.get("xy"):
+                    x, y = team_frame(it["xy"], t["alliance"])
+                    intakes.append([round(x * 100), round(y * 100)])
+            xy = np.array(t["xy"], float) / 100.0
+            if len(xy):
+                if t["alliance"] == "blue":
+                    xy = np.c_[L - xy[:, 0], W - xy[:, 1]]
+                hz = d.get("hz", 10)
+                ft = int(d.get("t_teleop_start", 23.5) * hz)
+                live = np.ones(len(xy), bool)
+                for g0, g1 in d.get("feed_gaps") or []:
+                    live[int(g0 * hz):int(g1 * hz) + 1] = False
+                ok = live[ft:] & np.isfinite(xy[ft:]).all(1)
+                H = np.histogram2d(xy[ft:][ok, 0], xy[ft:][ok, 1], bins=[nx, ny], range=[[0, L], [0, W]])[0]
+                heat = H if heat is None else heat + H
+        tf["verified_only"] = True
+        tf["verified_n"] = len(shorts)
+        for m in tf.get("matches") or []:
+            m["verified"] = m.get("match") in set(keys)
+        tf["id_conf"] = round(float(np.mean(confs)), 2) if confs else None
+        tf["team_conf"] = tf["id_conf"]
+        tf["analytics"] = None
+        if an:
+            try:
+                tf["analytics"] = web_team_analytics(AN.team_aggregate(an), an_web, tf["id_conf"] or 0.0)
+            except Exception as ex:
+                log(f"sitev2: {tk} aggregate failed: {ex!r}")
+        tf["shots_map"] = [p for p in tf.get("shots_map") or [] if p.get("m") in shorts]
+        tf["intakes_map"] = intakes
+        tf["heat"] = None if heat is None else (heat / max(heat.sum(), 1)).round(5).tolist()
+        tf["grid"] = G
+        tf["autos"] = [a for a in tf.get("autos") or [] if a.get("match") in set(keys)]
+        tf["routines"] = []
+        auto_paths[tk] = paths
+        teams[tk] = tf
+    try:
+        routines = AN.cluster_autos({tk: p for tk, p in auto_paths.items() if p})
+    except Exception as ex:
+        log(f"sitev2: cluster_autos failed: {ex!r}")
+        routines = {}
+    for tk, tf in teams.items():
+        rt = routines.get(tk)
+        if rt:
+            short = {a["match"]: a["short"] for a in tf["autos"]}
+            for au in tf["autos"]:
+                au["routine"] = rt["labels"].get(au["match"])
+            tf["routines"] = [{"id": r_["id"], "name": f"Auto {r_['id']}", "n": r_["n"], "of": rt.get("n_autos"),
+                               "freq": r_.get("freq"), "matches": [short.get(x, x) for x in r_.get("matches", [])],
+                               "xy": [[round(a_ * 100), round(b_ * 100)] for a_, b_ in r_.get("rep_path_red_frame", [])],
+                               "start_xy": r_.get("start"), "end_xy": r_.get("end"),
+                               "kind": r_.get("kind"), "consistency": r_.get("mean_intra_dist")}
+                              for r_ in rt.get("routines", [])]
+        else:
+            for au in tf["autos"]:
+                au["routine"] = None
+        tf["q"] = event_q(tf)
+        wr(os.path.join(tdir, f"{tk}.json"), tf)
+    evp = os.path.join(api, "event.json")
+    evj = rd(evp)
+    if evj:
+        for t in evj.get("teams") or []:
+            tf = teams.get(t.get("key"))
+            if tf:
+                t["q"], t["id_conf"], t["verified_n"] = tf["q"], tf["id_conf"], tf["verified_n"]
+        wr(evp, evj)
+    log(f"sitev2: {len(teams)} team files rebuilt from verified matches only")
+    return len(teams)

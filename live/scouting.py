@@ -1525,6 +1525,15 @@ def glob_json(d):
 
 def site_build_extra(DATA, ev, log=print):
     """Worker hook: run after build_site(ev).  Never raises."""
+    try:                 # team pages: aggregates from verified matches only (before the spec sheets / scout.json)
+        try:
+            from live import sitev2
+        except ImportError:
+            import sitev2
+        sitev2.verified_team_files(DATA, ev, log=log)
+    except Exception:
+        import traceback
+        traceback.print_exc()
     try:
         api_ev = os.path.join(DATA, "site", "api", ev)
         return build(api_ev, ev, log=log)

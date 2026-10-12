@@ -171,7 +171,7 @@ district events + DCMP + rookie bonus + adjustments (from TBA district rankings)
 "red":[3],"blue":[3],"us":"red"|"blue"|null,"analyze_url":"#/<ev>/a/<key>"|null,
 "result":{red,blue,winner,rp:{red,blue},bonus:{red,blue}} (played) | "pred":{p_red, score:{red,blue}, rp?:{red,blue}} (upcoming),
 "breakdown": (upcoming matches of `team` only) {"win_prob" (ours),"p_win_auto","score":{ours,theirs,margin,margin_sd},"fouls":{ours,theirs},
-  "periods":[{period: auto|transition|shift1..4|endgame, label, ours, theirs, delta, p_ours_ahead, our_active_p, their_active_p,
+  "periods":[{period: auto|transition|shift1..4|endgame, label, ours, theirs, delta, tower ({ours, theirs} climb pts inside auto/endgame, else null), p_ours_ahead, our_active_p, their_active_p,
               ours_if_won_auto, ours_if_lost_auto, theirs_if_won_auto, theirs_if_lost_auto}],
   "summary": plain-English "where you will be beaten"}}]}`. auto includes auto tower, endgame includes climb; shifts 1/3 are
 active for the auto loser (`our_active_p` = P our hub is active); FUEL points include the human player.
@@ -216,6 +216,10 @@ The one canonical per-team source for Teams, team page, Specs, Compare, Picklist
     "trend": {"tba": {"last_n": 4, "last", "before", "diff", "ci": [lo, hi], "verdict": "up|down|flat"} | null,   // alliance score - fouls drawn - partners' blend
               "blend": [[ts, blend, sd, epa], ...] | null } }] }                                  // from dash/<ts>.json snapshots, >= 3 points
 ```
+Team files (`t/<team>.json`) are rewritten from verified matches only by `sitev2.verified_team_files(DATA, ev)` (called from
+`scouting.site_build_extra` before the spec sheets): `analytics`, `shots_map`, `intakes_map`, `heat`, `autos`, `routines`, `q`, `id_conf`
+use verified matches; `matches[]` keeps every tracked match with `verified: bool`; `verified_only: true`, `verified_n`. event.json
+`teams[].q` / `id_conf` / `verified_n` are updated the same way.
 Spec sheets (`spec/<team>.json`) additionally carry `coverage` and `truth` ({video, flags, rating, trend}); their `climb` is from TBA
 (`source: "TBA"`), `auto.climb_rate` = TBA auto L1 rate; `spec/index.json` rows carry `cov`, `made_v` (canonical made/match) and `flags`.
 
@@ -224,7 +228,11 @@ replay snapshots `selection/<ts>.json` + `selection/index.json {times}` from `py
 one per `dash/<ts>.json`, each built with `--asof ts`; `goals --asof TS` also writes `selection/<ts>.json`). Same Season Monte Carlo as the goal block.
 ```jsonc
 { "schema", "event", "team", "asof", "sims", "generated", "quals_played", "quals_total",
-  "status": "projected" | "fixed" (alliances known) | "done" (event finished; nothing else below) | "unavailable",
+  "status": "projected" | "fixed" (alliances known) | "done" (event finished; only `actual` / `actual_us` below) | "unavailable",
+  "actual"?: [{ "seed", "name", "picks": [captain, R1, R2, backup?] (TBA order), "status": TBA playoff status ("won"|"eliminated"|...),
+                "points": {team: district points earned at this event} }],                 // status "done" only, from TBA alliances
+  "actual_us"?: { "team", "event_points", "seed" | null, "role": "captain|first pick|second pick|backup" | null,
+                  "p_dcmp" },                                                             // P(DCMP) from the season sim with this event final
   "model": {"draft", "playoffs"},
   "teams": [{ "team", "number", "nickname", "rank_mean", "rank_p10", "rank_p90", "p_captain", "p_r1", "p_r2", "p_selected",
               "rating", "rating_sd" (pts/match incl. foul share), "p_dcmp", "likely_captain": {"team", "p"}? }],
