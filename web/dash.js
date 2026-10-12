@@ -99,7 +99,7 @@
       ${weWin ? `<b>Win it →</b> our hub live <em class="sh">${SHS(au.if_won?.our_active)}</em> (win ${wp5(au.if_won?.win_prob)}). <span class="swap"><b>Lose it → swap</b>: live <em class="sh">${SHS(au.if_lost?.our_active)}</em>, defend <em class="sh">${SHS(au.if_lost?.defend_in)}</em> (win ${wp5(au.if_lost?.win_prob)})</span>`
         : `<b>Likely lose it →</b> our hub live <em class="sh">${SHS(au.if_lost?.our_active)}</em> (win ${wp5(au.if_lost?.win_prob)}). <span class="swap"><b>If we win it → swap</b>: live <em class="sh">${SHS(au.if_won?.our_active)}</em>, defend <em class="sh">${SHS(au.if_won?.defend_in)}</em> (win ${wp5(au.if_won?.win_prob)})</span>`}
       ${au.caution ? `<div class="small warnt">${H(au.caution)}</div>` : ""}`);
-    const L2 = df ? line("DEFEND", `<div class="qdef"><div>${df.goal_note ? `<div class="goaln"><b>${H(df.goal_note)}</b></div><span class="muted small">If you defend anyway:</span> ` : ""}<b>${tn(df.defender)}</b> defends <a href="#/${S.ev}/t/${df.target}"><b>${tn(df.target)}</b></a> in <em class="sh">${SHS(df.when)}</em>
+    const L2 = df ? line("DEFEND", `<div class="qdef"><div>${(df.goal_note || df.skip_note) ? `<div class="goaln"><b>${H(df.goal_note || df.skip_note)}</b></div><span class="muted small">If you defend anyway:</span> ` : ""}<b>${tn(df.defender)}</b> defends <a href="#/${S.ev}/t/${df.target}"><b>${tn(df.target)}</b></a> in <em class="sh">${SHS(df.when)}</em>
         <span class="muted small">(their live shifts; ${SHS(df.when_alt)} if auto flips)</span><br>${df.where ? `Where: <b>${H(df.where.zone_ours)}</b> <span class="muted small">(${Math.round((df.where.share || 0) * 100)}% of its made FUEL, ${H(df.coverage || "")})</span>` : `<span class="muted">Where: no verified shot locations</span>`}
         <div class="small muted">≈${df.denied_fuel} FUEL denied <span class="basis ${df.basis}">${df.basis === "measured" ? "measured" : "assumption"}</span> · ${H(pl.plan?.suggested_defender?.why || "")}</div></div>${miniField(pl, q)}</div>`) : "";
     const L3 = line("THEIR D", `${H(dd.text || "–")} ${(dd.teams || []).map(o => `<span class="mcov ${o.tier}" title="${H(o.label)}">${tn(o.team)} ${o.n_video ? (o.n_defended + "/" + o.n_video) : "n=0"}</span>`).join(" ")}
@@ -122,7 +122,8 @@
   }
   function planDetails(pl, R) {
     const pd = pl.plan || {}, q = pl.queue || {};
-    const defs = (pd.defend || []).map((x, i) => `<div class="drow"><div class="dn">${i + 1}</div><div class="dbody"><div><a href="#/${S.ev}/t/${x.target}"><b>Defend ${tn(x.target)}</b></a>
+    const small = (pd.defend || []).filter(x => (x.expected_gain_fuel ?? 0) < 2);
+    const defs = (pd.defend || []).filter(x => (x.expected_gain_fuel ?? 0) >= 2).map((x, i) => `<div class="drow"><div class="dn">${i + 1}</div><div class="dbody"><div><a href="#/${S.ev}/t/${x.target}"><b>Defend ${tn(x.target)}</b></a>
         <span class="shifts">${(x.when || []).map(w => `<em>${SH(w)}</em>`).join("")}</span>${x.where?.zone_ours ? ` <span class="muted small">${H(x.where.zone_ours)}</span>` : ""}</div>
         <div class="small muted">${H(x.why)}</div></div><div class="dgain n">≈${n0(x.expected_gain_fuel)}<small>FUEL denied${x.basis === "measured" ? "" : " (assumed)"}</small></div></div>`).join("");
     const mu = (pd.auto?.matchups || []).map(x => `<div class="small"><b>${tn(x.team)}</b> <span class="muted">${x.alliance === pl.alliance ? "us" : "them"}</span> ${H(x.note)}</div>`).join("");
@@ -133,7 +134,7 @@
       : `<div class="muted small">Nobody in this match climbs in ≥5% of matches — climb odds hidden.</div>`;
     const kf = (pd.key_factors || []).map(f => `<div class="kf"><span>${H(f.text)}</span></div>`).join("");
     return `<div class="plan">
-      <div><h3>Defense options <span class="muted small">FUEL denied ≈ live-shift FUEL × (1 − shot rate kept) × 70% engagement</span></h3>${defs || '<div class="muted small">None.</div>'}</div>
+      <div><h3>Defense options <span class="muted small">FUEL denied ≈ live-shift FUEL × (1 − shot rate kept) × 70% engagement</span></h3>${defs || '<div class="muted small">No target worth a defender (all under 2 FUEL).</div>'}${small.length ? `<div class="muted small">Not worth defending (&lt;2 FUEL): ${small.map(x => tn(x.target)).join(", ")}</div>` : ""}</div>
       <div><h3>Auto</h3>${mu || '<div class="muted small">No routine data.</div>'}
         <h3>TBA alliance auto FUEL, last 4 matches</h3><div class="muted small">the whole alliance's counted auto FUEL in each team's recent matches (TBA) — compare with the model's ${n0(q.auto?.our_expected)} (us) / ${n0(q.auto?.their_expected)} (them)</div>
         <table class="mini"><tbody>${ht}</tbody></table>

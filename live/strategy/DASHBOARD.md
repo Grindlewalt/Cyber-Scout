@@ -40,7 +40,7 @@
 >            "history": {team: [{"match","alliance_auto"}]} (TBA, last 4), "history_alliance_avg": {"us","them"},
 >            "recent_bias": backtest_asof.auto_bias_recent, "caution"?, "text"},
 >   "defend": null|{"target","defender","when","when_alt","where": null|{"zone_ours","share","field": [u, v]},
->            "denied_fuel" (int), "basis": "measured"|"assumption", "coverage", "goal_note"?, "text"},
+>            "denied_fuel" (int), "basis": "measured"|"assumption", "coverage", "goal_note"?, "skip_note"? (< 2 FUEL), "text"},
 >   "defenders": {"teams": [{"team","n_video","n_defended","matches","avg_defense_s","tier","label"}], "likely": [team],
 >                 "effect": null|{"retained","sd","n","text"}, "text"},
 >   "rp": {"us","them","shown": ["energized","supercharged"(,"traversal")], "hidden", "hidden_why"},
@@ -59,6 +59,8 @@
 >   quals posted before `asof`, each predicted (Monte Carlo, 1500 sims) from the matches played before it; EPA = the
 >   local as-of EPA with prequential sd (`epa_pre` in backtest.py). Rows cached in `DATA/cache/strategy/backtest_<ev>.json`.
 >   `model.backtest` (constant 58-match reference) is kept but no longer shown.
+> - `our_team.trend[].fuel_made` only from verified matches (live/coverage.py). The plan details hide defense targets
+>   worth < 2 FUEL.
 > - Display policy (dash.js): win % and bonus odds in 5% steps, shown as "<3%" / ">97%" at the ends.
 
 Built by `live/strategy/dashboard.py` at site-build time (and on demand for replay). All times are

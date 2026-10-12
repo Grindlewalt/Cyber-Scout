@@ -381,7 +381,10 @@ def levers(M, team, teams):
     return out
 
 
-def _fuel_made(E_v, key, team):
+def _fuel_made(E_v, key, team, verified=None):
+    """our robot's counted made FUEL in one match; only from a verified match (live/coverage.py) when `verified` given."""
+    if verified is not None and key not in verified:
+        return None
     for r in E_v["video"]["robot"]:
         if r["match"] == key and r["team"] == team and r.get("by_period") and r["w"] >= 0.5:
             return sum(r["by_period"][p]["counted"] for p in PERIODS)
@@ -511,7 +514,7 @@ def build(ctx, team=DEFAULT_TEAM, asof=None, sims_rank=2000, sims_match=6000, se
             Ma = fit_event_model(V, m["time"] + 1, use_video=True, epa_prior=ctx.prior)
             trend.append({"match": m["key"], "short": short, "time": m["time"], "blend_total": blend_rating(Ma, team)["total"],
                           "blend_sd": blend_rating(Ma, team)["sd"],
-                          "fuel_made": _fuel_made(V, m["key"], team), "alliance_fuel": m[us]["fuel_count"],
+                          "fuel_made": _fuel_made(V, m["key"], team, set(cov.get(team, {}).get("keys_full") or [])), "alliance_fuel": m[us]["fuel_count"],
                           "won": res["won"]})
         else:
             pl = next((p for p in plans if p["key"] == m["key"]), None)

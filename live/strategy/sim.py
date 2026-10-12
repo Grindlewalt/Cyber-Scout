@@ -49,7 +49,8 @@ def _param_draws(M, c, teams, n, rng):
     L = np.linalg.cholesky(cov + 1e-9 * np.eye(len(sub)))
     z = rng.standard_normal((n, len(sub))) @ L.T + mean
     mu = z[:, 0]
-    beta = z[:, 1] if nf == 2 else np.zeros(n)
+    bi = cp.get("beta_idx", 1 if nf == 2 else None)
+    beta = z[:, bi] if bi is not None else np.zeros(n)
     th = np.zeros((n, len(teams)))
     j = nf
     for r, k in enumerate(cols):

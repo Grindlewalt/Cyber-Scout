@@ -248,3 +248,20 @@ one per `dash/<ts>.json`, each built with `--asof ts`; `goals --asof TS` also wr
   "draft": { "teams", "order": [[team idx by simulated final rank] x 300], "theta": [[rating draw per team] x 300],
              "p_dcmp_by_outcome": {"<seed>:<role>": p}, "p_dcmp_by_role": {role: p} } }   // client-side "captain picks X" re-draft
 ```
+
+### Time-trend experiment (not adopted)
+`model.TREND` (default empty = off) adds an event-level drift term per component: x_ic + gamma_c·s, s = (match index −
+latest)/10, gamma ~ N(0, (0.06·DEFAULT_ALLIANCE[c])²), so mu is the level at the latest match (no extrapolation).
+As-of backtest on 2026wasam (`.work/agentM/trend_bt.py`; live = every match at t−10 min with posting/video lag;
+snapshots = 728 predictions; Δ = variant − current, 90% bootstrap CI):
+
+| subset | variant | Brier Δ | score MAE Δ | auto bias (act−pred) | auto-winner Brier Δ |
+|---|---|---|---|---|---|
+| live quals (58) | auto | +.0005 [−.0024, +.0036] | +0.2 | +5.8 → +1.0 | +.0010 [−.0037, +.0056] |
+| live quals (58) | all | +.0007 [−.0034, +.0045] | +1.3 | +5.8 → +1.0 | −.0004 |
+| live playoffs (16) | auto | +.0025 [−.0044, +.0105] | −0.2 | +3.8 → −6.2 | −.0107 [−.0236, +.0030] |
+| blind 09:00 → Q47–58 | auto | −.0044 [−.0132, +.0029] | −0.8 | +11.0 → +3.5 | – |
+| snapshots (728) | auto | −.0003 [−.0017, +.0011] | −0.2 | +10.5 → +7.3 | – |
+
+It fixes most of the auto bias but does not improve win Brier, score error or auto-winner Brier, and it overshoots in
+playoffs, so it stays off. Turning it on (`TREND = frozenset({"auto"})`) changes the backtest-cache signature.

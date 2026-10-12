@@ -20,6 +20,7 @@ from scipy import stats
 from . import epa as EPA
 from .baselines import S_PRIOR, S_PRIOR_N
 from .data import LEN, PERIODS, WID, shot_zone
+from . import model as MODEL
 from .model import fit_event_model
 from .sim import simulate
 
@@ -117,7 +118,7 @@ def backtest_rows(ctx, sims=1500, cache_path=None, log=None):
             if p["key"] not in done:
                 cepa.update(p)
                 done.add(p["key"])
-        sig = f"{len(prior)}:{sum(1 for t in vtimes if t < m['time'])}:{sims}"
+        sig = f"{len(prior)}:{sum(1 for t in vtimes if t < m['time'])}:{sims}:{','.join(sorted(MODEL.TREND))}"
         c = cache.get(m["key"])
         if c and c.get("sig") == sig and c.get("post") == posted(m):
             rows.append(c)
@@ -390,6 +391,8 @@ def queue_card(nm, P, raw, X, cov, epa_wp, auto_bias, V, team):
                   "text": (f"{_num(dfd['team'])} defends {_num(d0['target'])} in {'+'.join(w.replace('shift', 'S') for w in when)}"
                            f" (their live shifts{' if we win auto' if first else ' if we lose auto'})"
                            + (f", {where['zone_ours']}" if where else "") + ".")}
+    if defend and defend["denied_fuel"] < 2:
+        defend["skip_note"] = "No opponent is worth a dedicated defender here (under 2 FUEL denied) — all three score/feed."
     if defend and mode == "goal" and lever and lever["bonus"] != "traversal":
         defend["goal_note"] = (f"Goal mode: defense only changes the win ({'already likely' if wp > GOAL_HI else 'unlikely'}); "
                                f"{lever['bonus'].upper()} needs our own FUEL, so keep all three robots scoring/feeding "
