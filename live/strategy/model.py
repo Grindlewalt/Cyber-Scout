@@ -38,6 +38,50 @@ CLIMB_K = 4.0               # pseudo-matches for climb shrinkage
 # so mu is the level at the most recent match and predictions do not extrapolate.  gamma ~ N(0, (TREND_SD_FRAC *
 # DEFAULT_ALLIANCE[c])^2) per robot per TREND_UNIT matches.  TREND = components that get it (empty = off).
 TREND = frozenset()
+# How robot-level video enters the scoring model (strategist review round 2: video as censored evidence).
+#  mode      "replace": a usable video split replaces the alliance's TBA row (phase-1 behaviour)
+#            "contrast": the TBA row is always used; video contributes only the split (2 contrasts of the 3 robot rows),
+#                        so video can move a robot relative to its partners but never the alliance total
+#  recon_tol alliance-matches whose traced FUEL (robots + human) is more than this fraction off the TBA count give no
+#            split at all (None = no gate)
+#  floor     under-credited alliance-matches (traced < (1 - recon_tol) x TBA): a robot's raw credited count is a lower
+#            bound -- it is added as an absolute row only where it exceeds the robot's current prediction (one-sided)
+#  rel_noise extra relative noise on video robot rows (attribution / call noise)
+#  v2_only   only v2 (OCR identity) matches give splits (live/coverage.py trust rule)
+#  source    "soft": robot rows = the identity-weighted soft split scaled to TBA (phase 1)
+#            "credited": robot rows = shots confidently credited to each robot (data.CRED_CONF) + an equal share of the
+#                        unattributed rest; an alliance-component whose unattributed share of TBA exceeds recon_tol is
+#                        censored: its credited counts are lower bounds only (floor rows), never a split
+# Default chosen on the as-of backtest (README "Video as censored evidence"): credited source, 20% gate, floors.
+VIDEO = {"source": "credited", "mode": "replace", "recon_tol": 0.2, "floor": True, "rel_noise": REL_CALL_NOISE,
+         "v2_only": True}
+# less shrinkage per component: team-effect prior sd (EPA prior and tau) multiplied by this (1 = off)
+SHRINK_MULT = {}
+
+
+def _credited_block(v, tol):
+    """("split", y, V) | ("floor", cred) | None for one alliance-component under the "credited" source."""
+    tba = float(v.get("tba") or 0)
+    if tba <= 0 or v.get("cred") is None or (v.get("coverage") or 0) < 0.8:
+        return None
+    cred = np.asarray(v["cred"], float)
+    hp = float(v.get("hp_raw") or 0.0)
+    rob = tba - hp                                  # TBA FUEL scored by the three robots
+    if rob <= 0:
+        return None
+    rest = rob - cred.sum()
+    tol = 0.2 if tol is None else tol
+    if rest > tol * tba:                            # under-credited: counts are floors
+        return ("floor", cred)
+    if rest < -tol * tba:                           # over-credited (double counting): no robot information
+        return None
+    if rest >= 0:
+        y = cred + rest / 3.0
+        V = rest * (np.eye(3) / 3.0 - 1.0 / 9.0)
+    else:                                           # slightly over: shrink the credited counts to the TBA total
+        y = cred * rob / cred.sum()
+        V = np.zeros((3, 3))
+    return ("split", y, V)
 TREND_UNIT = 10.0
 TREND_SD_FRAC = 0.06
 
@@ -152,15 +196,25 @@ def fit_event_model(E, before=None, use_video=True, recency_halflife=None, epa_p
         return 0.5 ** ((nprior - 1 - order[key]) / recency_halflife)
 
     # ---- video blocks (trusted only)
-    vblocks = []
+    vblocks, floors = [], []
+    VC = VIDEO
+    tol = VC.get("recon_tol")
     if use_video:
         for b in E["video"]["alliance"]:
             if b["match"] not in keys:
                 continue
+            if VC.get("v2_only") and not b.get("v2", True):
+                continue
             infos = [v["id_info"] for v in b["comp"].values() if v["usable"]]
             if not infos or np.mean(infos) < TRUST_ID_INFO:
                 continue
+            r = b.get("recon")
+            if VC.get("source") != "credited" and tol is not None and (r is None or abs(r - 1.0) > tol):
+                if r is not None and r < 1.0 - tol and VC.get("floor"):
+                    floors.append(b)
+                continue
             vblocks.append(b)
+    M.video_floor_matches = sorted({b["match"] for b in floors})
     M.video_matches = sorted({b["match"] for b in vblocks})
     # ---- human-player mean per component (alliance level) from trusted video
     M.h = {}
@@ -172,10 +226,25 @@ def fit_event_model(E, before=None, use_video=True, recency_halflife=None, epa_p
     for c in COMPONENTS:
         used = set()
         blocks = []
+        contrast = VC.get("mode") == "contrast"
+        cfloors = []
         for b in vblocks:
             v = b["comp"][c]
-            if v["usable"]:
-                blocks.append((b["teams"], b["won_auto"], v["y"], v["V"], rw(b["match"]), ts[b["match"]]))
+            if VC.get("source") == "credited":
+                cb = _credited_block(v, tol)
+                if cb is None:
+                    continue
+                if cb[0] == "floor":
+                    cfloors.append((b, cb[1]))
+                    continue
+                y, Vm = cb[1].tolist(), cb[2]
+            elif v["usable"]:
+                y, Vm = v["y"], v["V"]
+            else:
+                continue
+            blocks.append((b["teams"], b["won_auto"], y, Vm, rw(b["match"]), ts[b["match"]],
+                           "contrast" if contrast else "abs"))
+            if not contrast:
                 used.add((b["match"], b["alliance"]))
         rows_all = [(m["teams"][a], m[a]["won_auto"], float(m[a]["comp"][c]), rw(m["key"]), ts[m["key"]])
                     for m in prior for a in ("red", "blue")]
@@ -186,7 +255,27 @@ def fit_event_model(E, before=None, use_video=True, recency_halflife=None, epa_p
         ut = c in trend and len(prior) >= 6
         hyp = fit_hyper(c, rows_all, teams, M.h[c], prior_hyper=ph, use_trend=ut)
         comp = fit_posterior(c, hyp, rows_tba_post, blocks, teams, M.h[c], epa_prior=epa_prior,
-                             rows_tba_all=rows_all if blocks else None, use_trend=ut)
+                             rows_tba_all=rows_all if blocks else None, use_trend=ut, rel_noise=VC.get("rel_noise"))
+        fl = [(b, b["comp"][c].get("raw")) for b in floors if b["comp"][c].get("tba", 0) > 0] + cfloors
+        if fl and VC.get("floor"):      # one-sided lower bounds from under-credited alliance-matches
+            extra = []
+            for b, raw in fl:
+                v = b["comp"][c]
+                if raw is None:
+                    continue
+                for k, t in enumerate(b["teams"]):
+                    x = float(raw[k])
+                    if x < 1.0:
+                        continue
+                    pred = team_theta(comp, t)[0] + comp["beta"] * float(b["won_auto"]) / 3.0 \
+                        + comp.get("trend", 0.0) * ts[b["match"]]
+                    if x > pred:
+                        extra.append(([t], b["won_auto"], [x], [[float(np.asarray(v["raw_V"])[k][k])]], rw(b["match"]),
+                                      ts[b["match"]], "abs"))
+            if extra:
+                comp = fit_posterior(c, hyp, rows_tba_post, blocks + extra, teams, M.h[c], epa_prior=epa_prior,
+                                     rows_tba_all=rows_all, use_trend=ut, rel_noise=VC.get("rel_noise"))
+                comp["n_floor_rows"] = len(extra)
         M.comp[c] = comp
     # ---- residual correlation across components (alliance level), shrunk toward identity
     M.R = _resid_corr(M, prior)
@@ -229,8 +318,9 @@ def _prior_terms(c, hyp, teams, h, epa_prior, use_trend=False):
         P0[1, 1] = 1.0 / (40.0 ** 2)
     if use_trend:
         P0[nf - 1, nf - 1] = 1.0 / (TREND_SD_FRAC * DEFAULT_ALLIANCE[c]) ** 2
+    sm2 = SHRINK_MULT.get(c, 1.0) ** 2
     for i in range(nT):
-        P0[nf + i, nf + i] = 1.0 / hyp["tau2"]
+        P0[nf + i, nf + i] = 1.0 / (hyp["tau2"] * sm2)
     pt = (epa_prior or {}).get("team") or {}
     if pt:
         mbar = epa_prior["event_mean"][c]
@@ -246,7 +336,7 @@ def _prior_terms(c, hyp, teams, h, epa_prior, use_trend=False):
                 continue
             m, sd = d["comp"][c]
             m0[nf + T[t]] = m - mbar
-            P0[nf + T[t], nf + T[t]] = 1.0 / max(sd, 1e-3) ** 2
+            P0[nf + T[t], nf + T[t]] = 1.0 / (max(sd, 1e-3) ** 2 * sm2)
     return m0, P0, T, nf, p
 
 
@@ -273,7 +363,8 @@ def _theta_var(cov, nf, j):
     return float(cov[0, 0] + cov[nf + j, nf + j] + 2 * cov[0, nf + j])
 
 
-def fit_posterior(c, hyp, rows_tba, blocks, teams, h, epa_prior=None, rows_tba_all=None, use_trend=False):
+def fit_posterior(c, hyp, rows_tba, blocks, teams, h, epa_prior=None, rows_tba_all=None, use_trend=False,
+                  rel_noise=REL_CALL_NOISE):
     """posterior with hyperparameters fixed from `hyp`.  Also returns, per team, the share of the posterior precision
     of theta (= mu + delta) that comes from the prior (EPA or event-mean shrinkage), the event's TBA rows and video."""
     sigma2, tau2 = hyp["sigma2"], hyp["tau2"]
@@ -282,8 +373,11 @@ def fit_posterior(c, hyp, rows_tba, blocks, teams, h, epa_prior=None, rows_tba_a
     A_t, b_t = _rows_info(c, rows_tba, sigma2, T, nf, p, h, use_trend)
     A = P0 + A_t
     b = P0 @ m0 + b_t
-    for (tl, wa, yv, V, wt, sv) in blocks:
-        X = np.zeros((3, p))
+    for blk in blocks:
+        tl, wa, yv, V, wt, sv = blk[:6]
+        kind = blk[6] if len(blk) > 6 else "abs"
+        k3 = len(tl)
+        X = np.zeros((k3, p))
         X[:, 0] = 1.0
         if use_beta:
             X[:, 1] = float(wa) / 3.0
@@ -292,7 +386,12 @@ def fit_posterior(c, hyp, rows_tba, blocks, teams, h, epa_prior=None, rows_tba_a
         for k, t in enumerate(tl):
             X[k, nf + T[t]] = 1.0
         yv = np.asarray(yv, float)
-        S = sigma2 * np.eye(3) + np.asarray(V) + np.diag((REL_CALL_NOISE * yv) ** 2 + 1.0)
+        S = sigma2 * np.eye(k3) + np.asarray(V) + np.diag((rel_noise * yv) ** 2 + 1.0)
+        if kind == "contrast":          # only the split: robot k minus robot k+1 (alliance total comes from TBA)
+            C = np.zeros((k3 - 1, k3))
+            for k in range(k3 - 1):
+                C[k, k], C[k, k + 1] = 1.0, -1.0
+            X, yv, S = C @ X, C @ yv, C @ S @ C.T
         Si = np.linalg.inv(S) * wt
         A += X.T @ Si @ X
         b += X.T @ Si @ yv

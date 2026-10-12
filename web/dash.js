@@ -42,7 +42,8 @@
 
   // ---------------------------------------------------------------- display policy (docs/STRATEGIST_REVIEW.md)
   // win % / bonus odds: round to 5%, clamp 3–97% (no false precision)
-  const wp5 = p => p == null ? "–" : p < 0.03 ? "<3%" : p > 0.97 ? ">97%" : Math.min(95, Math.max(5, Math.round(p * 20) * 5)) + "%";
+  // shown as "<5%" / ">95%" at the ends (tabs, card, schedule and tables all use this one function)
+  const wp5 = p => p == null ? "–" : p < 0.05 ? "<5%" : p > 0.95 ? ">95%" : Math.round(p * 20) * 5 + "%";
   const SHS = ws => (ws || []).map(w => SH(w)).join("+");
   const covTag = c => !c ? "" : `<span class="mcov ${c.tier}" title="verified robot video: ${H(c.label)}">${c.n ? "vid " + c.n : "no vid"}</span>`;
   function mchip(k, R, us) {
@@ -91,7 +92,7 @@
     const head = goal ? `<div class="qhead goal"><div class="qbig">${H(q.lever.bonus.toUpperCase())}<small>play for this RP · ${wp5(q.lever.p)} to get it</small></div>
         <div class="qsub">${H(q.lever.text)}<div class="muted small">Win ${wp5(wp)} · EPA says ${wp5(epa)}</div></div></div>`
       : `<div class="qhead"><div class="qbig ${wp >= .5 ? "pos" : "neg"}">${wp5(wp)}<small>we win (model)</small></div>
-        <div class="qsub">EPA (TBA only) says <b>${wp5(epa)}</b>${q.models_disagree ? ` <span class="mchipw" title="model and EPA differ by more than 15 points — treat the number with care">models disagree</span>` : ""}
+        <div class="qsub">EPA (TBA only) says <b>${wp5(epa)}</b>${q.models_disagree ? ` <span class="mchipw" title="model and EPA differ by 15 points or more (as shown) — treat the number with care">models disagree</span>` : ""}
         <div class="muted small">expected score us ${n0(p.score?.[al]?.mean)} <small>(${n0(p.score?.[al]?.lo)}–${n0(p.score?.[al]?.hi)})</small> vs them ${n0(p.score?.[op]?.mean)} <small>(${n0(p.score?.[op]?.lo)}–${n0(p.score?.[op]?.hi)})</small></div></div></div>`;
     const au = q.auto || {}, df = q.defend, dd = q.defenders || {}, rp = q.rp || {}, fl = q.fouls || {};
     const pa = au.p_win_auto ?? .5, weWin = pa >= .5;
@@ -101,8 +102,9 @@
       ${au.caution ? `<div class="small warnt">${H(au.caution)}</div>` : ""}`);
     const L2 = df ? line("DEFEND", `<div class="qdef"><div>${(df.goal_note || df.skip_note) ? `<div class="goaln"><b>${H(df.goal_note || df.skip_note)}</b></div><span class="muted small">If you defend anyway:</span> ` : ""}<b>${tn(df.defender)}</b> defends <a href="#/${S.ev}/t/${df.target}"><b>${tn(df.target)}</b></a> in <em class="sh">${SHS(df.when)}</em>
         <span class="muted small">(their live shifts; ${SHS(df.when_alt)} if auto flips)</span><br>${df.where ? `Where: <b>${H(df.where.zone_ours)}</b> <span class="muted small">(${Math.round((df.where.share || 0) * 100)}% of its made FUEL, ${H(df.coverage || "")})</span>` : `<span class="muted">Where: no verified shot locations</span>`}
-        <div class="small muted">≈${df.denied_fuel} FUEL denied <span class="basis ${df.basis}">${df.basis === "measured" ? "measured" : "assumption"}</span> · ${H(pl.plan?.suggested_defender?.why || "")}</div></div>${miniField(pl, q)}</div>`) : "";
+        <div class="small muted">≈${df.denied_fuel} FUEL denied <span class="basis ${df.basis}">${df.basis === "measured" ? "measured" : "assumption"}</span>${df.alt ? ` · ${H(df.alt.text)}` : ""} · ${H(pl.plan?.suggested_defender?.why || "")}</div></div>${miniField(pl, q)}</div>`) : "";
     const L3 = line("THEIR D", `${H(dd.text || "–")} ${(dd.teams || []).map(o => `<span class="mcov ${o.tier}" title="${H(o.label)}">${tn(o.team)} ${o.n_video ? (o.n_defended + "/" + o.n_video) : "n=0"}</span>`).join(" ")}
+      ${dd.ignores ? `<div class="small warnt">${H(dd.ignores)}</div>` : ""}
       ${dd.effect ? `<div class="small muted">If defended: ${H(dd.effect.text)}.</div>` : ""}`);
     const L4 = line("RP", `<div class="rprow"><span class="who">Us</span>${rpCells(rp.us || {}, rp.shown || [])}</div><div class="rprow them"><span class="who">Them</span>${rpCells(rp.them || {}, rp.shown || [])}</div>
       ${rp.hidden_why ? `<div class="small muted">TRAVERSAL hidden: ${H(rp.hidden_why)}.</div>` : ""}`);
@@ -282,7 +284,10 @@
     wireSort(rt);
   }
   function wirePlans(d, R) {
-    const show = i => { S.tab = i; const el = document.getElementById("plans"); if (!el) return; el.outerHTML = plansSection(d, R); wirePlans(d, R); startCountdown(d); };
+    const show = i => { S.tab = i;
+      const p = (d.plans || [])[i];
+      if (p) try { history.replaceState(null, "", `#/${S.ev}/dash/${S.ts || "live"}/${(p.short || i).toString().toLowerCase()}`); } catch (e) { }
+      const el = document.getElementById("plans"); if (!el) return; el.outerHTML = plansSection(d, R); wirePlans(d, R); startCountdown(d); };
     document.querySelectorAll("#plans .ptab").forEach(b => b.onclick = () => show(+b.dataset.i));
     document.querySelectorAll("a[data-plan]").forEach(a => a.onclick = e => { e.preventDefault(); show(+a.dataset.plan); document.getElementById("plans")?.scrollIntoView({ behavior: "smooth" }); });
   }
@@ -333,12 +338,15 @@ em.sh { font-style: normal; font-weight: 700; background: var(--panel2); border:
   }
 
   window.dashPage = async function (ev, ts) {
-    S = { ev, tab: 0, sort: S && S.ev === ev ? S.sort : { k: "bt", dir: -1 } };
+    if (ts === "live") ts = null;          // #/<ev>/dash/live/<plan> = live view with a plan tab open
+    S = { ev, ts, tab: 0, sort: S && S.ev === ev ? S.sort : { k: "bt", dir: -1 } };
     injectStyle();
-    const seg = location.hash.split("/"), pi = parseInt(seg[4], 10);   // #/<ev>/dash/<ts>/<plan index> opens that plan tab
-    if (pi >= 0) S.tab = pi;
     let idx = []; try { idx = await api(`${ev}/dash/index.json`); } catch (e) { }
     const d = await load(ev, ts);
+    // linkable plan tabs: #/<ev>/dash/<ts|live>/<q51 | plan index>
+    const want = (location.hash.split("/")[4] || "").toLowerCase(), ps = d.plans || [];
+    const byKey = ps.findIndex(p => (p.short || "").toLowerCase() === want);
+    S.tab = byKey >= 0 ? byKey : (/^\d+$/.test(want) && +want < ps.length ? +want : 0);
     crumbs([[d.event?.name || ev, `#/${ev}`], ["Dashboard"]]); $updated.textContent = d.event?.asof ? "replay" : "";
     render(d, idx);
     if (!ts) {   // live: refresh every 60s without losing scroll

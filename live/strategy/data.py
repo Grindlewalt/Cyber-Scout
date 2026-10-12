@@ -35,6 +35,7 @@ TOWER_TELEOP_PTS = [0, 10, 20, 30]
 TOWER_AUTO_PTS = 15          # L1 in auto, max 2 robots per alliance
 
 ID_RAMP = (0.3, 0.8)         # identity-confidence ramp for robot-match weights
+CRED_CONF = 0.8             # a made shot counts as confidently credited to a robot at this attribution probability
 MIN_TRACED = 3               # min traced counted fuel in an alliance-component to use the video split
 
 
@@ -197,6 +198,7 @@ def load_video(site_dir, tba_by_key):
         # ---- alliance soft allocation of counted fuel
         if has_shots:
             acc = {a: {p: {"robot_mean": np.zeros(3), "robot_cov": np.zeros((3, 3)), "hp": 0.0, "unknown": 0.0,
+                           "cred": np.zeros(3), "unc": 0.0,
                            "n_shots": 0, "id_info": 0.0} for p in PERIODS} for a in ("red", "blue")}
             for s in shots:
                 if s.get("outcome") != "made" or s.get("hub_active") is False:
@@ -214,6 +216,7 @@ def load_video(site_dir, tba_by_key):
                     continue
                 if kind != "robot":
                     A["unknown"] += 1
+                    A["unc"] += 1
                     continue
                 k = sh.get("track_idx")
                 pv = np.full(3, 1.0 / 3)
@@ -226,16 +229,27 @@ def load_video(site_dir, tba_by_key):
                         pv = np.full(3, (1 - pt) / 2)
                         pv[tm["teams"][a].index(team)] = pt
                 A["robot_mean"] += pv
+                if pv.max() >= CRED_CONF:          # confidently credited to one robot
+                    A["cred"][int(pv.argmax())] += 1
+                else:                              # robot shot we cannot pin on a robot: part of the unattributed pool
+                    A["unc"] += 1
                 A["robot_cov"] += np.diag(pv) - np.outer(pv, pv)
                 A["n_shots"] += 1
                 A["id_info"] += float(pv.max() - 1.0 / 3) / (2.0 / 3)
+            v2 = str((m.get("identity") or {}).get("method") or "").startswith("ocr")
             for a in ("red", "blue"):
                 comp = {}
+                n_rob = sum(acc[a][p]["n_shots"] for p in PERIODS)
+                n_hp = sum(acc[a][p]["hp"] for p in PERIODS)
+                tba_tot = sum(tm[a]["fuel"][p] for p in PERIODS)
+                recon = (n_rob + n_hp) / tba_tot if tba_tot else None   # traced (robots + HP) / TBA counted FUEL
                 for c, ps in COMP_PERIODS.items():
                     if c == "active":
                         ps = tm[a]["active_shifts"]
                     cv = min([cov.get(p, 1.0) for p in ps] or [1.0])
                     mean = sum(acc[a][p]["robot_mean"] for p in ps)
+                    cred = sum(acc[a][p]["cred"] for p in ps)
+                    unc = sum(acc[a][p]["unc"] for p in ps)
                     cvm = sum(acc[a][p]["robot_cov"] for p in ps)
                     hp = sum(acc[a][p]["hp"] for p in ps)
                     n = sum(acc[a][p]["n_shots"] for p in ps)
@@ -247,8 +261,11 @@ def load_video(site_dir, tba_by_key):
                     comp[c] = {"usable": bool(usable), "scale": scale, "coverage": cv, "traced": traced, "tba": tba_c,
                                "y": (mean * scale).tolist() if usable else None,
                                "V": (cvm * scale * scale).tolist() if usable else None,
-                               "hp": hp * scale if usable else None, "id_info": info / max(n, 1)}
+                               "hp": hp * scale if usable else None, "id_info": info / max(n, 1),
+                               "raw": mean.tolist(), "raw_V": cvm.tolist(),
+                               "cred": cred.tolist(), "unc": float(unc), "hp_raw": float(hp)}
                 blocks.append({"match": key, "time": tm["time"], "alliance": a, "teams": tm["teams"][a],
+                               "v2": v2, "recon": recon, "n_robot_shots": n_rob, "n_hp": n_hp, "tba_fuel": tba_tot,
                                "won_auto": tm[a]["won_auto"], "comp": comp,
                                "by_period_hp": {p: acc[a][p]["hp"] for p in PERIODS},
                                "by_period_traced": {p: float(acc[a][p]["robot_mean"].sum() + acc[a][p]["hp"])

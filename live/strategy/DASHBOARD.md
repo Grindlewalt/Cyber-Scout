@@ -19,6 +19,24 @@
 > - `dashboard.json` is the DASH_TEAM (frc4911) perspective; `dashboard.<team>.json` is written for that team too, and
 >   for others only with `--teams`.
 
+> **Round 3 (agent M).** Additive unless noted.
+> - Defense has one source: the defense library (`defense.json`). A target's retention is "measured" only when the
+>   library's per-team placebo-controlled estimate (`teams[].retention = {est, lo, hi, n_eff, significant}`) excludes
+>   100%; otherwise the event-wide library effect (`global.ratio / global.placebo.pooled_ratio`), labelled an
+>   assumption. `plan.defend[].top_scorer` (bool); `queue.defend.alt` = the top scorer when it is not the pick.
+>   `queue.defenders.effect` gained `lo, hi, significant, source ("library"|"video"), placebo`; `likely` = opponents
+>   that defended in ≥ half their verified matches (library `defenders[].matches` ∩ visible verified matches);
+>   `queue.defenders.if_defended = {defender, target, fuel_lost, win_prob, basis}` and `ignores` (text): the
+>   simulator has no defense, so the card says what a dedicated defender on our top scorer would do to the win %.
+>   The library is built from all tracked matches, so in a replay its estimates are not strictly as-of.
+> - `prediction.models_disagree` / `queue.models_disagree` compare the displayed (5%-step) values, ≥ 15 points.
+> - `ratings[].coverage` counts quals only (`of` = quals played), like scout.json; video becomes visible 10 min after
+>   posting, so a replay can show one match fewer than scout.json's played-by-time view.
+> - The climb lever is dropped when < 5% of the event's robot-matches end on the tower.
+> - Backtest cache key = hash of the prior matches' video content + the model's video/trend/shrinkage settings.
+> - dash.js: odds shown as "<5%" / ">95%" at the ends, everywhere; plan tabs are linkable as
+>   `#/<ev>/dash/<ts|live>/<q51>` (the URL updates when a tab is clicked).
+
 > **Match-day changes (agent M, 2026-10-11; docs/STRATEGIST_REVIEW.md).** All additive except where marked.
 > - `plans[]` (new): one plan per remaining match of `team`, in time order, each the same shape as `next_match` plus
 >   `as_of` = `{"ts", "asof", "quals_played", "last_result": "Q46"}` and `queue` (below). `next_match` is `plans[0]`
@@ -61,7 +79,7 @@
 >   `model.backtest` (constant 58-match reference) is kept but no longer shown.
 > - `our_team.trend[].fuel_made` only from verified matches (live/coverage.py). The plan details hide defense targets
 >   worth < 2 FUEL.
-> - Display policy (dash.js): win % and bonus odds in 5% steps, shown as "<3%" / ">97%" at the ends.
+> - Display policy (dash.js): win % and bonus odds in 5% steps (round 3: "<5%" / ">95%" at the ends).
 
 Built by `live/strategy/dashboard.py` at site-build time (and on demand for replay). All times are
 unix seconds. All fuel/points are expected values, with `lo`/`hi` = 10th/90th percentiles.

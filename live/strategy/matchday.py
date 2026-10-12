@@ -10,6 +10,7 @@
 
 Nothing here changes the robot model or the simulator; it only reads them.
 """
+import hashlib
 import json
 import math
 import os
@@ -34,6 +35,13 @@ INACTIVE_MIN = 50 / 60   # our two inactive shifts last 2 x 25 s
 DEF_MIN_S = 10           # a robot "defended" in a match when its defence time is at least this
 DISAGREE_PTS = 0.15      # blend vs EPA win prob: "models disagree" chip above 15 points
 GOAL_LO, GOAL_HI = 0.10, 0.90
+
+
+def disp(p):
+    """the dashboard's display of a probability (dash.js wp5): '<5%', '>95%', else 5% steps -> int percent or None."""
+    if p is None:
+        return None
+    return 4 if p < 0.05 else 96 if p > 0.95 else int(round(p * 20) * 5)
 
 
 def _r(x, nd=2):
@@ -74,7 +82,7 @@ def coverage_asof(cov_matches, V, asof, video_lag):
     vis = []
     for m in cov_matches:
         t = by.get(m["key"])
-        if not t or not t["played"]:
+        if not t or not t["played"] or t["comp_level"] != "qm":     # quals only, like scout.json
             continue
         if asof is not None and posted(t) + video_lag > asof:
             continue
@@ -82,7 +90,7 @@ def coverage_asof(cov_matches, V, asof, video_lag):
     vis.sort(key=lambda x: x[0])
     played = {}
     for m in V["tba"]:
-        if m["played"]:
+        if m["played"] and m["comp_level"] == "qm":
             for tk in m["teams"]["red"] + m["teams"]["blue"]:
                 played[tk] = played.get(tk, 0) + 1
     cov = COV.team_coverage([m for _, m in vis], played)
@@ -108,7 +116,14 @@ def backtest_rows(ctx, sims=1500, cache_path=None, log=None):
             cache = {}
     played = sorted([m for m in E["tba"] if m["played"]], key=lambda m: m["time"])
     quals = [m for m in played if m["comp_level"] == "qm"]
-    vtimes = sorted({b["time"] for b in E["video"]["alliance"]})
+    # cache key: everything a prequential fit depends on -- prior matches, the video content of those matches and the
+    # model's video/trend/shrinkage settings (a re-track or a setting change invalidates exactly the affected rows)
+    vdig = {}
+    for b in E["video"]["alliance"]:
+        h = hashlib.sha1(json.dumps([b.get("v2"), b.get("recon"), {c: {k: v.get(k) for k in ("cred", "unc", "hp_raw", "tba",
+                         "coverage", "y", "usable")} for c, v in b["comp"].items()}], sort_keys=True, default=float).encode())
+        vdig[b["match"]] = hashlib.sha1((vdig.get(b["match"], "") + h.hexdigest()).encode()).hexdigest()
+    cfg = json.dumps([MODEL.VIDEO, sorted(MODEL.TREND), MODEL.SHRINK_MULT, sims], sort_keys=True, default=str)
     cepa = EPA.local_epa(E, [], [], prior_events=ctx.prior_events)
     done = set()
     rows = []
@@ -118,7 +133,7 @@ def backtest_rows(ctx, sims=1500, cache_path=None, log=None):
             if p["key"] not in done:
                 cepa.update(p)
                 done.add(p["key"])
-        sig = f"{len(prior)}:{sum(1 for t in vtimes if t < m['time'])}:{sims}:{','.join(sorted(MODEL.TREND))}"
+        sig = hashlib.sha1((cfg + "|".join(f"{p['key']}:{vdig.get(p['key'], '')}" for p in prior)).encode()).hexdigest()
         c = cache.get(m["key"])
         if c and c.get("sig") == sig and c.get("post") == posted(m):
             rows.append(c)
@@ -203,8 +218,49 @@ def _an(r, *path):
     return d
 
 
-def event_extras(V, cov, cov_keys_full):
-    """event-level facts for the queue card.  cov_keys_full: {team: set(match keys)} of verified video."""
+def load_library(site_dir):
+    """the defense library (defense.json, built by live/scouting.py) or None."""
+    p = os.path.join(site_dir or "", "defense.json")
+    try:
+        return json.load(open(p))
+    except (OSError, ValueError):
+        return None
+
+
+def library_effect(lib):
+    """event-wide retention (share of shot rate a defended robot keeps), placebo-controlled when the library has a
+    placebo; None when the library has no usable global estimate."""
+    g = (lib or {}).get("global") or {}
+    r = g.get("ratio")
+    if r is None:
+        return None
+    pl = (g.get("placebo") or {}).get("pooled_ratio")
+    ci = g.get("ratio_ci")
+    k = 1.0 / pl if pl else 1.0
+    est = r * k
+    lo, hi = ((ci[0] * k, ci[1] * k) if ci and ci[0] is not None and ci[1] is not None else (None, None))
+    if lo is not None and not (lo <= est <= hi):        # library interval that excludes its own estimate: ignore it
+        lo = hi = None
+    return {"retained": _r(min(max(est, 0.3), 1.0), 2), "lo": _r(lo, 2), "hi": _r(hi, 2),
+            "significant": bool(hi is not None and hi < 1.0), "placebo": pl, "n": g.get("tested")}
+
+
+def retention_for(team, X):
+    """(retained, basis, detail) for a defense target: the library's per-team placebo-controlled estimate only when its
+    interval excludes 100%; otherwise the event-wide effect, labelled an assumption."""
+    t = (X.get("lib_teams") or {}).get(team) or {}
+    r = t.get("retention") or {}
+    if r.get("est") is not None and r.get("hi") is not None and (r.get("significant") or r["hi"] < 1.0):
+        return float(r["est"]), "measured", (f"defense library: kept {r['est'] * 100:.0f}% "
+                                             f"({r['lo'] * 100:.0f}–{r['hi'] * 100:.0f}%, placebo-controlled)")
+    e = X.get("defense_effect") or {}
+    v = e.get("retained") or 0.75
+    return float(v), "assumption", f"assumption: event-wide, defended robots keep ~{round(v * 20) * 5:.0f}% of their shot rate"
+
+
+def event_extras(V, cov, cov_keys_full, lib=None):
+    """event-level facts for the queue card.  cov_keys_full: {team: set(match keys)} of verified video;
+    lib: the defense library (defense.json) -- its estimates use all tracked matches, not just those before asof."""
     played = [m for m in V["tba"] if m["played"]]
     ever = {b: any(m[a]["bonus"].get(b) for m in played for a in ("red", "blue"))
             for b in ("energized", "supercharged", "traversal")}
@@ -229,6 +285,22 @@ def event_extras(V, cov, cov_keys_full):
                "text": f"robots defended here kept ~{round(m_ * 20) * 5:.0f}% of their shot rate "
                        f"(typical range {max(0, round((m_ - sd) * 20) * 5):.0f}–{round((m_ + sd) * 20) * 5:.0f}%; event average from "
                        f"{len(rr)} verified robot-matches)"}
+    le = library_effect(lib)
+    if le:
+        lo_hi = f"{le['lo'] * 100:.0f}–{le['hi'] * 100:.0f}%" if le["lo"] is not None else "no reliable interval"
+        eff = dict(le, source="library", text=(f"defended robots keep ~{round(le['retained'] * 20) * 5:.0f}% of their shot rate "
+                                               f"(event-wide, defense library{', placebo-controlled' if le['placebo'] else ''}; "
+                                               f"{lo_hi}){'' if le['significant'] else ' — not distinguishable from no effect, an assumption'}"))
+    elif eff:
+        eff = dict(eff, source="video", significant=False, text=eff["text"] + " — an assumption")
+    lib_teams = {d.get("team"): d for d in ((lib or {}).get("teams") or []) if isinstance(d, dict)}
+    lib_def = {}
+    raw_def = (lib or {}).get("defenders") or {}
+    for item in (raw_def.items() if isinstance(raw_def, dict) else raw_def):
+        if isinstance(item, (list, tuple)) and len(item) == 2:
+            lib_def[item[0]] = item[1]
+        elif isinstance(item, dict) and item.get("team"):
+            lib_def[item["team"]] = item
     defend_by = {}
     for r in ver:
         d = defend_by.setdefault(r["team"], {"n": 0, "def": [], "secs": []})
@@ -237,8 +309,14 @@ def event_extras(V, cov, cov_keys_full):
         d["secs"].append(s)
         if s >= DEF_MIN_S:
             d["def"].append(_short(r["match"]))
+    # one source: where the library lists a team's defended matches, use those (restricted to verified, visible ones)
+    for t, d in defend_by.items():
+        ld = lib_def.get(t)
+        if ld and isinstance(ld.get("matches"), list):
+            vis = {_short(k) for k in cov_keys_full.get(t, ())}
+            d["def"] = [k for k in ld["matches"] if k in vis]
     return {"bonus_ever": ever, "fouls_given": given, "fouls_event": float(np.mean(all_given)) if all_given else None,
-            "defense_effect": eff, "defend_by": defend_by}
+            "defense_effect": eff, "defend_by": defend_by, "lib_teams": lib_teams}
 
 
 # ------------------------------------------------------------------------------------------------- queue card
@@ -391,6 +469,12 @@ def queue_card(nm, P, raw, X, cov, epa_wp, auto_bias, V, team):
                   "text": (f"{_num(dfd['team'])} defends {_num(d0['target'])} in {'+'.join(w.replace('shift', 'S') for w in when)}"
                            f" (their live shifts{' if we win auto' if first else ' if we lose auto'})"
                            + (f", {where['zone_ours']}" if where else "") + ".")}
+    if defend and not d0.get("top_scorer"):
+        ts_ = next((d for d in nm["plan"]["defend"] if d.get("top_scorer")), None)
+        if ts_:
+            defend["alt"] = {"target": ts_["target"], "denied_fuel": int(round(ts_["expected_gain_fuel"] or 0)),
+                             "basis": "measured" if ts_["basis"] == "measured" else "assumption",
+                             "text": f"alternative: their top scorer {_num(ts_['target'])} (≈{ts_['expected_gain_fuel']:.0f} FUEL denied)"}
     if defend and defend["denied_fuel"] < 2:
         defend["skip_note"] = "No opponent is worth a dedicated defender here (under 2 FUEL denied) — all three score/feed."
     if defend and mode == "goal" and lever and lever["bonus"] != "traversal":
@@ -411,17 +495,34 @@ def queue_card(nm, P, raw, X, cov, epa_wp, auto_bias, V, team):
         else:
             opp.append({"team": t, "n_video": 0, "n_defended": None, "matches": [], "avg_defense_s": None,
                         "tier": "none", "label": "no verified video"})
-    likely = [o for o in opp if o["n_defended"]]
+    likely = [o for o in opp if o["n_defended"] and o["n_defended"] >= 0.5 * o["n_video"]]
     likely.sort(key=lambda o: (-(o["n_defended"] / o["n_video"]), -(o["avg_defense_s"] or 0)))
+    some = [o for o in opp if o["n_defended"] and o not in likely]
     if likely:
         txt = ("Expect defense from " + ", ".join(f"{_num(o['team'])} ({o['n_defended']}/{o['n_video']} verified matches)"
                                                   for o in likely) + ".")
+    elif some:
+        txt = ("Occasional defense: " + ", ".join(f"{_num(o['team'])} ({o['n_defended']}/{o['n_video']})" for o in some) + ".")
     elif all(o["n_video"] == 0 for o in opp):
         txt = "Unknown who defends — none of them has verified video yet."
     else:
         txt = "None of them has defended in verified video (" + ", ".join(
             f"{_num(o['team'])} n={o['n_video']}" for o in opp) + ")."
     defenders = {"teams": opp, "likely": [o["team"] for o in likely], "effect": eff, "text": txt}
+    if likely and raw is not None:
+        # the simulator has no defense: show what a dedicated defender on our top scorer would do to the win %
+        rs = [r for r in P["robots"] if r["team"] in nm["teams"][us]]
+        top = max(rs, key=lambda r: sum(r["expected_fuel"]["by_period"][s_] for s_ in ("shift1", "shift2", "shift3", "shift4")))
+        act = sum(top["expected_fuel"]["by_period"][s_] for s_ in ("shift1", "shift2", "shift3", "shift4"))
+        ret = (eff or {}).get("retained") or 0.75
+        loss = act * (1 - ret) * 0.7
+        mg = raw[us]["score"] - raw[them]["score"] - loss
+        wd = float(((mg > 0) + 0.5 * (mg == 0)).mean())
+        defenders["if_defended"] = {"defender": likely[0]["team"], "target": top["team"], "fuel_lost": _r(loss, 0),
+                                    "win_prob": _r(wd, 3), "basis": "measured" if (eff or {}).get("significant") else "assumption"}
+        defenders["ignores"] = (f"Win % ignores {_num(likely[0]['team'])}'s defense; if it shuts down our "
+                                f"{_num(top['team'])} (~{loss:.0f} FUEL) the win % is ~"
+                                + ("<5%" if wd < 0.05 else ">95%" if wd > 0.95 else f"{round(wd * 20) * 5}%") + ".")
     # ---- line 4: RP
     rp_line = {"us": rp["us"], "them": rp["them"], "shown": shown,
                "hidden": [b for b in ("traversal",) if b not in shown],
@@ -446,6 +547,6 @@ def queue_card(nm, P, raw, X, cov, epa_wp, auto_bias, V, team):
     fouls = {"teams": fl, "event_avg": _r(ev, 1), "flag": [f["team"] for f in flag], "text": ftxt,
              "note": "foul points are alliance-level in TBA; a team's number is its alliances' average, not its own"}
     # ---- EPA beside the blend
-    mdis = None if epa_wp is None else abs(wp - epa_wp) > DISAGREE_PTS
+    mdis = None if epa_wp is None else abs(disp(wp) - disp(epa_wp)) >= DISAGREE_PTS * 100   # on the shown numbers
     return {"mode": mode, "lever": lever, "win_prob": wp, "win_prob_epa": _r(epa_wp, 3), "models_disagree": mdis,
             "auto": auto, "defend": defend, "defenders": defenders, "rp": rp_line, "fouls": fouls}

@@ -265,3 +265,44 @@ snapshots = 728 predictions; Δ = variant − current, 90% bootstrap CI):
 
 It fixes most of the auto bias but does not improve win Brier, score error or auto-winner Brier, and it overshoots in
 playoffs, so it stays off. Turning it on (`TREND = frozenset({"auto"})`) changes the backtest-cache signature.
+
+**`defense.json` `teams[]`** (live/scouting.py `team_retention`; consumed by the dashboard defense numbers)
+```jsonc
+"teams": [{ "team": "frc4469",
+  "retention"?:   { "est", "lo", "hi",            // own active-hub points kept while defended, PLACEBO-CONTROLLED: (sum obs / sum exp over
+                                                  //  the team's testable episodes) / (same ratio over random undefended placebo windows); 90% CI
+                    "lo_adj", "hi_adj",           // FCR-adjusted interval (level 1 - 0.1*R/m, Benjamini-Yekutieli) across every estimate in the file
+                    "n_episodes", "n_testable", "n_eff" (Kish over expected points), "p" (two-sided bootstrap vs 1.0), "q" (BH),
+                    "significant" },              // q <= 0.10 AND the adjusted interval excludes 1.0
+  "as_defender"?: { same fields: the retention of this team's VICTIMS (its defense effect) } }],   // only with >= 3 testable episodes
+"teams_meta": { "event": {est, lo, hi, n_testable, n_eff} (event-wide placebo-controlled retention, the default when a team is not significant), "placebo_ratio", "placebo_ci", "placebo_windows", "alpha": 0.1, "tests" (m), "discoveries" (R), "adj_level", "min_testable_episodes" }
+```
+Use `significant` before calling a team's defense effect "measured"; otherwise use the event-wide effect, labelled an assumption.
+All library intervals (`global.ratio_ci`, `targets[].received.ci`, `defenders[].ci`) now always contain their estimate (the per-episode
+noise is no longer clipped at 0).
+
+## Video as censored evidence (round 3, agent M)
+`model.VIDEO` (default below, chosen on the as-of backtest): a robot row is the made FUEL **confidently credited** to
+that robot (attribution probability ≥ `data.CRED_CONF` = 0.8) plus an equal share of the unattributed rest, scaled to
+the TBA count. An alliance-component whose unattributed share exceeds 20% of TBA gives no split: its credited counts
+are lower bounds and enter only as one-sided floor rows (added where they exceed the robot's current prediction).
+More than 20% over-credited gives no robot information. v2 (OCR identity) matches only. Before, the uncertain shots
+were spread evenly over the three robots, which pulled strong robots down (2046, 948, 8248) and weak partners up.
+
+As-of backtest on the re-tracked data (43 verified day-1 quals; `.work/agentM/video_bt.py`; Brier, score MAE):
+
+| subset | no video | old video (soft split) | **credited + floors (default)** | Δ default − old, 90% CI |
+|---|---|---|---|---|
+| live quals (58) | .1345 / 53.5 | .1261 / 48.8 | **.1224 / 47.6** | −.0037 [−.0127, +.0047] |
+| live playoffs (16) | .1907 / 59.3 | .1793 / 58.5 | **.1772 / 58.2** | −.0021 [−.0145, +.0089] |
+| blind 09:00 → Q47–58 | .1910 / 49.6 | .1523 / 44.1 | **.1418 / 42.4** | −.0105 [−.0358, +.0132] |
+| snapshots (728) | .1327 / 55.5 | .1223 / 52.0 | **.1182 / 51.3** | −.0041 [−.0106, +.0023] |
+
+The default is better than no video on every subset (score MAE significantly: live −5.9 [−8.2, −3.7]) and better than
+the old split on every subset, though each gap to the old split is inside its interval. Q51 at 09:00: old 59%, now 44%
+(lost 168–314; no-video 10%). Also tried, none better: the 20% gate without credited counts, the contrast-only split
+(TBA total always used), credited without floors, and extra noise 0.3/0.6 (Brier slightly better, score MAE worse).
+
+Auto (round 3): on top of the default, the auto time trend cuts the alliance-auto bias (live +5.0 → −0.2, blind +9.7 →
++1.9; auto MAE 11.3 → 11.0) but leaves win Brier unchanged (−.0001 [−.0025, +.0024]) and overshoots in playoffs
+(−5.9). Halving auto shrinkage (`SHRINK_MULT = {"auto": 2}`) is slightly worse (+.0024). Neither is adopted.

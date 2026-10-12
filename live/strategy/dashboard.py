@@ -39,6 +39,7 @@ POST_LAG = 300             # when TBA has no post_result_time: result assumed po
 PLAYOFF_VISIBLE = 1500     # replay: a playoff match's alliances count as known 25 min before it is played
 SNAP_STEP = 1800
 ENGAGE = 0.7               # fraction of the target's active-shift time a dedicated defender actually affects (a priori)
+CLIMB_MATTERS = 0.05       # climb lever shown only when >= 5% of robot-matches at the event end on the tower
 DISAGREE_RATING = 15.0     # ratings table: blend vs EPA chip when |diff| >= max(15 pts, 1.5 sd)
 GENERIC_RETAINED = 0.75    # shot rate kept while defended when there is no event data at all (a priori)
 # reference backtest of the dashboard model (python -m live.strategy.backtest, 2026wasam, 58 quals, prior-only)
@@ -211,10 +212,9 @@ def next_match_plan(E_v, M, m, team, sims=6000, seed=0, X=None, cov=None, epa_wp
         {"team": min(ours, key=lambda r: r["expected_fuel"]["total"])["team"], "why": "lowest expected FUEL on our alliance"}
     defend = []
     for t in m["teams"][them]:
-        D = M.robot["team"].get(t) or {}
-        rr = D.get("rate_retained_defended")
-        if rr and not rr.get("prior_only") and rr["n_eff"] >= 2:
-            ret, basis = rr["v"], f"measured on {rr['n_eff']:.1f} weighted defended matches"
+        if X is not None:
+            ret, kind, basis = MD.retention_for(t, X)
+            basis = ("measured: " + basis) if kind == "measured" else basis
         else:
             ret, basis = GENERIC_RETAINED, "assumption: defended robots keep ~75% of their shot rate"
         r = robots[t]
@@ -237,6 +237,9 @@ def next_match_plan(E_v, M, m, team, sims=6000, seed=0, X=None, cov=None, epa_wp
                     f"~{ENGAGE * 100:.0f}% engagement that is ~{gain:.0f} FUEL denied. {ztxt[0].upper() + ztxt[1:]}. "
                     f"Their live shifts are our inactive shifts, so the defender gives up little counted FUEL.")})
     defend.sort(key=lambda d: -(d["expected_gain_fuel"] or 0))
+    top_scorer = max(defend, key=lambda d: d["active_fuel"] or 0)["target"] if defend else None
+    for d in defend:
+        d["top_scorer"] = d["target"] == top_scorer
     # ---- auto
     matchups = []
     for t in red + blue:
@@ -348,7 +351,10 @@ def levers(M, team, teams):
     if team in M.comp["auto"]["team_index"]:
         our_fuel = _lever_values(M, team, "auto_fuel", "model")[0] + _lever_values(M, team, "teleop_fuel", "model")[0]
     out = []
+    ev_climb = 1.0 - float(M.climb["event_end"][0])
     for name, src, unit, lower, desc in LEVERS:
+        if name == "climb" and ev_climb < CLIMB_MATTERS:
+            continue            # nobody climbs here: not a lever (strategist review)
         vals = {t: _lever_values(M, t, name, src)[0] for t in teams}
         have = {t: v for t, v in vals.items() if v is not None}
         ours = vals.get(team)
@@ -413,6 +419,7 @@ class Context:
             for t in (raw.get("data", raw) if isinstance(raw, dict) else raw):
                 self.nick[t["key"]] = t.get("nickname")
         self.cov_matches = MD.load_coverage_matches(E["paths"].get("site"))
+        self.library = MD.load_library(E["paths"].get("site"))
         self._bt_rows = None
 
     def bt_rows(self):
@@ -479,7 +486,7 @@ def build(ctx, team=DEFAULT_TEAM, asof=None, sims_rank=2000, sims_match=6000, se
     nxt = None
     prev_out = {}
     plans = []
-    X = MD.event_extras(V, cov, {t: set(c["keys_full"]) for t, c in cov.items()})
+    X = MD.event_extras(V, cov, {t: set(c["keys_full"]) for t, c in cov.items()}, lib=ctx.library)
     s_epa = MD.epa_sd(bt_rows, asof)
     bt_asof = MD.backtest_asof(bt_rows, asof)
     qp_sorted = sorted(qp, key=lambda m: m["time"])
