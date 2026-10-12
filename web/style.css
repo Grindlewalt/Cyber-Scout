@@ -305,3 +305,7 @@ table.rate .tm { position: sticky; left: 0; background: var(--panel); z-index: 1
 .sc-truth b span.sc-sd, .sc-truth b span.sc-v small { font-size:11px; color:var(--muted); }
 .sc-truth b span.sc-v.grey { color:#9aa5b4; }
 .sc-prb { background:var(--line); }
+/* round 3 (agent S): picklist fits 1400 px */
+.plwrap { grid-template-columns: 210px minmax(0, 1fr); }
+.plt td, .plt th { padding: 5px 6px; white-space: nowrap; }
+.plt .sc-flag { font-size: 10px; padding: 0 4px; }

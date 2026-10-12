@@ -306,3 +306,23 @@ the old split on every subset, though each gap to the old split is inside its in
 Auto (round 3): on top of the default, the auto time trend cuts the alliance-auto bias (live +5.0 → −0.2, blind +9.7 →
 +1.9; auto MAE 11.3 → 11.0) but leaves win Brier unchanged (−.0001 [−.0025, +.0024]) and overshoots in playoffs
 (−5.9). Halving auto shrinkage (`SHRINK_MULT = {"auto": 2}`) is slightly worse (+.0024). Neither is adopted.
+
+### Round 3 changes (agent S)
+- **Reconciliation gate** (`coverage.reconcile`): human-player credit capped at TBA − credited robots; `gate` = `ok` | `under`
+  (> 20 % of the alliance FUEL uncredited) | `over` (robots > 120 % of TBA) | `no_tba` (`RECON_GATE` env, default 0.2). Team
+  FUEL stats (made/match, accuracy, auto, pts/active-min in spec sheets and `scout.json`) use only `ok` results; `made_pm.n`
+  is the reconciled count and `made_pm.gates` / `video.fuel_gate` the tally. No more "≥" flags; `no_reconciled` when nothing passes.
+- `scout.json` `video.dead`: a match counts only if stopped ≥ 30 s AND the alliance scored < 85 % of its expected (sum of blends).
+  `video.def_matches`, `def_secs` added. "video higher" = reconciled FUEL ≥ 1.15 × EPA FUEL + 8 (n ≥ 2).
+- **Replay**: `python -m live.scouting DATA EV --snapshots` (or `--asof TS`) writes `scout/<ts>.json` + `scout/index.json` (verified
+  matches played ≤ ts, dashboard snapshot ≤ ts; rank/OPR as of then). `goals --asof` / `--selection-snapshots` read them for pitch facts.
+- **Goal block** `awards`: `{headline, p_no_awards, p_with_awards, p_if_impact_or_ei, p_we_win_award, contender, note}`. `p_goal`
+  (headline) = P(goal | we win no award at remaining events) unless env `DASH_AWARD_CONTENDER=1`. Rookie All-Star only to first-year
+  rookies. `value.matches` and `value.events` use the same conditioning. rankings `teams[].district.p_dcmp` = headline for us,
+  with-awards for others (better calibrated event-wide); `p_dcmp_with_awards` for all.
+- **selection.json**: `us.p_dcmp` (no awards) + `us.p_dcmp_with_awards`; outcomes' `p_dcmp` condition on no award (agree with the
+  need grid) and carry `needs` (grid cell); `us.captains[]` = per-captain re-simulation
+  `{captain, n, p_captain, seed_mode, alt: [{team, p}] (their next best), take: {p_win, p_final, p_dcmp}, next: {...}, delta_win, delta_dcmp}`
+  (draft + playoffs + points re-run with C's first pick forced to us vs forbidden, common random numbers, only sims where C captains
+  and we are available); pitches get `resim`, `fit` (lanes, auto, on-the-move, defended retention, defense played). `draft` (client
+  re-draft sample) removed.

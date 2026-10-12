@@ -224,6 +224,9 @@ class Match:
         self.d = d
         self.key = d["key"]
         self.verified = COV.verified_teams(d)
+        self.recon = COV.reconcile(d)
+        # per-match gate for team FUEL counts: only alliance results within 20% of TBA (coverage.reconcile)
+        self.fuel_ok = {al: (self.recon.get(al) or {}).get("gate") == "ok" for al in ("red", "blue")}
         self.short = d.get("short") or short_of(d["key"])
         self.hz = float(d.get("hz", 10))
         self.t_start = float(d["t_start"])
@@ -491,6 +494,7 @@ def spec_sheets(matches, geo, teams_meta, team_files):
         teleop_s = active_s = 0.0
         made_active = 0
         auto_rows, climb_rows = [], []
+        n_fuel = 0
         for M, tk in lst:
             hz = M.hz
             act = (M.mc >= 0) & (M.mc <= 160)
@@ -509,18 +513,22 @@ def spec_sheets(matches, geo, teams_meta, team_files):
                 dists.append(float(d[okd].sum() / max(0.3, okd.mean())) if okd.mean() > 0.5 else None)
             L = M.launch[tk.k]
             hub = [s for s in L if not s["pass"]]
-            att += len(hub)
-            made += sum(s["o"] == "made" for s in hub)
-            missed += sum(s["o"] == "missed" for s in hub)
-            passes += len(L) - len(hub)
-            for s in hub:
-                p = s["period"] or str(M.per_name[s["f"]])
-                byp[p]["a"] += 1
-                byp[p]["m"] += s["o"] == "made"
-            tel = M.teleop & tk.ok
-            teleop_s += tel.sum() / hz
-            active_s += (tel & M.active[tk.alliance]).sum() / hz
-            made_active += int(tk.pts[tel].sum())
+            fok = M.fuel_ok.get(tk.alliance, False)
+            mrows[-1]["fuel_ok"] = fok
+            if fok:                     # FUEL counts only from reconciled alliance results
+                n_fuel += 1
+                att += len(hub)
+                made += sum(s["o"] == "made" for s in hub)
+                missed += sum(s["o"] == "missed" for s in hub)
+                passes += len(L) - len(hub)
+                for s in hub:
+                    p = s["period"] or str(M.per_name[s["f"]])
+                    byp[p]["a"] += 1
+                    byp[p]["m"] += s["o"] == "made"
+                tel = M.teleop & tk.ok
+                teleop_s += tel.sum() / hz
+                active_s += (tel & M.active[tk.alliance]).sum() / hz
+                made_active += int(tk.pts[tel].sum())
             vols = volleys(L, hz)
             vol_sizes += [len(v) for v in vols if M.mc[v[0]["f"]] > 20]
             fire += [(len(v) - 1) / max(0.3, (v[-1]["f"] - v[0]["f"]) / hz) for v in vols if len(v) >= 3]
@@ -545,7 +553,7 @@ def spec_sheets(matches, geo, teams_meta, team_files):
             st_i = _station(M.d, tk)
             lvl_a = bd.get(f"autoTowerRobot{st_i}") if st_i else None
             lvl_e = bd.get(f"endGameTowerRobot{st_i}") if st_i else None
-            auto_rows.append({"m": M.short, "att": len(au), "made": sum(s["o"] == "made" for s in au),
+            auto_rows.append({"m": M.short, "att": len(au), "made": sum(s["o"] == "made" for s in au), "fuel_ok": fok,
                               "climb": None if lvl_a is None else lvl_a not in ("None", None)})
             climb_rows.append({"m": M.short, "level": _lvl(lvl_e)})
         allsp = np.concatenate(speeds) if speeds else np.zeros(0)
@@ -576,7 +584,8 @@ def spec_sheets(matches, geo, teams_meta, team_files):
             "scoring": {"att": att, "made": made, "missed": missed, "passes": passes,
                         "acc": r_(made / (made + missed), 3) if made + missed >= 5 else None,
                         "acc_ci": wilson(made, made + missed) if made + missed >= 5 else None,
-                        "made_pm": r_(made / nm, 1) if nm else None, "att_pm": r_(att / nm, 1) if nm else None,
+                        "made_pm": r_(made / n_fuel, 1) if n_fuel else None, "att_pm": r_(att / n_fuel, 1) if n_fuel else None,
+                        "n_fuel": n_fuel,
                         "pts_per_active_min": r_(made_active / active_s * 60, 1) if active_s > 30 else None,
                         "att_per_teleop_min": r_(sum(b["a"] for p, b in byp.items() if p != "auto") / teleop_s * 60, 1) if teleop_s > 30 else None,
                         "fire_rate": r_(np.median(fire), 1) if fire else None,
@@ -592,8 +601,9 @@ def spec_sheets(matches, geo, teams_meta, team_files):
                         "by_period": {p: v for p, v in byp.items()},
                         "active_s": r_(active_s, 0), "teleop_s": r_(teleop_s, 0)},
             "auto": {"rows": auto_rows,
-                     "made_avg": r_(np.mean([a["made"] for a in auto_rows]), 1) if auto_rows else None,
-                     "att_avg": r_(np.mean([a["att"] for a in auto_rows]), 1) if auto_rows else None,
+                     "made_avg": r_(np.mean([a["made"] for a in auto_rows if a["fuel_ok"]]), 1) if any(a["fuel_ok"] for a in auto_rows) else None,
+                     "att_avg": r_(np.mean([a["att"] for a in auto_rows if a["fuel_ok"]]), 1) if any(a["fuel_ok"] for a in auto_rows) else None,
+                     "n_fuel": sum(1 for a in auto_rows if a["fuel_ok"]),
                      "climb_rate": r_(np.mean([a["climb"] for a in auto_rows if a["climb"] is not None]), 2)
                      if any(a["climb"] is not None for a in auto_rows) else None,
                      "routines": [{k: r.get(k) for k in ("id", "name", "n", "of", "freq", "matches", "xy", "start_xy", "end_xy", "kind")}
@@ -1019,6 +1029,7 @@ def placebo_check(base, eps, rng=None, n=400):
     lens = [e["b"] - e["a"] for e in eps]
     succ = tested = 0
     so = se = 0.0
+    wins = []
     for _ in range(n):
         B = base[teams[rng.integers(len(teams))]]
         s = B.segs[rng.integers(len(B.segs))]
@@ -1044,10 +1055,11 @@ def placebo_check(base, eps, rng=None, n=400):
         tested += 1
         so += obs
         se += st["exp"]
+        wins.append((obs, st["exp"]))
         if obs / st["exp"] <= 0.5 and st["p"] <= 0.10:
             succ += 1
     return {"tested": tested, "false_success": succ, "rate": r_(succ / tested, 3) if tested else None,
-            "pooled_ratio": r_(so / se, 2) if se else None}
+            "pooled_ratio": r_(so / se, 2) if se else None, "_windows": wins}
 
 
 # ================================================================================ summaries
@@ -1064,19 +1076,97 @@ def _pool(lst):
             "denied": r_(E - O, 1), "secs": r_(sum(e["dur"] for e in lst), 0)}
 
 
-def _boot_ratio(lst, rng, B=500):
+def _boot_samples(lst, rng, B=1000):
+    """(point estimate sum(obs)/sum(exp), bootstrap samples) over testable episodes, or (None, None) if < 3.
+    Resamples episodes and adds each episode's count noise (from its own placebo spread: volleys make counts
+    overdispersed, and a few all-zero episodes must not give a falsely tight [0, 0] interval).  The noise is
+    mean-zero and NOT clipped per episode (clipping at 0 biased the samples upward, so the interval could exclude
+    the estimate: "71% (74-105%)"); only the summed count is floored at 0."""
     tst = [e for e in lst if e["effect"].get("metric") == "points"]
     if len(tst) < 3:
-        return None
+        return None, None
     O = np.array([e["effect"]["pts_obs"] for e in tst], float)
     E = np.array([e["effect"]["pts_exp"] for e in tst], float)
-    # count noise per episode from its own placebo spread (volleys make counts overdispersed), on top of
-    # resampling episodes - otherwise a few all-zero episodes would give a falsely tight [0, 0] interval
     sd = np.array([max(0.5, ((e["effect"]["pts_ci"][1] or 0) - (e["effect"]["pts_ci"][0] or 0)) / 3.29) for e in tst])
     idx = rng.integers(0, len(tst), (B, len(tst)))
-    On = np.maximum(0, O[idx] + rng.normal(0, 1, idx.shape) * sd[idx])
-    r = On.sum(1) / np.maximum(1e-6, E[idx].sum(1))
-    return [r_(np.percentile(r, 5), 2), r_(np.percentile(r, 95), 2)]
+    On = np.maximum(0.0, (O[idx] + rng.normal(0, 1, idx.shape) * sd[idx]).sum(1))
+    return float(O.sum() / max(1e-6, E.sum())), On / np.maximum(1e-6, E[idx].sum(1))
+
+
+def _ci_contains(est, lo, hi):
+    return [r_(min(lo, est), 2), r_(max(hi, est), 2)]
+
+
+def _boot_ratio(lst, rng, B=500):
+    est, smp = _boot_samples(lst, rng, B)
+    if est is None:
+        return None
+    return _ci_contains(est, float(np.percentile(smp, 5)), float(np.percentile(smp, 95)))
+
+
+def _kish(lst):
+    E = np.array([e["effect"]["pts_exp"] for e in lst if e["effect"].get("metric") == "points"], float)
+    return r_(E.sum() ** 2 / max(1e-9, (E ** 2).sum()), 1) if len(E) else 0
+
+
+def team_retention(eps, placebo_w, rng=None, B=2000, alpha=0.10, min_n=3):
+    """Per-team placebo-controlled retention for defense.json `teams[]`.
+    retention (as TARGET): own active-hub points kept while defended = [sum obs / sum exp over the team's testable
+    episodes] / [same ratio over placebo windows (random undefended windows scored exactly like episodes)].  The
+    placebo ratio removes the pipeline's own bias (it is not 1.0: windows are chosen near the scoring area).
+    as_defender: the same for the victims of the team's defense.
+    Intervals: bootstrap (episodes + count noise) / bootstrap (placebo windows).  Multiple testing: two-sided
+    bootstrap p vs 1.0, Benjamini-Hochberg over every team estimate in the file; the reported adjusted interval is
+    the FCR-adjusted one (level 1 - alpha*R/m, Benjamini-Yekutieli 2005) and `significant` = it excludes 1.0."""
+    rng = rng or np.random.default_rng(23)
+    if not placebo_w or len(placebo_w) < 20:
+        return [], None
+    po = np.array([w[0] for w in placebo_w], float)
+    pe = np.array([w[1] for w in placebo_w], float)
+    pr = po.sum() / pe.sum()
+    pidx = rng.integers(0, len(po), (B, len(po)))
+    psmp = po[pidx].sum(1) / np.maximum(1e-6, pe[pidx].sum(1))
+    by = {"retention": defaultdict(list), "as_defender": defaultdict(list)}
+    for e in eps:
+        by["retention"][e["target"]].append(e)
+        by["as_defender"][e["defender"]].append(e)
+    rows, cells = {}, []
+    for kind, dd in by.items():
+        for team, lst in dd.items():
+            est, smp = _boot_samples(lst, rng, B)
+            if est is None or sum(1 for e in lst if e["effect"].get("metric") == "points") < min_n:
+                continue
+            ctl = smp / psmp
+            e0 = est / pr
+            p = float(min(1.0, 2 * min((ctl >= 1).mean(), (ctl <= 1).mean()) + 1.0 / B))
+            cell = {"est": r_(e0, 2), "lo": None, "hi": None, "n_episodes": len(lst),
+                    "n_testable": sum(1 for e in lst if e["effect"].get("metric") == "points"), "n_eff": _kish(lst),
+                    "p": r_(p, 4), "_ctl": ctl}
+            cell["lo"], cell["hi"] = _ci_contains(e0, float(np.percentile(ctl, 100 * alpha / 2)),
+                                                  float(np.percentile(ctl, 100 * (1 - alpha / 2))))
+            rows.setdefault(team, {"team": team})[kind] = cell
+            cells.append(cell)
+    m = len(cells)
+    qs = bh_q([c["p"] for c in cells])
+    R = sum(1 for q in qs if q is not None and q <= alpha)
+    a_adj = alpha * max(R, 1) / max(m, 1)
+    for c, q in zip(cells, qs):
+        ctl = c.pop("_ctl")
+        c["q"] = r_(q, 4)
+        lo, hi = _ci_contains(c["est"], float(np.percentile(ctl, 100 * a_adj / 2)), float(np.percentile(ctl, 100 * (1 - a_adj / 2))))
+        c["lo_adj"], c["hi_adj"] = lo, hi
+        c["significant"] = bool(q is not None and q <= alpha and (hi < 1.0 or lo > 1.0))
+    ge, gs = _boot_samples(eps, rng, B)
+    event = None
+    if ge is not None:                     # event-wide placebo-controlled retention (the "assumption" default)
+        gc = gs / psmp
+        lo, hi = _ci_contains(ge / pr, float(np.percentile(gc, 100 * alpha / 2)), float(np.percentile(gc, 100 * (1 - alpha / 2))))
+        event = {"est": r_(ge / pr, 2), "lo": lo, "hi": hi, "n_testable": sum(1 for e in eps if e["effect"].get("metric") == "points"),
+                 "n_eff": _kish(eps)}
+    meta = {"event": event, "placebo_ratio": r_(pr, 3), "placebo_ci": [r_(np.percentile(psmp, 5), 3), r_(np.percentile(psmp, 95), 3)],
+            "placebo_windows": len(po), "alpha": alpha, "tests": m, "discoveries": R, "adj_level": r_(1 - a_adj, 4),
+            "min_testable_episodes": min_n}
+    return sorted(rows.values(), key=lambda r: int(r["team"][3:]) if r["team"][3:].isdigit() else 0), meta
 
 
 def summaries(eps, base, specs):
@@ -1207,6 +1297,29 @@ def load_matches(api_ev, geo, log=print):
     return out
 
 
+def build_asof(api_ev, ev, asof, out_dir=None, log=print):
+    """Replay view: scout/<asof>.json from verified matches played <= asof (TBA actual time) and the dashboard
+    snapshot <= asof.  Spec sheets / defense library are not snapshotted."""
+    out_dir = out_dir or api_ev
+    geo = Geo()
+    evj = jload(os.path.join(api_ev, "event.json"), {}) or {}
+    teams_meta = {t["key"]: dict(t, rank=None, opr=None) for t in evj.get("teams") or []}   # no end-of-event rank/OPR
+    data_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(api_ev))))
+    tt = {m["key"]: (m.get("actual_time") or m.get("time") or 0) for m in _tba_matches(data_root, ev)}
+    matches = [M for M in load_matches(api_ev, geo, lambda *a: None) if 0 < tt.get(M.key, 0) <= asof]
+    specs = spec_sheets(matches, geo, teams_meta, {})
+    try:                                      # defense played / received as of then
+        eps, base, _, _, _ = defense_library(matches, geo, specs)
+        targets, defenders = summaries(eps, base, specs)
+        for team, sp in specs.items():
+            sp["defense"] = {"received": (targets.get(team) or {}).get("received"), "played": defenders.get(team)}
+    except Exception as ex:
+        log(f"scouting asof: defense skipped: {ex!r}")
+    p = os.path.join(out_dir, "scout", f"{int(asof)}.json")
+    os.makedirs(os.path.dirname(p), exist_ok=True)
+    return build_truth(api_ev, ev, matches, specs, teams_meta, data_root=data_root, log=log, asof=asof, out_path=p)
+
+
 def build(api_ev, ev=None, out_dir=None, log=print):
     t0 = time.time()
     out_dir = out_dir or api_ev
@@ -1222,7 +1335,9 @@ def build(api_ev, ev=None, out_dir=None, log=print):
     specs = spec_sheets(matches, geo, teams_meta, team_files)
     eps, base, per_team, spots, dmask = defense_library(matches, geo, specs)
     targets, defenders = summaries(eps, base, specs)
-    cal = placebo_check(base, eps)
+    cal = placebo_check(base, eps, n=1500)
+    pw = (cal or {}).pop("_windows", None)
+    team_rows, team_meta = team_retention(eps, pw)
     # clips: embed for successful + top by points denied
     mby = {M.key: M for M in matches}
     order = sorted(eps, key=lambda e: (e["verdict"] != "success", -(e["effect"].get("denied") or -99)))
@@ -1251,6 +1366,7 @@ def build(api_ev, ev=None, out_dir=None, log=print):
                    "verdicts": dict(Counter(e["verdict"] for e in eps)),
                    "methods": dict(Counter(e["method"] for e in eps))},
         "episodes": eps, "targets": targets, "defenders": defenders,
+        "teams": team_rows, "teams_meta": team_meta,
     }
     jsave(os.path.join(out_dir, "defense.json"), out)
     truth = {}
@@ -1294,6 +1410,8 @@ def build(api_ev, ev=None, out_dir=None, log=print):
 # api/<ev>/scout.json (schema cyber-scout/scout@1, contract in live/strategy/README.md): ONE canonical value per team
 # metric for every page (teams table, team page, spec sheets, compare, picklist, selection).  Video numbers obey the
 # trust rule (coverage.py), are TBA-reconciled and shrunk; climbs come from TBA per robot; ratings from dashboard.json.
+DEAD_MIN_S, DEAD_TBA_FRAC = 30.0, 0.85   # "Dead": stopped >= 30 s AND the alliance scored < 85% of its expected (TBA)
+VH_MULT, VH_ADD = 1.15, 8.0   # "video higher" chip: reconciled video FUEL >= 1.15 x EPA FUEL + 8 (retuned round 3)
 SHRINK_K = 1.0          # pseudo-matches of the event mean in shrunk per-match video values
 ACC_PRIOR = 20.0        # pseudo-shots of the event accuracy
 
@@ -1333,6 +1451,27 @@ def _tba_robot_rows(tms, asof=None):
     return out
 
 
+def _opr(tms):
+    """{team: OPR (score minus fouls drawn)} by least squares over played quals in `tms` (as-of view)."""
+    rows, ys, idx = [], [], {}
+    for m in tms:
+        if m.get("comp_level") != "qm" or not _played_tba(m):
+            continue
+        for al in ("red", "blue"):
+            tks = m["alliances"][al]["team_keys"]
+            for t in tks:
+                idx.setdefault(t, len(idx))
+            rows.append([idx[t] for t in tks])
+            ys.append(m["alliances"][al]["score"] - ((m["score_breakdown"].get(al) or {}).get("foulPoints") or 0))
+    if len(rows) < len(idx):
+        return {}
+    A = np.zeros((len(rows), len(idx)))
+    for i, r in enumerate(rows):
+        A[i, r] = 1.0
+    x = np.linalg.lstsq(A, np.array(ys, float), rcond=None)[0]
+    return {t: r_(x[i], 1) for t, i in idx.items()}
+
+
 def _sv(v, raw, n, **kw):
     d = {"v": r_(v, 1) if v is not None else None, "raw": r_(raw, 1) if raw is not None else None, "n": n,
          "tier": COV.tier(n)}
@@ -1340,14 +1479,21 @@ def _sv(v, raw, n, **kw):
     return d
 
 
-def build_truth(api_ev, ev, matches, specs, teams_meta, data_root=None, log=print, out_dir=None):
+def build_truth(api_ev, ev, matches, specs, teams_meta, data_root=None, log=print, out_dir=None, asof=None, out_path=None):
     data_root = data_root or os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(api_ev))))
     tms = _tba_matches(data_root, ev)
-    rows_tba = _tba_robot_rows(tms)
+    rows_tba = _tba_robot_rows(tms, asof)
+    if asof is not None:
+        tms = [m for m in tms if (m.get("actual_time") or m.get("time") or 0) <= asof]
     played = {t: len(v) for t, v in rows_tba.items()}
     mds = [M.d for M in matches]
     cov = COV.team_coverage(mds, played)
     dash = jload(os.path.join(api_ev, "dashboard.json")) or {}
+    if asof is not None:                    # ratings as they stood: the latest dashboard snapshot <= asof
+        ts_ = sorted(int(f.split(".")[0]) for f in os.listdir(os.path.join(api_ev, "dash")) if f.split(".")[0].isdigit()) \
+            if os.path.isdir(os.path.join(api_ev, "dash")) else []
+        ts_ = [t for t in ts_ if t <= asof]
+        dash = (jload(os.path.join(api_ev, "dash", f"{ts_[-1]}.json")) or {}) if ts_ else {}
     rat = {r["team"]: r for r in dash.get("ratings") or []}
     # reconciliation per verified match
     recon = {M.key: COV.reconcile(M.d) for M in matches}
@@ -1360,10 +1506,10 @@ def build_truth(api_ev, ev, matches, specs, teams_meta, data_root=None, log=prin
                     continue
                 made = r["teams"].get(tk, 0)
                 team_rec[tk].append({"m": M.short, "key": M.key, "made": made, "scaled": r_(made * r["scale"], 1),
-                                     "lower_bound": r["lower_bound"], "over": r["over"],
+                                     "lower_bound": r["lower_bound"], "over": r["over"], "gate": r.get("gate"),
                                      "unattributed": r["unattributed"], "alliance_tba": r["tba"]})
     # event means for shrinkage (verified teams only)
-    pm = [np.mean([x["scaled"] for x in v]) for v in team_rec.values() if v]
+    pm = [np.mean([x["scaled"] for x in v if x["gate"] == "ok"]) for v in team_rec.values() if any(x["gate"] == "ok" for x in v)]
     ev_made = float(np.mean(pm)) if pm else None
     accs = [(sp["scoring"]["made"], sp["scoring"]["made"] + sp["scoring"]["missed"]) for sp in specs.values()]
     ev_acc = (sum(a for a, b in accs) / max(1, sum(b for a, b in accs))) if accs else None
@@ -1382,9 +1528,11 @@ def build_truth(api_ev, ev, matches, specs, teams_meta, data_root=None, log=prin
                      "auto_l1_rate": r_(np.mean([r["auto_l1"] for r in rs]), 2) if rs else None,
                      "keys": [r["key"] for r in rs]}
     tower_max = max([v["pts_mean"] or 0 for v in tower.values()] or [0])
+    opr_asof = _opr(tms) if asof is not None else {}
     # blend history from the dashboard snapshots (trend)
     hist = defaultdict(list)
-    snaps = sorted(glob_json(os.path.join(api_ev, "dash")))
+    snaps = sorted(p for p in glob_json(os.path.join(api_ev, "dash"))
+                   if asof is None or (os.path.basename(p).split(".")[0].isdigit() and int(os.path.basename(p).split(".")[0]) <= asof))
     for p in snaps:
         try:
             ts = int(os.path.basename(p).split(".")[0])
@@ -1411,7 +1559,8 @@ def build_truth(api_ev, ev, matches, specs, teams_meta, data_root=None, log=prin
                "rank": meta.get("rank") or r.get("rank"), "coverage": c,
                "rating": {"blend": r_(b.get("total"), 1), "sd": r_(b.get("sd"), 1), "auto": r_(b.get("auto"), 1),
                           "teleop": r_(b.get("teleop"), 1), "endgame": r_(b.get("endgame"), 1),
-                          "epa": r_(e.get("total"), 1), "epa_source": e.get("source"), "opr": meta.get("opr"),
+                          "epa": r_(e.get("total"), 1), "epa_source": e.get("source"),
+                          "opr": meta.get("opr") if asof is None else opr_asof.get(tk),
                           "video_weight": r.get("video_weight"), "record": r.get("record"),
                           "p_top8": (r.get("projection") or {}).get("p_top8")} if r or meta.get("opr") is not None else None,
                "climb": tower.get(tk), "flags": [], "video": None}
@@ -1438,15 +1587,19 @@ def build_truth(api_ev, ev, matches, specs, teams_meta, data_root=None, log=prin
         if sp and c["n"]:
             S, A = sp["scoring"], sp["auto"]
             n = c["n"]
-            raw_pm = float(np.mean([x["scaled"] for x in tr])) if tr else S["made_pm"]
-            lb = any(x["lower_bound"] for x in tr)
-            over = any(x["over"] for x in tr)
-            shr = (raw_pm * n + SHRINK_K * ev_made) / (n + SHRINK_K) if (raw_pm is not None and ev_made is not None) else raw_pm
+            tro = [x for x in tr if x["gate"] == "ok"]          # reconciled alliance results only
+            nf = len(tro)
+            raw_pm = float(np.mean([x["scaled"] for x in tro])) if tro else None
+            lb = False                                           # under-credited results are dropped, not floored
+            over = any(x["over"] for x in tro)
+            gates = dict(Counter(x["gate"] for x in tr))
+            shr = (raw_pm * nf + SHRINK_K * ev_made) / (nf + SHRINK_K) if (raw_pm is not None and ev_made is not None) else raw_pm
             mm = S["made"] + S["missed"]
             acc_raw = S["made"] / mm if mm else None
             acc_v = (S["made"] + ACC_PRIOR * ev_acc) / (mm + ACC_PRIOR) if (mm and ev_acc is not None) else None
             au_raw = A["made_avg"]
-            au_v = (au_raw * n + SHRINK_K * ev_auto) / (n + SHRINK_K) if (au_raw is not None and ev_auto is not None) else au_raw
+            na = A.get("n_fuel") or 0
+            au_v = (au_raw * na + SHRINK_K * ev_auto) / (na + SHRINK_K) if (au_raw is not None and ev_auto is not None) else au_raw
             cy_raw = S["cycle_s"]
             ncy = max(0, len(sp.get("paths") or []))
             # dead share from verified matches' analytics (only shown at n >= SHOW_N)
@@ -1457,7 +1610,14 @@ def build_truth(api_ev, ev, matches, specs, teams_meta, data_root=None, log=prin
                         an = (M.d.get("analytics") or [None] * 99)
                         a = an[t.k] if t.k < len(an) else None
                         if a and a.get("reliability"):
-                            dead.append(bool(a["reliability"].get("dead")))
+                            rl = a["reliability"]
+                            dd = bool(rl.get("dead")) and (rl.get("dead_s") or 0) >= DEAD_MIN_S
+                            if dd:                 # corroborate with TBA: the alliance scored well under expectation
+                                sc_ = ((M.d.get(t.alliance) or {}).get("score"))
+                                exp_ = sum(((rat.get(x) or {}).get("blend") or {}).get("total") or 0
+                                           for x in ((M.d.get(t.alliance) or {}).get("teams") or []))
+                                dd = sc_ is not None and exp_ > 0 and sc_ < DEAD_TBA_FRAC * exp_
+                            dead.append(dd)
             auto_bad = None
             if row["rating"] and row["rating"]["auto"] is not None and au_raw is not None:
                 # blend auto includes the auto tower (15 pts x P(L1)); compare FUEL with FUEL
@@ -1467,11 +1627,12 @@ def build_truth(api_ev, ev, matches, specs, teams_meta, data_root=None, log=prin
                     row["flags"].append({"k": "auto_not_tracked",
                                          "text": f"auto not tracked: video credited {au_raw:.0f} auto FUEL/match, TBA-based model says ~{mod:.0f}"})
             row["video"] = {
-                "made_pm": _sv(shr, raw_pm, n, lower_bound=lb or None, over=over or None,
-                               per_match=[{"m": x["m"], "made": x["made"], "scaled": x["scaled"], "lb": x["lower_bound"],
-                                           "un": x["unattributed"]} for x in tr]),
-                "acc": {"v": r_(acc_v, 3), "raw": r_(acc_raw, 3), "made": S["made"], "shots": mm, "n": n, "tier": COV.tier(n)},
-                "auto_made": None if auto_bad else _sv(au_v, au_raw, n),
+                "made_pm": (_sv(shr, raw_pm, nf, over=over or None, gates=gates,
+                               per_match=[{"m": x["m"], "made": x["made"], "scaled": x["scaled"], "gate": x["gate"],
+                                           "un": x["unattributed"]} for x in tr]) if nf else None),
+                "fuel_gate": gates,
+                "acc": {"v": r_(acc_v, 3), "raw": r_(acc_raw, 3), "made": S["made"], "shots": mm, "n": nf, "tier": COV.tier(nf)} if nf and mm else None,
+                "auto_made": None if (auto_bad or not na or au_raw is None) else _sv(au_v, au_raw, na),
                 "cycle_s": _sv(cy_raw, cy_raw, n, volleys=S.get("n_volleys")) if cy_raw is not None else None,
                 "fire": _sv(S["fire_rate"], S["fire_rate"], n) if S["fire_rate"] is not None else None,
                 "hopper": _sv(S["hopper_est"] or S["volley_max"], S["volley_max"], n) if (S["hopper_est"] or S["volley_max"]) else None,
@@ -1481,22 +1642,22 @@ def build_truth(api_ev, ev, matches, specs, teams_meta, data_root=None, log=prin
                 "dead": {"v": r_(np.mean(dead), 2), "n": len(dead)} if len(dead) >= COV.SHOW_N else None,
                 "def_played": ((sp.get("defense") or {}).get("played") or {}).get("n"),
                 "def_received": ((sp.get("defense") or {}).get("received") or {}).get("n"),
+                "def_matches": len(((sp.get("defense") or {}).get("played") or {}).get("matches") or []),
+                "def_secs": ((sp.get("defense") or {}).get("played") or {}).get("secs"),
             }
             # video vs model: positive evidence only (critics: every "video says worse" call was attribution loss)
             ep = (rat.get(tk) or {}).get("epa") or {}
-            if ep.get("total") is not None:      # vs the TBA-only EPA (the blend already contains this video)
+            if ep.get("total") is not None and raw_pm is not None:      # vs the TBA-only EPA (the blend already has this video)
                 mfuel = (ep.get("auto") or 0) + (ep.get("teleop") or 0)
-                if n >= 2 and raw_pm >= 25 and raw_pm >= 1.25 * mfuel + 10:
+                if nf >= 2 and raw_pm >= 25 and raw_pm >= VH_MULT * mfuel + VH_ADD:
                     row["flags"].append({"k": "video_higher", "text": f"video higher: {raw_pm:.0f} FUEL/match credited in "
-                                         f"{n} verified matches vs EPA {mfuel:.0f}"})
-                elif n >= COV.SHOW_N and not lb and not over and raw_pm <= 0.6 * mfuel - 10:
-                    row["flags"].append({"k": "video_lower", "text": f"video lower ({raw_pm:.0f} vs {mfuel:.0f}): check the replays "
-                                         "before trusting it -- low video counts were attribution loss every time at 2026wasam"})
-            if lb:
-                row["flags"].append({"k": "lower_bound", "text": "≥: more than 20% of the alliance FUEL in "
-                                     f"{sum(x['lower_bound'] for x in tr)} of {n} verified matches was not credited to any robot"})
-            if over:
-                row["flags"].append({"k": "over", "text": "credited FUEL exceeded the TBA alliance count; scaled down to the TBA total"})
+                                         f"{nf} reconciled matches vs EPA {mfuel:.0f}"})
+                elif nf >= COV.SHOW_N and not over and raw_pm <= 0.6 * mfuel - 10:
+                    row["flags"].append({"k": "video_lower", "text": f"video lower ({raw_pm:.0f} vs {mfuel:.0f}) in {nf} reconciled "
+                                         "matches: check the replays -- low video counts were attribution loss every time at 2026wasam"})
+            if n and not nf:
+                row["flags"].append({"k": "no_reconciled", "text": f"none of {n} verified matches reconciled with TBA within 20%: "
+                                     "no video FUEL numbers"})
         teams.append(row)
     out = {"schema": "cyber-scout/scout@1", "event": ev, "generated": int(time.time()),
            "verified_matches": [M.key for M in sorted(matches, key=lambda M: COV.match_order(M.key))],
@@ -1510,7 +1671,8 @@ def build_truth(api_ev, ev, matches, specs, teams_meta, data_root=None, log=prin
                            "any_climb": any((v["rate"] or 0) > 0 for v in tower.values())},
            "dash_generated": dash.get("generated"),
            "teams": teams}
-    jsave(os.path.join(out_dir or api_ev, "scout.json"), out)
+    out["asof"] = asof
+    jsave(out_path or os.path.join(out_dir or api_ev, "scout.json"), out)
     log(f"scouting: scout.json {len(teams)} teams, {sum(1 for t in teams if t['coverage']['n'])} with verified video, "
         f"tower max {tower_max}")
     return out
@@ -1548,5 +1710,17 @@ if __name__ == "__main__":
     ap.add_argument("data")
     ap.add_argument("ev")
     ap.add_argument("--out", default=None)
+    ap.add_argument("--asof", type=float, default=None, help="replay: write scout/<asof>.json only")
+    ap.add_argument("--snapshots", action="store_true", help="scout/<ts>.json for every dash/<ts>.json (+ scout/index.json)")
     a = ap.parse_args()
-    build(os.path.join(a.data, "site", "api", a.ev), a.ev, out_dir=a.out)
+    api_ev = os.path.join(a.data, "site", "api", a.ev)
+    if a.asof is not None or a.snapshots:
+        times = [a.asof] if a.asof is not None else sorted(int(f.split(".")[0]) for f in os.listdir(os.path.join(api_ev, "dash"))
+                                                           if f.split(".")[0].isdigit())
+        for ts in times:
+            build_asof(api_ev, a.ev, ts, out_dir=a.out, log=lambda *x: None)
+        od = os.path.join(a.out or api_ev, "scout")
+        jsave(os.path.join(od, "index.json"), {"event": a.ev, "times": sorted(int(f.split(".")[0]) for f in os.listdir(od) if f.split(".")[0].isdigit())})
+        print(f"scout snapshots: {len(times)}")
+    else:
+        build(api_ev, a.ev, out_dir=a.out)

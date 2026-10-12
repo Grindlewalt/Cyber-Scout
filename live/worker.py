@@ -424,6 +424,8 @@ def build_site(ev, tba):
     try:                                               # team spec sheets, defense library, scout.json (before goals:
         import scouting                                # the Selection pitch cards read scout.json)
         scouting.site_build_extra(DATA, ev, log=log)
+        import subprocess                              # scout.json replay snapshots (as-of picklist), ~3 s each
+        subprocess.run([sys.executable, "-m", "live.scouting", DATA, ev, "--snapshots"], cwd=REPO, timeout=900, check=False)
     except Exception:
         traceback.print_exc()
     try:                                               # rankings, district points, season goal, schedule, selection

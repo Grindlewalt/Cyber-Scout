@@ -43,7 +43,7 @@ def roles(R):
     return role, seed
 
 
-def selection_block(S, ev, team, goal=None, asof=None, nick=None, comps=None, scout=None):
+def selection_block(S, ev, team, goal=None, asof=None, nick=None, comps=None, scout=None, defense=None):
     """S = goals.Season (base run), ev = focal event key, team = our team.  comps = {team: {auto, teleop, endgame, total, sd}}
     (dashboard blend components) for the pitch cards; scout = scout.json teams by key (video facts, optional)."""
     nick = nick or {}
@@ -115,7 +115,13 @@ def selection_block(S, ev, team, goal=None, asof=None, nick=None, comps=None, sc
     j = loc[team]
     c_us = S.col[team]
     q_us = qual[:, c_us]
+    from .goals import no_award_mask, _contender
+    keep = np.ones(n, bool) if _contender() else no_award_mask(S, team)   # same conditioning as the headline
     rl, sd = role[:, j], seed[:, j]
+    pd = lambda m: _r(q_us[m & keep].mean()) if (m & keep).sum() >= MIN_N else None
+    for r_ in out["teams"]:
+        if r_["team"] == team and keep.sum() >= MIN_N:
+            r_["p_dcmp"] = _r(q_us[keep].mean())          # same as the headline
     ar = np.arange(n)
     e_us = np.where(sd > 0, E[ar, np.maximum(sd - 1, 0)], 0)
     outcomes = []
@@ -126,19 +132,19 @@ def selection_block(S, ev, team, goal=None, asof=None, nick=None, comps=None, sc
                 continue
             o = {"seed": k, "role": ROLES[ro], "share": _r(m.mean()), "n": int(m.sum()),
                  "event_points": _r(R["total"][m, j].mean() / R["mult"], 1),
-                 "p_dcmp": _r(q_us[m].mean()) if m.sum() >= MIN_N else None,
+                 "p_dcmp": pd(m),
                  "playoffs": {lab: _r((e_us[m] == pts).mean()) for lab, pts in RESULTS}}
             outcomes.append(o)
     m = rl == 0
     outcomes.append({"seed": None, "role": "not selected", "share": _r(m.mean()), "n": int(m.sum()),
                      "event_points": _r(R["total"][m, j].mean() / R["mult"], 1) if m.any() else None,
-                     "p_dcmp": _r(q_us[m].mean()) if m.sum() >= MIN_N else None})
+                     "p_dcmp": pd(m)})
     outcomes.sort(key=lambda o: -(o["share"] or 0))
     # role-level DCMP odds (for the manual scenario: fallback when a seed x role cell is thin)
     by_role = {}
     for ro, lab in ((1, "captain"), (2, "first pick"), (3, "second pick"), (0, "not selected")):
         mm = rl == ro
-        by_role[lab] = {"share": _r(mm.mean()), "p_dcmp": _r(q_us[mm].mean()) if mm.sum() >= MIN_N else None,
+        by_role[lab] = {"share": _r(mm.mean()), "p_dcmp": pd(mm),
                         "n": int(mm.sum())}
     # who picks us
     who, det = Counter(), defaultdict(Counter)
@@ -174,21 +180,24 @@ def selection_block(S, ev, team, goal=None, asof=None, nick=None, comps=None, sc
                     "qual_points_median": _r(qmed, 0), "grid": grid, "text": _need_text(need_here, qmed, grid),
                     "note": "excludes award points; cutoff = median projected DCMP cutoff (goal block)"}
         need = out_need
+        for o in outcomes:
+            if o["seed"]:
+                c = grid[o["seed"] - 1].get(o["role"]) or {}
+                o["needs"] = c.get("result")
     pitches = _pitches(team, picks_us, comps, scout, teams, nick)
+    try:
+        captains = captain_resim(S, ev, team, [p["captain"] for p in picks_us[:5]], keep_fn=no_award_mask if not _contender() else None)
+    except Exception:
+        import traceback
+        traceback.print_exc()
+        captains = []
+    _attach_fit(pitches, captains, team, scout, defense or {})
     us = {"team": team, "rank_mean": _r(R["rank"][:, j].mean(), 1), "p_captain": _r((rl == 1).mean()),
           "p_r1": _r((rl == 2).mean()), "p_r2": _r((rl == 3).mean()), "p_unpicked": _r((rl == 0).mean()),
-          "p_dcmp": _r(q_us.mean()), "outcomes": outcomes, "by_role": by_role, "picked_by": picks_us,
-          "need": need, "pitches": pitches}
+          "p_dcmp": _r(q_us[keep].mean()) if keep.sum() >= MIN_N else _r(q_us.mean()),
+          "p_dcmp_with_awards": _r(q_us.mean()), "outcomes": outcomes, "by_role": by_role, "picked_by": picks_us,
+          "need": need, "pitches": pitches, "captains": captains}
     out["us"] = us
-    # draft sample for the manual "captain picks X" scenario (client-side re-draft)
-    rng = np.random.default_rng(5)
-    ss = np.sort(rng.choice(n, size=min(DRAFT_SAMPLE, n), replace=False))
-    th = S.theta[:, R["cols"]] * 3.0
-    order = np.argsort(R["rank"], axis=1)
-    out["draft"] = {"teams": teams, "order": order[ss].tolist(),
-                    "theta": np.round(th[ss], 1).tolist(),
-                    "p_dcmp_by_outcome": {f"{o['seed']}:{o['role']}": o["p_dcmp"] for o in outcomes if o["seed"]},
-                    "p_dcmp_by_role": {k: v["p_dcmp"] for k, v in by_role.items()}}
     return out
 
 
@@ -211,7 +220,7 @@ def _need_text(need_here, qmed, grid):
     return f"need ~{need_here:.0f} event points (qual ~{qmed:.0f}): " + "; ".join(parts[:4])
 
 
-COMP_TXT = {"auto": "auto", "teleop": "teleop FUEL", "endgame": "endgame"}
+COMP_TXT = {"auto": "auto pts (model)", "teleop": "teleop pts (model)", "endgame": "endgame pts (model)"}
 
 
 def _pitches(team, picks_us, comps, scout, teams, nick):
@@ -258,3 +267,90 @@ def _pitches(team, picks_us, comps, scout, teams, nick):
         if len(cards) >= 4:
             break
     return cards
+
+
+def captain_resim(S, ev, team, caps, keep_fn=None):
+    """Per-captain re-simulation: whenever captain C seeds, force C's first pick to `team` ("take") vs forbid it
+    ("next best": C takes its best remaining alternative).  Same random numbers in both runs (quals, ratings,
+    playoff draws), so the difference is the pick.  Only seasons where C captains and `team` is still available at
+    C's pick are compared.  -> [{captain, n, p_captain, alt, take: {p_win, p_final, p_dcmp}, next: {...}, delta_win}]"""
+    out = []
+    base = S.draft.get(ev, {})
+    try:
+        for C in caps:
+            runs = {}
+            for how in ("take", "skip"):
+                S.draft[ev] = {C: (how, team)}
+                runs[how] = S._run({}, only=ev)
+            S.draft[ev] = base
+            Rt, Rs = runs["take"]["ev"][ev], runs["skip"]["ev"][ev]
+            teams = Rt["teams"]
+            if C not in teams or team not in teams:
+                continue
+            lc, lu = teams.index(C), teams.index(team)
+            capk = np.argmax(Rt["pairs"][:, :, 0] == lc, axis=1)
+            is_cap = (Rt["pairs"][:, :, 0] == lc).any(1)
+            ar = np.arange(S.n)
+            took = is_cap & (Rt["pairs"][ar, capk, 1] == lu)
+            if took.sum() < 20:
+                continue
+            alt = Counter(Rs["pairs"][ar[took], capk[took], 1])
+            qt, _ = S.dcmp_outcome(runs["take"])
+            qs_, _ = S.dcmp_outcome(runs["skip"])
+            keep = keep_fn(S, team, runs["take"]) & keep_fn(S, team, runs["skip"]) if keep_fn else np.ones(S.n, bool)
+            m = took & keep
+            c_us = S.col[team]
+
+            def blk(R, q):
+                e = R["alliance_elim"][ar, capk]
+                return {"p_win": _r((e[took] == 30).mean()), "p_final": _r((e[took] >= 20).mean()),
+                        "p_dcmp": _r(q[m, c_us].mean()) if m.sum() >= MIN_N else None}
+            t_, s_ = blk(Rt, qt), blk(Rs, qs_)
+            out.append({"captain": C, "n": int(took.sum()), "p_captain": _r(is_cap.mean()),
+                        "seed_mode": int(Counter(capk[took] + 1).most_common(1)[0][0]),
+                        "alt": [{"team": teams[i], "p": _r(c / took.sum())} for i, c in alt.most_common(2)],
+                        "take": t_, "next": s_,
+                        "delta_win": _r((t_["p_win"] or 0) - (s_["p_win"] or 0)),
+                        "delta_dcmp": _r((t_["p_dcmp"] or 0) - (s_["p_dcmp"] or 0)) if t_["p_dcmp"] is not None and s_["p_dcmp"] is not None else None})
+    finally:
+        S.draft[ev] = base
+    return out
+
+
+def _attach_fit(pitches, captains, team, scout, defense):
+    """Pitch card = our marginal effect for that alliance (re-sim) + fit facts (lanes, shooting, auto, defense)."""
+    cap = {c["captain"]: c for c in captains}
+    dt = {t["team"]: t for t in (defense.get("teams") or [])}
+    ev_def = (defense.get("teams_meta") or {}).get("event")
+
+    def vid(t):
+        return (scout.get(t) or {}).get("video") or {}
+
+    def pc(x):
+        return "–" if x is None else f"{round(x * 100)}%"
+    us = vid(team)
+    for p in pitches:
+        C = p["captain"]
+        rs = cap.get(C)
+        if rs:
+            alt = rs["alt"][0]["team"][3:] if rs["alt"] else "their next best"
+            p["resim"] = rs
+            p["pitch"] = (f"If {C[3:]} takes {team[3:]} instead of {alt}: alliance wins the event {pc(rs['take']['p_win'])} vs "
+                          f"{pc(rs['next']['p_win'])} ({'+' if (rs['delta_win'] or 0) >= 0 else ''}{round((rs['delta_win'] or 0) * 100)} pp)")
+        cv = vid(C)
+        fit = []
+        if us.get("trench") is not None or cv.get("trench") is not None:
+            fit.append(f"lanes: trench share {team[3:]} {pc(us.get('trench'))} / {C[3:]} {pc(cv.get('trench'))}")
+        if us.get("auto_made") or cv.get("auto_made"):
+            a, b = (us.get("auto_made") or {}).get("v"), (cv.get("auto_made") or {}).get("v")      # canonical (= tables)
+            fit.append(f"auto FUEL (video): {team[3:]} {'–' if a is None else round(a)} / {C[3:]} {'–' if b is None else round(b)}")
+        if us.get("on_move") is not None:
+            fit.append(f"shoots on the move {pc(us.get('on_move'))}")
+        r = (dt.get(team) or {}).get("retention")
+        if r:
+            fit.append(f"keeps {pc(r['est'])} of output when defended ({'measured' if r['significant'] else 'not significant'}, n_eff {r['n_eff']})"
+                       + (f"; event-wide {pc(ev_def['est'])}" if ev_def else ""))
+        d = (dt.get(team) or {}).get("as_defender")
+        if d:
+            fit.append(f"as a defender: victims keep {pc(d['est'])} ({'measured' if d['significant'] else 'not significant'})")
+        p["fit"] = fit

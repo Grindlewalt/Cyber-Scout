@@ -102,10 +102,10 @@ function covPill(c, opts = {}) {
 function svHtml(m, f = "1", unit = "") {
   if (!m || m.v == null || !m.n) return `<span class="muted">–</span>`;
   const fm = v => v == null ? "–" : f === "p" ? Math.round(v * 100) + "%" : f === "0" ? String(Math.round(v)) : f === "2" ? Number(v).toFixed(2) : Number(v).toFixed(1);
-  const tip = `shrunk value ${fm(m.v)}; raw ${fm(m.raw)} over n=${m.n} verified match${m.n === 1 ? "" : "es"}${m.lower_bound ? "; ≥ = more than 20% of the alliance FUEL was not credited to any robot, so this is a floor" : ""}${m.over ? "; credited FUEL exceeded the TBA count and was scaled down" : ""}`;
+  const tip = `shrunk value ${fm(m.v)}; raw ${fm(m.raw)} over n=${m.n} verified match${m.n === 1 ? "" : "es"}${m.gates ? ` (FUEL from alliance results within 20% of TBA: ${Object.entries(m.gates).map(([k, v]) => `${v} ${k}`).join(", ")})` : ""}${m.lower_bound ? "; ≥ = more than 20% of the alliance FUEL was not credited to any robot, so this is a floor" : ""}${m.over ? "; credited FUEL exceeded the TBA count and was scaled down" : ""}`;
   return `<span class="sc-v ${m.tier || ""}" title="${esc(tip)}">${m.lower_bound ? "≥" : ""}${fm(m.v)}${unit}<small>n=${m.n}</small></span>`;
 }
-const FLAG_TXT = { auto_not_tracked: ["auto not tracked", "warn"], video_higher: ["video higher", "good"], video_lower: ["video lower?", "grey"], lower_bound: ["≥ floor", "grey"], over: ["scaled to TBA", "grey"] };
+const FLAG_TXT = { auto_not_tracked: ["auto not tracked", "warn"], video_higher: ["video higher", "good"], video_lower: ["video lower?", "grey"], lower_bound: ["≥ floor", "grey"], over: ["scaled to TBA", "grey"], no_reconciled: ["no reconciled video", "grey"] };
 function flagChips(row, only) {
   return (row && row.flags || []).filter(f => !only || only.includes(f.k)).map(f => `<span class="sc-flag ${(FLAG_TXT[f.k] || [])[1] || ""}" title="${esc(f.text)}">${esc((FLAG_TXT[f.k] || [f.k])[0])}</span>`).join(" ");
 }

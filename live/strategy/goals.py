@@ -206,10 +206,12 @@ def award_model(D):
     return {"k5": int(round(np.mean(k5))) if k5 else 12, "p_ras": (ras / n) if n else 0.3}
 
 
-def sim_event(ev, col, theta, sigma, bonus, awm, seed, n, forced=None, fixed_alliances=None):
+def sim_event(ev, col, theta, sigma, bonus, awm, seed, n, forced=None, fixed_alliances=None, rookies=None, draft=None):
     """Simulate one district event for n seasons.  theta (n, T) global strength draws, col {team: column}.
     Returns {"teams": [cols], "qual","alliance","elim","award": (n, Ne) points (x3 at DCMP), "rank": (n, Ne), "prequal": (n, Ne) bool,
-             "rp_avg": (n, Ne)} -- common random numbers: the same seed gives the same draws except forced matches."""
+             "rp_avg": (n, Ne)} -- common random numbers: the same seed gives the same draws except forced matches.
+    rookies: team keys eligible for Rookie All-Star (else any team).  draft: {captain_key: ("take"|"skip", team_key)} --
+    whenever that team captains, its first pick is forced to (take) or forbidden from (skip) team_key."""
     rng = np.random.default_rng(seed)
     teams = sorted(set(ev["teams"]) & set(col), key=_num)
     Ne = len(teams)
@@ -268,13 +270,19 @@ def sim_event(ev, col, theta, sigma, bonus, awm, seed, n, forced=None, fixed_all
         for k, a in enumerate(fixed_alliances[:8]):
             pairs[:, k, :] = [loc[t] for t in a[:3]]
     else:
+        dr = {loc[c]: (how, loc[t]) for c, (how, t) in (draft or {}).items() if c in loc and t in loc}
         for s in range(n):
             avail = list(order[s])
             ths = th[s]
             caps, p1 = [], []
             for k in range(8):
                 cap = avail.pop(0)
-                j = max(range(len(avail)), key=lambda i: ths[avail[i]])
+                how, tgt = dr.get(cap, (None, None))
+                if how == "take" and tgt in avail:
+                    j = avail.index(tgt)
+                else:
+                    cand = [i for i in range(len(avail)) if not (how == "skip" and avail[i] == tgt)]
+                    j = max(cand, key=lambda i: ths[avail[i]])
                 p1.append(avail.pop(j))
                 caps.append(cap)
             p2 = [0] * 8
@@ -324,8 +332,15 @@ def sim_event(ev, col, theta, sigma, bonus, awm, seed, n, forced=None, fixed_all
             np.put_along_axis(award, perm[:, slot:slot + 1], float(pts), axis=1)
             np.put_along_axis(prequal, perm[:, slot:slot + 1], True, axis=1)
         has_ras = rng.random(n) < awm["p_ras"]
-        np.put_along_axis(award, perm[:, 2:3], np.where(has_ras, 8.0, 0.0)[:, None], axis=1)
-        np.put_along_axis(prequal, perm[:, 2:3], has_ras[:, None], axis=1)
+        rk_loc = [loc[t] for t in teams if t in (rookies or ())] if rookies is not None else None
+        if rk_loc is None:
+            np.put_along_axis(award, perm[:, 2:3], np.where(has_ras, 8.0, 0.0)[:, None], axis=1)
+            np.put_along_axis(prequal, perm[:, 2:3], has_ras[:, None], axis=1)
+        elif rk_loc:                                   # Rookie All-Star goes to a rookie team only
+            who = np.array(rk_loc)[rng.integers(0, len(rk_loc), n)]
+            ar_ = np.arange(n)[has_ras]
+            award[ar_, who[has_ras]] += 8.0
+            prequal[ar_, who[has_ras]] = True
         for j in range(3, min(3 + awm["k5"], Ne)):
             cur = np.take_along_axis(award, perm[:, j:j + 1], axis=1)
             np.put_along_axis(award, perm[:, j:j + 1], cur + 5.0, axis=1)
@@ -392,6 +407,10 @@ class Season:
         self.capacity = capacity or int(os.environ.get("DCMP_CAPACITY", 0)) or DI.CAPACITY.get(D["key"], DI.DEFAULT_CAPACITY)
         self.worlds_slots = worlds_slots or DI.WORLDS_SLOTS.get(D["key"], 15)
         self.rb = {r["team_key"]: r.get("rookie_bonus", 0) + r.get("adjustments", 0) for r in D["tba_rankings"]}
+        rbon = {r["team_key"]: r.get("rookie_bonus", 0) or 0 for r in D["tba_rankings"]}
+        mx = max(rbon.values() or [0])
+        self.rookies = {t for t, v in rbon.items() if v > 0 and v >= mx}     # first-year rookies (largest bonus)
+        self.draft = {}                                                    # {event: {captain: (take|skip, team)}}
         self.events = [e for e in D["events"] if not e["dcmp"]]
         self.dcmp = next((e for e in D["events"] if e["dcmp"]), None)
         self._plan_events()
@@ -447,12 +466,14 @@ class Season:
             if not ev["teams"]:
                 continue
             f = forced if (only is None or only == k) else {}
-            ck = (k, tuple(sorted(f.items()))) if k in cache or True else None
+            dr = self.draft.get(k) or {}
+            ck = (k, tuple(sorted(f.items())), tuple(sorted(dr.items())))
             if ck in cache:
                 R = cache[ck]
             else:
                 R = sim_event(ev, self.col, self.theta, self.sigma, self.bonus, self.awm, seed=self.seed * 1000 + i + 1,
-                              n=self.n, forced=f, fixed_alliances=self._fixed_alliances(ev))
+                              n=self.n, forced=f, fixed_alliances=self._fixed_alliances(ev), rookies=self.rookies,
+                              draft=dr)
                 cache[ck] = R
             sims[k] = R
             for j, t in enumerate(R["teams"]):
@@ -551,7 +572,12 @@ def goal_block(S, team, goal="DCMP", focal=None, value_matches=True, now=None):
             cur += S.done_pts[ev["key"]].get(team, {}).get("total", 0)
     cur += S.rb.get(team, 0)
     cut_now = None if goal.lower().startswith("rank") else _cutoff_now(S)
-    p = float(hit.mean())
+    p_aw = float(hit.mean())
+    noaw = no_award_mask(S, team, run)
+    p_no = float(hit[noaw].mean()) if noaw.sum() >= 20 else p_aw
+    pq = award_prequal_mask(S, team, run)
+    contender = _contender()
+    p = p_aw if contender else p_no             # headline: no awards for us unless we are an Impact/EI contender
     q50 = _q(cutoff)
     need = {}
     for lab, pr in (("p50", 50), ("p80", 80), ("p95", 95)):
@@ -569,7 +595,13 @@ def goal_block(S, team, goal="DCMP", focal=None, value_matches=True, now=None):
             row["points"] = {"mean": _r(R["total"][:, j].mean()), "p10": _r(_q(R["total"][:, j])[0]),
                              "p90": _r(_q(R["total"][:, j])[2]), "rank_mean": _r(R["rank"][:, j].mean(), 1)}
         evs.append(row)
-    block = {"goal": goal, "team": team, "district": D["key"], "p_goal": _r(p, 3), "p_goal_ci": _ci(p, S.n),
+    block = {"goal": goal, "team": team, "district": D["key"], "p_goal": _r(p, 3), "p_goal_ci": _ci(p, int(noaw.sum()) if not contender else S.n),
+             "awards": {"headline": "with random awards" if contender else "without awards for us",
+                        "p_no_awards": _r(p_no, 3), "p_with_awards": _r(p_aw, 3),
+                        "p_if_impact_or_ei": _r(float(hit[pq].mean()), 3) if pq.sum() >= 5 else (1.0 if goal.upper() == "DCMP" else None),
+                        "p_we_win_award": _r(1 - float(noaw.mean()), 3), "contender": contender,
+                        "note": "awards at unplayed events are random (Impact, EI, Rookie All-Star to first-year rookies only, "
+                                "~12 judged 5-pt awards); set DASH_AWARD_CONTENDER=1 to headline the with-awards number"},
              "current_points": cur, "projected_points": {"mean": _r(pre.mean()), "p10": _r(_q(pre)[0]), "p90": _r(_q(pre)[2])},
              "cutoff": {"now": cut_now, "projected": {"mean": _r(cutoff.mean()), "p10": _r(q50[0]), "p50": _r(q50[1]), "p90": _r(q50[2])}},
              "points_needed": need,
@@ -584,6 +616,40 @@ def goal_block(S, team, goal="DCMP", focal=None, value_matches=True, now=None):
     if value_matches:
         block["value"] = value_of_matches(S, team, goal, focal, p)
     return block
+
+
+def _contender():
+    return os.environ.get("DASH_AWARD_CONTENDER", "0") == "1"
+
+
+def _p_headline(S, team, goal, run=None):
+    """P(goal) as headlined: conditional on no award for `team` unless it is an award contender."""
+    hit = S.goal(team, goal, run)[0]
+    if _contender():
+        return float(hit.mean())
+    m = no_award_mask(S, team, run)
+    return float(hit[m].mean()) if m.sum() >= 20 else float(hit.mean())
+
+
+def no_award_mask(S, team, run=None):
+    """(n,) bool: simulated seasons in which `team` wins no award (no points, no pre-qualification) at its remaining
+    events -- the headline odds condition on this, so they do not lean on a random award."""
+    run = run or S.base_run
+    m = np.ones(S.n, bool)
+    for k, R in run["ev"].items():
+        if team in R["teams"]:
+            j = R["teams"].index(team)
+            m &= (R["award"][:, j] == 0) & ~R["prequal"][:, j]
+    return m
+
+
+def award_prequal_mask(S, team, run=None):
+    run = run or S.base_run
+    m = np.zeros(S.n, bool)
+    for k, R in run["ev"].items():
+        if team in R["teams"]:
+            m |= R["prequal"][:, R["teams"].index(team)]
+    return m
 
 
 def _ci(p, n):
@@ -621,11 +687,12 @@ def value_of_matches(S, team, goal, focal, p0):
             pr = {}
             for lab, who in (("win", side), ("loss", opp)):
                 r = S._run({m["key"]: who}, only=fev["key"])
-                pr[lab] = float(S.goal(team, goal, r)[0].mean())
+                pr[lab] = _p_headline(S, team, goal, r)
             out["matches"].append({"key": m["key"], "label": f"Qual {m['match_number']}", "time": _mt(m) or None,
                                    "p_if_win": _r(pr["win"], 3), "p_if_loss": _r(pr["loss"], 3),
                                    "delta": _r(pr["win"] - pr["loss"], 3)})
     hit = S.goal(team, goal)[0]
+    keep = np.ones(S.n, bool) if _contender() else no_award_mask(S, team)
     for ev in S.team_events(team):
         R = S.base_run["ev"].get(ev["key"])
         if R is None or team not in R["teams"]:
@@ -635,15 +702,15 @@ def value_of_matches(S, team, goal, focal, p0):
         rk = R["rank"][:, j]
         e = {"event": ev["key"], "by_points": [], "by_rank": []}
         qs = np.percentile(pts, [25, 75])
-        for lab, mask in (("bottom quartile", pts <= qs[0]), ("middle half", (pts > qs[0]) & (pts < qs[1])),
-                          ("top quartile", pts >= qs[1])):
+        for lab, mask in (("bottom quartile", (pts <= qs[0]) & keep), ("middle half", (pts > qs[0]) & (pts < qs[1]) & keep),
+                          ("top quartile", (pts >= qs[1]) & keep)):
             if mask.sum() >= 5:
                 e["by_points"].append({"outcome": lab, "points": _r(pts[mask].mean(), 0), "p_goal": _r(hit[mask].mean(), 3)})
         Ne = len(R["teams"])
-        for lab, mask in (("rank 1-4", rk <= 4), ("rank 5-8", (rk > 4) & (rk <= 8)), ("rank 9-16", (rk > 8) & (rk <= 16)),
-                          (f"rank 17+", rk > 16)):
+        for lab, mask in (("rank 1-4", (rk <= 4) & keep), ("rank 5-8", (rk > 4) & (rk <= 8) & keep),
+                          ("rank 9-16", (rk > 8) & (rk <= 16) & keep), (f"rank 17+", (rk > 16) & keep)):
             if mask.sum() >= 5:
-                e["by_rank"].append({"outcome": lab, "p_goal": _r(hit[mask].mean(), 3), "share": _r(mask.mean(), 3)})
+                e["by_rank"].append({"outcome": lab, "p_goal": _r(hit[mask].mean(), 3), "share": _r(mask.sum() / max(1, keep.sum()), 3)})
         out["events"].append(e)
     return out
 
@@ -868,9 +935,14 @@ def build_event_json(data_dir, ev, team=DEFAULT_TEAM, goal="DCMP", sims=800, aso
             elif M is not None:
                 comps = {t: DASH.blend_rating(M, t) for t in V["teams"]}
             sc = _read(os.path.join(api_dir, "scout.json")) or {}
+            if asof is not None:                       # replay: the scout snapshot as of then, if built
+                ss = os.path.join(api_dir, "scout", f"{int(asof)}.json")
+                sc = _read(ss) or sc
+            dfj = _read(os.path.join(api_dir, "defense.json")) or {}
             selection = SEL.selection_block(S, ev, team, goal_out if goal.upper() == "DCMP" else None, asof=asof,
                                             nick=(ctx.nick if ctx is not None else {}), comps=comps,
-                                            scout={r["team"]: r for r in sc.get("teams") or []})
+                                            scout={r["team"]: r for r in sc.get("teams") or []},
+                                            defense={"teams": dfj.get("teams"), "teams_meta": dfj.get("teams_meta")})
         except Exception:
             import traceback
             traceback.print_exc()
@@ -884,8 +956,12 @@ def build_event_json(data_dir, ev, team=DEFAULT_TEAM, goal="DCMP", sims=800, aso
             if c is None:
                 continue
             cur = S.rb.get(t, 0) + sum(d.get(t, {}).get("total", 0) for k, d in S.done_pts.items() if k in S.counted[t])
+            # our row = the headline (no awards for us unless contender); other teams keep random awards, which is
+            # better calibrated across the event (09:00 replay: Brier .133 with vs .147 without)
+            na = no_award_mask(S, t) if t == team else None
+            p_us = qual[na, c].mean() if (na is not None and na.sum() >= 20 and not _contender()) else pq[c]
             dist_rows[t] = {"current": cur, "projected": _r(pre[:, c].mean()), "p10": _r(_q(pre[:, c])[0]),
-                            "p90": _r(_q(pre[:, c])[2]), "p_dcmp": _r(pq[c], 3)}
+                            "p90": _r(_q(pre[:, c])[2]), "p_dcmp": _r(p_us, 3), "p_dcmp_with_awards": _r(pq[c], 3)}
     # ---- rankings.json
     teams_out = []
     nick = {}

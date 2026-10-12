@@ -86,7 +86,8 @@
     }).join("");
     return `<section class="card goalcard">
       <div><div class="muted small">SEASON GOAL · ${H(goalName)} · ${tn(g.team)}</div>
-        <div class="bigp ${col}">${P(p)}<small>chance (90% range ${P(ci[0])}–${P(ci[1])})${g.p_dcmp != null ? ` · DCMP ${P(g.p_dcmp)}` : ""}${g.dcmp?.is_prequalified ? " · pre-qualified by award" : ""}</small></div>${bar}
+        <div class="bigp ${col}">${P(p)}<small>${g.awards ? H(g.awards.headline) + " · " : ""}90% range ${P(ci[0])}–${P(ci[1])}${g.p_dcmp != null ? ` · DCMP ${P(g.p_dcmp)}` : ""}${g.dcmp?.is_prequalified ? " · pre-qualified by award" : ""}</small></div>
+        ${g.awards ? `<div class="small" style="margin-top:6px" title="${H(g.awards.note)}">${g.awards.contender ? `without awards ${P(g.awards.p_no_awards)}` : `+ random awards: <b>${P(g.awards.p_with_awards)}</b>`} · if we win Impact/EI: ${P(g.awards.p_if_impact_or_ei)}</div>` : ""}${bar}
         <div class="small muted">green = your projected points (10–90%), yellow = projected cutoff</div></div>
       <div>
         <div class="tiles">
@@ -164,33 +165,6 @@
   const P5 = v => v == null ? "–" : v >= 0.995 ? ">99%" : v < 0.005 ? "<1%" : Math.round(v * 100) + "%";
   const selNav = ev => nav(ev).replace('tablink on" href="#/' + ev + '/rankings"', 'tablink" href="#/' + ev + '/rankings"').replace('tablink" href="#/' + ev + '/selection"', 'tablink on" href="#/' + ev + '/selection"');
 
-  function redraft(D, forced, team) {           // client-side re-draft over the sampled seasons
-    const T = D.teams.length, us = D.teams.indexOf(team), out = {};
-    const add = k => { out[k] = (out[k] || 0) + 1; };
-    let n = 0, pd = 0, pdn = 0;
-    for (let s = 0; s < D.order.length; s++) {
-      const th = D.theta[s], avail = D.order[s].slice(), caps = [], p1 = [];
-      for (let k = 0; k < 8 && avail.length; k++) {
-        const cap = avail.shift(); caps.push(cap);
-        let j = -1; const f = forced[cap];
-        if (f != null) j = avail.indexOf(f);
-        if (j < 0) { j = 0; for (let i = 1; i < avail.length; i++) if (th[avail[i]] > th[avail[j]]) j = i; }
-        p1.push(avail.splice(j, 1)[0]);
-      }
-      const p2 = new Array(8);
-      for (let k = 7; k >= 0; k--) { if (!avail.length) break; let j = 0; for (let i = 1; i < avail.length; i++) if (th[avail[i]] > th[avail[j]]) j = i; p2[k] = avail.splice(j, 1)[0]; }
-      let key = "none:not selected";
-      for (let k = 0; k < 8; k++) { if (caps[k] === us) key = `${k + 1}:captain`; if (p1[k] === us) key = `${k + 1}:first pick`; if (p2[k] === us) key = `${k + 1}:second pick`; }
-      add(key); n++;
-      const [sd, role] = key.split(":");
-      const p = D.p_dcmp_by_outcome[key] ?? D.p_dcmp_by_role[role];
-      if (p != null) { pd += p; pdn++; }
-    }
-    const rows = Object.entries(out).map(([k, v]) => ({ k, p: v / n })).sort((a, b) => b.p - a.p);
-    const role = r => rows.filter(x => x.k.endsWith(r)).reduce((a, b) => a + b.p, 0);
-    return { rows, n, p_captain: role(":captain"), p_r1: role(":first pick"), p_r2: role(":second pick"), p_none: role(":not selected"), p_dcmp: pdn ? pd / pdn : null };
-  }
-
   function selPage(ev, d, times, ts) {
     const u = d.us, tm = tn(d.team);
     const opts = [`<option value="">live (${fmtDT(null)})</option>`, ...times.map(t => `<option value="${t}" ${String(t) === String(ts) ? "selected" : ""}>${fmtDT(t)}</option>`)].join("");
@@ -209,27 +183,27 @@
     const outs = (u.outcomes || []).filter(o => o.share >= 0.01).map(o => {
       const pl = o.playoffs || {};
       return `<tr><td><b>${o.seed ? "A" + o.seed + " " : ""}${ROLE_SHORT[o.role]}</b></td><td class="num">${P5(o.share)}</td><td class="num">${n0(o.event_points)}</td>
-        <td class="num">${o.p_dcmp == null ? `<span class="muted" title="fewer than 15 simulated seasons">thin</span>` : `<b>${P5(o.p_dcmp)}</b>`}</td>
+        <td class="num">${o.p_dcmp == null ? `<span class="muted" title="fewer than 15 simulated seasons">thin</span>` : `<b>${P5(o.p_dcmp)}</b>`}</td><td class="small">${o.seed ? (o.needs ? (o.needs === "out early" ? "any" : H(o.needs)) : "✕") : ""}</td>
         <td class="small muted">${o.playoffs ? `win ${P5(pl.win)} · final ${P5(pl.finalist)} · top-4 ${P5(pl["top 4 (13)"])}` : ""}</td></tr>`; }).join("");
     const cell = c => !c || !c.result ? `<td class="cell-no" title="even winning gives ${c ? c.points : "?"} pts">✕</td>`
       : `<td class="${c.result === "out early" ? "cell-ok" : (c.p_result ?? 0) >= 0.25 ? "cell-ok" : "cell-hard"}" title="${c.points} pts; P(alliance does at least this) ${P5(c.p_result)}">${c.result === "out early" ? "any" : H(c.result)}<span class="sc-sd">${P5(c.p_result)}</span></td>`;
     const grid = nd ? `<table class="mini"><thead><tr><th>Alliance</th><th>as captain</th><th>as R1 pick</th><th>as R2 pick</th></tr></thead><tbody>
       ${nd.grid.map(g => `<tr><td>A${g.seed}</td>${cell(g.captain)}${cell(g["first pick"])}${cell(g["second pick"])}</tr>`).join("")}</tbody></table>` : "";
     const pitches = (u.pitches || []).map(p => `<div class="pitch"><h4>${tn(p.captain)} <span class="muted small">${H((p.nickname || "").slice(0, 28))} · A${p.seed} ${ROLE_SHORT[p.role]} · ${P5(p.p)} of sims</span></h4>
-      <div><b>Pitch:</b> ${H(p.pitch)}</div><div class="small muted">They lack: ${H(p.lacks)} · we bring: ${H(p.we_bring)}</div>
-      ${p.evidence && p.evidence.length ? `<div class="small muted">Video (verified, small n): ${H(p.evidence.join(" · "))}</div>` : ""}</div>`).join("") || `<div class="muted small">No likely captain.</div>`;
+      <div><b>${H(p.pitch)}</b></div>${p.resim ? `<div class="small muted">our DCMP if they take us ${P5(p.resim.take.p_dcmp)} vs ${P5(p.resim.next.p_dcmp)} · ${p.resim.n} sims where they captain and we are available</div>` : ""}
+      <div class="small muted">They lack: ${H(p.lacks)} · we bring: ${H(p.we_bring)}</div>
+      ${(p.fit || []).length ? `<div class="small muted">Fit: ${H(p.fit.join(" · "))}</div>` : ""}</div>`).join("") || `<div class="muted small">No likely captain.</div>`;
     const seeds = (d.seeds || []).map(sd => `<tr><td>A${sd.seed}</td><td>${sd.captain.map(c => `<span class="${c.team === d.team ? "pos" : ""}">${tn(c.team)}</span> <span class="muted small">${P5(c.p)}</span>`).join(" · ")}</td>
       <td>${sd.first_pick.map(c => `<span class="${c.team === d.team ? "pos" : ""}">${tn(c.team)}</span> <span class="muted small">${P5(c.p)}</span>`).join(" · ")}</td><td class="num">${P5(sd.playoffs.win)}</td><td class="num">${P5(sd.playoffs.finalist)}</td></tr>`).join("");
     const trows = (d.teams || []).slice(0, 32).sort((a, b) => a.rank_mean - b.rank_mean).map(t => `<tr class="${t.team === d.team ? "usrow" : ""}"><td><a href="#/${S.ev}/t/${t.team}"><b>${t.number}</b></a> <span class="muted small nick">${H((t.nickname || "").slice(0, 20))}</span></td>
       <td class="num">${n0(t.rank_mean, 1)} <span class="muted small">${t.rank_p10}–${t.rank_p90}</span></td><td class="num">${n0(t.rating)}<span class="sc-sd">±${n0(t.rating_sd)}</span></td>
       <td class="num">${P5(t.p_captain)}</td><td class="num">${P5(t.p_r1)}</td><td class="num">${P5(t.p_r2)}</td><td>${t.likely_captain ? `${tn(t.likely_captain.team)} <span class="muted small">${P5(t.likely_captain.p)}</span>` : "–"}</td><td class="num">${P5(t.p_dcmp)}</td></tr>`).join("");
-    const teamOpts = (d.draft?.teams || []).slice().sort((a, b) => parseInt(tn(a)) - parseInt(tn(b))).map(t => `<option value="${t}">${tn(t)}</option>`).join("");
     return head + `<div class="sc-sel">
       <section class="card"><div class="grid"><div>
         <div class="muted small">${tm} AT SELECTION · ${d.sims} simulated events</div>
         <div class="kpis" style="margin-top:6px"><div class="kpi"><div class="k">Captain</div><div class="v">${P5(u.p_captain)}</div></div><div class="kpi"><div class="k">R1 pick</div><div class="v">${P5(u.p_r1)}</div></div>
           <div class="kpi"><div class="k">R2 pick</div><div class="v">${P5(u.p_r2)}</div></div><div class="kpi"><div class="k">Not picked</div><div class="v">${P5(u.p_unpicked)}</div></div>
-          <div class="kpi"><div class="k">DCMP</div><div class="v">${P5(u.p_dcmp)}</div></div><div class="kpi"><div class="k">Proj. rank</div><div class="v">${n0(u.rank_mean, 1)}</div></div></div>
+          <div class="kpi" title="headline: no award for us at the remaining events; + awards = with random awards"><div class="k">DCMP (no awards)</div><div class="v">${P5(u.p_dcmp)}</div><div class="small muted">+awards ${P5(u.p_dcmp_with_awards)}</div></div><div class="kpi"><div class="k">Proj. rank</div><div class="v">${n0(u.rank_mean, 1)}</div></div></div>
         ${nd ? `<h3>DCMP need, in pick terms</h3><div class="need"><b>${H(nd.text)}</b></div><div class="small muted">Season so far ${nd.current_points} pts; median projected cutoff ${n0(nd.final_points)} → ${n0(nd.need_here)} needed here, qual points ~${n0(nd.qual_points_median)} (median rank). ${H(nd.note)}.</div>${grid}
           <div class="small muted">Cell = least playoff result that reaches the need from that slot (✕ = not even a win); % = chance that alliance seed gets at least that far in the simulation.</div>` : ""}
       </div><div>
@@ -237,12 +211,14 @@
         <h3>Pitch cards</h3>${pitches}
       </div></div></section>
       <div style="height:14px"></div>
-      <section class="card"><div class="grid"><div><h3 style="margin-top:0">DCMP odds by outcome</h3><div class="tablewrap"><table class="mini"><thead><tr><th>Outcome</th><th class="num">Chance</th><th class="num">Event pts</th><th class="num">P(DCMP)</th><th>Playoffs from that slot</th></tr></thead><tbody>${outs}</tbody></table></div>
-        <div class="small muted">Conditional, not causal: the share of simulated seasons with that outcome that reached DCMP (thin = fewer than 15 sims).</div></div>
-        <div><h3 style="margin-top:0">"Captain picks X" scenario</h3>
-        <div class="scn">Captain <select id="scCap">${teamOpts}</select> picks <select id="scPick">${teamOpts}</select><button id="scAdd">Add</button><button id="scClr">Clear</button></div>
-        <div id="scList" class="small muted"></div><div id="scOut"></div>
-        <div class="small muted" style="margin-top:6px">Re-runs only the draft over ${d.draft ? d.draft.order.length : 0} sampled seasons (ranks + rating draws); the forced pick applies whenever that team captains. P(DCMP) maps each outcome to the base table above, so it ignores the change in alliance strength.</div></div></div></section>
+      <section class="card"><div class="grid"><div><h3 style="margin-top:0">DCMP odds by outcome</h3><div class="tablewrap"><table class="mini"><thead><tr><th>Outcome</th><th class="num">Chance</th><th class="num">Event pts</th><th class="num">P(DCMP)</th><th>Needs</th><th>Playoffs from that slot</th></tr></thead><tbody>${outs}</tbody></table></div>
+        <div class="small muted">Conditional, not causal: share of simulated seasons with that outcome (and no award for us) that reached DCMP (thin = fewer than 15 sims). Needs = least playoff result from that slot that reaches the need (grid above).</div></div>
+        <div><h3 style="margin-top:0">If this captain takes ${tm} vs their next best</h3>
+        <div class="tablewrap"><table class="mini"><thead><tr><th>Captain</th><th>Next best</th><th class="num">Alliance wins<br>take / next</th><th class="num">Δ win</th><th class="num">Our DCMP<br>take / next</th></tr></thead><tbody>
+        ${(u.captains || []).map(c => `<tr><td><b>${tn(c.captain)}</b> <span class="muted small">A${c.seed_mode}</span></td><td>${c.alt.map(a => tn(a.team)).join(" / ")}</td>
+          <td class="num">${P5(c.take.p_win)} / ${P5(c.next.p_win)}</td><td class="num"><b class="${(c.delta_win || 0) >= 0 ? "pos" : "neg"}">${(c.delta_win || 0) >= 0 ? "+" : "−"}${Math.abs(Math.round((c.delta_win || 0) * 100))}</b></td>
+          <td class="num">${P5(c.take.p_dcmp)} / ${P5(c.next.p_dcmp)}</td></tr>`).join("") || '<tr><td colspan="5" class="muted">no likely captain</td></tr>'}</tbody></table></div>
+        <div class="small muted" style="margin-top:6px">Full re-simulation (draft + playoffs + district points) with the pick forced vs forbidden, same random numbers; only seasons where that team captains and ${tm} is still available. Δ win in percentage points.</div></div></div></section>
       <div style="height:14px"></div>
       <section class="card"><h3 style="margin-top:0">Projected seeds</h3><div class="tablewrap"><table class="mini"><thead><tr><th>Seed</th><th>Captain (most likely)</th><th>R1 pick (most likely)</th><th class="num">Win</th><th class="num">Finalist</th></tr></thead><tbody>${seeds}</tbody></table></div></section>
       <div style="height:14px"></div>
@@ -257,22 +233,6 @@
     crumbs([[ev, `#/${ev}`], ["Selection"]]); $updated.textContent = d.asof ? "replay " + fmtDT(d.asof) : ago(d.generated);
     $app.innerHTML = `<div class="dash rk">${selPage(ev, d, idx.times || [], ts)}</div>`;
     const sel = document.getElementById("selts"); if (sel) sel.onchange = () => { location.hash = `#/${ev}/selection${sel.value ? "/" + sel.value : ""}`; };
-    if (!d.draft || !d.us) return;
-    const forced = {}, D = d.draft, base = redraft(D, {}, d.team);
-    const show = () => {
-      const fs = Object.entries(forced);
-      document.getElementById("scList").innerHTML = fs.length ? fs.map(([c, p]) => `${tn(D.teams[c])} → ${tn(D.teams[p])}`).join(" · ") : "No forced picks: baseline draft.";
-      const r = fs.length ? redraft(D, forced, d.team) : base;
-      const row = (l, a, b) => `<tr><td>${l}</td><td class="num">${P5(b)}</td><td class="num"><b>${P5(a)}</b></td></tr>`;
-      document.getElementById("scOut").innerHTML = `<table class="mini"><thead><tr><th>${tn(d.team)}</th><th class="num">baseline</th><th class="num">scenario</th></tr></thead><tbody>
-        ${row("captain", r.p_captain, base.p_captain)}${row("R1 pick", r.p_r1, base.p_r1)}${row("R2 pick", r.p_r2, base.p_r2)}${row("not picked", r.p_none, base.p_none)}${row("DCMP (approx.)", r.p_dcmp, base.p_dcmp)}</tbody></table>
-        <div class="small muted">Most likely: ${r.rows.slice(0, 4).map(x => { const [sd, ro] = x.k.split(":"); return `${sd === "none" ? "" : "A" + sd + " "}${ROLE_SHORT[ro]} ${P5(x.p)}`; }).join(" · ")}</div>`;
-    };
-    const cap = document.getElementById("scCap"), pk = document.getElementById("scPick");
-    const lc = (u => u.picked_by && u.picked_by[0] && u.picked_by[0].captain)(d.us); if (lc) cap.value = lc; pk.value = d.team;
-    document.getElementById("scAdd").onclick = () => { const c = D.teams.indexOf(cap.value), p = D.teams.indexOf(pk.value); if (c >= 0 && p >= 0 && c !== p) { forced[c] = p; show(); } };
-    document.getElementById("scClr").onclick = () => { for (const k in forced) delete forced[k]; show(); };
-    show();
   });
   CS.nav({ label: "Selection", href: ev => `#/${ev}/selection`, order: 31 });
 })();

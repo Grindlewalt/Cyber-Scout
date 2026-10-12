@@ -199,6 +199,7 @@
       <div><b>${G.succ ?? 0}<small> / ${G.tested ?? 0}</small></b><span>clearly reduced output</span></div>
       <div><b>${G.sig ?? 0}</b><span>significant after multiple-testing</span></div>
       <div title="sum observed / sum expected over testable episodes, bootstrap 90% CI over episodes"><b>${pc(G.ratio)}<small> ${G.ratio_ci ? pc(G.ratio_ci[0]) + "–" + pc(G.ratio_ci[1]) : ""}</small></b><span>defended output vs expected</span></div>
+      ${d.teams_meta && d.teams_meta.event ? `<div title="divided by the same ratio over ${d.teams_meta.placebo_windows} random undefended placebo windows (${d.teams_meta.placebo_ratio}); ${d.teams_meta.discoveries} of ${d.teams_meta.tests} team estimates significant after multiple testing"><b>${pc(d.teams_meta.event.est)}<small> ${pc(d.teams_meta.event.lo)}–${pc(d.teams_meta.event.hi)}</small></b><span>placebo-controlled retention (event)</span></div>` : ""}
       <div title="random undefended windows scored exactly like episodes"><b>${pc(PL.pooled_ratio)}<small> · ${pc(PL.rate)} false</small></b><span>placebo windows (calibration)</span></div>
     </div>
     <div id="dxTarget"></div>
@@ -291,7 +292,11 @@
       el.innerHTML = `<div class="dx-panel"><h2>How to defend ${tn(F.target)} <small>${H(nick[F.target] || "")} · <a href="#/${ev}/specs/${F.target}">spec sheet</a> · <a href="#/${ev}/defense">all targets</a></small></h2>
         <div class="dx-2"><div><ul class="dx-adv">${(t.advice || []).map(a => `<li>${H(a)}</li>`).join("")}</ul>
           <div class="dx-note">Baseline: ${B.pts_per_active_s != null ? f1(B.pts_per_active_s * 60) : "–"} pts per active-hub minute over ${f1(B.active_s, 0)} s of free active time
-           (${f1(B.free_s, 0)} s free teleop). Defended: ${R.n} episodes, output ${pc(R.ratio)} of expected${R.ci ? ` (90% CI ${pc(R.ci[0])}–${pc(R.ci[1])})` : ""}.</div></div>
+           (${f1(B.free_s, 0)} s free teleop). Defended: ${R.n} episodes, output ${pc(R.ratio)} of expected${R.ci ? ` (90% CI ${pc(R.ci[0])}–${pc(R.ci[1])})` : ""}.</div>
+          ${(() => { const tr = (d.teams || []).find(x => x.team === F.target), rr = tr && tr.retention, evd = d.teams_meta && d.teams_meta.event;
+            return rr ? `<div class="dx-note"><b>Placebo-controlled retention: ${pc(rr.est)}</b> (90% CI ${pc(rr.lo)}–${pc(rr.hi)}; adjusted for ${d.teams_meta.tests} team tests ${pc(rr.lo_adj)}–${pc(rr.hi_adj)}; n_eff ${rr.n_eff}) —
+              ${rr.significant ? "<b>measured</b>: defense reliably cuts this team's output" : `not significant: use the event-wide ${evd ? pc(evd.est) : ""} (an assumption) rather than this team's own number`}.</div>`
+              : `<div class="dx-note">Fewer than 3 testable episodes: no team-specific estimate${evd ? `; event-wide placebo-controlled retention ${pc(evd.est)} (${pc(evd.lo)}–${pc(evd.hi)}), an assumption` : ""}.</div>`; })()}</div>
         <div>${tbl("Method", t.by_method || {})}${tbl("Where", t.by_zone || {})}${tbl("Hub state", t.by_state || {})}
           ${(t.defenders || []).length ? `<div class="dx-note">Defenders faced: ${t.defenders.map(x => `<b>${tn(x.team)}</b> ${x.n}× (${pc(x.ratio)})`).join(", ")}</div>` : ""}</div></div></div>`;
     }

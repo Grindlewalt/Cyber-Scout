@@ -70,13 +70,18 @@ def match_order(key):
     return (lvl, int(m.group(2)), int(m.group(3) or 0))
 
 
-def reconcile(match, unattributed_max=0.2, over_tol=0.03):
+GATE = float(os.environ.get("RECON_GATE", "0.2"))
+
+
+def reconcile(match, unattributed_max=None, over_tol=0.03):
     """Credited robot FUEL vs the TBA alliance count for one verified (v2) match.
     -> {alliance: {"tba", "credited", "human", "unattributed", "lower_bound", "over", "scale", "teams": {team: made}}}
-    `credited` = made shots credited to a verified team; `human` = made by the human player (from the shot reconcile);
-    unattributed = 1 - (credited + human) / tba.  lower_bound: > unattributed_max of the alliance's FUEL is not credited to
+    `credited` = made shots credited to a verified team; `human` = made by the human player (from the shot reconcile),
+    capped at tba - credited; unattributed = 1 - (credited + human_capped) / tba.  gate: "ok" | "under" (> 20% of the
+    alliance FUEL uncredited) | "over" (robots credited > 120% of TBA) -- only "ok" results feed team FUEL stats.  lower_bound: > unattributed_max of the alliance's FUEL is not credited to
     any robot, so a robot's count is a floor ("≥X") and must never be read as "under-rated".  over: credited + human
     exceeds TBA (double counting) -> scale = tba / (credited + human) shrinks the robots' counts to the TBA total."""
+    unattributed_max = GATE if unattributed_max is None else unattributed_max
     ver = verified_teams(match)
     rec = match.get("reconcile") or {}
     tracks = match.get("tracks") or []
@@ -100,13 +105,17 @@ def reconcile(match, unattributed_max=0.2, over_tol=0.03):
         cred = sum(per.values())
         if not tba:
             out[al] = {"tba": tba, "credited": cred, "human": human, "unattributed": None, "lower_bound": True,
-                       "over": False, "scale": 1.0, "teams": per}
+                       "over": False, "scale": 1.0, "teams": per, "gate": "no_tba"}
             continue
-        un = 1.0 - (cred + human) / float(tba)
-        over = (cred + human) > tba * (1 + over_tol)
-        out[al] = {"tba": tba, "credited": cred, "human": human, "unattributed": round(max(0.0, un), 3),
-                   "lower_bound": un > unattributed_max, "over": bool(over),
-                   "scale": round(tba / float(cred + human), 3) if over else 1.0, "teams": per}
+        hcap = max(0, min(human, tba - cred))            # human-player credit capped at TBA - credited robots
+        ratio = (cred + hcap) / float(tba)
+        un = 1.0 - ratio
+        over = cred > tba * (1 + over_tol)
+        gate = "under" if ratio < 1 - unattributed_max else "over" if cred > tba * (1 + unattributed_max) else "ok"
+        out[al] = {"tba": tba, "credited": cred, "human": human, "human_capped": hcap, "ratio": round(ratio, 3),
+                   "unattributed": round(max(0.0, un), 3), "lower_bound": un > unattributed_max, "over": bool(over),
+                   "scale": round(tba / float(cred), 3) if over and cred else 1.0, "teams": per,
+                   "gate": gate}   # per-match gate for team FUEL stats: only "ok" alliance results feed them
     return out
 
 

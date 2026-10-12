@@ -148,7 +148,7 @@ async function teamPage(ev, tk) {
   const trend = (label, vals, f, color) => `<div class="trend"><span>${label}</span>${spark(vals, { color })}<em>${fmtV(vals.filter(has).slice(-1)[0], f)}</em></div>`;
 
   $app.innerHTML = `<div class="titlebar"><div><h1>${d.number} <span class="muted" style="font-weight:500">${esc(d.nickname || "")}</span></h1>
-    <div class="sub">${d.rank ? `Rank ${d.rank} · ` : ""}${d.opr != null ? `OPR ${fx(d.opr)} · ` : ""}${d.tracked} matches tracked
+    <div class="sub">${d.rank ? `Rank ${d.rank} · ` : ""}${d.opr != null ? `OPR ${fx(d.opr)} · ` : ""}${CV.n} verified match${CV.n === 1 ? "" : "es"}${CV.of ? ` of ${CV.of} played` : ""}${d.tracked > CV.n ? ` <span class="muted small">(${d.tracked - CV.n} replay-only)</span>` : ""}
       ${role ? ` · <span class="pill role">${ROLE_TXT[val(role)] || val(role)}</span>` : ""}
       · ${covPill(CV)} ${flagChips(SR)} · <a href="https://www.thebluealliance.com/team/${d.number}/${(e && e.year) || ""}" target="_blank" rel="noopener">TBA</a></div></div>
     <button id="star" class="${starred ? "on" : ""}">${starred ? "★ Starred" : "☆ Star"}</button></div>
@@ -163,7 +163,7 @@ async function teamPage(ev, tk) {
         <div><b>${SV.auto_made ? svHtml(SV.auto_made) : CV.n ? '<span class="muted">n/t</span>' : "–"}</b><span>Auto FUEL (video)</span></div>
         <div><b>${svHtml(SV.cycle_s)}</b><span>Cycle s (video)</span></div>
         <div><b>${SR.climb ? pct(SR.climb.rate) : "–"}</b><span>Climb, TBA (${SR.climb ? SR.climb.n : 0} quals)</span></div>
-        <div><b>${SR.trend && SR.trend.tba ? `${SR.trend.tba.diff > 0 ? "+" : ""}${SR.trend.tba.diff}` : "–"}${SR.trend && SR.trend.tba ? `<span class="sc-sd">${SR.trend.tba.ci[0]}…${SR.trend.tba.ci[1]}</span>` : ""}</b><span title="alliance score minus fouls drawn minus partners' blend, last 4 quals vs earlier; 90% interval">TBA trend, last 4 ${SR.trend && SR.trend.tba ? "(" + SR.trend.tba.verdict + ")" : ""}</span></div>
+        <div><b>${!(SR.trend && SR.trend.tba) ? "–" : SR.trend.tba.verdict === "flat" ? `<span class="muted">no clear trend</span>` : `${SR.trend.tba.diff > 0 ? "+" : ""}${SR.trend.tba.diff}<span class="sc-sd">${SR.trend.tba.ci[0]}…${SR.trend.tba.ci[1]}</span>`}</b><span title="alliance score minus fouls drawn minus partners' blend, last 4 quals vs earlier; shown only when the 90% interval excludes 0${SR.trend && SR.trend.tba ? ` (now ${SR.trend.tba.diff}, ${SR.trend.tba.ci[0]}…${SR.trend.tba.ci[1]})` : ""}">TBA trend, last 4</span></div>
         <div><b>${SR.trend && SR.trend.blend ? spark(SR.trend.blend.map(x => x[1]), { color: "#7cb4ff" }) : "–"}</b><span>Blend over the event${SR.trend && SR.trend.blend ? ` (${fx(SR.trend.blend[0][1], 0)} → ${fx(SR.trend.blend.slice(-1)[0][1], 0)})` : ""}</span></div>
       </div>
       ${(SR.flags || []).length ? `<div class="note">${SR.flags.map(f => esc(f.text)).join("<br>")}</div>` : ""}

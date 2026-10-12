@@ -64,3 +64,43 @@ then graded against what happened. Full notes: `.work/strategist/{match,picks,qu
   (or make them replay-aware if cheap).
 - Kill: ID pill, video-only picklist default, Dead% n ≤ 2, ⚠ on every rank, climb lever when tower OPR ≤ 10, blank
   auto columns, per-shot accuracy CIs, 2-point sparklines, v1 heatmaps/autos on team pages.
+
+## Round 2 (same critics, staging data: 43 verified day-1 quals instead of 11)
+Notes: `.work/strategist/{match,picks,quant}/round2/REPORT.md`.
+
+**Fixed:** ID% → coverage, Q28 leak, verified-only team pages, consistent core values, plans per match, queue card,
+goal mode (Q55 called right), who-defends-us (2903), honest footer, labels/clamps, Selection tab (captains 7/8, R1
+6/8, 9317 on the shortlist), picklist Spearman .65 → .90. Identity is now trustworthy (97.6% on hand labels).
+
+**The finding:** 4x more verified video made predictions slightly *worse* (blind 09:00 Brier .140 → .157; live quals
+.119 → .125; no-video model .133; EPA .147). Video now carries ~49% of each rating but adds nothing measurable
+(−.008 [−.033, +.016]). Cause: under-credited alliance results ("≥", 19/88) and over-credited ones (20/88) are used
+as true counts — the big downward moves (8248 −18, 948 −15, 2046 −10) were all wrong, upward moves mostly right.
+Q51 went 31% → 60% (lost 168–314). Identity is no longer the weak link; per-robot FUEL attribution is.
+
+## Round 3 work split
+**M (model + match day)** — model.py, data.py, sim.py, backtest.py, dashboard.py, matchday.py, preview.py, web/dash.js:
+1. Video as censored evidence: alliance results that fail reconciliation (>20% off TBA) contribute only TBA totals;
+   lower-bound robot counts may only raise a rating (one-sided); then calibrate video noise/share on the as-of
+   backtest so with-video is never worse than without (live replay + blind 09:00 + snapshots); report numbers.
+2. One defense source: use the library's placebo-controlled per-team estimate (S provides it); "measured" only when
+   its CI excludes 100%, else event-wide effect labelled assumption. Defend targets = their active-shift FUEL ×
+   effect (top scorer shown as alternative). Opponents who defend in ≥ half their verified matches: apply the event
+   effect to our active shifts in the sim, or at minimum show "win % ignores 2903's defense" (pick by backtest).
+3. Auto: blend TBA alliance-auto history / less shrinkage; adopt only if the backtest improves.
+4. Small: climb lever hidden when climb doesn't matter; disagreement chip on rounded values; linkable plan tabs;
+   tab odds use the same rounding as the card ("<5%"); footer cache key hashes video content; coverage counts
+   agree with scout.json.
+**S (selection + scouting)** — scouting.py, coverage.py, sitev2.py, goals.py, selection.py, district.py, web/event.js,
+rankings.js, teams2.js, quant.js, defense.js, schedule.js, app.js, style.css:
+1. Defense library: fix `_boot_ratio` clipping (interval must contain the estimate); publish per-team placebo-
+   controlled retention `{est, lo, hi, n_eff, significant}` in defense.json `teams[]` (M consumes it).
+2. Reconciliation as a per-match gate for team stats (drop alliance results >20% off TBA; cap human-player credit at
+   TBA − credited robots); then "≥/over" flags only where they still matter (no alarm on every team).
+3. DCMP odds: headline without awards, "+awards" as a second number, Impact/EI-contender option, RAS rookies only;
+   need grid and outcome table must agree; one sim count everywhere.
+4. Per-captain re-simulation ("if C takes us vs their next best": P(win), P(DCMP)) replacing the seed-mapped
+   scenario; pitch cards = our marginal Δwin for that alliance + fit facts (lanes, shooting spots, auto starts, defense).
+5. Picklist: replay-aware (Saturday-night as-of), defender / third-robot column (defense episodes, matches defended),
+   "Dead" only ≥ 30 s and TBA-corroborated, retune video-higher, fix Dead column clipping, one auto value everywhere,
+   trends hidden when CI swamps them, team header counts verified matches.

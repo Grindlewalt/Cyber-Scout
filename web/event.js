@@ -48,9 +48,12 @@ function qcell(c, r) {
   if (c[0] === "blend" && has(x)) return `${fmtV(x, "1")}<span class="sc-sd">±${fmtV(r.s.rating.sd, "0")}</span>`;
   return fmtV(x, c[3]);
 }
-async function scoutRows(d, ev) {
-  const sd = await scoutData(ev);
-  return { sd, rows: d.teams.map(t => ({ t, s: sd && sd.by[t.key] || null })) };
+async function scoutRows(d, ev, ts) {
+  let sd;
+  if (ts) { try { sd = await api(`${ev}/scout/${ts}.json`); sd.by = Object.fromEntries(sd.teams.map(t => [t.team, t])); } catch (e) { sd = null; } }
+  else sd = await scoutData(ev);
+  // replay: rank / OPR as of then (scout snapshot), never the end-of-event values from event.json
+  return { sd, rows: d.teams.map(t => { const s = sd && sd.by[t.key] || null; return { t: ts ? { ...t, rank: s?.rank ?? null, opr: s?.rating?.opr ?? null } : t, s }; }) };
 }
 
 function teamsTable(el, d, ev) {
@@ -156,10 +159,15 @@ function plSave(ev, st, onConflict) {
 const PL_DEFAULT = { blend: 4, made: 0, acc: 0, automade: 0, cycle: 0, climb: 0, defs: 0 };
 const PL_KEYS = [["blend", "Blend", r => r.s?.rating?.blend, 1], ["made", "Video made/m", r => qv(VID(r, "made_pm")), 1], ["acc", "Video acc", r => qv(VID(r, "acc")), 1],
   ["automade", "Video auto", r => qv(VID(r, "auto_made")), 1], ["cycle", "Cycle s ↓", r => qv(VID(r, "cycle_s")), -1], ["climb", "Climb (TBA)", r => r.s?.climb?.rate, 1],
-  ["defs", "Def. played", r => VID(r, "def_played"), 1]];
+  ["defs", "Defense", r => VID(r, "def_matches"), 1]];
 async function picklistPane(el, d, ev) {
   el.innerHTML = `<div class="loading">Loading team stats…</div>`;
-  const { sd, rows } = await scoutRows(d, ev);
+  const idx = await api(`${ev}/scout/index.json`).catch(() => ({ times: [] }));
+  const hm = location.hash.match(/\/picklist\/(\d{9,})/);          // deep link #/<ev>/picklist/<ts>
+  const ts = hm ? hm[1] : (sessionStorageGet("plts:" + ev) || "");
+  const { sd, rows } = await scoutRows(d, ev, ts);
+  const fmtTs = t => { const x = new Date(t * 1000); return ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][x.getDay()] + " " + x.toTimeString().slice(0, 5); };
+  const asofSel = `<span class="scn small">As of <select id="plts"><option value="">end of data</option>${(idx.times || []).map(t => `<option value="${t}" ${String(t) === ts ? "selected" : ""}>${fmtTs(t)}</option>`).join("")}</select></span>`;
   const st = Object.assign({ stars: [], dnp: [], weights: { ...PL_DEFAULT } }, await plLoad(ev));
   st.weights = { ...PL_DEFAULT, ...(st.weights && "blend" in st.weights ? st.weights : {}) };
   const climbOn = !!(sd && sd.event_stats && sd.event_stats.climb_matters);
@@ -183,21 +191,22 @@ async function picklistPane(el, d, ev) {
     const list = rows.map(r => ({ r, s: kf(r) })).sort((a, b) => (b.s ?? -1e9) - (a.s ?? -1e9));
     const shown = list.filter(x => only === "all" || (only === "star" && st.stars.includes(x.r.t.key)) || (only === "avail" && !st.dnp.includes(x.r.t.key)));
     const dis = x => x && x.r.s ? flagChips(x.r.s, ["video_higher", "video_lower", "auto_not_tracked"]) : "";
-    el.innerHTML = `${dataBanner(sd, "ratings: end-of-event dashboard")}<div class="plwrap"><div class="plw card"><h2>Order by</h2><div class="chips" id="plm"></div>
+    el.innerHTML = `${ts ? `<div class="sc-banner"><b>Replay as of ${fmtTs(+ts)}</b>: ratings, ranks, OPR and video only from data posted before then.</div>` : dataBanner(sd, "ratings: end-of-event dashboard")}<div class="controls">${asofSel}</div><div class="plwrap"><div class="plw card"><h2>Order by</h2><div class="chips" id="plm"></div>
       <div class="note" style="margin:6px 0 8px">Default: blend rating ± sd (expected points/match; best predictor here: rank-order agreement with the day-2 result .92 vs .65 for video-only stats).
       Custom = weighted z-scores; video metrics are shrunk and missing values count as event average.</div>
       ${mode === "custom" ? PL_KEYS.map(([k, l]) => `<label class="wrow ${k === "climb" && !climbOn ? "sc-dis" : ""}" title="${k === "climb" && !climbOn ? `off: the best robot here averages ${fx(sd?.event_stats?.tower_pts_max)} tower pts/match (≤ 10)` : ""}"><span>${l}</span><input type="range" min="0" max="5" step="0.5" value="${st.weights[k] || 0}" data-k="${k}" ${k === "climb" && !climbOn ? "disabled" : ""}><b>${W(k)}</b></label>`).join("") : ""}
       <div class="controls"><button id="plreset">Reset weights</button><button id="plcopy">Copy list</button></div></div>
       <div class="plt card"><div class="chips" id="plf"></div><div class="tablewrap"><table><thead><tr><th class="num">#</th><th></th><th>Team</th><th class="num">Rank</th><th>Blend ± sd</th><th class="num">EPA</th><th class="num">OPR</th>
-        <th title="verified robot-video matches / played">Video</th><th class="num" title="FUEL made per match on verified video (≥ = floor)">Made/m</th><th class="num">Acc</th><th class="num">Auto</th>${climbOn ? '<th class="num">Climb</th>' : ""}<th class="num" title="only with ≥ 3 verified matches">Dead</th>${mode === "custom" ? '<th class="num">Score</th>' : ""}<th>Video vs EPA</th><th></th></tr></thead>
+        <th title="verified robot-video matches / played">Video</th><th class="num" title="FUEL made per match on verified video (≥ = floor)">Made/m</th><th class="num">Acc</th><th class="num">Auto</th>${climbOn ? '<th class="num">Climb</th>' : ""}<th class="num" title="matches with defense played (episodes) on verified video: third-robot / defender value">Def.</th><th class="num" title="stopped ≥ 30 s AND the alliance scored under 85% of expectation (TBA); ≥ 3 verified matches">Dead</th>${mode === "custom" ? '<th class="num">Score</th>' : ""}<th>Notes</th></tr></thead>
       <tbody>${shown.map((x, i) => { const r = x.r, k = r.t.key, star = st.stars.includes(k), no = st.dnp.includes(k), dd = VID(r, "dead"); return `<tr class="${no ? "dnp" : ""} ${k === (d.team || "frc4911") ? "usrow" : ""}"><td class="num">${i + 1}</td>
-        <td><button class="star ${star ? "on" : ""}" data-s="${k}" title="star">${star ? "★" : "☆"}</button></td><td><a class="team" href="#/${ev}/t/${k}">${r.t.number}</a> <span class="muted small">${esc((r.t.nickname || "").slice(0, 18))}</span></td>
+        <td style="white-space:nowrap"><button class="star ${star ? "on" : ""}" data-s="${k}" title="star">${star ? "★" : "☆"}</button><button class="star ${no ? "on" : ""}" data-n="${k}" title="do not pick">⊘</button></td><td><a class="team" href="#/${ev}/t/${k}">${r.t.number}</a> <span class="muted small" title="${esc(r.t.nickname || "")}">${esc((r.t.nickname || "").slice(0, 12))}</span></td>
         <td class="num">${r.t.rank ?? "–"}</td><td>${bbar(r)}</td><td class="num">${fx(r.s?.rating?.epa)}</td><td class="num">${fx(r.t.opr)}</td><td>${covPill(r.s?.coverage, { short: true })}</td>
         <td class="num">${svHtml(VID(r, "made_pm"))}</td><td class="num">${svHtml(VID(r, "acc"), "p")}</td><td class="num">${VID(r, "auto_made") ? svHtml(VID(r, "auto_made")) : r.s?.coverage?.n ? '<span class="muted" title="video auto contradicts TBA: not tracked">n/t</span>' : "–"}</td>
-        ${climbOn ? `<td class="num">${pct(r.s?.climb?.rate)}</td>` : ""}<td class="num">${dd && dd.n >= 3 ? pct(dd.v) : "–"}</td>${mode === "custom" ? `<td class="num"><b>${fx(x.s, 2)}</b></td>` : ""}
-        <td>${dis(x)}</td><td><button class="star ${no ? "on" : ""}" data-n="${k}" title="do not pick">⊘</button></td></tr>`; }).join("")}</tbody></table></div>
-        <div class="note">Video columns: verified matches only, shrunk (hover for raw and n); grey italic = n &lt; 3. "video higher" = verified video credits ≥ 1.25× EPA + 10 FUEL (positive evidence, held up at 2026wasam).
-        "video lower?" appears only with ≥ 3 fully-credited matches: under-attribution made every "video says worse" call wrong. ${climbOn ? "" : `Climb column hidden: no robot here averages more than 10 tower pts/match (max ${fx(sd?.event_stats?.tower_pts_max)}).`}</div></div></div>`;
+        ${climbOn ? `<td class="num">${pct(r.s?.climb?.rate)}</td>` : ""}<td class="num" title="${VID(r, "def_played") || 0} defense episodes in ${VID(r, "def_matches") || 0} matches">${VID(r, "def_matches") || "–"}</td><td class="num">${dd && dd.n >= 3 ? pct(dd.v) : "–"}</td>${mode === "custom" ? `<td class="num"><b>${fx(x.s, 2)}</b></td>` : ""}
+        <td>${dis(x)}</td></tr>`; }).join("")}</tbody></table></div>
+        <div class="note">Video columns: verified matches only, shrunk (hover for raw and n); grey italic = n &lt; 3. "video higher" = reconciled video FUEL ≥ 1.15× EPA FUEL + 8.
+        Video FUEL numbers use only alliance results that reconcile with TBA within 20% (hover for n). "video lower?" appears only with ≥ 3 reconciled matches: under-attribution made every "video says worse" call wrong. ${climbOn ? "" : `Climb column hidden: no robot here averages more than 10 tower pts/match (max ${fx(sd?.event_stats?.tower_pts_max)}).`}</div></div></div>`;
+    el.querySelector("#plts").onchange = e => { sessionStorageSet("plts:" + ev, e.target.value); picklistPane(el, d, ev); };
     chipRow(el.querySelector("#plm"), [["blend", "Blend"], ["epa", "EPA"], ["opr", "OPR"], ["custom", "Custom"]], mode, k => { mode = k; lsSet("cyberscout:plmode", k); render(); });
     chipRow(el.querySelector("#plf"), [["all", "All"], ["star", "Starred"], ["avail", "Hide ⊘"]], only, k => { only = k; render(); });
     el.querySelectorAll(".wrow input").forEach(i => i.oninput = () => { st.weights[i.dataset.k] = +i.value; save(); i.nextElementSibling.textContent = i.value; clearTimeout(render.t); render.t = setTimeout(render, 120); });
