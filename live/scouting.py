@@ -41,6 +41,11 @@ from collections import Counter, defaultdict
 
 import numpy as np
 
+try:
+    from live import coverage as COV
+except ImportError:          # run as a script from live/
+    import coverage as COV
+
 LEN, WID = 16.541, 8.069
 CX = LEN / 2
 ID_CONF_MIN = float(os.environ.get("ID_CONF_MIN", "0.5"))
@@ -218,6 +223,7 @@ class Match:
     def __init__(self, d, geo):
         self.d = d
         self.key = d["key"]
+        self.verified = COV.verified_teams(d)
         self.short = d.get("short") or short_of(d["key"])
         self.hz = float(d.get("hz", 10))
         self.t_start = float(d["t_start"])
@@ -296,7 +302,9 @@ class Trk:
         t = M.d["tracks"][k]
         N, hz = M.N, M.hz
         self.k = k
-        self.team = t.get("team")
+        # trust rule (live/coverage.py): a track feeds its team's numbers only in a v2 match with team_conf >= VERIFIED_CONF
+        self.team = t.get("team") if t.get("team") in M.verified else None
+        self.label = t.get("team")
         self.alliance = t["alliance"]
         xy = np.asarray(t["xy"], float)[:N] / 100.0
         obs = np.asarray(t.get("obs") or np.ones(N), int)[:N] > 0
@@ -1189,6 +1197,9 @@ def load_matches(api_ev, geo, log=print):
         d = jload(os.path.join(mdir, fn))
         if not d or not d.get("tracks") or d.get("shots") is None:
             continue          # v1 match (no shots) - nothing for scouting
+        if not COV.is_v2(d):
+            log(f"scouting: {fn}: v1 tracks (no OCR identity) - replay only, feeds no team numbers")
+            continue
         try:
             out.append(Match(d, geo))
         except Exception as ex:          # one bad match must not kill the event
@@ -1242,6 +1253,22 @@ def build(api_ev, ev=None, out_dir=None, log=print):
         "episodes": eps, "targets": targets, "defenders": defenders,
     }
     jsave(os.path.join(out_dir, "defense.json"), out)
+    truth = {}
+    try:
+        T = build_truth(api_ev, ev or evj.get("key"), matches, specs, teams_meta, log=log, out_dir=out_dir)
+        truth = {r["team"]: r for r in T["teams"]}
+    except Exception:
+        import traceback
+        traceback.print_exc()
+    for team, sp in specs.items():
+        tr = truth.get(team) or {}
+        sp["coverage"] = tr.get("coverage")
+        sp["truth"] = {k: tr.get(k) for k in ("video", "flags", "rating", "trend")}
+        if tr.get("climb"):                 # climb from TBA per robot (every played qual), not from the tracked subset
+            cl = tr["climb"]
+            sp["climb"] = {"rows": sp["climb"]["rows"], "levels": cl["levels"], "rate": cl["rate"], "n": cl["n"],
+                           "pts_mean": cl["pts_mean"], "source": "TBA"}
+            sp["auto"]["climb_rate"] = cl["auto_l1_rate"]
     idx = []
     for team, sp in specs.items():
         jsave(os.path.join(out_dir, "spec", f"{team}.json"), dict(sp, event=ev or evj.get("key")))
@@ -1252,13 +1279,248 @@ def build(api_ev, ev=None, out_dir=None, log=print):
                     "trench": sp["lanes"]["trench_share"], "left": sp["lanes"]["left_share"],
                     "on_move": s["on_move"], "climb": sp["climb"]["rate"],
                     "def_recv": (targets.get(team) or {}).get("received", {}).get("n"),
-                    "def_play": (defenders.get(team) or {}).get("n")})
+                    "def_play": (defenders.get(team) or {}).get("n"),
+                    "cov": sp.get("coverage"), "made_v": ((sp.get("truth") or {}).get("video") or {}).get("made_pm"),
+                    "flags": [f["k"] for f in (sp.get("truth") or {}).get("flags") or []]})
     idx.sort(key=lambda r: (-(r["made_pm"] or -1)))
     jsave(os.path.join(out_dir, "spec", "index.json"), {"event": ev or evj.get("key"), "teams": idx,
                                                          "matches": [M.key for M in matches], "generated": time.time()})
     log(f"scouting: {len(matches)} matches, {len(specs)} spec sheets, {len(eps)} defense episodes "
         f"({out['global']['succ']} successful) in {time.time() - t0:.1f}s")
     return out
+
+
+# ------------------------------------------------------------------------------------------------ scouting truth
+# api/<ev>/scout.json (schema cyber-scout/scout@1, contract in live/strategy/README.md): ONE canonical value per team
+# metric for every page (teams table, team page, spec sheets, compare, picklist, selection).  Video numbers obey the
+# trust rule (coverage.py), are TBA-reconciled and shrunk; climbs come from TBA per robot; ratings from dashboard.json.
+SHRINK_K = 1.0          # pseudo-matches of the event mean in shrunk per-match video values
+ACC_PRIOR = 20.0        # pseudo-shots of the event accuracy
+
+
+def _tba_matches(data_root, ev):
+    raw = jload(os.path.join(data_root, "tba", f"event__{ev}__matches.json"), {}) or {}
+    ms = raw.get("data", raw) if isinstance(raw, dict) else raw
+    return [m for m in (ms or []) if isinstance(m, dict)]
+
+
+def _played_tba(m):
+    return (m.get("alliances", {}).get("red", {}).get("score") or -1) >= 0 and m.get("score_breakdown")
+
+
+LVL_PTS = {0: 0, 1: 10, 2: 20, 3: 30}
+
+
+def _tba_robot_rows(tms, asof=None):
+    """{team: [{key, t, al, end_level, auto_l1, alliance_auto_fuel, score, partners}]} from TBA quals (played, <= asof)."""
+    out = defaultdict(list)
+    for m in sorted(tms, key=lambda m: COV.match_order(m["key"])):
+        if m.get("comp_level") != "qm" or not _played_tba(m):
+            continue
+        t = m.get("actual_time") or m.get("time") or 0
+        if asof is not None and t and t > asof:
+            continue
+        for al in ("red", "blue"):
+            bd = m["score_breakdown"].get(al) or {}
+            tks = m["alliances"][al]["team_keys"]
+            afuel = (bd.get("totalAutoPoints") or 0) - (bd.get("autoTowerPoints") or 0)
+            for i, tk in enumerate(tks):
+                out[tk].append({"key": m["key"], "t": t, "al": al, "end_level": _lvl(bd.get(f"endGameTowerRobot{i + 1}")),
+                                "auto_l1": bd.get(f"autoTowerRobot{i + 1}") not in (None, "None"),
+                                "alliance_auto_fuel": afuel, "score": m["alliances"][al]["score"],
+                                "fouls_drawn": bd.get("foulPoints") or 0,
+                                "partners": [x for x in tks if x != tk]})
+    return out
+
+
+def _sv(v, raw, n, **kw):
+    d = {"v": r_(v, 1) if v is not None else None, "raw": r_(raw, 1) if raw is not None else None, "n": n,
+         "tier": COV.tier(n)}
+    d.update({k: x for k, x in kw.items() if x is not None})
+    return d
+
+
+def build_truth(api_ev, ev, matches, specs, teams_meta, data_root=None, log=print, out_dir=None):
+    data_root = data_root or os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(api_ev))))
+    tms = _tba_matches(data_root, ev)
+    rows_tba = _tba_robot_rows(tms)
+    played = {t: len(v) for t, v in rows_tba.items()}
+    mds = [M.d for M in matches]
+    cov = COV.team_coverage(mds, played)
+    dash = jload(os.path.join(api_ev, "dashboard.json")) or {}
+    rat = {r["team"]: r for r in dash.get("ratings") or []}
+    # reconciliation per verified match
+    recon = {M.key: COV.reconcile(M.d) for M in matches}
+    team_rec = defaultdict(list)            # team -> [(match short, made credited, scaled made, lower_bound, over, al)]
+    for M in matches:
+        for al, r in recon[M.key].items():
+            for tk in M.verified:
+                al_t = next((t.alliance for t in M.tracks if t.label == tk), None)
+                if al_t != al:
+                    continue
+                made = r["teams"].get(tk, 0)
+                team_rec[tk].append({"m": M.short, "key": M.key, "made": made, "scaled": r_(made * r["scale"], 1),
+                                     "lower_bound": r["lower_bound"], "over": r["over"],
+                                     "unattributed": r["unattributed"], "alliance_tba": r["tba"]})
+    # event means for shrinkage (verified teams only)
+    pm = [np.mean([x["scaled"] for x in v]) for v in team_rec.values() if v]
+    ev_made = float(np.mean(pm)) if pm else None
+    accs = [(sp["scoring"]["made"], sp["scoring"]["made"] + sp["scoring"]["missed"]) for sp in specs.values()]
+    ev_acc = (sum(a for a, b in accs) / max(1, sum(b for a, b in accs))) if accs else None
+    autos = [sp["auto"]["made_avg"] for sp in specs.values() if sp["auto"]["made_avg"] is not None]
+    ev_auto = float(np.mean(autos)) if autos else None
+    cyc = [sp["scoring"]["cycle_s"] for sp in specs.values() if sp["scoring"]["cycle_s"] is not None]
+    ev_cyc = float(np.median(cyc)) if cyc else None
+    # climbs (TBA per robot, every played qual)
+    tower = {}
+    for tk, rs in rows_tba.items():
+        lv = Counter(r["end_level"] for r in rs if r["end_level"] is not None)
+        n = sum(lv.values())
+        tower[tk] = {"n": n, "levels": {str(k): v for k, v in sorted(lv.items())},
+                     "rate": r_(sum(v for k, v in lv.items() if k) / n, 2) if n else None,
+                     "pts_mean": r_(sum(LVL_PTS.get(k, 0) * v for k, v in lv.items()) / n, 1) if n else None,
+                     "auto_l1_rate": r_(np.mean([r["auto_l1"] for r in rs]), 2) if rs else None,
+                     "keys": [r["key"] for r in rs]}
+    tower_max = max([v["pts_mean"] or 0 for v in tower.values()] or [0])
+    # blend history from the dashboard snapshots (trend)
+    hist = defaultdict(list)
+    snaps = sorted(glob_json(os.path.join(api_ev, "dash")))
+    for p in snaps:
+        try:
+            ts = int(os.path.basename(p).split(".")[0])
+        except ValueError:
+            continue
+        d = jload(p) or {}
+        for r in d.get("ratings") or []:
+            b = r.get("blend") or {}
+            if b.get("total") is not None:
+                hist[r["team"]].append([ts, r_(b["total"], 1), r_(b.get("sd"), 1), r_((r.get("epa") or {}).get("total"), 1)])
+    teams = []
+    keys = sorted(set(teams_meta) | set(rows_tba), key=lambda k: int(k[3:]) if k[3:].isdigit() else 0)
+    last_v = max((M.key for M in matches), key=COV.match_order, default=None)
+    for tk in keys:
+        meta = teams_meta.get(tk, {})
+        c = cov.get(tk) or {"n": 0, "keys": [], "last": None, "of": played.get(tk), "tier": "none"}
+        c = dict(c, label=COV.label(c) if c.get("n") else "no verified video")
+        r = rat.get(tk) or {}
+        b = r.get("blend") or {}
+        e = r.get("epa") or {}
+        sp = specs.get(tk)
+        tr = team_rec.get(tk) or []
+        row = {"team": tk, "number": int(tk[3:]) if tk[3:].isdigit() else tk, "nickname": meta.get("nickname") or r.get("nickname"),
+               "rank": meta.get("rank") or r.get("rank"), "coverage": c,
+               "rating": {"blend": r_(b.get("total"), 1), "sd": r_(b.get("sd"), 1), "auto": r_(b.get("auto"), 1),
+                          "teleop": r_(b.get("teleop"), 1), "endgame": r_(b.get("endgame"), 1),
+                          "epa": r_(e.get("total"), 1), "epa_source": e.get("source"), "opr": meta.get("opr"),
+                          "video_weight": r.get("video_weight"), "record": r.get("record"),
+                          "p_top8": (r.get("projection") or {}).get("p_top8")} if r or meta.get("opr") is not None else None,
+               "climb": tower.get(tk), "flags": [], "video": None}
+        # TBA trend: alliance score minus partners' end-of-data blend, last 4 vs earlier
+        rs = rows_tba.get(tk) or []
+        contrib = []
+        for x in rs:
+            pb = [(rat.get(p) or {}).get("blend", {}).get("total") for p in x["partners"]]
+            if all(v is not None for v in pb):
+                contrib.append(x["score"] - x["fouls_drawn"] - sum(pb))
+        tt = None
+        if len(contrib) >= 6:
+            a_, b_ = np.array(contrib[:-4]), np.array(contrib[-4:])
+            diff = b_.mean() - a_.mean()
+            se = math.sqrt(a_.var(ddof=1) / len(a_) + b_.var(ddof=1) / len(b_))
+            tt = {"last_n": 4, "last": r_(b_.mean(), 0), "before": r_(a_.mean(), 0), "diff": r_(diff, 0),
+                  "ci": [r_(diff - 1.64 * se, 0), r_(diff + 1.64 * se, 0)],
+                  "verdict": "up" if diff - 1.64 * se > 0 else "down" if diff + 1.64 * se < 0 else "flat"}
+        h = hist.get(tk) or []
+        if len(h) > 14:
+            idx = np.unique(np.linspace(0, len(h) - 1, 14).round().astype(int))
+            h = [h[i] for i in idx]
+        row["trend"] = {"tba": tt, "blend": h if len(h) >= 3 else None}
+        if sp and c["n"]:
+            S, A = sp["scoring"], sp["auto"]
+            n = c["n"]
+            raw_pm = float(np.mean([x["scaled"] for x in tr])) if tr else S["made_pm"]
+            lb = any(x["lower_bound"] for x in tr)
+            over = any(x["over"] for x in tr)
+            shr = (raw_pm * n + SHRINK_K * ev_made) / (n + SHRINK_K) if (raw_pm is not None and ev_made is not None) else raw_pm
+            mm = S["made"] + S["missed"]
+            acc_raw = S["made"] / mm if mm else None
+            acc_v = (S["made"] + ACC_PRIOR * ev_acc) / (mm + ACC_PRIOR) if (mm and ev_acc is not None) else None
+            au_raw = A["made_avg"]
+            au_v = (au_raw * n + SHRINK_K * ev_auto) / (n + SHRINK_K) if (au_raw is not None and ev_auto is not None) else au_raw
+            cy_raw = S["cycle_s"]
+            ncy = max(0, len(sp.get("paths") or []))
+            # dead share from verified matches' analytics (only shown at n >= SHOW_N)
+            dead = []
+            for M in matches:
+                for t in M.tracks:
+                    if t.team == tk:
+                        an = (M.d.get("analytics") or [None] * 99)
+                        a = an[t.k] if t.k < len(an) else None
+                        if a and a.get("reliability"):
+                            dead.append(bool(a["reliability"].get("dead")))
+            auto_bad = None
+            if row["rating"] and row["rating"]["auto"] is not None and au_raw is not None:
+                # blend auto includes the auto tower (15 pts x P(L1)); compare FUEL with FUEL
+                mod = row["rating"]["auto"] - 15.0 * ((row["climb"] or {}).get("auto_l1_rate") or 0.0)
+                if mod >= 12 and au_raw <= 0.3 * mod:
+                    auto_bad = {"video": au_raw, "model": mod}
+                    row["flags"].append({"k": "auto_not_tracked",
+                                         "text": f"auto not tracked: video credited {au_raw:.0f} auto FUEL/match, TBA-based model says ~{mod:.0f}"})
+            row["video"] = {
+                "made_pm": _sv(shr, raw_pm, n, lower_bound=lb or None, over=over or None,
+                               per_match=[{"m": x["m"], "made": x["made"], "scaled": x["scaled"], "lb": x["lower_bound"],
+                                           "un": x["unattributed"]} for x in tr]),
+                "acc": {"v": r_(acc_v, 3), "raw": r_(acc_raw, 3), "made": S["made"], "shots": mm, "n": n, "tier": COV.tier(n)},
+                "auto_made": None if auto_bad else _sv(au_v, au_raw, n),
+                "cycle_s": _sv(cy_raw, cy_raw, n, volleys=S.get("n_volleys")) if cy_raw is not None else None,
+                "fire": _sv(S["fire_rate"], S["fire_rate"], n) if S["fire_rate"] is not None else None,
+                "hopper": _sv(S["hopper_est"] or S["volley_max"], S["volley_max"], n) if (S["hopper_est"] or S["volley_max"]) else None,
+                "pts_active_min": _sv(S["pts_per_active_min"], S["pts_per_active_min"], n) if S["pts_per_active_min"] is not None else None,
+                "speed_p95": _sv(sp["drive"]["p95_speed"], sp["drive"]["p95_speed"], n) if sp["drive"]["p95_speed"] is not None else None,
+                "trench": sp["lanes"].get("trench_share"), "on_move": S.get("on_move"),
+                "dead": {"v": r_(np.mean(dead), 2), "n": len(dead)} if len(dead) >= COV.SHOW_N else None,
+                "def_played": ((sp.get("defense") or {}).get("played") or {}).get("n"),
+                "def_received": ((sp.get("defense") or {}).get("received") or {}).get("n"),
+            }
+            # video vs model: positive evidence only (critics: every "video says worse" call was attribution loss)
+            ep = (rat.get(tk) or {}).get("epa") or {}
+            if ep.get("total") is not None:      # vs the TBA-only EPA (the blend already contains this video)
+                mfuel = (ep.get("auto") or 0) + (ep.get("teleop") or 0)
+                if n >= 2 and raw_pm >= 25 and raw_pm >= 1.25 * mfuel + 10:
+                    row["flags"].append({"k": "video_higher", "text": f"video higher: {raw_pm:.0f} FUEL/match credited in "
+                                         f"{n} verified matches vs EPA {mfuel:.0f}"})
+                elif n >= COV.SHOW_N and not lb and not over and raw_pm <= 0.6 * mfuel - 10:
+                    row["flags"].append({"k": "video_lower", "text": f"video lower ({raw_pm:.0f} vs {mfuel:.0f}): check the replays "
+                                         "before trusting it -- low video counts were attribution loss every time at 2026wasam"})
+            if lb:
+                row["flags"].append({"k": "lower_bound", "text": "≥: more than 20% of the alliance FUEL in "
+                                     f"{sum(x['lower_bound'] for x in tr)} of {n} verified matches was not credited to any robot"})
+            if over:
+                row["flags"].append({"k": "over", "text": "credited FUEL exceeded the TBA alliance count; scaled down to the TBA total"})
+        teams.append(row)
+    out = {"schema": "cyber-scout/scout@1", "event": ev, "generated": int(time.time()),
+           "verified_matches": [M.key for M in sorted(matches, key=lambda M: COV.match_order(M.key))],
+           "last_verified": last_v,
+           "quals_played": sum(1 for m in tms if m.get("comp_level") == "qm" and _played_tba(m)),
+           "policy": {"verified_conf": COV.VERIFIED_CONF, "show_n": COV.SHOW_N, "shrink_matches": SHRINK_K,
+                      "acc_prior_shots": ACC_PRIOR, "lower_bound_unattributed": 0.2},
+           "event_stats": {"made_pm_mean": r_(ev_made, 1), "acc": r_(ev_acc, 3), "auto_made_mean": r_(ev_auto, 1),
+                           "cycle_median": r_(ev_cyc, 1), "tower_pts_max": r_(tower_max, 1),
+                           "climb_matters": bool(tower_max > 10),
+                           "any_climb": any((v["rate"] or 0) > 0 for v in tower.values())},
+           "dash_generated": dash.get("generated"),
+           "teams": teams}
+    jsave(os.path.join(out_dir or api_ev, "scout.json"), out)
+    log(f"scouting: scout.json {len(teams)} teams, {sum(1 for t in teams if t['coverage']['n'])} with verified video, "
+        f"tower max {tower_max}")
+    return out
+
+
+def glob_json(d):
+    try:
+        return [os.path.join(d, f) for f in os.listdir(d) if f.endswith(".json")]
+    except OSError:
+        return []
 
 
 def site_build_extra(DATA, ev, log=print):

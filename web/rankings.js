@@ -53,7 +53,7 @@
     document.head.appendChild(st);
   }
 
-  const nav = ev => `<div class="evtabs"><a class="tablink" href="#/${ev}/dash">Dashboard</a><a class="tablink on" href="#/${ev}/rankings">Rankings</a><a class="tablink" href="#/${ev}/schedule">Schedule</a><a class="tablink" href="#/${ev}/teams">Teams</a><a class="tablink" href="#/${ev}/matches">Matches</a></div>`;
+  const nav = ev => `<div class="evtabs"><a class="tablink" href="#/${ev}/dash">Dashboard</a><a class="tablink on" href="#/${ev}/rankings">Rankings</a><a class="tablink" href="#/${ev}/selection">Selection</a><a class="tablink" href="#/${ev}/schedule">Schedule</a><a class="tablink" href="#/${ev}/teams">Teams</a><a class="tablink" href="#/${ev}/matches">Matches</a></div>`;
 
   function goalPanel(d) {
     const g = d.goal; if (!g) return "";
@@ -148,10 +148,131 @@
     const d = await api(`${ev}/rankings.json`);
     crumbs([[ev, `#/${ev}`], ["Rankings"]]); $updated.textContent = d.asof ? "replay" : ago(d.generated);
     $app.innerHTML = `<div class="dash rk"><div class="dtop"><div><h1>Rankings &amp; season goal</h1><div class="sub">${H(ev)} · ${tn(d.team)}${d.district ? " · district " + H(d.district) : ""}</div></div>${nav(ev)}</div>
+      ${d.asof ? "" : `<div class="sc-banner"><b>End-of-event data</b>, not replay time${d.quals_played ? ` · ${d.quals_played}/${d.quals_total} quals played` : ""}. Replay views: <a href="#/${ev}/selection">Selection</a> time picker, Dashboard time picker.</div>`}
       ${goalPanel(d)}<div style="height:16px"></div><div id="rk-table">${table(d)}</div></div>`;
     wire(d);
     const iv = setInterval(async () => { try { const n = await api(`${ev}/rankings.json`); if (n.generated !== d.generated) route(false); } catch (e) { } }, 90000);
     cleanup.push(() => clearInterval(iv));
   });
   CS.nav({ label: "Rankings", href: ev => `#/${ev}/rankings`, order: 30 });
+
+  // ================================================================== Selection tab (#/<ev>/selection[/<ts>])
+  // Data: api/<ev>/selection.json (live) or selection/<ts>.json (replay snapshot, goals --asof <ts>), index in
+  // selection/index.json. Contract: live/strategy/README.md "selection.json".
+  const ROLE_SHORT = { captain: "captain", "first pick": "R1 pick", "second pick": "R2 pick", "not selected": "not picked" };
+  const fmtDT = ts => { if (!ts) return "end of data"; const d = new Date(ts * 1000); return DAYS[d.getDay()] + " " + d.toTimeString().slice(0, 5); };
+  const P5 = v => v == null ? "–" : v >= 0.995 ? ">99%" : v < 0.005 ? "<1%" : Math.round(v * 100) + "%";
+  const selNav = ev => nav(ev).replace('tablink on" href="#/' + ev + '/rankings"', 'tablink" href="#/' + ev + '/rankings"').replace('tablink" href="#/' + ev + '/selection"', 'tablink on" href="#/' + ev + '/selection"');
+
+  function redraft(D, forced, team) {           // client-side re-draft over the sampled seasons
+    const T = D.teams.length, us = D.teams.indexOf(team), out = {};
+    const add = k => { out[k] = (out[k] || 0) + 1; };
+    let n = 0, pd = 0, pdn = 0;
+    for (let s = 0; s < D.order.length; s++) {
+      const th = D.theta[s], avail = D.order[s].slice(), caps = [], p1 = [];
+      for (let k = 0; k < 8 && avail.length; k++) {
+        const cap = avail.shift(); caps.push(cap);
+        let j = -1; const f = forced[cap];
+        if (f != null) j = avail.indexOf(f);
+        if (j < 0) { j = 0; for (let i = 1; i < avail.length; i++) if (th[avail[i]] > th[avail[j]]) j = i; }
+        p1.push(avail.splice(j, 1)[0]);
+      }
+      const p2 = new Array(8);
+      for (let k = 7; k >= 0; k--) { if (!avail.length) break; let j = 0; for (let i = 1; i < avail.length; i++) if (th[avail[i]] > th[avail[j]]) j = i; p2[k] = avail.splice(j, 1)[0]; }
+      let key = "none:not selected";
+      for (let k = 0; k < 8; k++) { if (caps[k] === us) key = `${k + 1}:captain`; if (p1[k] === us) key = `${k + 1}:first pick`; if (p2[k] === us) key = `${k + 1}:second pick`; }
+      add(key); n++;
+      const [sd, role] = key.split(":");
+      const p = D.p_dcmp_by_outcome[key] ?? D.p_dcmp_by_role[role];
+      if (p != null) { pd += p; pdn++; }
+    }
+    const rows = Object.entries(out).map(([k, v]) => ({ k, p: v / n })).sort((a, b) => b.p - a.p);
+    const role = r => rows.filter(x => x.k.endsWith(r)).reduce((a, b) => a + b.p, 0);
+    return { rows, n, p_captain: role(":captain"), p_r1: role(":first pick"), p_r2: role(":second pick"), p_none: role(":not selected"), p_dcmp: pdn ? pd / pdn : null };
+  }
+
+  function selPage(ev, d, times, ts) {
+    const u = d.us, tm = tn(d.team);
+    const opts = [`<option value="">live (${fmtDT(null)})</option>`, ...times.map(t => `<option value="${t}" ${String(t) === String(ts) ? "selected" : ""}>${fmtDT(t)}</option>`)].join("");
+    const head = `<div class="dtop"><div><h1>Alliance selection</h1><div class="sub">${H(ev)} · us = ${tm} · projection ${d.asof ? "as of " + fmtDT(d.asof) : "on all data"} · ${d.quals_played ?? "?"}/${d.quals_total ?? "?"} quals played</div></div>${selNav(ev)}</div>
+      <div class="scn small" style="margin:0 0 10px">As of <select id="selts">${opts}</select><span class="muted">replay snapshots use only data posted before that time (goals --asof)</span></div>`;
+    if (d.status !== "projected" && d.status !== "fixed" || !u) {
+      if (d.actual) return head + `<section class="card"><h3 style="margin-top:0">Actual alliances (event finished)</h3>
+        ${d.actual_us ? `<div class="need">${tm}: ${d.actual_us.seed ? `A${d.actual_us.seed} ${ROLE_SHORT[d.actual_us.role] || d.actual_us.role}` : "not selected"} · ${n0(d.actual_us.event_points)} event pts · DCMP ${P5(d.actual_us.p_dcmp)}</div>` : ""}
+        <div class="tablewrap"><table class="mini"><thead><tr><th>Seed</th><th>Captain</th><th>R1</th><th>R2</th><th>Backup</th><th>Result</th></tr></thead><tbody>
+        ${d.actual.map(a => `<tr><td>A${a.seed}</td>${[0, 1, 2, 3].map(i => { const t = a.picks[i]; return `<td class="${t === d.team ? "pos" : ""}">${t ? `<b>${tn(t)}</b> <span class="muted small">${n0(a.points[t])} pts</span>` : "–"}</td>`; }).join("")}<td>${H(a.status || "")}</td></tr>`).join("")}</tbody></table></div>
+        <div class="small muted">Pick an earlier time above to see the projection as it stood before selection.</div></section>`;
+      return head + `<section class="card"><div class="empty">${d.status === "done" ? "This event is finished: district points are final, so there is no draft left to project. Pick an earlier time above to see the projection as it stood." : "No selection projection for this event (not a district event, or the simulation was unavailable)."}</div></section>`;
+    }
+    const nd = u.need;
+    const who = (u.picked_by || []).map(x => `<tr><td><a href="#/${S.ev}/t/${x.captain}"><b>${tn(x.captain)}</b></a> <span class="muted small">${H((d.teams.find(t => t.team === x.captain) || {}).nickname || "").slice(0, 22)}</span></td><td colspan="2" class="small">${(x.slots || [x]).map(z => `A${z.seed} ${ROLE_SHORT[z.role]}`).join(", ")}</td><td class="num"><span class="hbar" style="width:${Math.round(x.p * 300)}px"></span>${P5(x.p)}</td></tr>`).join("");
+    const outs = (u.outcomes || []).filter(o => o.share >= 0.01).map(o => {
+      const pl = o.playoffs || {};
+      return `<tr><td><b>${o.seed ? "A" + o.seed + " " : ""}${ROLE_SHORT[o.role]}</b></td><td class="num">${P5(o.share)}</td><td class="num">${n0(o.event_points)}</td>
+        <td class="num">${o.p_dcmp == null ? `<span class="muted" title="fewer than 15 simulated seasons">thin</span>` : `<b>${P5(o.p_dcmp)}</b>`}</td>
+        <td class="small muted">${o.playoffs ? `win ${P5(pl.win)} · final ${P5(pl.finalist)} · top-4 ${P5(pl["top 4 (13)"])}` : ""}</td></tr>`; }).join("");
+    const cell = c => !c || !c.result ? `<td class="cell-no" title="even winning gives ${c ? c.points : "?"} pts">✕</td>`
+      : `<td class="${c.result === "out early" ? "cell-ok" : (c.p_result ?? 0) >= 0.25 ? "cell-ok" : "cell-hard"}" title="${c.points} pts; P(alliance does at least this) ${P5(c.p_result)}">${c.result === "out early" ? "any" : H(c.result)}<span class="sc-sd">${P5(c.p_result)}</span></td>`;
+    const grid = nd ? `<table class="mini"><thead><tr><th>Alliance</th><th>as captain</th><th>as R1 pick</th><th>as R2 pick</th></tr></thead><tbody>
+      ${nd.grid.map(g => `<tr><td>A${g.seed}</td>${cell(g.captain)}${cell(g["first pick"])}${cell(g["second pick"])}</tr>`).join("")}</tbody></table>` : "";
+    const pitches = (u.pitches || []).map(p => `<div class="pitch"><h4>${tn(p.captain)} <span class="muted small">${H((p.nickname || "").slice(0, 28))} · A${p.seed} ${ROLE_SHORT[p.role]} · ${P5(p.p)} of sims</span></h4>
+      <div><b>Pitch:</b> ${H(p.pitch)}</div><div class="small muted">They lack: ${H(p.lacks)} · we bring: ${H(p.we_bring)}</div>
+      ${p.evidence && p.evidence.length ? `<div class="small muted">Video (verified, small n): ${H(p.evidence.join(" · "))}</div>` : ""}</div>`).join("") || `<div class="muted small">No likely captain.</div>`;
+    const seeds = (d.seeds || []).map(sd => `<tr><td>A${sd.seed}</td><td>${sd.captain.map(c => `<span class="${c.team === d.team ? "pos" : ""}">${tn(c.team)}</span> <span class="muted small">${P5(c.p)}</span>`).join(" · ")}</td>
+      <td>${sd.first_pick.map(c => `<span class="${c.team === d.team ? "pos" : ""}">${tn(c.team)}</span> <span class="muted small">${P5(c.p)}</span>`).join(" · ")}</td><td class="num">${P5(sd.playoffs.win)}</td><td class="num">${P5(sd.playoffs.finalist)}</td></tr>`).join("");
+    const trows = (d.teams || []).slice(0, 32).sort((a, b) => a.rank_mean - b.rank_mean).map(t => `<tr class="${t.team === d.team ? "usrow" : ""}"><td><a href="#/${S.ev}/t/${t.team}"><b>${t.number}</b></a> <span class="muted small nick">${H((t.nickname || "").slice(0, 20))}</span></td>
+      <td class="num">${n0(t.rank_mean, 1)} <span class="muted small">${t.rank_p10}–${t.rank_p90}</span></td><td class="num">${n0(t.rating)}<span class="sc-sd">±${n0(t.rating_sd)}</span></td>
+      <td class="num">${P5(t.p_captain)}</td><td class="num">${P5(t.p_r1)}</td><td class="num">${P5(t.p_r2)}</td><td>${t.likely_captain ? `${tn(t.likely_captain.team)} <span class="muted small">${P5(t.likely_captain.p)}</span>` : "–"}</td><td class="num">${P5(t.p_dcmp)}</td></tr>`).join("");
+    const teamOpts = (d.draft?.teams || []).slice().sort((a, b) => parseInt(tn(a)) - parseInt(tn(b))).map(t => `<option value="${t}">${tn(t)}</option>`).join("");
+    return head + `<div class="sc-sel">
+      <section class="card"><div class="grid"><div>
+        <div class="muted small">${tm} AT SELECTION · ${d.sims} simulated events</div>
+        <div class="kpis" style="margin-top:6px"><div class="kpi"><div class="k">Captain</div><div class="v">${P5(u.p_captain)}</div></div><div class="kpi"><div class="k">R1 pick</div><div class="v">${P5(u.p_r1)}</div></div>
+          <div class="kpi"><div class="k">R2 pick</div><div class="v">${P5(u.p_r2)}</div></div><div class="kpi"><div class="k">Not picked</div><div class="v">${P5(u.p_unpicked)}</div></div>
+          <div class="kpi"><div class="k">DCMP</div><div class="v">${P5(u.p_dcmp)}</div></div><div class="kpi"><div class="k">Proj. rank</div><div class="v">${n0(u.rank_mean, 1)}</div></div></div>
+        ${nd ? `<h3>DCMP need, in pick terms</h3><div class="need"><b>${H(nd.text)}</b></div><div class="small muted">Season so far ${nd.current_points} pts; median projected cutoff ${n0(nd.final_points)} → ${n0(nd.need_here)} needed here, qual points ~${n0(nd.qual_points_median)} (median rank). ${H(nd.note)}.</div>${grid}
+          <div class="small muted">Cell = least playoff result that reaches the need from that slot (✕ = not even a win); % = chance that alliance seed gets at least that far in the simulation.</div>` : ""}
+      </div><div>
+        <h3>Who picks ${tm}</h3><div class="tablewrap"><table class="mini"><thead><tr><th>Captain</th><th colspan="2">As (most likely first)</th><th class="num">Chance</th></tr></thead><tbody>${who || '<tr><td colspan="4" class="muted">nobody in the simulation</td></tr>'}</tbody></table></div>
+        <h3>Pitch cards</h3>${pitches}
+      </div></div></section>
+      <div style="height:14px"></div>
+      <section class="card"><div class="grid"><div><h3 style="margin-top:0">DCMP odds by outcome</h3><div class="tablewrap"><table class="mini"><thead><tr><th>Outcome</th><th class="num">Chance</th><th class="num">Event pts</th><th class="num">P(DCMP)</th><th>Playoffs from that slot</th></tr></thead><tbody>${outs}</tbody></table></div>
+        <div class="small muted">Conditional, not causal: the share of simulated seasons with that outcome that reached DCMP (thin = fewer than 15 sims).</div></div>
+        <div><h3 style="margin-top:0">"Captain picks X" scenario</h3>
+        <div class="scn">Captain <select id="scCap">${teamOpts}</select> picks <select id="scPick">${teamOpts}</select><button id="scAdd">Add</button><button id="scClr">Clear</button></div>
+        <div id="scList" class="small muted"></div><div id="scOut"></div>
+        <div class="small muted" style="margin-top:6px">Re-runs only the draft over ${d.draft ? d.draft.order.length : 0} sampled seasons (ranks + rating draws); the forced pick applies whenever that team captains. P(DCMP) maps each outcome to the base table above, so it ignores the change in alliance strength.</div></div></div></section>
+      <div style="height:14px"></div>
+      <section class="card"><h3 style="margin-top:0">Projected seeds</h3><div class="tablewrap"><table class="mini"><thead><tr><th>Seed</th><th>Captain (most likely)</th><th>R1 pick (most likely)</th><th class="num">Win</th><th class="num">Finalist</th></tr></thead><tbody>${seeds}</tbody></table></div></section>
+      <div style="height:14px"></div>
+      <section class="card"><h3 style="margin-top:0">Draft odds by team</h3><div class="tablewrap"><table class="mini"><thead><tr><th>Team</th><th class="num">Final rank (10–90%)</th><th class="num">Rating ± sd</th><th class="num">Captain</th><th class="num">R1</th><th class="num">R2</th><th>Most likely captain picking them</th><th class="num">DCMP</th></tr></thead><tbody>${trows}</tbody></table></div>
+      <div class="note">${H(d.model?.draft || "")}. Real captains decline, scout for fit and pick defenders; treat these as base rates. Ratings in points per match (incl. foul share).</div></section></div>`;
+  }
+
+  CS.route("selection", async function (ev, ts) {
+    css();
+    S = { ev, sort: S && S.ev === ev ? S.sort : { k: "rank", dir: 1 } };
+    const [d, idx] = await Promise.all([api(ts ? `${ev}/selection/${ts}.json` : `${ev}/selection.json`), api(`${ev}/selection/index.json`).catch(() => ({ times: [] }))]);
+    crumbs([[ev, `#/${ev}`], ["Selection"]]); $updated.textContent = d.asof ? "replay " + fmtDT(d.asof) : ago(d.generated);
+    $app.innerHTML = `<div class="dash rk">${selPage(ev, d, idx.times || [], ts)}</div>`;
+    const sel = document.getElementById("selts"); if (sel) sel.onchange = () => { location.hash = `#/${ev}/selection${sel.value ? "/" + sel.value : ""}`; };
+    if (!d.draft || !d.us) return;
+    const forced = {}, D = d.draft, base = redraft(D, {}, d.team);
+    const show = () => {
+      const fs = Object.entries(forced);
+      document.getElementById("scList").innerHTML = fs.length ? fs.map(([c, p]) => `${tn(D.teams[c])} → ${tn(D.teams[p])}`).join(" · ") : "No forced picks: baseline draft.";
+      const r = fs.length ? redraft(D, forced, d.team) : base;
+      const row = (l, a, b) => `<tr><td>${l}</td><td class="num">${P5(b)}</td><td class="num"><b>${P5(a)}</b></td></tr>`;
+      document.getElementById("scOut").innerHTML = `<table class="mini"><thead><tr><th>${tn(d.team)}</th><th class="num">baseline</th><th class="num">scenario</th></tr></thead><tbody>
+        ${row("captain", r.p_captain, base.p_captain)}${row("R1 pick", r.p_r1, base.p_r1)}${row("R2 pick", r.p_r2, base.p_r2)}${row("not picked", r.p_none, base.p_none)}${row("DCMP (approx.)", r.p_dcmp, base.p_dcmp)}</tbody></table>
+        <div class="small muted">Most likely: ${r.rows.slice(0, 4).map(x => { const [sd, ro] = x.k.split(":"); return `${sd === "none" ? "" : "A" + sd + " "}${ROLE_SHORT[ro]} ${P5(x.p)}`; }).join(" · ")}</div>`;
+    };
+    const cap = document.getElementById("scCap"), pk = document.getElementById("scPick");
+    const lc = (u => u.picked_by && u.picked_by[0] && u.picked_by[0].captain)(d.us); if (lc) cap.value = lc; pk.value = d.team;
+    document.getElementById("scAdd").onclick = () => { const c = D.teams.indexOf(cap.value), p = D.teams.indexOf(pk.value); if (c >= 0 && p >= 0 && c !== p) { forced[c] = p; show(); } };
+    document.getElementById("scClr").onclick = () => { for (const k in forced) delete forced[k]; show(); };
+    show();
+  });
+  CS.nav({ label: "Selection", href: ev => `#/${ev}/selection`, order: 31 });
 })();

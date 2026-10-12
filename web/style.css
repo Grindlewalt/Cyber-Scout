@@ -262,3 +262,46 @@ table.rate .tm { position: sticky; left: 0; background: var(--panel); z-index: 1
 
 .topnav { overflow-x: auto; white-space: nowrap; max-width: 60vw; scrollbar-width: none; }
 .topnav::-webkit-scrollbar { display: none; }
+
+/* ---- scouting truth (agent S): coverage pill, canonical values, flags, banners, selection tab ---- */
+.sc-cov { display:inline-block; font-size:11px; padding:0 7px; border-radius:99px; border:1px solid var(--line); white-space:nowrap; font-variant-numeric:tabular-nums; }
+.sc-cov.fact { color:#b6e3c0; border-color:rgba(63,185,80,.45); }
+.sc-cov.grey { color:var(--muted); border-style:dashed; }
+.sc-cov.none { color:#6b7685; opacity:.8; }
+.sc-v { font-variant-numeric:tabular-nums; white-space:nowrap; }
+.sc-v small { font-size:10px; color:var(--muted); margin-left:3px; font-weight:400; }
+.sc-v.grey { color:#9aa5b4; font-style:italic; }
+.sc-flag { display:inline-block; font-size:10.5px; padding:0 6px; border-radius:4px; border:1px solid var(--line); color:var(--muted); white-space:nowrap; cursor:help; }
+.sc-flag.warn { color:#f0c36b; border-color:rgba(210,153,34,.5); }
+.sc-flag.good { color:#8fe0a0; border-color:rgba(63,185,80,.5); }
+.sc-banner { font-size:12px; color:#c9d4e2; background:rgba(210,153,34,.08); border:1px solid rgba(210,153,34,.35); border-radius:8px; padding:6px 10px; margin:0 0 12px; line-height:1.5; }
+.sc-banner b { color:#f0c36b; }
+.sc-truth { display:grid; grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); gap:8px; }
+.sc-truth > div { background:var(--panel2); border-radius:8px; padding:7px 10px; min-width:0; }
+.sc-truth b { display:block; font-size:18px; font-variant-numeric:tabular-nums; }
+.sc-truth span { display:block; font-size:11.5px; color:var(--muted); }
+.sc-sd { color:var(--muted); font-size:11px; margin-left:3px; }
+.sc-dis { opacity:.55; }
+.sc-sel .grid { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:14px; }
+@media (max-width:900px){ .sc-sel .grid { grid-template-columns:minmax(0,1fr); } }
+.sc-sel .big { font-size:34px; font-weight:700; font-variant-numeric:tabular-nums; line-height:1.1; }
+.sc-sel .big small { font-size:12px; font-weight:500; color:var(--muted); display:block; margin-top:4px; }
+.sc-sel .kpis { display:grid; grid-template-columns:repeat(auto-fit,minmax(130px,1fr)); gap:10px; }
+.sc-sel .kpi { background:var(--panel2); border:1px solid var(--line); border-radius:8px; padding:8px 11px; }
+.sc-sel .kpi .k { font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:.4px; }
+.sc-sel .kpi .v { font-size:20px; font-weight:650; font-variant-numeric:tabular-nums; }
+.sc-sel .pitch { background:var(--panel2); border:1px solid var(--line); border-radius:8px; padding:9px 12px; margin-bottom:8px; font-size:13px; line-height:1.45; }
+.sc-sel .pitch h4 { margin:0 0 4px; font-size:14px; }
+.sc-sel .cell-ok { color:#8fe0a0; } .sc-sel .cell-hard { color:#f0c36b; } .sc-sel .cell-no { color:#6b7685; }
+.sc-sel .need { font-size:15px; margin:4px 0 8px; }
+.sc-sel td.us, .sc-sel tr.usrow td { background:rgba(62,139,255,.10); }
+.sc-sel .scn { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin:6px 0; }
+.sc-sel .scn select, .sc-sel .scn button { background:var(--panel2); color:var(--text); border:1px solid var(--line); border-radius:6px; padding:4px 8px; font-size:12.5px; }
+.sc-sel .hbar { display:inline-block; height:8px; background:var(--accent); border-radius:2px; vertical-align:middle; margin-right:5px; opacity:.8; }
+.sc-prb { position:relative; display:inline-block; width:96px; height:8px; background:var(--panel2); border-radius:4px; vertical-align:middle; margin-right:7px; }
+.sc-prb .rg { position:absolute; top:1px; bottom:1px; background:rgba(62,139,255,.55); border-radius:3px; }
+.sc-prb .mn { position:absolute; top:-2px; bottom:-2px; width:2px; background:#ffd43b; }
+.sc-truth b span.sc-v, .sc-truth b span.sc-sd, .sc-truth b span.muted { display:inline; font-size:inherit; color:inherit; }
+.sc-truth b span.sc-sd, .sc-truth b span.sc-v small { font-size:11px; color:var(--muted); }
+.sc-truth b span.sc-v.grey { color:#9aa5b4; }
+.sc-prb { background:var(--line); }

@@ -19,6 +19,48 @@
 > - `dashboard.json` is the DASH_TEAM (frc4911) perspective; `dashboard.<team>.json` is written for that team too, and
 >   for others only with `--teams`.
 
+> **Match-day changes (agent M, 2026-10-11; docs/STRATEGIST_REVIEW.md).** All additive except where marked.
+> - `plans[]` (new): one plan per remaining match of `team`, in time order, each the same shape as `next_match` plus
+>   `as_of` = `{"ts", "asof", "quals_played", "last_result": "Q46"}` and `queue` (below). `next_match` is `plans[0]`
+>   (same object). Snapshots (`dash/<ts>.json`) keep every plan; their `preview_url` stays null.
+> - `plan.defend[]`: `basis` is `"measured"` only with ≥ 2 effective defended matches (was 0.4), otherwise the generic
+>   assumption (75% kept) is used — the per-team "event prior" retention is gone (one defense-effect number).
+>   `where.zone_ours` = zone seen from OUR driver station ("their end, our right trench"). `why` text changed.
+> - `plan.suggested_defender` gained `basis` and `candidates[]` (`team`, `passes_per_min`, `feed_cost_fuel`,
+>   `expected_fuel`, `defense_s`): the defender is the robot that gives up the least feeding while our hub is
+>   inactive (verified passing rate × 0.5 assumed conversion), not just the lowest scorer.
+> - `plan.key_factors` is filtered for our point of view (no `uncertainty`; no `defense_target` / `defense_resistant` /
+>   `inactive_behaviour` about our own alliance). preview.py: `defense_target` needs ≥ 2 effective matches.
+> - `prediction` gained `win_prob_epa` (local as-of EPA, prequential normal), `models_disagree` (|Δ| > 15 pts) and
+>   `rp` = `{"us"|"them": {"win","energized","supercharged","traversal","rp_mean","fuel": {mean,lo,hi}}}`.
+>   `rp.us.win` is the plan's `win_prob` (one win % per match everywhere).
+> - `queue` (new, per plan): `{"mode": "win"|"goal", "lever": null|{"bonus","needed","unit","expected","lo","hi","p","text"},
+>   "win_prob", "win_prob_epa", "models_disagree",
+>   "auto": {"p_win_auto","our_expected","their_expected","if_won"|"if_lost": {"our_active","defend_in","win_prob"},
+>            "history": {team: [{"match","alliance_auto"}]} (TBA, last 4), "history_alliance_avg": {"us","them"},
+>            "recent_bias": backtest_asof.auto_bias_recent, "caution"?, "text"},
+>   "defend": null|{"target","defender","when","when_alt","where": null|{"zone_ours","share","field": [u, v]},
+>            "denied_fuel" (int), "basis": "measured"|"assumption", "coverage", "goal_note"?, "text"},
+>   "defenders": {"teams": [{"team","n_video","n_defended","matches","avg_defense_s","tier","label"}], "likely": [team],
+>                 "effect": null|{"retained","sd","n","text"}, "text"},
+>   "rp": {"us","them","shown": ["energized","supercharged"(,"traversal")], "hidden", "hidden_why"},
+>   "fouls": {"teams": [{"team","side","avg_given","n"}], "event_avg", "flag": [team], "text", "note"}}`.
+>   Goal mode when win < 10% or > 90%: the headline is the bonus RP closest to a coin flip. `field` = [u, v] fractions
+>   seen from our driver station: u 0 = our left → 1 = our right, v 0 = our wall → 1 = their wall. TRAVERSAL is
+>   hidden while no alliance at the event has earned it (as of `now`). Defense data only from verified matches.
+> - `ratings[].coverage` (new) = `{"n","of","keys": ["Q12",..],"last","tier": "fact"|"grey"|"none","label"}` from
+>   `live/coverage.py` as of `now` (video visible 10 min after posting). `ratings[].disagree` = `{"diff": blend − EPA,
+>   "flag": |diff| ≥ max(15, 1.5 sd)}`. `id_conf` is kept for compatibility but no longer shown.
+> - `schedule[]`: upcoming matches with a plan take `win_prob` and `bonus_probs` from the plan; new
+>   `bonus_probs_them`; played `result` gained `rp_them`, `bonus_them`.
+> - `model.backtest_asof` (new; the footer uses only this): `{"n","through","asof","min_n","what",
+>   "brier": {"blend","no_video","epa","coin"}, "accuracy": {"blend","epa"}, "blend_minus_epa": {"mean","ci90"},
+>   "video_increment": {"mean","ci90"}, "n_with_video", "auto_bias_recent": {"mean","n_alliances","from","to"}}` over
+>   quals posted before `asof`, each predicted (Monte Carlo, 1500 sims) from the matches played before it; EPA = the
+>   local as-of EPA with prequential sd (`epa_pre` in backtest.py). Rows cached in `DATA/cache/strategy/backtest_<ev>.json`.
+>   `model.backtest` (constant 58-match reference) is kept but no longer shown.
+> - Display policy (dash.js): win % and bonus odds in 5% steps, shown as "<3%" / ">97%" at the ends.
+
 Built by `live/strategy/dashboard.py` at site-build time (and on demand for replay). All times are
 unix seconds. All fuel/points are expected values, with `lo`/`hi` = 10th/90th percentiles.
 `asof` means only results posted (TBA `post_result_time`) before this time were used, which is replay mode. Video

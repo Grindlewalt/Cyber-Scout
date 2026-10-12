@@ -333,7 +333,8 @@ def sim_event(ev, col, theta, sigma, bonus, awm, seed, n, forced=None, fixed_all
         for j in range(awm["k5"]):
             np.put_along_axis(award, perm[:, j:j + 1], 5.0 * mult, axis=1)
     return {"teams": teams, "cols": cols, "qual": qual, "alliance": alliance, "elim": elim, "award": award,
-            "total": qual + alliance + elim + award, "rank": rank, "prequal": prequal, "rp_avg": avg}
+            "total": qual + alliance + elim + award, "rank": rank, "prequal": prequal, "rp_avg": avg,
+            "pairs": pairs, "alliance_elim": E, "fixed": bool(fixed_alliances), "mult": mult}
 
 
 def _known_results(ev, fixed_alliances, loc):
@@ -844,12 +845,27 @@ def build_event_json(data_dir, ev, team=DEFAULT_TEAM, goal="DCMP", sims=800, aso
                 b = DASH.blend_rating(M, t)
                 ratings[t] = (b["total"] / 3.0, max(b["sd"], 3.0) / 3.0)
     # ---- district + goal
-    goal_out = dist_rows = None
+    goal_out = dist_rows = selection = None
     S = None
     if dk:
         D = DI.load_district(data_dir, dk, asof=asof, offline=offline, log=log)
         S = Season(D, n=sims, seed=seed, ratings=ratings or None, data_dir=data_dir, offline=offline, log=log)
         goal_out = goal_block(S, team, goal, focal=ev, now=now)
+        try:
+            from . import selection as SEL
+            comps = {}
+            if dash and asof is None:
+                comps = {r["team"]: r.get("blend") or {} for r in dash["ratings"]}
+            elif M is not None:
+                comps = {t: DASH.blend_rating(M, t) for t in V["teams"]}
+            sc = _read(os.path.join(api_dir, "scout.json")) or {}
+            selection = SEL.selection_block(S, ev, team, goal_out if goal.upper() == "DCMP" else None, asof=asof,
+                                            nick=(ctx.nick if ctx is not None else {}), comps=comps,
+                                            scout={r["team"]: r for r in sc.get("teams") or []})
+        except Exception:
+            import traceback
+            traceback.print_exc()
+            selection = None
         qual, cutoff = S.dcmp_outcome(S.base_run)
         pq = qual.mean(0)
         pre = S.base_run["pre"]
@@ -916,19 +932,54 @@ def build_event_json(data_dir, ev, team=DEFAULT_TEAM, goal="DCMP", sims=800, aso
     sched["build_s"] = None
     rk["build_s"] = round(time.time() - t0, 1)
     sched["build_s"] = rk["build_s"]
+    if selection is not None:
+        selection["generated"] = int(time.time())
+        selection["quals_played"], selection["quals_total"] = rk["quals_played"], rk["quals_total"]
+    rk["_selection"] = selection          # popped by site_build -> selection.json
     return rk, sched
 
 
 def site_build(data_dir, event, team=DEFAULT_TEAM, out_dir=None, goal=None, sims=800, offline=False, ctx=None, log=None,
-               asof=None):
+               asof=None, snapshot_only=False):
     """Worker entry point: writes <out_dir or DATA/site/api/<ev>>/rankings.json and schedule.json.  `goal` defaults to env
     DASH_GOAL or DCMP (or 'Worlds', 'rank:N').  Exceptions in the district part never prevent the files being written."""
     goal = goal or os.environ.get("DASH_GOAL", "DCMP")
     out_dir = out_dir or os.path.join(data_dir, "site", "api", event)
     rk, sc = build_event_json(data_dir, event, team, goal, sims, asof, offline, ctx, True, log)
+    sel = rk.pop("_selection", None)
+    if asof is not None and sel:      # replay build: dated selection snapshot
+        c = _dump(sel, os.path.join(out_dir, "selection", f"{int(asof)}.json"))
+        if snapshot_only:             # (never overwrite the live files)
+            return {"selection_kb": c // 1024, "build_s": rk["build_s"]}
     a = _dump(rk, os.path.join(out_dir, "rankings.json"))
     b = _dump(sc, os.path.join(out_dir, "schedule.json"))
-    return {"rankings_kb": a // 1024, "schedule_kb": b // 1024, "build_s": rk["build_s"]}
+    c = _dump(sel, os.path.join(out_dir, "selection.json")) if sel else 0
+    return {"rankings_kb": a // 1024, "schedule_kb": b // 1024, "selection_kb": c // 1024, "build_s": rk["build_s"]}
+
+
+def selection_snapshots(data_dir, event, team=DEFAULT_TEAM, out_dir=None, sims=800, offline=False, only_missing=True,
+                        times=None, log=None):
+    """Dated selection views for replay: one api/<ev>/selection/<ts>.json per dashboard snapshot time (dash/<ts>.json)
+    or per `times`.  Each uses goals --asof <ts> (only data posted before ts)."""
+    out_dir = out_dir or os.path.join(data_dir, "site", "api", event)
+    if times is None:
+        dd = os.path.join(out_dir, "dash")
+        times = sorted(int(f.split(".")[0]) for f in os.listdir(dd) if f.endswith(".json") and f.split(".")[0].isdigit()) \
+            if os.path.isdir(dd) else []
+    done = []
+    for ts in times:
+        p = os.path.join(out_dir, "selection", f"{int(ts)}.json")
+        if only_missing and os.path.exists(p):
+            continue
+        try:
+            site_build(data_dir, event, team, out_dir, "DCMP", sims, offline, log=log, asof=ts, snapshot_only=True)
+            done.append(ts)
+        except Exception as ex:
+            (log or print)(f"selection snapshot {ts}: {ex!r}")
+    idx = sorted(int(f.split(".")[0]) for f in os.listdir(os.path.join(out_dir, "selection"))
+                 if f.endswith(".json") and f.split(".")[0].isdigit()) if os.path.isdir(os.path.join(out_dir, "selection")) else []
+    _dump({"event": event, "times": idx}, os.path.join(out_dir, "selection", "index.json"))
+    return done
 
 
 def main(argv=None):
@@ -943,6 +994,9 @@ def main(argv=None):
     ap.add_argument("--offline", action="store_true")
     ap.add_argument("--replay", action="store_true")
     ap.add_argument("--goal-only", action="store_true", help="print the goal block only (no match model)")
+    ap.add_argument("--selection-snapshots", action="store_true",
+                    help="write selection/<ts>.json for every dash/<ts>.json snapshot (or --asof) for replay")
+    ap.add_argument("--all", action="store_true", help="with --selection-snapshots: rebuild existing snapshots too")
     a = ap.parse_args(argv)
     team = a.team if a.team.startswith("frc") else f"frc{a.team}"
     if a.replay:
@@ -963,6 +1017,11 @@ def main(argv=None):
         D = DI.load_district(a.data_dir, dk, asof=a.asof, offline=a.offline)
         S = Season(D, n=a.sims, data_dir=a.data_dir, offline=a.offline)
         print(json.dumps(goal_block(S, team, a.goal, a.event), indent=1, default=float))
+        return
+    if a.selection_snapshots:
+        done = selection_snapshots(a.data_dir, a.event, team, a.out_dir, a.sims, a.offline, only_missing=not a.all,
+                                   times=[a.asof] if a.asof else None, log=lambda *x: print(*x, file=sys.stderr))
+        print({"selection_snapshots": len(done)})
         return
     r = site_build(a.data_dir, a.event, team, a.out_dir, a.goal, a.sims, a.offline, asof=a.asof,
                    log=lambda *x: print(*x, file=sys.stderr))

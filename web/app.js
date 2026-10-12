@@ -85,6 +85,35 @@ function idPill(c, n) {
   const cls = c >= IDC.hi ? "good" : c >= IDC.mid ? "warn" : "bad";
   return `<span class="idp ${cls}" title="identity confidence ${Math.round(c * 100)}%${n != null ? `, ${n} bumper-number reads` : ""}. ${ID_CAL}">${Math.round(c * 100)}%</span>`;
 }
+// ---- scouting truth (api/<ev>/scout.json, live/scouting.py build_truth; trust rule live/coverage.py)
+// One canonical value per team metric for every page. Video numbers: verified (v2, team_conf >= 0.6) matches only,
+// n >= 3 -> fact, 1-2 -> grey "n=2 (Q12, Q17)", 0 -> hidden; "≥" when > 20% of the alliance FUEL was not credited.
+const SCOUT = {};
+function scoutData(ev) {
+  return SCOUT[ev] || (SCOUT[ev] = api(`${ev}/scout.json`).then(d => { d.by = Object.fromEntries((d.teams || []).map(t => [t.team, t])); return d; }).catch(() => null));
+}
+const shortKey = k => { const m = String(k || "").split("_").pop().match(/^([a-z]+)(\d+)(?:m(\d+))?$/); return m ? ({ qm: "Q", sf: "SF", f: "F", qf: "QF" }[m[1]] || m[1].toUpperCase()) + m[2] + (m[3] && m[1] !== "qm" ? "-" + m[3] : "") : k; };
+function covPill(c, opts = {}) {
+  if (!c || !c.n) return `<span class="sc-cov none" title="No verified robot video for this team: video stats hidden, ratings come from TBA results only.">no video</span>`;
+  const ks = (c.keys || []).map(shortKey).join(", ");
+  return `<span class="sc-cov ${c.tier}" title="Verified video matches (v2 tracker, identity ≥ 60%): ${esc(ks)}${c.of ? ` of ${c.of} played` : ""}. ${c.tier === "grey" ? "Fewer than 3: treat video numbers as anecdotes." : ""}">${opts.short ? `${c.n}${c.of ? "/" + c.of : ""}` : `video ${c.n}${c.of ? "/" + c.of : ""} · last ${shortKey(c.last)}`}</span>`;
+}
+/** canonical metric {v, raw, n, tier, lower_bound?} -> html.  f: "1" | "0" | "p" | "2" */
+function svHtml(m, f = "1", unit = "") {
+  if (!m || m.v == null || !m.n) return `<span class="muted">–</span>`;
+  const fm = v => v == null ? "–" : f === "p" ? Math.round(v * 100) + "%" : f === "0" ? String(Math.round(v)) : f === "2" ? Number(v).toFixed(2) : Number(v).toFixed(1);
+  const tip = `shrunk value ${fm(m.v)}; raw ${fm(m.raw)} over n=${m.n} verified match${m.n === 1 ? "" : "es"}${m.lower_bound ? "; ≥ = more than 20% of the alliance FUEL was not credited to any robot, so this is a floor" : ""}${m.over ? "; credited FUEL exceeded the TBA count and was scaled down" : ""}`;
+  return `<span class="sc-v ${m.tier || ""}" title="${esc(tip)}">${m.lower_bound ? "≥" : ""}${fm(m.v)}${unit}<small>n=${m.n}</small></span>`;
+}
+const FLAG_TXT = { auto_not_tracked: ["auto not tracked", "warn"], video_higher: ["video higher", "good"], video_lower: ["video lower?", "grey"], lower_bound: ["≥ floor", "grey"], over: ["scaled to TBA", "grey"] };
+function flagChips(row, only) {
+  return (row && row.flags || []).filter(f => !only || only.includes(f.k)).map(f => `<span class="sc-flag ${(FLAG_TXT[f.k] || [])[1] || ""}" title="${esc(f.text)}">${esc((FLAG_TXT[f.k] || [f.k])[0])}</span>`).join(" ");
+}
+/** banner for pages that show end-of-event data (not the replay time the dashboard may be set to) */
+function dataBanner(sd, what = "") {
+  const lv = sd && sd.last_verified ? shortKey(sd.last_verified) : null;
+  return `<div class="sc-banner"><b>End-of-event data</b>, not replay time${what ? " · " + esc(what) : ""}${sd ? ` · robot video: ${(sd.verified_matches || []).length} verified matches (${esc((sd.verified_matches || []).map(shortKey).join(", "))})${lv ? `, last ${lv}` : ""} · ${sd.quals_played} quals played` : ""}</div>`;
+}
 function crumbs(parts) {
   $crumbs.innerHTML = parts.map(([t, h]) => h ? `<a href="${h}">${esc(t)}</a>` : `<span>${esc(t)}</span>`).join(" / ");
 }

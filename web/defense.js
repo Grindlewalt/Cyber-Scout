@@ -180,7 +180,7 @@
   // ------------------------------------------------------------------ page
   async function page(ev, target) {
     css();
-    const [d, e] = await Promise.all([api(`${ev}/defense.json`), api(`${ev}/event.json`).catch(() => null)]);
+    const [d, e, scd] = await Promise.all([api(`${ev}/defense.json`), api(`${ev}/event.json`).catch(() => null), scoutData(ev)]);
     crumbs([[e ? e.name : ev, `#/${ev}`], ["Defense library"]]); $updated.textContent = "";
     const nick = {}; ((e && e.teams) || []).forEach(t => nick[t.key] = t.nickname);
     const eps = d.episodes || [], G = d.global || {}, PL = G.placebo || {};
@@ -190,8 +190,9 @@
     const opt = (k, lab, vals, fmt = x => x) => `<select data-f="${k}"><option value="">${lab}</option>${vals.map(v => `<option value="${H(v)}"${F[k] === v ? " selected" : ""}>${H(fmt(v))}</option>`).join("")}</select>`;
     $app.innerHTML = `<div class="titlebar"><div><h1>Defense library</h1>
       <div class="sub">Every time an opponent stayed within ${d.params?.radius_m ?? 1.5} m of a robot in its own scoring area for ≥ ${d.params?.min_s ?? 2} s,
-        scored against that robot's own output in comparable undefended time (same zone mix and hub state). ${(d.matches || []).length} matches.</div></div>
-      <a class="dbtn" href="#/${ev}/specs" style="white-space:nowrap">Spec sheets</a></div>
+        scored against that robot's own output in comparable undefended time (same zone mix and hub state). ${(d.matches || []).length} verified matches
+        (${H((d.matches || []).map(shortKey).join(", "))}); both robots must have verified identity. Per-team effects rest on a handful of episodes: read them as anecdotes until n ≥ 3.</div></div>
+      <a class="dbtn" href="#/${ev}/specs" style="white-space:nowrap">Spec sheets</a></div>${dataBanner(scd)}
     <div class="dx-sum">
       <div><b>${G.n ?? 0}</b><span>episodes detected</span></div>
       <div><b>${G.tested ?? 0}</b><span>with ≥ 2 pts at stake (testable)</span></div>

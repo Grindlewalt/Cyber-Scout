@@ -25,6 +25,7 @@ import numpy as np
 from scipy import stats
 
 from . import epa as EPA
+from . import matchday as MD
 from . import rank as RANK
 from .data import COMPONENTS, LEN, PERIODS, SHIFTS, WID, load_event, shot_zone
 from .model import fit_event_model, team_theta
@@ -38,6 +39,7 @@ POST_LAG = 300             # when TBA has no post_result_time: result assumed po
 PLAYOFF_VISIBLE = 1500     # replay: a playoff match's alliances count as known 25 min before it is played
 SNAP_STEP = 1800
 ENGAGE = 0.7               # fraction of the target's active-shift time a dedicated defender actually affects (a priori)
+DISAGREE_RATING = 15.0     # ratings table: blend vs EPA chip when |diff| >= max(15 pts, 1.5 sd)
 GENERIC_RETAINED = 0.75    # shot rate kept while defended when there is no event data at all (a priori)
 # reference backtest of the dashboard model (python -m live.strategy.backtest, 2026wasam, 58 quals, prior-only)
 BACKTEST_REF = {"event": "2026wasam", "n": 58,
@@ -160,7 +162,25 @@ def _zone_xy(E_v, team, zone, alliance):
     return [round(x, 2), round(y, 2)]
 
 
-def next_match_plan(E_v, M, m, team, sims=6000, seed=0):
+DROP_FACTORS = {"uncertainty"}          # noise in a queue (strategist review)
+
+
+def _our_factors(F, us_teams):
+    """preview key factors from OUR alliance's point of view: no advice about defending our own robots, no partner
+    passing trivia, no generic uncertainty line; weights stay in the JSON but are not points."""
+    out = []
+    for f in F:
+        if f["kind"] in DROP_FACTORS:
+            continue
+        if f.get("team") in us_teams and f["kind"] in ("defense_target", "defense_resistant", "inactive_behaviour"):
+            continue
+        out.append(f)
+    return out
+
+
+def next_match_plan(E_v, M, m, team, sims=6000, seed=0, X=None, cov=None, epa_wp=None, auto_bias=None, asof_stamp=None):
+    """plan for one of our matches (any remaining match, not only the next).  X/cov/epa_wp/auto_bias feed the queue
+    card (matchday.queue_card); without them the card is omitted (old behaviour)."""
     us = "red" if team in m["teams"]["red"] else "blue"
     them = "blue" if us == "red" else "red"
     P = build_preview(E_v, m["key"], asof="prior", sims=sims, seed=seed, M=M)
@@ -187,38 +207,35 @@ def next_match_plan(E_v, M, m, team, sims=6000, seed=0):
     likely = ["shift2", "shift4"] if p_them_auto >= 0.5 else ["shift1", "shift3"]
     other = ["shift1", "shift3"] if likely == ["shift2", "shift4"] else ["shift2", "shift4"]
     ours = [robots[t] for t in m["teams"][us]]
-    defender = min(ours, key=lambda r: r["expected_fuel"]["total"])
+    dfd = MD.pick_defender(ours, X) if X is not None else \
+        {"team": min(ours, key=lambda r: r["expected_fuel"]["total"])["team"], "why": "lowest expected FUEL on our alliance"}
     defend = []
-    ev_ret = None
     for t in m["teams"][them]:
         D = M.robot["team"].get(t) or {}
         rr = D.get("rate_retained_defended")
-        if rr and not rr.get("prior_only") and rr["n_eff"] >= 0.4:
-            ret, basis = rr["v"], f"measured (shrunk; {rr['n_eff']:.1f} weighted defended matches)"
-        elif rr:
-            ret, basis = rr["event"], "event prior (no defended time measured for this robot)"
+        if rr and not rr.get("prior_only") and rr["n_eff"] >= 2:
+            ret, basis = rr["v"], f"measured on {rr['n_eff']:.1f} weighted defended matches"
         else:
-            ret, basis = GENERIC_RETAINED, "generic prior (no defended time measured at this event)"
-        ev_ret = rr["event"] if rr else ev_ret
+            ret, basis = GENERIC_RETAINED, "assumption: defended robots keep ~75% of their shot rate"
         r = robots[t]
         act = sum(r["expected_fuel"]["by_period"][s] for s in SHIFTS)
         gain = act * max(0.0, 1.0 - min(ret, 1.0)) * ENGAGE
         tz = r.get("top_zones")
         where = None
-        ztxt = "no trusted shot locations yet"
+        ztxt = "no verified shot locations yet"
         if tz and tz["w_made"] >= 3:
             z = tz["zones"][0]
-            where = {"zone": z["zone"], "share": z["share"], "xy": _zone_xy(E_v, t, z["zone"], them)}
-            ztxt = f"{z['share'] * 100:.0f}% of its tracked made FUEL comes from {z['zone']} (its driver's view)"
+            where = {"zone": z["zone"], "share": z["share"], "xy": _zone_xy(E_v, t, z["zone"], them),
+                     "zone_ours": MD.their_view_zone(z["zone"])}
+            ztxt = f"{z['share'] * 100:.0f}% of its tracked made FUEL comes from {MD.their_view_zone(z['zone'])}"
         defend.append({
             "target": t, "when": likely, "when_alt": other, "p_when": _r(max(p_them_auto, 1 - p_them_auto), 3),
             "where": where, "expected_gain_fuel": _r(gain, 1), "active_fuel": _r(act, 1),
             "rate_retained": _r(ret, 2), "basis": "measured" if basis.startswith("measured") else "prior",
-            "why": (f"{_num(t)} is expected to score ~{act:.0f} FUEL in its active shifts ({' + '.join(likely)} "
-                    f"in {max(p_them_auto, 1 - p_them_auto) * 100:.0f}% of sims); defended it keeps ~{ret * 100:.0f}% "
-                    f"of its shot rate [{basis}]; with ~{ENGAGE * 100:.0f}% engagement that is ~{gain:.0f} FUEL "
-                    f"prevented. {ztxt[0].upper() + ztxt[1:]}. Their active shifts are our inactive shifts, so the "
-                    f"defender gives up little counted FUEL.")})
+            "why": (f"{_num(t)} is expected to score ~{act:.0f} FUEL in its live shifts ({' + '.join(likely)} "
+                    f"in {max(p_them_auto, 1 - p_them_auto) * 100:.0f}% of sims). {basis[0].upper() + basis[1:]}; with "
+                    f"~{ENGAGE * 100:.0f}% engagement that is ~{gain:.0f} FUEL denied. {ztxt[0].upper() + ztxt[1:]}. "
+                    f"Their live shifts are our inactive shifts, so the defender gives up little counted FUEL.")})
     defend.sort(key=lambda d: -(d["expected_gain_fuel"] or 0))
     # ---- auto
     matchups = []
@@ -244,8 +261,8 @@ def next_match_plan(E_v, M, m, team, sims=6000, seed=0):
     auto = {"our_expected": _r(P["alliances"][us]["fuel_by_period"]["auto"], 1),
             "their_expected": _r(P["alliances"][them]["fuel_by_period"]["auto"], 1),
             "p_win_auto": _r(p_auto_us, 3), "matchups": matchups,
-            "note": (f"Auto winner's hub is active in shifts 2 and 4; at this event that schedule is worth "
-                     f"{pr['schedule_value_fuel']['mean']:+.0f} ± {pr['schedule_value_fuel']['sd']:.0f} teleop FUEL. "
+            "note": (f"The auto winner's hub is live in shifts 2 and 4; at this event that schedule is worth about "
+                     f"{pr['schedule_value_fuel']['mean']:.0f} ± {pr['schedule_value_fuel']['sd']:.0f} teleop FUEL. "
                      f"Win prob {win_if_won * 100:.0f}% if we win auto vs {win_if_lost * 100:.0f}% if we lose it.")}
     endgame = []
     for t in red + blue:
@@ -258,10 +275,17 @@ def next_match_plan(E_v, M, m, team, sims=6000, seed=0):
           "partners": [t for t in m["teams"][us] if t != team], "opponents": list(m["teams"][them]),
           "teams": {"red": red, "blue": blue},
           "prediction": prediction,
-          "plan": {"defend": defend, "suggested_defender": {"team": defender["team"],
-                                                            "why": "lowest expected FUEL on our alliance"},
-                   "auto": auto, "endgame": endgame, "key_factors": P["key_factors"]},
+          "plan": {"defend": defend, "suggested_defender": dfd,
+                   "auto": auto, "endgame": endgame, "key_factors": _our_factors(P["key_factors"], set(m["teams"][us]))},
           "preview_url": f"preview/{m['key']}.json"}
+    if asof_stamp:
+        nm["as_of"] = asof_stamp
+    if X is not None:
+        q = MD.queue_card(nm, P, raw, X, cov or {}, epa_wp, auto_bias, E_v, team)
+        nm["queue"] = q
+        prediction["win_prob_epa"] = q["win_prob_epa"]
+        prediction["models_disagree"] = q["models_disagree"]
+        prediction["rp"] = {"us": q["rp"]["us"], "them": q["rp"]["them"]}
     return nm, P
 
 
@@ -385,6 +409,15 @@ class Context:
             raw = json.load(open(tp))
             for t in (raw.get("data", raw) if isinstance(raw, dict) else raw):
                 self.nick[t["key"]] = t.get("nickname")
+        self.cov_matches = MD.load_coverage_matches(E["paths"].get("site"))
+        self._bt_rows = None
+
+    def bt_rows(self):
+        """prequential predictions of every played qual (asof-independent; footers subset them by post time)."""
+        if self._bt_rows is None:
+            cp = os.path.join(self.data_dir, "cache", "strategy", f"backtest_{self.E['event']}.json")
+            self._bt_rows = MD.backtest_rows(self, cache_path=cp, log=self.log)
+        return self._bt_rows
 
 
 def build(ctx, team=DEFAULT_TEAM, asof=None, sims_rank=2000, sims_match=6000, seed=0, previews=None):
@@ -412,6 +445,8 @@ def build(ctx, team=DEFAULT_TEAM, asof=None, sims_rank=2000, sims_match=6000, se
                 vid_matches.setdefault(t, set()).add(b["match"])
     for r in V["video"]["robot"]:
         idc.setdefault(r["team"], []).append(r["ident"])
+    cov = MD.coverage_asof(ctx.cov_matches, V, asof, VIDEO_LAG)
+    bt_rows = ctx.bt_rows()
     ratings = []
     for t in E["teams"]:
         w = info_weights(M, t)
@@ -427,7 +462,12 @@ def build(ctx, team=DEFAULT_TEAM, asof=None, sims_rank=2000, sims_match=6000, se
             "prior_events": (pr or {}).get("events", []),
             "video_matches": len(vid_matches.get(t, ())),
             "id_conf": _r(np.mean(idc[t]), 2) if idc.get(t) else None,
+            "coverage": {k: v for k, v in cov[t].items() if k != "keys_full"},
             "projection": proj[t]})
+        rr = ratings[-1]
+        if rr["epa"]["total"] is not None and rr["blend"]["total"] is not None:
+            diff = rr["blend"]["total"] - rr["epa"]["total"]
+            rr["disagree"] = {"diff": _r(diff, 1), "flag": abs(diff) >= max(DISAGREE_RATING, 1.5 * (rr["blend"]["sd"] or 0))}
     ratings.sort(key=lambda r: (r["rank"] or 999, -(r["blend"]["total"] or 0)))
     # ---- our next match
     mine = sorted([m for m in V["tba"] if team in m["teams"]["red"] + m["teams"]["blue"]],
@@ -435,9 +475,24 @@ def build(ctx, team=DEFAULT_TEAM, asof=None, sims_rank=2000, sims_match=6000, se
     upcoming = [m for m in mine if not m["played"]]
     nxt = None
     prev_out = {}
-    if upcoming:
-        nxt, P = next_match_plan(V, M, upcoming[0], team, sims=sims_match, seed=seed)
-        prev_out[upcoming[0]["key"]] = P
+    plans = []
+    X = MD.event_extras(V, cov, {t: set(c["keys_full"]) for t, c in cov.items()})
+    s_epa = MD.epa_sd(bt_rows, asof)
+    bt_asof = MD.backtest_asof(bt_rows, asof)
+    qp_sorted = sorted(qp, key=lambda m: m["time"])
+    stamp = {"ts": int(now), "asof": int(asof) if asof is not None else None, "quals_played": len(qp),
+             "last_result": label(qp_sorted[-1])[1] if qp_sorted else None}
+    for i, um in enumerate(upcoming):
+        ce = [sum(cepa.value(t)["total"] for t in um["teams"][a]) for a in ("red", "blue")]
+        p_epa_red = float(stats.norm.cdf((ce[0] - ce[1]) / s_epa))
+        us_ = "red" if team in um["teams"]["red"] else "blue"
+        pl, P = next_match_plan(V, M, um, team, sims=sims_match if i == 0 else max(2000, sims_match // 2), seed=seed,
+                                X=X, cov=cov, epa_wp=p_epa_red if us_ == "red" else 1 - p_epa_red,
+                                auto_bias=bt_asof.get("auto_bias_recent"), asof_stamp=stamp)
+        plans.append(pl)
+        prev_out[um["key"]] = P
+    if plans:
+        nxt = plans[0]
     # ---- schedule + trend (pre-match win prob for played matches from a fit with only earlier matches)
     sched, trend = [], []
     pm_by_key = {d["key"]: d for d in per_match}
@@ -451,24 +506,32 @@ def build(ctx, team=DEFAULT_TEAM, asof=None, sims_rank=2000, sims_match=6000, se
             wp = S["p_red_win"] if us == "red" else 1 - S["p_red_win"]
             res = {"red": m["red"]["score"], "blue": m["blue"]["score"],
                    "won": m[us]["score"] > m[them]["score"], "tie": m[us]["score"] == m[them]["score"],
-                   "rp": m[us].get("rp"), "bonus": m[us].get("bonus")}
+                   "rp": m[us].get("rp"), "bonus": m[us].get("bonus"),
+                   "rp_them": m[them].get("rp"), "bonus_them": m[them].get("bonus")}
             Ma = fit_event_model(V, m["time"] + 1, use_video=True, epa_prior=ctx.prior)
             trend.append({"match": m["key"], "short": short, "time": m["time"], "blend_total": blend_rating(Ma, team)["total"],
                           "blend_sd": blend_rating(Ma, team)["sd"],
                           "fuel_made": _fuel_made(V, m["key"], team), "alliance_fuel": m[us]["fuel_count"],
                           "won": res["won"]})
         else:
-            if nxt and m["key"] == nxt["key"]:
-                wp = nxt["prediction"]["win_prob"]
+            pl = next((p for p in plans if p["key"] == m["key"]), None)
+            if pl:
+                wp = pl["prediction"]["win_prob"]       # one win % per match everywhere
             else:
                 S = simulate(M, m["teams"]["red"], m["teams"]["blue"], n=2000, seed=seed + 5)
                 wp = S["p_red_win"] if us == "red" else 1 - S["p_red_win"]
             res = None
         pm = pm_by_key.get(m["key"])
+        if not m["played"]:
+            pl = next((p for p in plans if p["key"] == m["key"]), None)
+            if pl and pl["prediction"].get("rp"):
+                pm = {us: pl["prediction"]["rp"]["us"], them: pl["prediction"]["rp"]["them"]}
         sched.append({"key": m["key"], "label": lbl, "short": short, "comp_level": m["comp_level"], "time": m["time"],
                       "played": m["played"], "alliance": us, "partners": [t for t in m["teams"][us] if t != team],
                       "opponents": list(m["teams"][them]), "win_prob": _r(wp, 3), "result": res,
-                      "bonus_probs": ({k: _r(v, 3) for k, v in pm[us].items()} if pm else None),
+                      "bonus_probs": ({k: _r(v, 3) for k, v in pm[us].items() if not isinstance(v, dict)} if pm else None),
+                      "bonus_probs_them": ({k: _r(v, 3) for k, v in pm[them].items() if not isinstance(v, dict)}
+                                           if pm else None),
                       "preview_url": f"preview/{m['key']}.json",
                       "analyze_url": f"#/{E['event']}/a/{m['key']}" if m["played"] else None})
     our = {"team": team, "levers": levers(M, team, E["teams"]), "trend": trend,
@@ -485,8 +548,8 @@ def build(ctx, team=DEFAULT_TEAM, asof=None, sims_rank=2000, sims_match=6000, se
                   "now": int(now), "asof": int(asof) if asof is not None else None,
                   "quals_played": len(qp), "quals_total": len(allq),
                   "playoffs": any(m["comp_level"] != "qm" for m in V["tba"])},
-        "team": team, "next_match": nxt, "ratings": ratings, "our_team": our, "schedule": sched,
-        "model": {"backtest": BACKTEST_REF,
+        "team": team, "next_match": nxt, "plans": plans, "ratings": ratings, "our_team": our, "schedule": sched,
+        "model": {"backtest": BACKTEST_REF, "backtest_asof": bt_asof,
                   "epa_source": {"display": "statbotics" if ctx.sb.get("ok") else "local",
                                  "prior": "local (earlier events this season, TBA)" if (ctx.prior or {}).get("sources", {}).get("local_events") else
                                  ("statbotics" if ctx.prior else "none (event-mean shrinkage)"),
@@ -645,6 +708,8 @@ def main(argv=None):
             D, _ = build(ctx, team, ts, a.sims_rank, a.sims_match, seed=0)
             for r in D["schedule"]:
                 r["preview_url"] = None        # previews on disk reflect current data, not this asof
+            for pl in D.get("plans") or []:
+                pl["preview_url"] = None       # the plan itself (stamped as_of) is the snapshot's record
             if D["next_match"]:
                 D["next_match"]["preview_url"] = None
             n = _dump(D, fp)

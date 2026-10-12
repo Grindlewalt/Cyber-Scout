@@ -48,32 +48,34 @@
 
   // ------------------------------------------------------------------ list
   const COLS = [
-    ["number", "Team", v => v, ""], ["rank", "Rank", v => v ?? "–", ""], ["n", "Matches", v => v, "tracked matches with v2 data"],
-    ["made_pm", "Made/m", v => f1(v), "fuel made per match (identity-credited shots)"], ["acc", "Acc", pc, "made / (made+missed)"],
+    ["number", "Team", v => v, ""], ["rank", "Rank", v => v ?? "–", ""], ["n", "Video", (v, x) => covPill(x.cov, { short: true }), "verified matches (v2 tracker, identity ≥ 60%) / played"],
+    ["made_pm", "Made/m", (v, x) => x.made_v ? svHtml(x.made_v) : f1(v), "FUEL made per match: shrunk, TBA-reconciled (≥ = floor, alliance under-credited); same number as the Teams table"], ["acc", "Acc", pc, "made / (made+missed), raw"],
     ["pts_min", "Pts/active min", v => f1(v), "made fuel into an ACTIVE hub per minute of own-hub-active teleop time"],
     ["fire", "Fire /s", v => f1(v), "balls per second inside a volley"], ["hopper", "Volley p90", v => v ?? "–", "90th percentile volley size ≈ hopper capacity"],
     ["cycle", "Cycle s", v => f1(v), "median time between volley starts (teleop)"], ["speed", "p95 m/s", v => f1(v, 2), "95th percentile moving speed"],
     ["trench", "Trench", pc, "share of hub-line crossings through a trench"], ["left", "Left", pc, "share of crossings on the driver's left"],
-    ["on_move", "On move", pc, "share of shots launched while moving > 0.5 m/s"], ["climb", "Climb", pc, "endgame climb rate (TBA)"],
+    ["on_move", "On move", pc, "share of shots launched while moving > 0.5 m/s"], ["climb", "Climb", pc, "endgame climb rate (TBA, every played qual)"], ["flags", "", (v, x) => FLAGS(x), ""],
     ["def_recv", "Def. recv", v => v ?? 0, "defense episodes received"], ["def_play", "Def. played", v => v ?? 0, "defense episodes played"],
   ];
+  const FLAGS = x => flagChips({ flags: (x.flags || []).map(k => ({ k, text: k.replace(/_/g, " ") })) }, ["auto_not_tracked", "video_higher", "video_lower"]);
   async function listPage(ev) {
     css();
-    const [ix, e] = await Promise.all([api(`${ev}/spec/index.json`), api(`${ev}/event.json`).catch(() => null)]);
+    const [ix, e, scd] = await Promise.all([api(`${ev}/spec/index.json`), api(`${ev}/event.json`).catch(() => null), scoutData(ev)]);
     crumbs([[e ? e.name : ev, `#/${ev}`], ["Spec sheets"]]); $updated.textContent = "";
     let sk = "made_pm", sd = -1;
     const rows = ix.teams || [];
     $app.innerHTML = `<div class="sx-head"><div><h1>Spec sheets</h1>
-      <div class="sub">${rows.length} teams · ${(ix.matches || []).length} matches with shot + identity data. Only robot-frames and shots with identity confidence ≥ 50% count.</div></div>
+      <div class="sub">${rows.length} teams · ${(ix.matches || []).length} verified matches (v2 tracker; a team counts only where its identity ≥ 60%, frames and shots ≥ 50%). Grey italic = fewer than 3 verified matches.</div></div>
       <div class="sx-links"><a href="#/${ev}/defense">Defense library</a></div></div>
-      <div class="sx-card"><div class="tablewrap"><table class="sx-list sx-tbl" id="sxl"></table></div></div>`;
+      ${dataBanner(scd)}<div class="sx-card"><div class="tablewrap"><table class="sx-list sx-tbl" id="sxl"></table></div></div>`;
     const tb = document.getElementById("sxl");
     const draw = () => {
-      const r = rows.slice().sort((a, b) => { const x = a[sk], y = b[sk]; if (x == null) return 1; if (y == null) return -1; return (x > y ? 1 : x < y ? -1 : 0) * sd; });
+      const kv = (r, k) => k === "made_pm" && r.made_v ? r.made_v.v : r[k];
+      const r = rows.slice().sort((a, b) => { const x = kv(a, sk), y = kv(b, sk); if (x == null) return 1; if (y == null) return -1; return (x > y ? 1 : x < y ? -1 : 0) * sd; });
       tb.innerHTML = `<thead><tr>${COLS.map(([k, l, , t]) => `<th class="${k === "number" ? "" : "num"}" data-k="${k}" title="${H(t)}">${l}${k === sk ? (sd < 0 ? " ▾" : " ▴") : ""}</th>`).join("")}</tr></thead>
       <tbody>${r.map(x => `<tr class="clk" data-t="${x.team}">${COLS.map(([k, , f]) => k === "number"
         ? `<td><a href="#/${ev}/specs/${x.team}"><b>${x.number}</b></a> <span class="sx-mini">${H((x.nickname || "").slice(0, 22))}</span></td>`
-        : `<td class="num">${f(x[k])}</td>`).join("")}</tr>`).join("")}</tbody>`;
+        : `<td class="${k === "flags" ? "" : "num"}">${f(x[k], x)}</td>`).join("")}</tr>`).join("")}</tbody>`;
       tb.querySelectorAll("th").forEach(th => th.onclick = () => { const k = th.dataset.k; if (k === sk) sd = -sd; else { sk = k; sd = k === "rank" || k === "number" ? 1 : -1; } draw(); });
       tb.querySelectorAll("tr.clk").forEach(tr => tr.onclick = ev_ => { if (ev_.target.tagName !== "A") location.hash = `#/${ev}/specs/${tr.dataset.t}`; });
     };
@@ -187,7 +189,8 @@
   // ------------------------------------------------------------------ spec page
   async function specPage(ev, team) {
     css();
-    const [sp, e] = await Promise.all([api(`${ev}/spec/${team}.json`), api(`${ev}/event.json`).catch(() => null)]);
+    const [sp, e, sd] = await Promise.all([api(`${ev}/spec/${team}.json`), api(`${ev}/event.json`).catch(() => null), scoutData(ev)]);
+    const TR = sp.truth || {}, TV = TR.video || {}, autoBad = (TR.flags || []).some(f => f.k === "auto_not_tracked");
     crumbs([[e ? e.name : ev, `#/${ev}`], ["Spec sheets", `#/${ev}/specs`], [String(sp.number)]]); $updated.textContent = "";
     const D = sp.drive || {}, S = sp.scoring || {}, A = sp.auto || {}, CL = sp.climb || {}, LN = sp.lanes || {}, DF = sp.defense || {};
     const st = (v, l, u = "", tip = "") => `<div title="${H(tip)}"><b>${v}${u && v !== "–" ? `<small> ${u}</small>` : ""}</b><span>${l}</span></div>`;
@@ -196,22 +199,24 @@
     const lvls = CL.levels || {}, nL = Object.values(lvls).reduce((a, b) => a + b, 0);
     const ownN = (LN.own || {}).n || 0;
     $app.innerHTML = `<div class="sx-head"><div><h1>${sp.number} <small>${H(sp.nickname || "")}</small></h1>
-      <div class="sub">${sp.rank ? `Rank ${sp.rank} · ` : ""}${sp.n} tracked match${sp.n === 1 ? "" : "es"}: ${matchTxt}</div></div>
+      <div class="sub">${sp.rank ? `Rank ${sp.rank} · ` : ""}${covPill(sp.coverage)} verified: ${matchTxt} ${flagChips(TR)}</div></div>
       <div class="sx-links"><a href="#/${ev}/t/${team}">Team page</a><a href="#/${ev}/defense/${team}">How to defend ${sp.number}</a><a href="#/${ev}/specs">All specs</a></div></div>
+    ${dataBanner(sd)}${(sp.coverage?.n || 0) < 3 ? `<div class="sc-banner"><b>n=${sp.coverage?.n || 0}</b>: fewer than 3 verified matches. Every video number on this page is an anecdote, not a rate.</div>` : ""}
     <div class="sx-grid3">
       <div class="sx-card"><h2>Drive <small>${f1(D.seconds, 0)} s tracked</small></h2><div class="sx-stat">
         ${st(f1(D.top_speed, 2), "Top speed", "m/s", "99th percentile of speed")}${st(f1(D.p95_speed, 2), "p95 moving", "m/s")}${st(f1(D.mean_speed, 2), "Mean moving", "m/s")}
         ${st(f1(D.accel_p90), "Accel p90", "m/s²")}${st(f1(D.accel_max), "Accel max", "m/s²", "99th percentile")}${st(pc(D.pct_moving), "Time moving")}${st(f1(D.dist_per_match, 0), "Dist / match", "m")}</div></div>
       <div class="sx-card"><h2>Scoring <small>${S.made}/${S.att} made${S.passes ? ` · ${S.passes} passes` : ""}</small></h2><div class="sx-stat">
-        ${st(f1(S.made_pm), "Made / match")}${st(pc(S.acc), "Accuracy", "", S.acc_ci ? `90% CI ${pc(S.acc_ci[0])}–${pc(S.acc_ci[1])}` : "")}
+        ${st(TV.made_pm ? (TV.made_pm.lower_bound ? "≥" : "") + f1(TV.made_pm.v) : f1(S.made_pm), "Made / match", "", TV.made_pm ? `canonical (shrunk, TBA-reconciled); raw ${f1(TV.made_pm.raw)} over n=${TV.made_pm.n}` : "")}${st(pc(S.acc), "Accuracy", "", `${S.made}/${S.made + S.missed} shots`)}
         ${st(f1(S.pts_per_active_min), "Pts / active min", "", "made into an active hub per minute of own-hub-active teleop")}
         ${st(f1(S.fire_rate), "Fire rate", "/s", "balls per second inside a volley of 3+")}${st(f1(S.volley_mean), "Volley mean")}
         ${st(S.hopper_est ?? S.volley_max ?? "–", "Volley p90 ≈ hopper", "", `max volley ${S.volley_max ?? "–"}, ${S.n_volleys} teleop volleys`)}
         ${st(f1(S.cycle_s), "Cycle", "s", S.cycle_iqr ? `IQR ${S.cycle_iqr[0]}–${S.cycle_iqr[1]} s` : "")}${st(pc(S.on_move), "Shots on move")}${st(f1(S.dist_med), "Shot dist", "m", "median distance to hub")}</div></div>
       <div class="sx-card"><h2>Auto &amp; climb</h2><div class="sx-stat">
-        ${st(f1(A.made_avg), "Auto made")}${st(f1(A.att_avg), "Auto shots")}${st(pc(A.climb_rate), "Auto climb")}
-        ${st(pc(CL.rate), "Endgame climb", "", nL ? `levels: ${Object.entries(lvls).map(([k, v]) => `L${k}×${v}`).join(", ")}` : "")}</div>
-        <div class="sx-mini" style="margin-top:6px">${(A.rows || []).map(r => `${r.m}: ${r.made}/${r.att}${r.climb ? " + climb" : ""}`).join(" · ")}</div>
+        ${autoBad ? st("n/t", "Auto made", "", (TR.flags.find(f => f.k === "auto_not_tracked") || {}).text) + st("n/t", "Auto shots") : st(f1(A.made_avg), "Auto made") + st(f1(A.att_avg), "Auto shots")}${st(pc(A.climb_rate), "Auto L1 (TBA)")}
+        ${st(pc(CL.rate), "Endgame climb (TBA)", "", `${CL.n ?? nL} quals · levels: ${Object.entries(lvls).map(([k, v]) => `L${k}×${v}`).join(", ")}`)}</div>
+        ${autoBad ? `<div class="sx-mini" style="margin-top:6px;color:#f0c36b">${H((TR.flags.find(f => f.k === "auto_not_tracked") || {}).text)}</div>` : ""}
+        ${autoBad ? "" : `<div class="sx-mini" style="margin-top:6px">${(A.rows || []).map(r => `${r.m}: ${r.made}/${r.att}${r.climb ? " + climb" : ""}`).join(" · ")}</div>`}
         ${(A.routines || []).length ? `<div class="sx-mini" style="margin-top:4px">Routines: ${A.routines.map(r => `${H(r.name)} ${r.n}/${r.of}`).join(", ")} — <a href="#/${ev}/t/${team}">paths on team page</a></div>` : ""}</div>
     </div>
     <div class="sx-grid" style="margin-top:14px">

@@ -24,6 +24,7 @@ like phase 1.
 | `preview.py` | preview JSON (schema below) with plain-English key factors |
 | `epa.py` | EPA: pre-event component prior from the teams' earlier events this season (TBA, cached) or Statbotics; as-of EPA for display (Statbotics team_match history or local running EPA) |
 | `rank.py` | 2026 RP rules + TBA tiebreakers (reproduces the final Sammamish table exactly); Monte Carlo rank projection |
+| `matchday.py` | match-day helpers for the dashboard: verified-video coverage as of a time (`live/coverage.py`), cached prequential backtest rows + as-of footer, queue card (auto swap, defend who/when/where, opposing defenders, RP us/them, fouls, goal mode) |
 | `dashboard.py` | dashboard JSON (contract `DASHBOARD.md`): as-of view, blended ratings + video_weight, projection, next-match plan, levers, schedule, replay snapshots |
 
 ## EPA prior (phase 2)
@@ -180,3 +181,62 @@ up and `asof` is None); one draw per team per season. Match = sum(theta) + N(0, 
 probabilities logistic in score (fitted on the district). Alliance selection: captains by rank, picks best remaining rating (no
 declines). Awards at unplayed events: random teams (Impact, EI, RAS ~ 30%, ~12 judged); they pre-qualify for DCMP. Worlds: surrogate
 DCMP (performance = theta + noise), approximate. Not modelled: team withdrawals, DCMP declines, tie-break details beyond avg RP.
+
+## Auto under-prediction (agent M, 2026-10-11)
+Prequential check (model refit before every qual, EPA prior, 2000 sims): alliance auto FUEL actual − predicted = −4.9
+(Q3–46, n=88 alliances) and −10.3 (Q47–58, n=24). A naive "mean of each team's earlier alliance autos" is biased the
+same way (−7.8 / −10.6): autos at 2026wasam rose over the event (alliance mean 37.5 day 1 → 47.8 day 2). It is drift,
+not a shrinkage bug; recency weighting (half-life 12 matches) only cuts it to −3.3 / −6.5. The dashboard now shows the
+TBA auto history beside the prediction and a caution when the last 10 posted quals were off by ≥ 5 FUEL
+(`model.backtest_asof.auto_bias_recent`). The levers' "auto FUEL 13.9" is per robot (one third of an alliance without
+the human player), so it is not comparable with alliance autos of 37–58.
+
+## Scouting truth and alliance selection (agent S)
+**Trust rule** (`live/coverage.py`, shared): a team's robot-level video number comes only from *verified* matches (v2 tracker,
+`identity.method` `ocr*`, and that team's track `team_conf >= 0.6`). v1 tracks feed nothing but the replay (`scouting.load_matches`
+skips them; `Trk.team` is None for unverified tracks, so no shots/frames/defense episodes are credited). n >= 3 fact, 1-2 grey, 0 hidden.
+`coverage.reconcile(match)` compares credited robot FUEL + human player with the TBA alliance count (`reconcile.total.tba`):
+> 20% unattributed -> `lower_bound` ("≥X", never read as under-rated); credited > TBA -> `over`, scaled to the TBA total.
+
+**`scout.json`** (`cyber-scout/scout@1`, written by `live/scouting.py` `build()` -> `build_truth()`, i.e. the existing worker hook
+`scouting.site_build_extra(DATA, ev)`; reads `site/api/<ev>/{m/*.json, dashboard.json, dash/*.json}` and `tba/event__<ev>__matches.json`).
+The one canonical per-team source for Teams, team page, Specs, Compare, Picklist and Selection pitch evidence.
+```jsonc
+{ "schema", "event", "generated", "verified_matches": [keys in play order], "last_verified", "quals_played",
+  "policy": {"verified_conf": 0.6, "show_n": 3, "shrink_matches": 1, "acc_prior_shots": 20, "lower_bound_unattributed": 0.2},
+  "event_stats": {"made_pm_mean", "acc", "auto_made_mean", "cycle_median", "tower_pts_max", "climb_matters": tower_pts_max > 10, "any_climb"},
+  "teams": [{ "team", "number", "nickname", "rank",
+    "coverage": {"n", "keys", "last", "of" (quals played), "tier": "fact|grey|none", "label"},
+    "rating": {"blend", "sd", "auto", "teleop", "endgame", "epa", "epa_source", "opr", "video_weight", "record", "p_top8"} | null,  // dashboard.json
+    "climb": {"n", "levels": {"0": k, ...}, "rate", "pts_mean", "auto_l1_rate", "keys"} | null,      // TBA per robot, every played qual
+    "video": null | {               // metric = {v (shrunk toward event), raw, n, tier, lower_bound?, over?}
+       "made_pm" (+per_match [{m, made, scaled, lb, un}]), "acc" {v, raw, made, shots, n, tier}, "auto_made" (null when it contradicts TBA),
+       "cycle_s", "fire", "hopper", "pts_active_min", "speed_p95", "trench", "on_move", "dead" ({v, n} only when n >= 3), "def_played", "def_received"},
+    "flags": [{"k": "auto_not_tracked|video_higher|video_lower|lower_bound|over", "text"}],   // video vs EPA (TBA-only), positive evidence first
+    "trend": {"tba": {"last_n": 4, "last", "before", "diff", "ci": [lo, hi], "verdict": "up|down|flat"} | null,   // alliance score - fouls drawn - partners' blend
+              "blend": [[ts, blend, sd, epa], ...] | null } }] }                                  // from dash/<ts>.json snapshots, >= 3 points
+```
+Spec sheets (`spec/<team>.json`) additionally carry `coverage` and `truth` ({video, flags, rating, trend}); their `climb` is from TBA
+(`source: "TBA"`), `auto.climb_rate` = TBA auto L1 rate; `spec/index.json` rows carry `cov`, `made_v` (canonical made/match) and `flags`.
+
+**`selection.json`** (`cyber-scout/selection@1`, `live/strategy/selection.py`, written by `goals.site_build` next to rankings.json;
+replay snapshots `selection/<ts>.json` + `selection/index.json {times}` from `python -m live.strategy.goals DATA EV --selection-snapshots [--all] [--asof TS]`,
+one per `dash/<ts>.json`, each built with `--asof ts`; `goals --asof TS` also writes `selection/<ts>.json`). Same Season Monte Carlo as the goal block.
+```jsonc
+{ "schema", "event", "team", "asof", "sims", "generated", "quals_played", "quals_total",
+  "status": "projected" | "fixed" (alliances known) | "done" (event finished; nothing else below) | "unavailable",
+  "model": {"draft", "playoffs"},
+  "teams": [{ "team", "number", "nickname", "rank_mean", "rank_p10", "rank_p90", "p_captain", "p_r1", "p_r2", "p_selected",
+              "rating", "rating_sd" (pts/match incl. foul share), "p_dcmp", "likely_captain": {"team", "p"}? }],
+  "seeds": [{ "seed", "captain": [{team, p}] x3, "first_pick": [{team, p}] x3, "playoffs": {"win","finalist","top 4 (13)","top 6 (7)","out early"} }],
+  "us": { "team", "rank_mean", "p_captain", "p_r1", "p_r2", "p_unpicked", "p_dcmp",
+          "outcomes": [{ "seed"|null, "role": "captain|first pick|second pick|not selected", "share", "n", "event_points", "p_dcmp" (null if n < 15), "playoffs" }],
+          "by_role": {role: {share, p_dcmp, n}},
+          "picked_by": [{ "captain", "seed", "role", "p", "slots": [{seed, role, p}] }],
+          "need": { "final_points" (median cutoff + 1), "current_points", "need_here", "qual_points_median",
+                    "grid": [{ "seed", "captain"|"first pick"|"second pick": {"result": least playoff result reaching the need | null, "points", "p_result"} }],
+                    "text": "need ~44 event points (qual ~12): R1 pick of A1–A5 + finalist; ...", "note" } | null,
+          "pitches": [{ "captain", "nickname", "seed", "role", "p", "captain_rating", "lacks", "we_bring", "pitch", "evidence": [video facts with n] }] },
+  "draft": { "teams", "order": [[team idx by simulated final rank] x 300], "theta": [[rating draw per team] x 300],
+             "p_dcmp_by_outcome": {"<seed>:<role>": p}, "p_dcmp_by_role": {role: p} } }   // client-side "captain picks X" re-draft
+```

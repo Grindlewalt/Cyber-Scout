@@ -46,7 +46,7 @@
 `;
     document.head.appendChild(st);
   }
-  const nav = ev => `<div class="evtabs"><a class="tablink" href="#/${ev}/dash">Dashboard</a><a class="tablink" href="#/${ev}/rankings">Rankings</a><a class="tablink on" href="#/${ev}/schedule">Schedule</a><a class="tablink" href="#/${ev}/teams">Teams</a><a class="tablink" href="#/${ev}/matches">Matches</a></div>`;
+  const nav = ev => `<div class="evtabs"><a class="tablink" href="#/${ev}/dash">Dashboard</a><a class="tablink" href="#/${ev}/rankings">Rankings</a><a class="tablink" href="#/${ev}/selection">Selection</a><a class="tablink on" href="#/${ev}/schedule">Schedule</a><a class="tablink" href="#/${ev}/teams">Teams</a><a class="tablink" href="#/${ev}/matches">Matches</a></div>`;
 
   function teams(ts, c, us) { return ts.map(k => `<a class="t ${c} ${k === us ? "us" : ""}" href="#/${S.ev}/t/${k}">${tn(k)}</a>`).join(""); }
 
@@ -131,6 +131,7 @@
     if (nextOurs && !S.open.size) S.open.add(nextOurs.key);
     crumbs([[ev, `#/${ev}`], ["Schedule"]]); $updated.textContent = d.asof ? "replay" : ago(d.generated);
     $app.innerHTML = `<div class="dash sc"><div class="dtop"><div><h1>Schedule</h1><div class="sub">${H(ev)} · predictions for <b>${tn(d.team)}</b>'s matches break down where each alliance scores. Click a row to expand.</div></div>${nav(ev)}</div>
+      ${d.asof ? "" : `<div class="sc-banner"><b>End-of-event data</b>, not replay time: predictions for unplayed matches use everything posted so far. For a replay view use the Dashboard's time picker or <span class="muted">goals --asof</span>.</div>`}
       <section class="card" id="sc-body"></section></div>`;
     draw(d);
     const target = key;                              // deep link #/<ev>/schedule/<matchkey>

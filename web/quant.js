@@ -27,7 +27,7 @@ function tile(label, x, f = "1", unit = "", tip = "") {
 }
 function spark(vals, opts = {}) {
   const w = opts.w || 110, h = opts.h || 26, ok = vals.filter(has);
-  if (ok.length < 2) return `<span class="muted small">–</span>`;
+  if (ok.length < 3) return `<span class="muted small" title="fewer than 3 points: no trend">–</span>`;
   const lo = Math.min(...ok), hi = Math.max(...ok), rg = hi - lo || 1;
   const pts = vals.map((v, i) => has(v) ? [2 + i * (w - 4) / (vals.length - 1), h - 3 - (v - lo) / rg * (h - 6)] : null).filter(Boolean);
   const last = pts[pts.length - 1];
@@ -120,12 +120,20 @@ function section(id, title, body, note = "") {
   return `<section class="card sect" id="s-${id}"><h2>${title}</h2>${body}${note ? `<div class="note">${note}</div>` : ""}</section>`;
 }
 
+const label_ = c => `n=${c.n}${c.of ? "/" + c.of : ""} (${(c.keys || []).map(shortKey).join(", ")})`;
 async function teamPage(ev, tk) {
-  const [d, e] = await Promise.all([getTeam(ev, tk), api(`${ev}/event.json`).catch(() => null)]);
+  const [d, e, scd] = await Promise.all([getTeam(ev, tk), api(`${ev}/event.json`).catch(() => null), scoutData(ev)]);
+  const SR = (scd && scd.by[tk]) || {}, SV = SR.video || {}, RT = SR.rating || {}, CV = SR.coverage || { n: 0, keys: [] };
+  const vkeys = new Set(CV.keys || []), vshort = new Set((CV.keys || []).map(shortKey));
+  d.matches = (d.matches || []).map(m => ({ ...m, verified: vkeys.has(m.match) }));
+  const tainted = d.matches.some(m => !m.verified);
+  d.shots_map = (d.shots_map || []).filter(p => vshort.has(p.m));
+  d.autos = (d.autos || []).filter(a => vshort.has(a.short));
+  if (tainted) { d.routines = []; d.heat = null; d.intakes_map = []; }
   crumbs([[e ? e.name : ev, `#/${ev}`], [`${d.number}${d.nickname ? " · " + d.nickname : ""}`]]); $updated.textContent = "";
   const ag = d.analytics, S = ag && ag.scoring || {}, MV = ag && ag.movement || {}, DF = ag && ag.defense || {}, EG = ag && ag.endgame || {}, RL = ag && ag.reliability || {};
   const ms = d.matches || [], an = ms.map(m => m.analytics || null);
-  const tr = fn => an.map(a => { try { return a ? fn(a) : null; } catch (x) { return null; } });
+  const tr = fn => an.map((a, i) => { try { return a && ms[i].verified ? fn(a) : null; } catch (x) { return null; } });
   const starred = (lsGet("cyberscout:picks:" + ev, {}).stars || []).includes(tk);
   const role = ag && ag.role;
   const mcf = m => m.team_conf != null ? m.team_conf : m.conf;
@@ -140,14 +148,29 @@ async function teamPage(ev, tk) {
   $app.innerHTML = `<div class="titlebar"><div><h1>${d.number} <span class="muted" style="font-weight:500">${esc(d.nickname || "")}</span></h1>
     <div class="sub">${d.rank ? `Rank ${d.rank} · ` : ""}${d.opr != null ? `OPR ${fx(d.opr)} · ` : ""}${d.tracked} matches tracked
       ${role ? ` · <span class="pill role">${ROLE_TXT[val(role)] || val(role)}</span>` : ""}
-      · ${idHead} · <a href="https://www.thebluealliance.com/team/${d.number}/${(e && e.year) || ""}" target="_blank" rel="noopener">TBA</a></div></div>
+      · ${covPill(CV)} ${flagChips(SR)} · <a href="https://www.thebluealliance.com/team/${d.number}/${(e && e.year) || ""}" target="_blank" rel="noopener">TBA</a></div></div>
     <button id="star" class="${starred ? "on" : ""}">${starred ? "★ Starred" : "☆ Star"}</button></div>
     <nav class="jump">${navs.map(([k, l]) => `<a href="#" data-j="${k}">${l}</a>`).join("")}</nav>
     ${ag ? "" : `<div class="card empty">No quantitative analytics for this team yet.</div>`}
-    <div class="trends">${trend("Accuracy", tr(a => a.scoring.accuracy), "p", C_MADE)}${trend("Made", tr(a => a.scoring.made), "0", "#7cb4ff")}${trend("Attempts", tr(a => a.scoring.attempts), "0", "#7cb4ff")}
+    ${dataBanner(scd)}
+    <section class="card sect"><h2>Scouting truth <span class="muted small">same numbers as Teams, Specs, Compare, Picklist · video: ${CV.n ? esc(label_(CV)) : "no verified video"}</span></h2>
+      <div class="sc-truth">
+        <div><b>${has(RT.blend) ? fx(RT.blend) : "–"}<span class="sc-sd">±${fx(RT.sd, 0)}</span></b><span>Blend rating (pts/match)</span></div>
+        <div><b>${fx(RT.epa)}</b><span>EPA, local as-of (TBA only)</span></div><div><b>${fx(d.opr)}</b><span>OPR (TBA)</span></div>
+        <div><b>${svHtml(SV.made_pm)}</b><span>Made / match (video)</span></div><div><b>${svHtml(SV.acc, "p")}</b><span>Accuracy (video, shrunk)</span></div>
+        <div><b>${SV.auto_made ? svHtml(SV.auto_made) : CV.n ? '<span class="muted">n/t</span>' : "–"}</b><span>Auto FUEL (video)</span></div>
+        <div><b>${svHtml(SV.cycle_s)}</b><span>Cycle s (video)</span></div>
+        <div><b>${SR.climb ? pct(SR.climb.rate) : "–"}</b><span>Climb, TBA (${SR.climb ? SR.climb.n : 0} quals)</span></div>
+        <div><b>${SR.trend && SR.trend.tba ? `${SR.trend.tba.diff > 0 ? "+" : ""}${SR.trend.tba.diff}` : "–"}${SR.trend && SR.trend.tba ? `<span class="sc-sd">${SR.trend.tba.ci[0]}…${SR.trend.tba.ci[1]}</span>` : ""}</b><span title="alliance score minus fouls drawn minus partners' blend, last 4 quals vs earlier; 90% interval">TBA trend, last 4 ${SR.trend && SR.trend.tba ? "(" + SR.trend.tba.verdict + ")" : ""}</span></div>
+        <div><b>${SR.trend && SR.trend.blend ? spark(SR.trend.blend.map(x => x[1]), { color: "#7cb4ff" }) : "–"}</b><span>Blend over the event${SR.trend && SR.trend.blend ? ` (${fx(SR.trend.blend[0][1], 0)} → ${fx(SR.trend.blend.slice(-1)[0][1], 0)})` : ""}</span></div>
+      </div>
+      ${(SR.flags || []).length ? `<div class="note">${SR.flags.map(f => esc(f.text)).join("<br>")}</div>` : ""}
+      ${tainted ? `<div class="note">Matches tracked without verified identity (${esc(d.matches.filter(m => !m.verified).map(m => m.short).join(", "))}) are replay-only: excluded from the shot chart, autos and trends; the intake map, heatmap and routine clusters are hidden because they mix them in.</div>` : ""}</section>
+    <div class="trends" style="${ms.filter(m => m.verified).length < 3 ? "display:none" : ""}">${trend("Accuracy", tr(a => a.scoring.accuracy), "p", C_MADE)}${trend("Made", tr(a => a.scoring.made), "0", "#7cb4ff")}${trend("Attempts", tr(a => a.scoring.attempts), "0", "#7cb4ff")}
       ${trend("Cycle s", tr(a => a.scoring.cycle_s), "1", "#fbbf24")}${trend("Dist m", tr(a => a.movement.distance_m), "0", "#a78bfa")}${trend("Defense s", tr(a => a.defense.time_s), "1", "#fb7185")}</div>
     <div class="stackv">
-    ${section("scoring", "Scoring", `<div class="tiles">
+    ${tainted ? section("scoring", "Scoring", `<div class="muted small">Per-team aggregates from the tracker file mix in unverified matches, so they are not shown; the canonical values are in Scouting truth above and the per-match rows (verified only) are in Matches below.</div>`) : ""}
+    ${tainted ? "" : section("scoring", "Scoring", `<div class="tiles">
         ${tile("Accuracy", has(S.accuracy_pooled) ? { ...(S.accuracy || {}), v: S.accuracy_pooled } : S.accuracy, "p", "", "made / attempted fuel (pooled over matches)")}
         ${tile("Made / match", S.made, "1")}${tile("Attempts / match", S.attempts, "1")}${tile("Passes / match", S.passes, "1")}
         ${tile("Points / match", S.points, "1", "", "made into an ACTIVE hub")}${tile("Uncounted / match", S.uncounted, "1", "", "made into an inactive hub")}
@@ -183,12 +206,13 @@ async function teamPage(ev, tk) {
         ${tile("Avg dead time", RL.mean_dead_s, "1", " s")}${tile("Low-coverage matches", has(RL.low_coverage_matches) ? RL.low_coverage_matches : null, "0")}</div>
       <div>${role ? `<h3>Role <span class="pill role">${ROLE_TXT[val(role)] || val(role)}</span> ${confBar(mc(role), "role confidence")} <span class="muted small">n=${mn(role)}</span></h3>${role.scores ? bars(Object.entries(role.scores).sort((a, b) => b[1] - a[1]).map(([k, v]) => [ROLE_TXT[k] || k, v, 1, pct(v)])) : ""}` : ""}</div></div>`)}
     ${section("matches", "Matches", `<div class="tablewrap"><table><thead><tr><th>Match</th><th>All.</th><th class="num">Made/Att</th><th class="num">Acc</th><th class="num">Fire /s</th><th class="num">Volley</th><th class="num">Cycle s</th>
-      <th class="num">Intakes</th><th>Auto</th><th class="num">Auto made</th><th>Climb</th><th class="num">Def s</th><th class="num">Cont.</th><th class="num">Pins</th><th class="num">Dist m</th><th title="identity confidence in this match">ID</th><th>Flags</th></tr></thead>
-      <tbody>${ms.map((m, i) => { const a = an[i]; const lo = mcf(m) != null && mcf(m) < IDC.low; return `<tr class="${lo ? "lowid" : ""}" ${lo ? 'title="Low identity confidence: this robot may be mislabelled in this match, treat its stats with care"' : ""}><td><a href="#/${ev}/m/${m.match}">${esc(m.short)}</a></td><td class="${m.alliance[0]}">${m.alliance[0].toUpperCase()}</td>` + (a ? `
+      <th class="num">Intakes</th><th>Auto</th><th class="num">Auto made</th><th>Climb</th><th class="num">Def s</th><th class="num">Cont.</th><th class="num">Pins</th><th class="num">Dist m</th><th title="verified identity (v2, ≥ 60%)">Verified</th><th>Flags</th></tr></thead>
+      <tbody>${ms.map((m, i) => { const a = an[i]; const lo = mcf(m) != null && mcf(m) < IDC.low; if (!m.verified) return `<tr class="sc-dis"><td><a href="#/${ev}/m/${m.match}">${esc(m.short)}</a></td><td class="${m.alliance[0]}">${m.alliance[0].toUpperCase()}</td><td colspan="14" class="muted">identity not verified (v1 tracks or confidence &lt; 60%): replay only, feeds no numbers</td><td></td></tr>`;
+        return `<tr><td><a href="#/${ev}/m/${m.match}">${esc(m.short)}</a></td><td class="${m.alliance[0]}">${m.alliance[0].toUpperCase()}</td>` + (a ? `
         <td class="num">${a.scoring.made}/${a.scoring.attempts}</td><td class="num">${fmtV(a.scoring.accuracy, "p")}</td><td class="num">${fmtV(a.scoring.fire_rate)}</td><td class="num">${fmtV(a.scoring.volley_size, "0")}</td><td class="num">${fmtV(a.scoring.cycle_s)}</td>
         <td class="num">${a.collection.intakes}</td><td>${esc(a.auto.routine || "–")}</td><td class="num">${a.auto.made}/${a.auto.shots}</td><td>${a.endgame.level ? "L" + a.endgame.level : a.endgame.attempted ? "failed" : "–"}</td>
-        <td class="num">${fmtV(a.defense.time_s)}</td><td class="num">${a.defense.contacts}</td><td class="num">${a.defense.pins}</td><td class="num">${fmtV(a.movement.distance_m, "0")}</td><td>${idPill(mcf(m))}</td>
-        <td>${a.reliability.dead ? '<span class="pill failed">dead</span>' : ""}${a.reliability.low_coverage ? '<span class="pill no_video">low cov.</span>' : ""}</td>` : `<td colspan="13" class="muted">no analytics</td><td>${idPill(mcf(m))}</td>`) + `</tr>`; }).join("")
+        <td class="num">${fmtV(a.defense.time_s)}</td><td class="num">${a.defense.contacts}</td><td class="num">${a.defense.pins}</td><td class="num">${fmtV(a.movement.distance_m, "0")}</td><td>✓</td>
+        <td>${a.reliability.dead ? '<span class="pill failed">dead</span>' : ""}${a.reliability.low_coverage ? '<span class="pill no_video">low cov.</span>' : ""}</td>` : `<td colspan="13" class="muted">no analytics</td><td>✓</td>`) + `</tr>`; }).join("")
         || `<tr><td colspan="16" class="empty">No tracked matches yet</td></tr>`}</tbody></table></div>`)}
     </div>`;
 

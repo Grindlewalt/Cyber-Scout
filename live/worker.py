@@ -77,7 +77,7 @@ def process_match(ev, m, cfg, status, meta_cache):
     cands = videos.candidates(m, cfg, meta_cache)
     if not cands:
         st.update(state="no_video", at=time.time()); return False
-    cache = os.path.join(DATA, "cache"); os.makedirs(cache, exist_ok=True)
+    cache = os.environ.get("VIDEO_CACHE") or os.path.join(DATA, "cache"); os.makedirs(cache, exist_ok=True)
     st.update(state="processing", at=time.time(), video=cands[0]["id"], attempts=st.get("attempts", 0) + 1)
     jsave(os.path.join(ev_dir(ev), "status.json"), status)
     import process
@@ -421,15 +421,18 @@ def build_site(ev, tba):
                             "--snapshots", "--only-missing"], cwd=REPO, timeout=900, check=False)
         except Exception:
             traceback.print_exc()
-    try:                                               # rankings, district points, season goal, schedule
+    try:                                               # team spec sheets, defense library, scout.json (before goals:
+        import scouting                                # the Selection pitch cards read scout.json)
+        scouting.site_build_extra(DATA, ev, log=log)
+    except Exception:
+        traceback.print_exc()
+    try:                                               # rankings, district points, season goal, schedule, selection
         sys.path.insert(0, REPO)
         from live.strategy import goals
         goals.site_build(DATA, ev, team=os.environ.get("DASH_TEAM", "frc4911"))
-    except Exception:
-        traceback.print_exc()
-    try:                                               # team spec sheets + defense library
-        import scouting
-        scouting.site_build_extra(DATA, ev, log=log)
+        import subprocess                              # selection replay snapshots (only the missing ones, ~4 s each)
+        subprocess.run([sys.executable, "-m", "live.strategy.goals", DATA, ev, "--selection-snapshots"],
+                       cwd=REPO, timeout=900, check=False)
     except Exception:
         traceback.print_exc()
     log(f"{ev}: site rebuilt ({n_done}/{len(match_rows)} matches tracked)")

@@ -165,7 +165,7 @@ def key_factors(M, S, robots, red, blue):
     # defence susceptibility
     for r in robots:
         rr = (r["defended"] or {}).get("rate_retained")
-        if rr and not rr.get("prior_only") and rr["n_eff"] >= 0.4 and r["expected_fuel"]["total"] >= 20:
+        if rr and not rr.get("prior_only") and rr["n_eff"] >= 2.0 and r["expected_fuel"]["total"] >= 20:   # >= 2 eff. matches
             if rr["v"] < 0.75:
                 F.append({"kind": "defense_target", "team": r["team"], "weight": 0.6,
                           "text": f"{r['number']} kept only ~{rr['v'] * 100:.0f}% of its shot rate while defended "
