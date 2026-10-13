@@ -148,6 +148,7 @@ function plSave(ev, st, onConflict) {
     const m = plMeta[ev] || {};
     try {
       const r = await CS.app("PUT", `events/${ev}/picklists/${PL_NAME}`, { data: st, base_version: m.version ?? undefined });
+      if (r && r.queued) return;       // offline: kept in the outbox (sync.js), sent in order when the server is back
       plMeta[ev] = { version: r.version, by: r.updated_by, at: r.updated_at };
     } catch (e) {
       const cur = e.status === 409 && e.data && e.data.detail && e.data.detail.current;
@@ -159,6 +160,15 @@ function plSave(ev, st, onConflict) {
     }
   }, 500);
 }
+// sync.js: a queued save was sent (new version), or the user picked "take theirs" on a conflict
+window.CS = window.CS || { routes: {}, globalRoutes: {}, navItems: [] };     // event.js loads before app.js
+CS.picklist = {
+  adopt(ev, cur) { plMeta[ev] = { version: cur.version, by: cur.updated_by, at: cur.updated_at }; lsSet(plKey(ev), cur.data); },
+};
+document.addEventListener("cs:sent", e => {
+  const d = e.detail || {}, m = /^events\/([^/]+)\/picklists\/main$/.exec(d.path || "");
+  if (m && d.data && d.data.version != null) plMeta[decodeURIComponent(m[1])] = { version: d.data.version, by: d.data.updated_by, at: d.data.updated_at };
+});
 const PL_DEFAULT = { blend: 4, made: 0, acc: 0, automade: 0, cycle: 0, climb: 0, defs: 0 };
 // weights come from the shared server picklist or localStorage: only the known keys, each a number in 0..5 (security
 // audit: never render a stored value as markup, in value="" or as the shown number)

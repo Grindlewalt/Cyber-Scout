@@ -80,16 +80,22 @@
     if (Array.isArray(x)) return x.map(e => (e.loc ? e.loc.slice(-1)[0] + ": " : "") + e.msg).join("; ");
     return x.message || JSON.stringify(x);
   }
-  CS.app = async function (method, path, body) {
+  CS.csrf = () => cookie("cs_csrf") || (CS.session && CS.session.csrf) || "";
+  // opts (sync.js): {headers} extra request headers (Idempotency-Key), {timeout} ms before giving up (AbortError, no .status)
+  CS.app = async function (method, path, body, opts) {
     const opt = { method, credentials: "same-origin", cache: "no-store", headers: {} };
-    if (method !== "GET") opt.headers["X-CSRF-Token"] = cookie("cs_csrf") || (CS.session && CS.session.csrf) || "";
+    if (method !== "GET") opt.headers["X-CSRF-Token"] = CS.csrf();
     if (body !== undefined) { opt.headers["Content-Type"] = "application/json"; opt.body = JSON.stringify(body); }
-    const r = await fetch("app/v1/" + path, opt);
+    if (opts && opts.headers) Object.assign(opt.headers, opts.headers);
+    let ac = null, tm = 0;
+    if (opts && opts.timeout && window.AbortController) { ac = new AbortController(); opt.signal = ac.signal; tm = setTimeout(() => ac.abort(), opts.timeout); }
+    let r;
+    try { r = await fetch("app/v1/" + path, opt); } finally { clearTimeout(tm); }
     let d = null;
     if (r.status !== 204) { try { d = await r.json(); } catch (e) { } }
     if (!r.ok) {
       const err = new Error(errText(d, r.status)); err.status = r.status; err.data = d;
-      if (r.status === 401 && CS.platform && CS.user) { CS.user = null; setTimeout(() => goLogin(), 0); }
+      if (r.status === 401 && CS.platform && CS.user) { CS.user = null; if (CS.sync) CS.sync.forget(); setTimeout(() => goLogin(), 0); }
       throw err;
     }
     return d;
@@ -97,18 +103,32 @@
   CS.can = role => !CS.platform || (!!CS.user && ROLES.indexOf(CS.user.role) >= ROLES.indexOf(role));
 
   let loaded = false, apiDown = false;
+  // sync.js (CS.sync): client mode asks the local Cyber-Scout Client first (no server set yet -> #/connect, not signed in ->
+  // #/login); when the server can't be reached, the last signed-in user on this device keeps reading the saved data offline.
   CS.refreshSession = async function () {
     apiDown = false;
+    const sy = CS.sync;
+    if (sy) await sy.ready;
+    if (sy && sy.mode === "client") {
+      const st = await sy.refresh();
+      if (!st) { apiDown = true; loaded = true; return CS.session; }
+      CS.platform = true;
+      if (!st.server || !st.signed_in) { CS.session = { client: true, setup_required: false, configured: true, user: null }; CS.user = null; loaded = true; return CS.session; }
+    }
     try {
       const r = await fetch("app/v1/session", { credentials: "same-origin", cache: "no-store" });
       const json = (r.headers.get("content-type") || "").includes("json");
       if (r.status === 404 || (r.ok && !json)) { CS.platform = false; CS.session = null; CS.user = null; }  // legacy static site / dev server
       else if (!r.ok) { apiDown = true; }
-      else { CS.platform = true; CS.session = await r.json(); CS.user = CS.session.user; }
+      else { CS.platform = true; CS.session = await r.json(); CS.user = CS.session.user; if (sy) { if (CS.user) sy.rememberUser(CS.user); else sy.forget(); } }
     } catch (e) { apiDown = true; }
+    const off = apiDown && sy && sy.offlineSession();
+    if (off) { apiDown = false; CS.platform = true; CS.session = off; CS.user = off.user; if (sy.mode === "browser") sy.lost(); }
     loaded = true;
     return CS.session;
   };
+  /** sign-in state changed outside the login form (client signed out, back online): check the session again and re-route */
+  CS.reauth = () => { loaded = false; route(false); };
   CS.navAllowed = i => !CS.platform || ((!i.roles || (CS.user && i.roles.includes(CS.user.role))) && (!i.minRole || CS.can(i.minRole)));
 
   // ---------------------------------------------------------------- hooks into app.js (route / nav / api)
@@ -132,9 +152,15 @@
     const p = hashParts();
     if (apiDown) {
       renderUserBox();
-      $app.innerHTML = `<div class="empty err" role="alert"><b>Can't reach the Cyber-Scout server</b>Check that the server is running and this device is on its network.<div class="acts"><button type="button" id="retry">Try again</button></div></div>`;
+      const cl = CS.sync && CS.sync.mode === "client";
+      $app.innerHTML = cl ? `<div class="empty err" role="alert"><b>The Cyber-Scout Client isn't answering</b>This page is served by the Client on this computer. Check that it's still running, then try again.<div class="acts"><button type="button" id="retry">Try again</button></div></div>`
+        : `<div class="empty err" role="alert"><b>Can't reach the Cyber-Scout server</b>Check that the server is running and this device is on its network. Once you've signed in here, saved data stays readable without a connection.<div class="acts"><button type="button" id="retry">Try again</button></div></div>`;
       document.getElementById("retry").onclick = () => { loaded = false; route(); };
       return;
+    }
+    if (CS.sync && CS.sync.needsServer()) {          // Cyber-Scout Client, first run: which server?
+      if (p[0] !== "connect" && p[0] !== "settings") { location.replace("#/connect"); return; }
+      return appRoute(scroll);
     }
     if (CS.platform) {
       if (CS.session.setup_required && p[0] !== "setup") { location.replace("#/setup"); return; }
@@ -157,7 +183,7 @@
   api = async function (p) {
     try { return await appApi(p); }
     catch (e) {
-      if (CS.platform && / 401$|: 401$/.test(e.message)) { await CS.refreshSession(); if (!CS.user) goLogin(); }
+      if (CS.platform && / 401$|: 401$/.test(e.message)) { await CS.refreshSession(); if (!CS.user) { if (CS.sync) CS.sync.forget(); goLogin(); } }
       throw e;
     }
   };
@@ -170,7 +196,8 @@
       <a href="#" id="signout">Sign out</a>`;
     el.querySelector("#signout").onclick = async e => {
       e.preventDefault();
-      try { await CS.app("POST", "auth/logout"); } catch (x) { }
+      if (CS.sync && CS.sync.mode === "client") { try { await CS.sync.clientLogout(); } catch (x) { } }
+      else { try { await CS.app("POST", "auth/logout"); } catch (x) { } if (CS.sync) CS.sync.signedOut(); }
       CS.user = null; loaded = false; location.hash = "#/login";
     };
   }
@@ -196,14 +223,22 @@
   // ---------------------------------------------------------------- login
   CS.globalRoute("login", async () => {
     crumbs([["Sign in"]]); $updated.textContent = "";
-    $app.innerHTML = `<div class="card authcard"><h1>Sign in</h1><div class="sub">Cyber-Scout. Ask your team's admin for an account.</div>
+    const cl = CS.sync && CS.sync.mode === "client" ? CS.sync.status || {} : null;   // Cyber-Scout Client: it signs in, keeps the session
+    $app.innerHTML = `<div class="card authcard"><h1>Sign in</h1><div class="sub">${cl ? `This computer's Cyber-Scout Client signs in to <b>${esc(CS.sync.host(cl.server))}</b> and keeps you signed in. <a href="#/connect">Change server</a>`
+      : "Cyber-Scout. Ask your team's admin for an account."}</div>
       <form class="csform" autocomplete="on">
         <label>Username<input name="username" autocomplete="username" required maxlength="32" autocapitalize="none" spellcheck="false"></label>
         <label>Password<input name="password" type="password" autocomplete="current-password" placeholder="Leave blank if you don't have one"></label>
         <button type="submit" class="primary">Sign in</button><div class="cserr" aria-live="polite"></div></form></div>`;
     form($app, async d => {
+      if (cl) {
+        await CS.sync.clientLogin(d.username.trim(), d.password || "");
+        loaded = false; await CS.refreshSession();
+        if (!CS.user) throw new Error(apiDown ? "Signed in, but the server stopped answering. Try again." : "Signed in, but the server didn't confirm it. Try again.");
+        afterAuth(); return;
+      }
       CS.session = await CS.app("POST", "auth/login", { username: d.username.trim(), password: d.password || "" });
-      CS.user = CS.session.user;
+      CS.user = CS.session.user; if (CS.sync) CS.sync.rememberUser(CS.user);
       afterAuth();
     });
   });

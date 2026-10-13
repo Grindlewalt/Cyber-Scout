@@ -128,3 +128,22 @@ Client side (part 2), as implemented in `client/` (answer shapes of the control 
   appear in `errors` (`kind` `conflict` / `failed`, with the server's answer) and in `GET /client/v1/outbox`.
   Extra fields: `media`, `followed`, `available_events`, `offline_reason`, `server_info`, `web_version`, `storage`.
   `POST /client/v1/test` always answers 200 with `ok:true|false`.
+
+Web app (part 3), as implemented in `web/sync.js`, `web/sw.js` (+ small hooks in `app.js`, `setup.js`, `event.js`,
+`notes.js`, `settings.js`).
+
+- **"Stale-while-revalidate" for `/api/…` has a 1.5 s network grace**: the network answer is used when it arrives
+  within 1.5 s (so an online page is never one refresh behind), otherwise the cached copy is shown at once and the
+  cache is updated in the background. Answers served from the cache carry `x-cs-src: offline|stale` and `x-cs-at`
+  (ms) for the "Saved copy · as of …" label. `index.html` is network-first with a 4 s limit.
+- **Browser-mode offline copies hold data only** (`api/…` paths of the manifest), not videos; `media/*.jpg|png|webp`
+  get a 40-entry LRU, videos and Range requests pass through. Bundles are requested in ≤ 8 MB chunks and a failed
+  chunk is re-requested for the files still missing (no `Range`/`If-Range` resume in the browser).
+- **Outbox (browser)**: queued writes are notes, picklist, identity fixes and their approve/reject; every such write
+  carries an `Idempotency-Key` even online (the key is reused if it ends up queued). No Web Lock between the page and
+  the Background-Sync worker: both send with the item's key and rely on the server's replay / 429. "Keep mine" /
+  "Retry" send a new key. 409 "keep mine / take theirs" is offered for picklists in both modes (client mode: from the
+  outbox item's `response.detail.current`).
+- **Offline sign-in state**: the last signed-in user (id, name, role; no secret) is kept in `localStorage
+  cs:sync:user` so the app opens read-only + outbox when `/app/v1/session` can't be reached; it is dropped on
+  sign-out, on any 401 and when the server answers "no user".

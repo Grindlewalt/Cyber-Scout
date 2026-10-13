@@ -69,6 +69,9 @@ const fx = (v, d = 1) => v == null ? "–" : Number(v).toFixed(d);
 // file from several places (router + page + sidebar, or the boot prefetch at the end of this file) fetches it once.
 // Every caller gets its own parsed copy (pages add fields to what they get). Polls (60-90 s apart) always refetch;
 // each fetch still revalidates with the server (no-cache + ETag -> 304 when unchanged).
+// Offline (sync.js): in browser mode the service worker answers from its cache when the server is slow or unreachable
+// (headers x-cs-src / x-cs-at), in client mode the local Cyber-Scout Client serves its mirror; CS.sync.seen() turns that
+// into the connection pill and the toolbar's "Saved copy · as of …".
 const API_MEMO = new Map(), API_TTL = 5000;
 async function api(p) {
   const now = Date.now();
@@ -77,7 +80,8 @@ async function api(p) {
     for (const [k, v] of API_MEMO) if (v.t && now - v.t >= API_TTL) API_MEMO.delete(k);
     const me = e = { t: 0 };
     e.text = fetch("api/" + p, { cache: "no-cache" })
-      .then(r => { if (!r.ok) throw new Error(p + ": " + r.status); return r.text(); })
+      .then(r => { if (CS.sync) CS.sync.seen(p, r); if (!r.ok) throw new Error(p + ": " + r.status); return r.text(); },
+        err => { if (CS.sync) CS.sync.lost(err); throw err; })
       .then(x => { me.t = Date.now(); return x; }, err => { if (API_MEMO.get(p) === me) API_MEMO.delete(p); throw err; });
     API_MEMO.set(p, e);
   }
@@ -752,7 +756,11 @@ async function route(scroll = true) {
   } catch (e) {
     console.error(e);
     if (p.length && EVK.test(p[0]) && !CS.globalRoutes[p[0]] && /\b404\b/.test(e.message) && await compNotBuilt(p[0])) return;
-    $app.innerHTML = `<div class="empty err" role="alert"><b>Couldn't load this page</b>${esc(e.message)}. It may not be processed yet, or the connection dropped.
+    const off = CS.sync && CS.sync.isOffline();
+    if (off) { crumbs([["Not saved on this device"]]); $updated.textContent = ""; }
+    $app.innerHTML = off ? `<div class="empty err" role="alert"><b>This page isn't saved on this device</b>You're not connected to the Cyber-Scout server, and this page wasn't opened or saved while you were.${CS.sync.mode === "browser" ? " Next time you're online, use “Save this event for offline” in the connection menu." : ""}
+      <div class="acts"><button type="button" id="routeretry">Try again</button></div></div>`
+      : `<div class="empty err" role="alert"><b>Couldn't load this page</b>${esc(e.message)}. It may not be processed yet, or the connection dropped.
       <div class="acts"><button type="button" id="routeretry">Try again</button></div></div>`;
     const rb = document.getElementById("routeretry"); if (rb) rb.onclick = () => route(false);
   }

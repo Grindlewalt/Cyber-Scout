@@ -28,6 +28,7 @@
   .nt-t { white-space: pre-wrap; overflow-wrap: anywhere; margin-top: 2px; line-height: 1.5; }
   .nt-a { display: flex; gap: var(--sp-1); margin-top: var(--sp-1); flex-wrap: wrap; }
   .nt-a button, .idfx .acts button, .idfx-p button { padding: 2px 10px; font-size: var(--fs-foot); }
+  .nt-q .nt-t { color: var(--ink-2); }
   .nt-rm .nt-t { color: var(--ink-3); text-decoration: line-through; text-decoration-color: var(--line-strong); }
   .nt-tag { font-size: var(--fs-cap); padding: 0 6px; border-radius: var(--r-tag); border: 1px dashed var(--line-strong); color: var(--ink-2); white-space: nowrap; }
   .nt-tag.warn { border-style: solid; color: var(--caution); border-color: var(--caution-line); background: var(--caution-tint); }
@@ -105,9 +106,18 @@
     const help = `<span class="hl">Plain-text notes for everyone on the team: what you saw that the numbers don't show.</span>`
       + `<span class="hl">${team ? "Notes about this team, including the ones written on its match pages." : "Notes about this match; pick a team to make a note also show on that team's page."}</span>`
       + `<span class="hl">Scouts and up can write; you can edit or delete your own. Strategists and admins can hide anyone's note and bring hidden or deleted notes back. Every change is in the Activity log.</span>`;
+    // notes written offline wait in the outbox (sync.js): shown here until they're sent
+    const queued = () => CS.sync ? CS.sync.pending(it => it.method === "POST" && it.path === `events/${encodeURIComponent(ev)}/notes` && !!it.body
+      && (team ? it.body.team === team : it.body.match === match)) : [];
+    const qItem = it => `<li class="nt-i nt-q"><div class="nt-m"><b>${H(name(CS.user))}</b><span class="nt-tag warn" title="Saved on this device. It's sent when the connection to the server is back.">waiting to send</span>
+        <time datetime="${H(new Date(it.at).toISOString())}">${H(when(it.at / 1000))}</time></div><div class="nt-t">${H(it.body.text)}</div></li>`;
+    const onOutbox = () => { if (!el.isConnected) document.removeEventListener("cs:outbox", onOutbox); else if (!S.editing && !el.contains(document.activeElement)) load(); };
+    document.addEventListener("cs:outbox", onOutbox);
+    const QMSG = "Saved on this device. It's sent when the connection to the server is back.";
     async function load() {
       try { S.list = await CS.app("GET", q()) || []; S.err = null; }
-      catch (e) { S.list = []; S.err = e.status === 404 ? "Notes aren't available on this server." : errMsg(e); }
+      catch (e) { S.list = []; S.err = e.status === 404 ? "Notes aren't available on this server." : !e.status || (e.data && e.data.offline) || e.status >= 502
+        ? "Not connected: everyone's notes show here once the server can be reached." : errMsg(e); }
       draw();
     }
     function msg(kind, text, undo) {
@@ -141,7 +151,7 @@
         <div class="nt-t">${H(n.text)}</div>${acts.length ? `<div class="nt-a">${acts.join("")}</div>` : ""}</li>`;
     }
     function draw() {
-      const live = S.list.filter(n => !n.removed), canWrite = CS.can("scout");
+      const live = S.list.filter(n => !n.removed), canWrite = CS.can("scout"), qd = queued();
       const keepFocus = document.activeElement && el.contains(document.activeElement) ? document.activeElement.id : null;
       const about = match && teams.length ? `<label class="nt-row"><span class="muted small">About</span><select id="ntAbout"><option value="">the whole match</option>${teams.map(t => `<option value="${H(t)}"${S.about === t ? " selected" : ""}>${H(num(t))}</option>`).join("")}</select></label>` : "";
       el.innerHTML = `<div class="mv-sh"><h2 id="${hid}">Notes</h2><span class="muted small">${live.length || "none yet"}</span>${CS.help(help, "About notes")}
@@ -153,7 +163,7 @@
             <div class="nt-row">${about}<span class="${cntCls(S.draft.length)} nt-grow" id="ntCnt" aria-live="polite">${counter(S.draft.length)}</span>
             <button type="submit" class="primary"${S.draft.trim() ? "" : " disabled"}>Add note</button></div></form>`}
         <div class="nt-msg" role="status" aria-live="polite"></div>
-        ${S.err ? `<div class="nt-ro">${H(S.err)}</div>` : S.list.length ? `<ul class="nt-list">${S.list.map(item).join("")}</ul>` : `<div class="muted small">No notes yet.</div>`}`;
+        ${S.err ? `<div class="nt-ro">${H(S.err)}</div>` : ""}${qd.length || (!S.err && S.list.length) ? `<ul class="nt-list">${qd.map(qItem).join("")}${S.err ? "" : S.list.map(item).join("")}</ul>` : S.err ? "" : `<div class="muted small">No notes yet.</div>`}`;
       wire();
       if (keepFocus) { const f = document.getElementById(keepFocus); if (f) f.focus(); }
     }
@@ -168,7 +178,8 @@
           S.busy = true; b.disabled = true;
           const body = { text: ta.value };
           if (team) body.team = team; else { body.match = match; if (S.about) body.team = S.about; }
-          try { await CS.app("POST", `events/${encodeURIComponent(ev)}/notes`, body); S.draft = ""; await load(); msg("ok", "Note added."); }
+          try { const r = await CS.app("POST", `events/${encodeURIComponent(ev)}/notes`, body); S.draft = "";
+            if (r && r.queued) { draw(); msg("ok", QMSG); } else { await load(); msg("ok", "Note added."); } }
           catch (x) { msg("err", errMsg(x)); b.disabled = false; }
           finally { S.busy = false; }
         };
@@ -186,7 +197,8 @@
         fe.querySelector("[data-cancel]").onclick = () => { S.editing = null; draw(); };
         fe.onsubmit = async e => {
           e.preventDefault();
-          try { await CS.app("PATCH", `notes/${id}`, { text: ta.value }); S.editing = null; await load(); msg("ok", "Saved."); }
+          try { const r = await CS.app("PATCH", `notes/${id}`, { text: ta.value }); S.editing = null;
+            if (r && r.queued) { draw(); msg("ok", "Edit " + QMSG.charAt(0).toLowerCase() + QMSG.slice(1)); } else { await load(); msg("ok", "Saved."); } }
           catch (x) { msg("err", errMsg(x)); }
         };
       });
@@ -194,10 +206,12 @@
     async function act(a, id, okText) {
       try {
         if (a === "delete" || a === "hide") {
-          await CS.app("DELETE", `notes/${id}`);
+          const r = await CS.app("DELETE", `notes/${id}`);
+          if (r && r.queued) { msg("ok", QMSG); return; }
           await load(); msg("ok", a === "hide" ? "Note hidden: only strategists and admins can still see it." : "Note deleted.", id);
         } else if (a === "restore") {
-          await CS.app("POST", `notes/${id}/restore`); await load(); msg("ok", okText || "Note restored.");
+          const r = await CS.app("POST", `notes/${id}/restore`); if (r && r.queued) { msg("ok", QMSG); return; }
+          await load(); msg("ok", okText || "Note restored.");
         }
       } catch (x) { msg("err", errMsg(x)); }
     }
@@ -265,8 +279,8 @@
       el.querySelectorAll("[data-dec]").forEach(b => b.onclick = async () => {
         const rid = b.closest("[data-rid]").dataset.rid, d = b.dataset.dec;
         try {
-          await CS.app("POST", `${base}/override-requests/${encodeURIComponent(rid)}/${d}`);
-          S.msg = ["ok", d === "approve" ? "Approved: the worker re-labels this match on its next pass." : CS.can("strategist") ? "Rejected." : "Withdrawn."];
+          const r = await CS.app("POST", `${base}/override-requests/${encodeURIComponent(rid)}/${d}`);
+          S.msg = r && r.queued ? ["ok", "Saved on this device. It's sent when the connection to the server is back."] : ["ok", d === "approve" ? "Approved: the worker re-labels this match on its next pass." : CS.can("strategist") ? "Rejected." : "Withdrawn."];
         } catch (x) { S.msg = ["err", H(errMsg(x))]; }
         load();
       });
@@ -283,8 +297,9 @@
           changed().forEach(t => { entry[t.alliance][String(t.idx)] = S.sel[t.idx]; });
           r = await CS.app("PUT", `${base}/overrides/${encodeURIComponent(match)}`, entry);
         }
-        const queued = r && r.status === "pending";
-        S.msg = queued ? ["ok", `Sent for review: a strategist or admin approves it in Identity fixes. Until then this match keeps its current labels.`]
+        const queued = r && (r.status === "pending" || r.queued);
+        S.msg = r && r.queued ? ["ok", "Saved on this device. It's sent when the connection to the server is back; until then this match keeps its current labels."]
+          : queued ? ["ok", `Sent for review: a strategist or admin approves it in Identity fixes. Until then this match keeps its current labels.`]
           : ["ok", clear ? "Fixes cleared. The worker re-labels this match on its next pass (a few minutes)." : "Fix applied. The worker re-labels this match on its next pass (a few minutes); reload this page after that."];
         if (!queued) tracks.forEach(t => { orig[t.idx] = S.sel[t.idx]; });
       } catch (x) { S.msg = ["err", H(errMsg(x))]; }

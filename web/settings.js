@@ -17,11 +17,14 @@
   CS.globalRoute("settings", async () => {
     crumbs([["Settings"]]); $updated.textContent = "";
     if (!S) { $app.innerHTML = `<div class="empty">Settings need theme.js, which didn't load. Reload the page.</div>`; return; }
+    if (CS.sync) await CS.sync.ready;
+    const client = !!(CS.sync && CS.sync.mode === "client");
     const draw = (focusSel) => {
       const cur = S.get(), t = S.themes.find(x => x.id === cur.style), single = t.modes.length === 1;
       const def = S.defaults;
       $app.innerHTML = `<div class="st">
-        <h1>Settings</h1><div class="sub">How Cyber-Scout looks for you. Saved in this browser only, so each device can have its own look.</div>
+        <h1>Settings</h1><div class="sub">${client ? "This computer's connection to your team's server, and how Cyber-Scout looks for you." : "How Cyber-Scout looks for you, and what this device keeps for offline use. Saved in this browser only, so each device can have its own look."}</div>
+        ${client ? '<div id="st-sync"></div>' : ""}
         <figure class="st-note">
           <blockquote>I like having a colorful UI and I'm sure others do too. I couldn't land on a specific design, so I went a little ham.</blockquote>
           <figcaption><span class="st-av" aria-hidden="true">G</span>Grant</figcaption>
@@ -53,7 +56,10 @@
 
         <div class="st-acts"><button type="button" id="st-reset"${cur.style === def.style && cur.mode === def.mode && cur.layout === def.layout ? " disabled" : ""}>Reset to default</button>
           <span class="st-ok" role="status" aria-live="polite"></span></div>
+        ${client ? "" : '<div id="st-sync" class="st-after"></div>'}
       </div>`;
+      // sync.js: Connection (Cyber-Scout Client) first, or Offline (browser) after the look
+      if (CS.sync && CS.sync.mountSettings) CS.sync.mountSettings($app.querySelector("#st-sync"));
       $app.querySelectorAll("input[name=st-style]").forEach(i => i.onchange = () => { S.set({ style: i.value }); draw(`input[name=st-style][value="${i.value}"]`); });
       $app.querySelectorAll("input[name=st-mode]").forEach(i => i.onchange = () => { S.set({ mode: i.value }); draw(`input[name=st-mode][value="${i.value}"]`); });
       $app.querySelectorAll("input[name=st-layout]").forEach(i => i.onchange = () => { S.set({ layout: i.value }); draw(`input[name=st-layout][value="${i.value}"]`); });
