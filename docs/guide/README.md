@@ -114,15 +114,18 @@ calibration) and, optionally, correcting a robot's team (an identity override; s
 * The **team number and season goal set in Admin are not used** by the strategy builds; they read the `DASH_TEAM`
   / `DASH_GOAL` environment variables (default `frc4911` / `DCMP`). `web/dash.js` also hard-codes `frc4911`.
   ([strategy.md](strategy.md), [web.md](web.md))
-* The **api container gets no `.env`**: `PASSWORD_MIN`, `SESSION_*`, `SETUP_CODE_REQUIRED` and the one-time
-  `TBA_KEY`/`EVENTS` import documented in `server/README.md` never reach it. ([server.md](server.md),
-  [architecture.md](architecture.md))
+* *(Fixed in the cleanup pass, 2026-10-13.)* The api container now gets an explicit allowlist of `.env` values
+  (`SESSION_IDLE_DAYS`, `SESSION_MAX_DAYS`, `PASSWORD_MIN`, `MEMBER_PASSWORD_MIN`, `SETUP_CODE_REQUIRED`, `COOKIE_SECURE`, with the `server/config.py` defaults); still no
+  `env_file`, so the one-time `TBA_KEY`/`EVENTS` import stays off on purpose. ([deploy.md](deploy.md),
+  [server.md](server.md))
 * The **no-password sign-in default is `never`** (Off), not `lan` as `server/README.md` says; the UI offers only
   Off / On-for-testing. ([server.md](server.md))
-* `goals.py` appears to feed the event's teams into the season simulation at about one third of their blend
-  rating while keeping full alliance noise — likely a bug. ([strategy.md](strategy.md))
-* There is **no UI to write notes or propose identity fixes** yet (the API supports both; the web app only has the
-  approval queue `#/fixes`). ([web.md](web.md))
+* *(Fixed in the cleanup pass.)* `goals.py` fed the event's teams into the season simulation at one third of their
+  blend rating; it now passes the blend unchanged (DCMP-odds Brier on the as-of replay .129 → .122 for the event's
+  teams). ([strategy.md](strategy.md))
+* *(Fixed in the cleanup pass.)* Notes and identity fixes have a UI: a Notes card on the team and match pages and a
+  "Wrong team?" form on the match page (scouts' fixes go to the per-competition queue `#/<ev>/fixes`).
+  ([web.md](web.md))
 * Every idle poll (120 s) rebuilds the whole site, including the dashboard, the defense library and all
   `scout/<ts>.json` replay snapshots. ([pipeline.md](pipeline.md), [architecture.md](architecture.md))
 * `camera_<source>.json` (needed to track from a livestream) is written by no code; it must be made by hand.
@@ -140,7 +143,7 @@ calibration) and, optionally, correcting a robot's team (an identity override; s
 | win-probability Brier, 58 quals (as-of footer) | blend .1185, no video .1333, EPA .1474, coin .25 | [strategy.md](strategy.md) |
 | blend − EPA | −.029 [−.051, −.009] (90% CI) | strategy.md |
 | video increment | −.015 [−.036, +.004] (not significant) | strategy.md |
-| defense: share of scoring kept while defended (event-wide, placebo-controlled) | 0.71 [0.56, 0.88]; 0 of 39 per-team tests significant | strategy.md |
+| defense: share of scoring kept while defended (event-wide, placebo-controlled) | 0.71 [0.56, 0.88]; 0 of 39 per-team tests significant (so every queue-card defense effect is an "assumption") | strategy.md |
 | district points | exact vs TBA on all 309 2026 PNW team-events | strategy.md |
 
 ## Glossary
@@ -198,7 +201,8 @@ livestream clip → reject the record) and flags substitutions (informational).
 
 **Overrides / identity fixes** — `data/events/<ev>/overrides.json`, `{match: {alliance: {track idx: team}}}`.
 Through the API (`PUT /app/v1/events/<ev>/overrides/<match>`) a scout's fix is queued for approval by default and a
-strategist's is applied directly; the web app currently has only the approval queue, not a form to propose one.
+strategist's is applied directly. In the web app: "Wrong team?" on the match page proposes / applies one, and
+`#/<ev>/fixes` is the approval queue.
 The worker applies them on its next site build (for v2 matches per match; v1 matches re-solve event-wide). An
 overridden track keeps the tracker's per-frame confidence, so quarantine still applies.
 

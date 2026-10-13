@@ -61,6 +61,7 @@ Files (committed sizes):
 | `setup.js` | 395 | session, `CS.app`, roles, login, account, TBA event picker, first-run wizard |
 | `admin.js` | 240 | Admin: Teammates, Settings, Events, Updates |
 | `audit.js` | 130 | Activity (audit log, lockdown, sign-in policy) and Identity-fixes queue |
+| `notes.js` | ~300 | (cleanup pass) `CS.notes` (Notes card on the team and match pages) and `CS.idFix` ("Wrong team?" identity-fix form on the match page) |
 | `sources.js` | 649 | Video setup: sources, layout box editor, calibration wizard; livestream recorder status |
 | `rankings.js` | 227 | Rankings & season goal; Selection tab |
 | `schedule.js` | 151 | Schedule with per-period breakdown |
@@ -126,7 +127,7 @@ Consequences are in [§11](#11-csp-rules-for-contributors).
 End of `<body>`, in this order (order matters, see below):
 
 ```
-quant.js  event.js  player.js  dash.js  app.js  setup.js  admin.js  audit.js
+quant.js  event.js  player.js  dash.js  app.js  setup.js  admin.js  audit.js  notes.js
 sources.js  rankings.js  schedule.js  teams2.js  defense.js  settings.js
 ```
 
@@ -192,7 +193,7 @@ Registered items (committed):
 | 65 | Specs | `#/<ev>/specs` | scout | | teams2.js |
 | 70 | Defense | `#/<ev>/defense` | scout | | defense.js |
 | 80 | Video | `#/<ev>/sources` | manage | roles admin | sources.js |
-| 94 | Identity fixes | `#/fixes` | manage | global, minRole strategist | audit.js |
+| 94 | Identity fixes | `#/<ev>/fixes` (old `#/fixes` redirects to the current competition's) | manage | minRole strategist | audit.js |
 | 95 | Admin | `#/admin` | manage | global, roles admin | admin.js |
 | 96 | Activity | `#/activity` | manage | global, roles admin | audit.js |
 | 99 | Settings | `#/settings` | manage | global | settings.js |
@@ -217,6 +218,14 @@ Registered items (committed):
 | anything else under an event | `eventPage` → falls back to Teams |
 
 Errors in a handler render a "Couldn't load this page … Try again" card (`#routeretry` re-runs `route(false)`).
+
+**Route validation** (cleanup pass, security audit): before any handler runs, `routeOk(p)` (also `CS.routeOk`)
+checks every hash segment once: each matches `^[A-Za-z0-9_.,=?&%:-]{1,160}$`; the first is a global route or an
+event key (`EVK`); and the argument shapes of the core routes: `m`/`a` match key `^[A-Za-z0-9_]{1,40}$` (before
+`?t=`), `t`/`specs` team `^frc\d{1,5}$`, `defense` team or `defenders`, `dash` `live` or a 9–12 digit ts (+ plan
+key), `selection`/`picklist` ts, `schedule` match key, `compare` up to three team numbers. Anything else shows
+"Page not found" without calling a page, so no unvalidated route parameter reaches an `href` or `innerHTML`. A new
+route with arguments should add its shape to `routeOk`.
 
 `cleanup` is a global array: pages push teardown functions (intervals, observers, global listeners). Anything a page
 adds to `window`/`document` must be removed through it.
@@ -330,7 +339,8 @@ star (writes through `plLoad/plSave` from event.js, i.e. the shared server pickl
 canonical scout.json values, coverage, flags, trend), then sections Scoring (tiles, by-period bars), Shot chart
 (chips: All/Auto/Teleop × Points+density/Points/Density), Intake map, Autonomous (routine paths, chips per routine,
 "show all auto paths"), Movement (tiles, zone time, mid-field crossings by lane, teleop heatmap), Defense, Endgame,
-Reliability & role, Matches table. When the team file mixes unverified matches (`tainted`), the per-team aggregate
+Reliability & role, Matches table, and (cleanup pass) a **Notes** card under Scouting truth (`CS.notes`, see
+`notes.js` below). When the team file mixes unverified matches (`tainted`), the per-team aggregate
 Scoring section is replaced by a note pointing at Scouting truth.
 
 ### `event.js` — Teams, Compare, Picklist (panes of `eventPage`)
@@ -349,7 +359,9 @@ Scoring section is replaced by a note pointing at Scouting truth.
   OPR / Custom (`localStorage cyberscout:plmode`); Custom = weighted mean of event z-scores over `PL_KEYS`
   (blend, video made/m, acc, auto, cycle ↓, climb (disabled when `scout.json event_stats.climb_matters` is false),
   defense matches), weights 0–5 sliders, default `{blend: 4}`. Filters All / Starred / Hide do-not-pick. "Copy list"
-  copies a numbered text list. In replay (`/<ts>`) it reads `scout/<ts>.json` and uses that snapshot's rank/OPR.
+  copies a numbered text list. Weights are coerced on load and on render (`plWeights` / `plWeight`: known keys only,
+  `Number()` clamped to 0–5) so a stored value can never reach `value=""` or the shown number as markup (security
+  audit finding 1; the server schema also rejects it). In replay (`/<ts>`) it reads `scout/<ts>.json` and uses that snapshot's rank/OPR.
 
 ### `player.js` — match page / Analyze (`#/<ev>/m/<match>`, `#/<ev>/a/<match>[?t=<s>]`)
 
@@ -389,6 +401,9 @@ Everything is drawn client-side on canvases over the real video; nothing is bake
   match from the livestream), shows the stream score, teams read off the overlay, and the clip with native controls,
   seeking to `live.auto_start_in_clip − 3 s`.
 - `?t=<video s>` (used by the defense library) seeks there on load.
+- (cleanup pass) **Wrong team?** in the Robots card header (and "Propose a fix" in the Identity section) opens the
+  identity-fix form (`CS.idFix`), and a **Notes** card ends the page (`CS.notes`, match notes, optionally about one
+  of the six teams). Both only for signed-in users; the form only for scout+.
 
 ### `dash.js` — Dashboard (`#/<ev>/dash[/<ts|live>[/<plan>]]`)
 
@@ -502,8 +517,37 @@ uploads, disk, recent errors).
   filters by user / action family / via lan|public, 100 per page with "more"). Each row: time, who, action + target,
   before/after (truncated JSON), team net vs internet + IP, **Undo** (`POST audit/<id>/revert`) and **Undo all
   since** (`POST audit/revert-user {user_id, since}`).
-- Identity fixes: for every followed event, `GET events/<ev>/overrides`; pending scout requests with requested vs
-  current mapping ("changed" when stale) and Approve / Reject (`POST …/override-requests/<id>/approve|reject`).
+- Identity fixes (`#/<ev>/fixes`, one queue per competition; other competitions' waiting counts link to theirs):
+  `GET events/<ev>/overrides`; pending scout requests with requested vs current mapping (robots named as the match
+  page shows them, from `m/<match>.json`; "changed" when stale) and Approve / Reject
+  (`POST …/override-requests/<id>/approve|reject`). Requests come from the match page's "Wrong team?" form.
+
+### `notes.js` — Notes and identity-fix proposals (cleanup pass)
+
+Two widgets mounted by other pages; both need the platform and a signed-in user (static site / signed out: nothing
+is shown), call only `CS.app` (CSRF), inject their CSS once (`#nt-css`, theme tokens only) and render every
+user string with `esc()` (note text with `white-space: pre-wrap`, never as HTML).
+
+- **`CS.notes.mount(el, ev, {team} | {match, teams})`**: `GET events/<ev>/notes?team=|match=` (newest first). Each
+  note: author display name, relative time (full time in `title`), match chip on the team page / team chip on the
+  match page, "edited (by X)" and, for removed notes, "hidden by X" / "deleted by its author". Scout+ get a
+  textarea (`maxlength` 4000, live "n / 4000" counter, warn at 3800) → `POST events/<ev>/notes` (`{team}` on the team
+  page; `{match, team?}` on the match page, "About: the whole match | <team>"), so a match note about a team also
+  shows on that team's page. Own notes: Edit (`PATCH notes/<id>`), Delete (`DELETE`, soft, with an **Undo** =
+  `POST notes/<id>/restore`). Strategist+: Hide on others' notes (`DELETE` → hidden), a "show hidden and deleted"
+  toggle (`include_removed=true`) and Restore. Viewers get a read-only line.
+- **`CS.idFix.mount(el, ev, match, tracks, teams)`** (match page): a select per robot listing its alliance's TBA
+  teams; picking a team that another robot of the alliance has swaps the two (the worker applies fixes the same
+  way). Submit merges the changed robots into the match's current entry from `GET events/<ev>/overrides` and sends
+  `PUT events/<ev>/overrides/<match>` (`{red: {<track idx>: team}, blue: {...}}`, track idx = `tracks[].idx`).
+  The button says **Send for review** for a scout in `review` mode (202 → "Sent for review", the request appears
+  in `#/<ev>/fixes`) and **Apply fix** for strategist+ or `direct` mode (200 → applied on the worker's next pass).
+  It also lists the applied fixes (Clear / Ask to clear = `DELETE`) and this match's pending requests (Approve /
+  Reject for strategist+, Withdraw for your own). Robots are named the way the page shows them ("robot shown as
+  9442 → 1318"); the queue page uses the same wording from `m/<match>.json`.
+- Errors: 423 → "Read-only right now: an admin turned on lockdown…", 429 → "Slow down… try again in N s" (or the
+  server's "too many fixes waiting" text), 403 → "Your role can't do that." (`CS.writeErr`). With
+  `CS.session.lockdown` set, non-admins see the forms replaced by a read-only line.
 
 ### `settings.js` — Settings (`#/settings`, everyone)
 
@@ -539,7 +583,9 @@ Platform API (`app/v1/…`), by file: setup.js `session`, `setup`, `auth/login|l
 `settings/tba-key`, `events`, `tba/events`, `events/<ev>/sources`; admin.js `users[/<id>]`, `settings`,
 `settings/tba-key`, `events[/<key>]`, `admin/update[/check|apply|rollback]`; audit.js `admin/security`,
 `admin/sessions/revoke`, `audit`, `audit/<id>/revert`, `audit/revert-user`, `events/<ev>/overrides`,
-`events/<ev>/override-requests/<id>/approve|reject`; event.js `events/<ev>/picklists/main`; sources.js
+`events/<ev>/override-requests/<id>/approve|reject`; notes.js `events/<ev>/notes`, `notes/<id>`,
+`notes/<id>/restore`, `events/<ev>/overrides[/<match>]`, `events/<ev>/override-requests/<id>/approve|reject`;
+event.js `events/<ev>/picklists/main`; sources.js
 `events/<ev>/sources[/discover|/<id>|/<id>/frame|/<id>/frame.jpg]`, `events/<ev>/layout[/<id>[/suggest]]`,
 `events/<ev>/calibration[/<target>/wizard|detect|fit|accept|overlay|frame.jpg]`, `events/<ev>/jobs/<id>`,
 `events/<ev>/livestream`. Full list and roles: `server.md`.
@@ -694,7 +740,7 @@ fixtures `lab/api/events.json`, `lab/api/2026wasam/dash/index.json` and `lab/api
   Fonts are allowed by the policy but unused (fonts are self-hosted so the app works on venue Wi-Fi).
 - `frame-ancestors 'self'`: the site cannot be framed by other origins.
 - Escape everything: user- and data-provided strings go through `esc()`; URLs through `CS.safeHref` (http/https
-  only) or `CS.mediaUrl` (only `media/...`). Event keys from the URL are validated before reaching hrefs.
+  only) or `CS.mediaUrl` (only `media/...`). Every hash segment is validated once in `route()` (`routeOk`, §4.3) before any page sees it.
 - The site JSON responses have their own CSP (`default-src 'none'`), so opening a JSON URL directly cannot run
   anything.
 
@@ -749,10 +795,7 @@ Found while writing this (code at `cc6297c`):
   "us" markers.
 - `dashboard.<team>.json` and `preview/<match>.json` are written but never read. The queue card's "Full preview"
   button links to `#/<ev>/m/<match>`, which for an unplayed match is a 404 → error card.
-- **No UI for notes or for proposing identity fixes.** The API has notes (`/events/<ev>/notes`, `/notes/<id>`) and
-  `PUT /events/<ev>/overrides/<match>`, and the role tips promise "write notes, fix robot identities", but no web
-  file calls them; only the approval queue (`#/fixes`) exists. Overrides must be proposed via the API or by editing
-  `overrides.json`.
+- *(Fixed in the cleanup pass.)* Notes and identity-fix proposals now have a UI (`notes.js`).
 - Sign-in policy UI offers only `never` / `everywhere` (commit 52e9da6), but `server/routers/admin.py` still accepts
   `never | lan | everywhere` and its field description calls `lan` the default; a server-side `lan` value is not an option in the
   UI's select, so the browser shows the first option ("Off") and saving the form silently changes it to `never`. See `server.md` for the effective default.

@@ -91,12 +91,19 @@ services:
     read_only: true                            # only ./data (volume) and /tmp (tmpfs) are writable
     tmpfs:
       - /tmp:size=64m,mode=1777
+    # No env_file here on purpose: the api gets an explicit allowlist of .env values (defaults = server/config.py),
+    # so secrets or worker-only settings in .env (e.g. a legacy TBA_KEY) never reach it. Add new api knobs here.
     environment:
       DATA: /data
       PUID: ${PUID:-1000}
       PGID: ${PGID:-1000}
       TZ: ${TZ:-UTC}
       COOKIE_SECURE: ${COOKIE_SECURE:-auto}
+      SESSION_IDLE_DAYS: ${SESSION_IDLE_DAYS:-7}
+      SESSION_MAX_DAYS: ${SESSION_MAX_DAYS:-30}
+      PASSWORD_MIN: ${PASSWORD_MIN:-10}
+      MEMBER_PASSWORD_MIN: ${MEMBER_PASSWORD_MIN:-4}
+      SETUP_CODE_REQUIRED: ${SETUP_CODE_REQUIRED:-1}
       PYTHONDONTWRITEBYTECODE: "1"
     volumes:
       - ./data:/data

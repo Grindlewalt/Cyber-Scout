@@ -883,6 +883,14 @@ def district_key_of(data_dir, ev):
     return (info.get("district") or {}).get("key")
 
 
+def blend_theta(b):
+    """dashboard blend {total, sd} -> Season rating (mean, sd).  Both are points per ROBOT per match already (a sum over
+    an alliance ~ its score; dashboard.blend_rating), the same unit as district_strengths' theta -- no /3 here.  Until
+    2026-10 this divided by 3, which ran the event's teams at a third of their strength next to full-strength district
+    teams and full alliance noise (sigma)."""
+    return float(b["total"]), max(float(b.get("sd") or 6.0), 3.0)
+
+
 def build_event_json(data_dir, ev, team=DEFAULT_TEAM, goal="DCMP", sims=800, asof=None, offline=False, ctx=None,
                      with_matches=True, log=None, seed=0):
     """-> (rankings dict, schedule dict).  ctx = dashboard.Context (built here if None and with_matches)."""
@@ -904,7 +912,7 @@ def build_event_json(data_dir, ev, team=DEFAULT_TEAM, goal="DCMP", sims=800, aso
         for r in dash["ratings"]:
             b = r.get("blend") or {}
             if b.get("total") is not None:
-                ratings[r["team"]] = (b["total"] / 3.0, max(b.get("sd") or 6.0, 3.0) / 3.0 * 1.0)
+                ratings[r["team"]] = blend_theta(b)
         ratings_src = "dashboard"
     # ---- model + projection (event-level rank projection and per-match sims)
     M = proj = table = per_match = None
@@ -918,8 +926,7 @@ def build_event_json(data_dir, ev, team=DEFAULT_TEAM, goal="DCMP", sims=800, aso
         if not ratings or asof is not None:
             ratings = {}
             for t in V["teams"]:
-                b = DASH.blend_rating(M, t)
-                ratings[t] = (b["total"] / 3.0, max(b["sd"], 3.0) / 3.0)
+                ratings[t] = blend_theta(DASH.blend_rating(M, t))
     # ---- district + goal
     goal_out = dist_rows = selection = None
     S = None

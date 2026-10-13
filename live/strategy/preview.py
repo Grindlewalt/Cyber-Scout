@@ -14,6 +14,7 @@ import time
 import numpy as np
 from scipy import stats
 
+from . import matchday as MD
 from .data import COMPONENTS, PERIODS, SHIFTS, load_event
 from .model import fit_event_model, team_theta
 from .sim import simulate
@@ -111,7 +112,7 @@ def _fmt_periods(bp, k=2):
     return " and ".join(PERIOD_LABEL[p] for p, _ in top)
 
 
-def key_factors(M, S, robots, red, blue):
+def key_factors(M, S, robots, red, blue, lib_teams=None):
     F = []
     pr = S["p_red_win"]
     fav = "Red" if pr >= 0.5 else "Blue"
@@ -162,18 +163,36 @@ def key_factors(M, S, robots, red, blue):
             txt += " No trusted shot locations yet for this robot."
         F.append({"kind": "top_scorer", "alliance": a, "team": top["team"], "weight": round(min(1.0, share + 0.3), 2),
                   "text": txt})
-    # defence susceptibility
+    # defence susceptibility. With the defense library (lib_teams = defense.json teams[] by team) only its per-team
+    # placebo-controlled estimates that are `significant` count (same rule as the dashboard's "measured"); without a
+    # library, the shrunk per-robot estimate, labelled an assumption.
     for r in robots:
+        if lib_teams is not None:
+            lr = MD.lib_significant(((lib_teams.get(r["team"]) or {}).get("retention")))
+            if not lr or r["expected_fuel"]["total"] < 20:
+                continue
+            lo, hi = lr.get("lo_adj", lr.get("lo")), lr.get("hi_adj", lr.get("hi"))
+            ci = f", {lo * 100:.0f}–{hi * 100:.0f}%" if lo is not None and hi is not None else ""
+            if lr["est"] < 1.0:
+                F.append({"kind": "defense_target", "team": r["team"], "weight": 0.6, "basis": "measured",
+                          "text": f"{r['number']} kept only ~{lr['est'] * 100:.0f}% of its scoring while defended "
+                                  f"(defense library, placebo-controlled{ci}) — defending it pays."})
+            else:
+                F.append({"kind": "defense_resistant", "team": r["team"], "weight": 0.3, "basis": "measured",
+                          "text": f"Defence has not slowed {r['number']} (kept ~{lr['est'] * 100:.0f}% of its scoring "
+                                  f"while defended; defense library, placebo-controlled{ci})."})
+            continue
         rr = (r["defended"] or {}).get("rate_retained")
         if rr and not rr.get("prior_only") and rr["n_eff"] >= 2.0 and r["expected_fuel"]["total"] >= 20:   # >= 2 eff. matches
             if rr["v"] < 0.75:
-                F.append({"kind": "defense_target", "team": r["team"], "weight": 0.6,
+                F.append({"kind": "defense_target", "team": r["team"], "weight": 0.6, "basis": "assumption",
                           "text": f"{r['number']} kept only ~{rr['v'] * 100:.0f}% of its shot rate while defended "
-                                  f"(shrunk estimate, {rr['n_eff']:.1f} weighted defended matches) — defending it pays."})
+                                  f"(shrunk estimate, {rr['n_eff']:.1f} weighted defended matches; not placebo-controlled, "
+                                  f"an assumption) — defending it may pay."})
             elif rr["v"] > 1.0:
-                F.append({"kind": "defense_resistant", "team": r["team"], "weight": 0.3,
+                F.append({"kind": "defense_resistant", "team": r["team"], "weight": 0.3, "basis": "assumption",
                           "text": f"Defence has not slowed {r['number']} so far (retained ~{rr['v'] * 100:.0f}% of "
-                                  f"its shot rate, {rr['n_eff']:.1f} weighted defended matches)."})
+                                  f"its shot rate, {rr['n_eff']:.1f} weighted defended matches; not placebo-controlled)."})
     # reliability
     for r in robots:
         dr = r["reliability"]["dead_rate"]
@@ -212,8 +231,9 @@ def key_factors(M, S, robots, red, blue):
     return F
 
 
-def build_preview(E, key, asof="prior", sims=8000, seed=0, epa_prior=None, M=None):
-    """epa_prior: epa.pre_event_prior(...) (team-effect prior); M: an already fitted model to reuse (must match `asof`)."""
+def build_preview(E, key, asof="prior", sims=8000, seed=0, epa_prior=None, M=None, lib_teams=None):
+    """epa_prior: epa.pre_event_prior(...) (team-effect prior); M: an already fitted model to reuse (must match `asof`);
+    lib_teams: the defense library's teams[] by team (defense factors only from its `significant` estimates)."""
     m = E["by_key"].get(key)
     if not m:
         raise SystemExit(f"unknown match {key}")
@@ -258,7 +278,7 @@ def build_preview(E, key, asof="prior", sims=8000, seed=0, epa_prior=None, M=Non
                           "hp_fuel_mean": S["alliances"][a]["hp_fuel_mean"]} for a in ("red", "blue")},
         "robots": robots,
     }
-    out["key_factors"] = key_factors(M, S, robots, red, blue)
+    out["key_factors"] = key_factors(M, S, robots, red, blue, lib_teams)
     if m["played"]:
         out["actual"] = {"red_score": m["red"]["score"], "blue_score": m["blue"]["score"], "red_win": m["red_win"],
                          "red_won_auto": m["red"]["won_auto"],

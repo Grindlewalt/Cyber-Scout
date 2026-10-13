@@ -36,7 +36,7 @@ picks changes up on its next poll without a restart.
 /opt/cyber-scout/
   docker-compose.yml   worker (GPU) + recorder (live streams) + api (accounts/settings) + web (nginx, port 7560)
   docker-compose.cpu.yml   CPU-only override (enabled via COMPOSE_FILE in .env)
-  .env                 infra only: WEB_PORT, PUID/PGID, TZ, MEDIA_DIR
+  .env                 infra only: WEB_PORT, PUID/PGID, TZ, MEDIA_DIR (+ optional api settings, below)
   app/                 the code (git: github.com/Grindlewalt/Cyber-Scout)
   data/                ALL state                                  <- back up
     app.db               accounts, settings (incl. the TBA key), picklists, notes   (secret)
@@ -101,8 +101,9 @@ python3 updater/cs-updater.py --stack $PWD check | apply | rollback    # the upd
   The labelling re-solves the whole event on the next poll, so one fix also improves other matches.
 * **Re-process a match:** delete `data/events/<event>/matches/<match>.json`.
 * **Upgrading a stack that predates accounts** (settings in `.env`): add the new compose file, `docker compose up -d
-  --build`; on first start the api imports `TBA_KEY` and `EVENTS` from `.env` once, then run setup in the browser
-  (setup code in `data/setup-code.txt`) to create the admin. After that, manage them in the app.
+  --build`, then run setup in the browser (setup code in `data/setup-code.txt`) to create the admin and enter the TBA
+  key and events there. The api container does **not** receive `TBA_KEY` / `EVENTS` from `.env` (see "API settings"
+  below), so the old one-time import only happens if you add them to the api's `environment:` yourself for one start.
 
 ## Live streams: results without waiting for YouTube
 
@@ -186,6 +187,23 @@ cams over the field), set `reject` in the event's `event.json` so those videos a
 
 The detector was trained on public FRC robot datasets plus auto-labelled footage from this
 venue (`live/make_labels.py`). A very different camera angle may need the same fine-tune.
+
+## API settings (.env)
+The api container has no `env_file`: compose passes it an explicit allowlist of `.env` values, each with the default
+from `server/config.py`, so nothing else in `.env` (a legacy `TBA_KEY`, worker options) reaches it:
+
+| variable | default | meaning |
+|---|---|---|
+| `SESSION_IDLE_DAYS` | `7` | signed out after this many days unused |
+| `SESSION_MAX_DAYS` | `30` | signed out after this many days regardless |
+| `PASSWORD_MIN` | `10` | admin password minimum length |
+| `MEMBER_PASSWORD_MIN` | `4` | minimum for other accounts when they set a password |
+| `SETUP_CODE_REQUIRED` | `1` | `0` = first-run setup without the code in `data/setup-code.txt` |
+| `COOKIE_SECURE` | `auto` | `1` / `0` / `auto` (Secure when the proxy sends `X-Forwarded-Proto: https`) |
+| `TZ`, `PUID`, `PGID` | `UTC`, `1000`, `1000` | as for the other services |
+
+Change one in `.env`, then `docker compose up -d api` (recreates the container). A new api setting must be added to
+the api service's `environment:` in `docker-compose.yml`.
 
 ## Hardening options (.env)
 - `GPU_IDS` (default `0`; e.g. `1` or `0,1` — numbering from `nvidia-smi -L`; inside the container the cards count from 0, so leave `GPU_DEVICE=0`).

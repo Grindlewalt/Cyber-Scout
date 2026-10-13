@@ -527,7 +527,8 @@ edited** when this was written (see top note).
 | `conftest.py` | Fixtures: temp DATA, `TestClient(create_app())`, fake TBA, limiter resets, login helpers. |
 | `test_auth.py` | Setup code, login/logout, sessions (idle / max), cookies, CSRF, password policy, login rate limits. |
 | `test_data.py` | Settings, events, `worker.json`, picklists, the overrides file. |
-| `test_hardening.py` | Audit log + revert, picklist history, soft-deleted notes, identity-fix review, write limits, text / display-name validation, passwordless only on the team network, lockdown, sign everyone out. |
+| `test_hardening.py` | Audit log + revert, picklist history, soft-deleted notes, identity-fix review, write limits, text / display-name validation, passwordless only on the team network, lockdown, sign everyone out, the compose api env allowlist. |
+| `test_notes_ui.py` | The API contract `web/notes.js` relies on: notes on team + match pages, ownership, hide / restore, lockdown 423, the fix merge-then-PUT flow. |
 | `test_livestream.py` | `GET /events/{ev}/livestream` reads the recorder status file. |
 | `test_roles.py` | Role matrix: who may call what. |
 | `test_sources_api.py` | Pasted source URLs are normalised and validated (audit findings 2 and 4). |
@@ -538,7 +539,7 @@ edited** when this was written (see top note).
 ## `web/` (the SPA)
 
 Static, no build step, served by nginx. Script order is fixed in `index.html`: `theme.js` in `<head>`, then
-`quant.js`, `event.js`, `player.js`, `dash.js`, `app.js`, `setup.js`, `admin.js`, `audit.js`, `sources.js`,
+`quant.js`, `event.js`, `player.js`, `dash.js`, `app.js`, `setup.js`, `admin.js`, `audit.js`, `notes.js`, `sources.js`,
 `rankings.js`, `schedule.js`, `teams2.js`, `defense.js`, `settings.js`. The later files register through
 `CS.route`, `CS.globalRoute` and `CS.nav`. `app.js` and the fetch code were **being edited** (see top note).
 
@@ -550,7 +551,8 @@ Static, no build step, served by nginx. Script order is fixed in `index.html`: `
 | `web/app.js` | Router + plugin registry + shared helpers + the data contract comment at the top (see the function list below). |
 | `web/setup.js` | Platform plugin: sign-in, session, role-aware nav, first-run setup wizard, my account. Exposes `CS.app`, `CS.user`, `CS.can`, `CS.platform`, `CS.form`, `CS.genPassword`, `CS.eventPicker`, `CS.refreshSession`, `CS.navAllowed`. Global routes `#/login`, `#/account`, `#/setup[/step]`. |
 | `web/admin.js` | `#/admin[/users\|settings\|events\|updates]` (admin): `users`, `settings` (team, goal, TBA key, worker options incl. GPU / HUBCAM), `events` (follow via `CS.eventPicker`), `updates` (changelog, progress, rollback). |
-| `web/audit.js` | `#/activity` (admin: audit log, filters, revert, lockdown / passwordless / review switches, sign everyone out) and `#/fixes` (strategist+: identity-fix approval queue). |
+| `web/audit.js` | `#/activity` (admin: audit log, filters, revert, lockdown / passwordless / review switches, sign everyone out) and `#/<ev>/fixes` (strategist+: identity-fix approval queue per competition). |
+| `web/notes.js` | `CS.notes` (Notes card on the team and match pages) and `CS.idFix` ("Wrong team?" identity-fix form on the match page). |
 | `web/settings.js` | `#/settings`: per-browser theme, appearance (light / dark / auto) and layout (sidebar / top bar / command), stored by `theme.js` (`window.CSStyle`). |
 | `web/theme.js` | **Generated** by `lab/tools/site-themes.mjs`. Runs in `<head>` before paint: reads `cs:style` / `cs:mode` / `cs:layout` from localStorage and sets `<html data-style data-mode data-layout>` and theme-colour metas. Default `{style: "jet", mode: "auto", layout: "sidebar"}`. |
 | `web/themes.css` | **Generated**: every theme (18) scoped to `html[data-style]` + mode, plus the layout CSS. |
@@ -632,7 +634,8 @@ Run with `python -m pytest tests` from the repo root. They need no GPU, video or
 |---|---|
 | `tests/test_fuel_cuts.py` | `fuel.py` scene-cut handling (frozen lead-in + cut must not blind auto). |
 | `tests/test_liveingest.py` | Livestream → worker: record selection, trackability, fast results, live-first processing (file fixtures). |
-| `tests/test_matchday.py` | Pure helpers of `live/strategy/matchday.py`. |
+| `tests/test_matchday.py` | Pure helpers of `live/strategy/matchday.py`; defense "measured" only when the library says `significant` (queue card and preview factors). |
+| `tests/test_goals_scale.py` | `goals.py` passes the dashboard blend to the season sim unscaled (per robot). |
 | `tests/test_source_urls.py` | Audit findings 2 and 4: URL normalisation, `--` before URLs, SSRF guard in `live/sources.py`. |
 
 ---

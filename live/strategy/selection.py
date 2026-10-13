@@ -87,8 +87,8 @@ def selection_block(S, ev, team, goal=None, asof=None, nick=None, comps=None, sc
                "rank_p10": int(np.percentile(R["rank"][:, j], 10)), "rank_p90": int(np.percentile(R["rank"][:, j], 90)),
                "p_captain": _r((rl == 1).mean()), "p_r1": _r((rl == 2).mean()), "p_r2": _r((rl == 3).mean()),
                "p_selected": _r((rl > 0).mean()),
-               "rating": _r(S.mu[S.col[t]] * 3, 1) if t in S.col else None,
-               "rating_sd": _r(S.sd[S.col[t]] * 3, 1) if t in S.col else None,
+               "rating": _r(S.mu[S.col[t]], 1) if t in S.col else None,         # per robot (blend + foul share), like the dashboard
+               "rating_sd": _r(S.sd[S.col[t]], 1) if t in S.col else None,
                "p_dcmp": _r(qual[:, S.col[t]].mean()) if t in S.col else None}
         # most likely captain that picks this team
         cap = Counter()

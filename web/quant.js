@@ -169,6 +169,7 @@ async function teamPage(ev, tk) {
       ${d.matches.some(m => !m.verified) ? `<div class="note">Verified matches only (${CV.n}) · ${esc(d.matches.filter(m => !m.verified).map(m => m.short).join(", "))} replay-only ${CS.help(tainted
         ? "Matches tracked without verified identity are replay-only: excluded from the shot chart, autos and trends; the intake map, heatmap and routine clusters are hidden because they mix them in."
         : "Every section below uses verified matches only. The listed matches were tracked without verified identity (v1 tracks or confidence under 60%) and are replay-only.", "Why some matches are replay-only")}</div>` : ""}</section>
+    <section id="tpNotes" class="sect"></section>
     <div class="trends" style="${ms.filter(m => m.verified).length < 3 ? "display:none" : ""}">${trend("Accuracy", tr(a => a.scoring.accuracy), "p")}${trend("Made", tr(a => a.scoring.made), "0")}${trend("Attempts", tr(a => a.scoring.attempts), "0")}
       ${trend("Cycle s", tr(a => a.scoring.cycle_s), "1")}${trend("Dist m", tr(a => a.movement.distance_m), "0")}${trend("Defense s", tr(a => a.defense.time_s), "1")}</div>
     <div class="stackv">
@@ -219,6 +220,7 @@ async function teamPage(ev, tk) {
         || `<tr><td colspan="16" class="empty">No tracked matches yet</td></tr>`}</tbody></table></div>`)}
     </div>`;
 
+  if (CS.notes) CS.notes.mount(document.getElementById("tpNotes"), ev, { team: tk });      // notes.js
   document.querySelectorAll(".jump a").forEach(a => a.onclick = ev_ => { ev_.preventDefault(); const s = document.getElementById("s-" + a.dataset.j); s && s.scrollIntoView({ behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "start" }); });
   document.getElementById("star").onclick = async e_ => {     // shared picklist (event.js) when signed in
     const p = typeof plLoad === "function" ? await plLoad(ev) : lsGet("cyberscout:picks:" + ev, {}); p.stars = p.stars || [];

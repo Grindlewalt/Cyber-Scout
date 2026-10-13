@@ -73,7 +73,7 @@
 
     // ------------------------------------------------------------------------------------------ jet (dark only)
     {
-      id: "jetdark", name: "Jet", defaultMode: "dark",
+      id: "jetdark", name: "Jet (dark only)", defaultMode: "dark",
       blurb: "True black, graphite hairlines, colour only for data. 'Us' is the one inverse white tag. Dark only.",
       why: jet.why,
       fonts: jet.fonts.slice(),

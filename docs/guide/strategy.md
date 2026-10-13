@@ -470,8 +470,10 @@ features, data quality), `key_factors`, and `actual` for played matches. Full fi
 `live/strategy/README.md` (still accurate).
 
 Key factors (sorted by weight): `outlook` (toss-up when the favourite is < 60 %), `auto_battle`, `top_scorer` per
-alliance (with its top zone when ≥ 5 weighted made shots), `defense_target` (retained shot rate < 0.75 with
-≥ 2 effective defended matches and ≥ 20 expected FUEL), `defense_resistant` (retained > 1.0), `reliability` (shrunk
+alliance (with its top zone when ≥ 5 weighted made shots), `defense_target` / `defense_resistant`
+(≥ 20 expected FUEL; with a defense library (`lib_teams`, passed by the dashboard) only when the library's per-team
+retention is `significant`, est < 1 / > 1, `basis: "measured"`; with no library, the shrunk per-robot retained shot
+rate < 0.75 / > 1.0 with ≥ 2 effective defended matches, labelled `basis: "assumption"`, "not placebo-controlled"), `reliability` (shrunk
 dead rate ≥ 0.15), `climb` (P(climb) or P(auto L1) ≥ 0.3), `inactive_behaviour` (≥ 5 passes/min while inactive),
 `data_quality` (teams with video weight < 0.5), `uncertainty` (widest active-shift rating).
 
@@ -539,7 +541,8 @@ Same shape for `next_match` and each `plans[]` entry:
 * `plan.defend[]` for each opponent, sorted by gain: `when` = their most likely active shifts (= our inactive
   shifts; 2+4 if they are more likely to win auto), `when_alt`, `p_when`, `where {zone, share, xy (field m, TBA
   frame), zone_ours}` when ≥ 3 weighted made shots, `active_fuel` = their expected FUEL in shifts 1–4,
-  `rate_retained` and `basis` from `matchday.retention_for` (§9.5), `expected_gain_fuel = active_fuel ×
+  `rate_retained` and `basis` (`"measured"` / `"assumption"`, same words as the queue card since the cleanup pass;
+  was `"prior"`) from `matchday.retention_for` (§9.5), `expected_gain_fuel = active_fuel ×
   (1 − retained) × ENGAGE` with `ENGAGE = 0.7` (share of the target's active time a dedicated defender affects,
   a priori), `top_scorer`, `why`.
 * `plan.suggested_defender` (`matchday.pick_defender`): the robot on our alliance that gives up the least feeding
@@ -569,12 +572,16 @@ Six lines from our alliance's point of view, built from the plan's own simulatio
 | `rp` | `us`, `them` = `{win, energized, supercharged, traversal, rp_mean, fuel {mean, lo, hi}}` (bonus odds from the plan's simulated FUEL / tower points; `us.win` = the plan's win %), `shown`, `hidden` (TRAVERSAL while no alliance at the event has earned it, as of `now`), `hidden_why` |
 | `fouls` | per team the average foul points its alliances gave away (`teams[] {team, side, avg_given, n}`), `event_avg`, `flag` (n ≥ 3 and avg ≥ max(1.5 × event, event + 5)), `text`, `note` (TBA fouls are alliance-level) |
 
-**Defense effect source** (`retention_for`, `library_effect`, `event_extras`): a target's retention is
-"measured" when the defense library's per-team placebo-controlled estimate has `significant` **or** its 90 % upper
-bound `hi < 1.0`; otherwise the event-wide library effect (`global.ratio / global.placebo.pooled_ratio`, clamped to
+**Defense effect source** (`retention_for`, `lib_significant`, `library_effect`, `event_extras`): a target's
+retention is "measured" only when the defense library's per-team placebo-controlled estimate has `significant: true`
+(BH q ≤ 0.10 and the FCR-adjusted interval excludes 100 %; the shown interval is `lo_adj`–`hi_adj`); otherwise the event-wide library effect (`global.ratio / global.placebo.pooled_ratio`, clamped to
 0.3–1.0) labelled an assumption; with no library at all, the weighted mean `rate_retained` of verified robot-matches
 defended ≥ 5 s (needs ≥ 3), then 0.75 (`GENERIC_RETAINED`). The library is built from all tracked matches, so in a
-replay its estimates are not strictly as-of.
+replay its estimates are not strictly as-of. The same rule drives `plan.defend[].basis`, `queue.defend.basis`,
+`queue.defenders.if_defended` (which now uses `retention_for` on our top scorer instead of the event-wide figure's own
+significance) and the preview's defense key factors. With the production library (0 of 39 significant) every team is
+an assumption at the event-wide 0.71; the old rule (`significant` **or** raw `hi < 1.0`) had called 488, 4469,
+5588, 5937 and 9317 measured. Test: `tests/test_matchday.py`.
 
 Display rounding (`matchday.disp`, mirrors `dash.js`): probabilities in 5 % steps, "<5%" below 0.05 and ">95%"
 above 0.95. Plan tabs are linkable as `#/<ev>/dash/<ts|live>/<q51>`.
@@ -632,8 +639,9 @@ Built once (`n = 800` sims by default), then queried for any team / goal.
   district match (`district_strengths`: start at mean alliance score / 3, `K 0.5 → 1/3`, sd
   `THETA_SD0 = 11 / sqrt(1 + n/5)`); `sigma` = RMS alliance residual of the last two thirds of matches (fallback 38;
   73.7 in production). When `asof` is None and Statbotics answers for > 20 teams, Statbotics EPAs replace it. For the
-  focal event, `build_event_json` passes the dashboard blend (`ratings`) and `Season` adds the event's mean foul
-  points / 3 (see the scale warning in **Docs vs code**). One draw per team per simulated season.
+  focal event, `build_event_json` passes the dashboard blend unchanged (`goals.blend_theta`: total and max(sd, 3), both
+  points per robot like `district_strengths`) and `Season` adds the event's mean foul points / 3 (see **Docs vs code**
+  item 2 for the earlier `/ 3` bug). One draw per team per simulated season.
 * **Remaining events** (`sim_event`): remaining quals from the posted schedule (10 random rounds if none is posted
   and nothing was played); alliance score = Σ theta + N(0, sigma); RP = 3 win / 1 tie + Bernoulli bonus RPs from
   logistic fits of P(bonus | alliance score) on the district's played quals (`fit_bonus`); ranking by average RP;
@@ -683,7 +691,18 @@ beaten", `narrative`).
 
 `--replay` computes DCMP odds at three points around each district event (1 h before its first match, mid-event,
 4 h after) against the actual DCMP team list: Brier vs base rate, log loss, AUC, accuracy at 0.5, expected vs actual
-qualifiers. No result of this is recorded in the repo docs.
+qualifiers. `--replay` passes no dashboard ratings (every team uses `district_strengths`), so it cannot show the
+focal-event scale. The cleanup pass replayed the dashboard path instead (`.work/cleanup/goals/scripts/replay_blend.py`:
+as-of model → blend → `Season`, all 36 `dash/` snapshots of 2026wasam, 800 sims; results in
+`.work/cleanup/goals/replay_scale{0.333333,1}.json`):
+
+| | before (blend / 3) | after (blend) |
+|---|---|---|
+| 4911 P(DCMP), mean over snapshots | 9.1 % (6–13 %) | 2.3 % (1–6 %); 4911 did not qualify |
+| Brier, 29 event teams | .1288 | .1224 |
+| AUC, event teams | .884 | .893 |
+| Brier, whole district | .0646 | .0619 |
+| AUC, whole district | .970 | .972 |
 
 ---
 
@@ -783,7 +802,7 @@ conditional on one set of simulated seasons.
   finished: only `actual[]` from TBA alliances with district points earned, and `actual_us {team, event_points,
   seed, role, p_dcmp}`), `unavailable`.
 * `teams[]`: `rank_mean`, `rank_p10/p90`, `p_captain`, `p_r1`, `p_r2`, `p_selected`, `rating` / `rating_sd`
-  (`3 × theta` mean / sd), `p_dcmp`, `likely_captain`.
+  (`theta` mean / sd = per-robot blend + foul share; was `3 × theta` while `goals` divided by 3), `p_dcmp`, `likely_captain`.
 * `seeds[]`: top-3 likely captains and first picks per seed, playoff outcome distribution (win 30, finalist 20,
   top 4 (13), top 6 (7), out early).
 * `us`: `rank_mean`, `p_captain`, `p_r1`, `p_r2`, `p_unpicked`, `p_dcmp` (no awards, as the headline),
@@ -960,19 +979,19 @@ Caches under `DATA/cache/` (all disposable; deleting them forces refetch / refit
 
 1. **App team / goal settings are ignored by strategy.** `worker.json` `team_number` / `season_goal` are never read;
    the dashboard, goals and selection use `DASH_TEAM` / `DASH_GOAL` env (defaults frc4911 / DCMP).
-2. **Likely scale bug in the season sim's focal-event strengths.** `goals.build_event_json` passes
-   `ratings[t] = (blend_total / 3, max(sd, 3) / 3)` and `Season` adds `foul_mean / 3`, while every other team's
-   `theta` from `district_strengths` is a per-robot share whose alliance sum is the alliance score. The blend is
-   already per robot (mean blend 64.0 vs alliance mean 199.1 / 3 = 66.4). Production confirms it: 4911 blend 85.6 →
-   `theta_team.mean` 30.7 (= 85.6/3 + 7.2/3), with `sigma_alliance` 73.7. Focal-event teams therefore enter at about
-   one third of the scale of other events' teams with the full alliance noise, so focal-event quals and playoffs come
-   out much closer to coin flips and the bonus-RP logits (fitted on real ~200-point scores) are evaluated at ~70-point
-   scores. `selection.json` shows `rating = 3 × theta` (= blend + fouls), which hides it. Verify and fix (likely: drop
-   the `/ 3`, and use `+ foul/3` only, and show `rating = theta`).
-3. **"Measured" defense is looser than the round-3 spec.** `DASHBOARD.md` / `README.md` say use `significant`
-   before calling a team's defense effect measured. `matchday.retention_for` also accepts `hi < 1.0` (the unadjusted
-   90 % interval). In production that labels 5 teams (488, 4469, 5588, 5937, 9317; q 0.42–0.44) as "measured" while
-   the file reports 0 discoveries.
+2. *(Fixed in the cleanup pass, 2026-10-13.)* **Season-sim scale bug.** Until then `goals.build_event_json` divided the
+   dashboard blend by 3 before passing it to the season simulation. The blend is already points per robot, the same
+   unit as the district ratings (`dashboard.blend_rating`, `district_strengths`; production: 4911 blend 85.6 → sim
+   μ 30.7 vs its district theta 76.8; event teams' mean 23.5 vs 64.2 for the other 99 district teams). The event's
+   teams therefore ran at about a third of their strength, against full-strength district teams and full alliance
+   noise: their matches became close to coin flips and their later events were simulated as if they were weak.
+   `goals.blend_theta` now passes the blend total and sd unchanged, and `selection.json` shows `rating = theta`.
+   On the 2026wasam as-of replay (§10.5) the DCMP-odds Brier for the event's teams improved from .129 to .122 (whole
+   district .065 → .062); 4911's mean P(DCMP) fell from 9 % to 2 % (it did not qualify). Test:
+   `tests/test_goals_scale.py`.
+3. *(Fixed in the cleanup pass.)* **"Measured" defense was looser than the round-3 spec**: `retention_for` also
+   accepted the unadjusted `hi < 1.0`, which labelled 5 teams (488, 4469, 5588, 5937, 9317; q 0.42–0.44) "measured"
+   while the library reported 0 discoveries. Now only `significant` counts, everywhere (§9.5).
 4. **"One win % per match everywhere" holds only inside `dashboard.json`.** `schedule.json` runs its own simulations
    of the same matches (`pred.p_red`: 1500 sims; `breakdown.win_prob`: 3000 sims) and `rankings.json` its own rank
    projection (1500 sims vs the dashboard's 2000), so those pages can differ from the dashboard by Monte Carlo noise.
@@ -980,8 +999,8 @@ Caches under `DATA/cache/` (all disposable; deleting them forces refetch / refit
 6. Scout snapshots are fully rebuilt on every site build (no `--only-missing`), unlike dashboard and selection
    snapshots.
 7. `DASHBOARD.md`'s early "match-day" note says `plan.defend[].basis` is "measured" only with ≥ 2 effective defended
-   matches; round 3 replaced that with the library rule above. `plan.defend[].basis` is `"measured"` or `"prior"`,
-   while `queue.defend.basis` is `"measured"` or `"assumption"` for the same thing.
+   matches; round 3 replaced that with the library rule above. Since the cleanup pass `plan.defend[].basis` and
+   `queue.defend.basis` both use `"measured"` / `"assumption"` (it was `"prior"` in the plan).
 8. `live/strategy/README.md` lists `scout.json` `made_pm.per_match` items as `{m, made, scaled, lb, un}`; the code
    writes `{m, made, scaled, gate, un}`. It also quotes the season-sim sigma as ~61; production computes 73.7.
 9. `selection.py`'s module docstring still describes a client-side "manual scenario" re-draft; the `draft` sample it
@@ -992,5 +1011,6 @@ Caches under `DATA/cache/` (all disposable; deleting them forces refetch / refit
 12. The README's auto-bias numbers (−4.9 / −10.3) are written as "actual − predicted" but have the opposite sign of
     the production footer's `auto_bias_recent` (+9.7, actual − predicted, autos under-predicted). The text
     ("under-prediction") matches the footer; the README sign is the inconsistent one.
-13. `goals.replay` exists but no result is recorded in the docs; the only DCMP-odds calibration number quoted is the
-    09:00 replay Brier .133 (with awards) vs .147 (without).
+13. `goals.replay` (district strengths only) has no recorded result; the dashboard-path replay of the cleanup pass is
+    in §10.5. The older quoted DCMP-odds calibration number is the 09:00 replay Brier .133 (with awards) vs .147
+    (without), measured with the `/ 3` bug.

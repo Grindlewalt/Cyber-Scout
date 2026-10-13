@@ -89,8 +89,11 @@ app falls back to the matching `.env` value.
 | `*_MEM_LIMIT` | compose | per-container caps |
 
 The full variable list, including tuning knobs, is in [architecture.md §7](architecture.md#7-environment-variables).
-API-only variables (`PASSWORD_MIN`, `SESSION_*`, `SETUP_CODE_REQUIRED`, legacy `TBA_KEY`/`EVENTS` import) are
-**not** passed to the api container by the current compose file. Adding them to `.env` does nothing.
+API-only variables reach the api container through an explicit allowlist in `deploy/docker-compose.yml` (no
+`env_file`): `SESSION_IDLE_DAYS`, `SESSION_MAX_DAYS`, `PASSWORD_MIN`, `MEMBER_PASSWORD_MIN`, `SETUP_CODE_REQUIRED` and `COOKIE_SECURE`, each defaulting to the
+`server/config.py` value (7 / 30 / 10 / 4 / 1 / auto). Set one in `.env` and recreate the api (`docker compose up -d
+api`). The legacy `TBA_KEY`/`EVENTS` import is deliberately **not** passed (enter the key in the setup wizard); a
+new api setting must be added to the api service's `environment:` (see `deploy/README.md` "API settings").
 
 **(atomosserver)** `/opt/stacks/cyber-scout/.env` (0600) contains only `POLL_SECONDS=120`, `GPU_DEVICE=0`,
 `TZ=America/Los_Angeles`, `PUID=1000`, `PGID=1000`, `MEDIA_DIR=/mnt/nas/autoscout-media` and `PAUSE_PROCESSING=1`.

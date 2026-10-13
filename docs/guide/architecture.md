@@ -110,8 +110,9 @@ off disk.
   No named volumes. The api has no access to `MEDIA_DIR`. The web container cannot see anything in `data/` outside
   `site/api`.
 * **Environment:** worker and recorder get the whole `.env` (`env_file: .env`) plus `DATA=/data`. The **api does
-  not use `env_file`**. It gets only `DATA`, `PUID`, `PGID`, `TZ`, `COOKIE_SECURE` and `PYTHONDONTWRITEBYTECODE`
-  (see the inconsistency note in §7).
+  not use `env_file`**: it gets `DATA`, `PUID`, `PGID`, `TZ`, `COOKIE_SECURE`, `PYTHONDONTWRITEBYTECODE` and an
+  explicit allowlist of account settings from `.env` (`SESSION_IDLE_DAYS`, `SESSION_MAX_DAYS`, `PASSWORD_MIN`, `MEMBER_PASSWORD_MIN`, `SETUP_CODE_REQUIRED`, each with the
+  `server/config.py` default). Secrets such as a legacy `TBA_KEY` never reach it.
 * **Hardening** (from the security audit, commit 74e84af):
 
   | | worker | recorder | api | web |
@@ -551,10 +552,10 @@ numeric. The env var `CS_UPDATER_ALLOW_ROOT=1` allows running it as root.
 
 ### Inconsistencies worth knowing
 
-* **The legacy `.env` import cannot work under the current compose file.** `deploy/README.md` and
-  `server/README.md` say the API imports `TBA_KEY` / `EVENTS` from `.env` on first start. The api service has no
-  `env_file` and its `environment:` block does not list them. The same applies to `SETUP_CODE_REQUIRED`,
-  `SESSION_*` and `PASSWORD_MIN` (documented as `.env` knobs, but they never reach the container).
+* **The legacy `.env` import is off on purpose.** `server/README.md` says the API imports `TBA_KEY` / `EVENTS`
+  from `.env` on first start; the api service has no `env_file` and its allowlist leaves them out, so the key is
+  entered in the setup wizard instead (`deploy/README.md` says so). The account settings (`SETUP_CODE_REQUIRED`,
+  `SESSION_*`, `PASSWORD_MIN`, `MEMBER_PASSWORD_MIN`) do reach it since the cleanup pass.
 * **`team_number` / `season_goal` from Admin are not used by the worker.** The dashboard team and goal come from
   `DASH_TEAM` / `DASH_GOAL` (defaults frc4911 / DCMP).
 * **`camera_<source id>.json`** (needed for tracking from a livestream) is not produced by the calibration wizard.

@@ -179,12 +179,18 @@ def _our_factors(F, us_teams):
     return out
 
 
+def _lib_teams(X):
+    """the defense library's per-team rows for previews, or None when there is no library (previews then fall back to
+    the shrunk per-robot estimate, labelled an assumption)."""
+    return (X.get("lib_teams") or {}) if X is not None and X.get("has_library") else None
+
+
 def next_match_plan(E_v, M, m, team, sims=6000, seed=0, X=None, cov=None, epa_wp=None, auto_bias=None, asof_stamp=None):
     """plan for one of our matches (any remaining match, not only the next).  X/cov/epa_wp/auto_bias feed the queue
     card (matchday.queue_card); without them the card is omitted (old behaviour)."""
     us = "red" if team in m["teams"]["red"] else "blue"
     them = "blue" if us == "red" else "red"
-    P = build_preview(E_v, m["key"], asof="prior", sims=sims, seed=seed, M=M)
+    P = build_preview(E_v, m["key"], asof="prior", sims=sims, seed=seed, M=M, lib_teams=_lib_teams(X))
     red, blue = m["teams"]["red"], m["teams"]["blue"]
     S = simulate(M, red, blue, n=sims, seed=seed + 11, raw=True)
     raw = S["raw"]["alliances"]
@@ -231,7 +237,7 @@ def next_match_plan(E_v, M, m, team, sims=6000, seed=0, X=None, cov=None, epa_wp
         defend.append({
             "target": t, "when": likely, "when_alt": other, "p_when": _r(max(p_them_auto, 1 - p_them_auto), 3),
             "where": where, "expected_gain_fuel": _r(gain, 1), "active_fuel": _r(act, 1),
-            "rate_retained": _r(ret, 2), "basis": "measured" if basis.startswith("measured") else "prior",
+            "rate_retained": _r(ret, 2), "basis": "measured" if basis.startswith("measured") else "assumption",
             "why": (f"{_num(t)} is expected to score ~{act:.0f} FUEL in its live shifts ({' + '.join(likely)} "
                     f"in {max(p_them_auto, 1 - p_them_auto) * 100:.0f}% of sims). {basis[0].upper() + basis[1:]}; with "
                     f"~{ENGAGE * 100:.0f}% engagement that is ~{gain:.0f} FUEL denied. {ztxt[0].upper() + ztxt[1:]}. "
@@ -578,7 +584,8 @@ def build(ctx, team=DEFAULT_TEAM, asof=None, sims_rank=2000, sims_match=6000, se
                       "RP = 3 win / 1 tie + ENERGIZED (>=100 FUEL) + SUPERCHARGED (>=360 FUEL) + TRAVERSAL (>=50 tower pts); "
                       "TBA tiebreakers avg match pts (no fouls), avg auto FUEL, avg tower pts.",
                       f"Defence gains assume ~{ENGAGE * 100:.0f}% engagement during the target's active shifts; "
-                      "rate retained is measured only where the target has been defended on video (basis field).",
+                      "rate retained is measured only where the defense library's per-team estimate is significant "
+                      "(basis field); otherwise the event-wide effect, an assumption.",
                       "Not modelled in the simulator: defence/congestion interactions, per-team fouls."],
                   "build_s": None}}
     out["model"]["build_s"] = round(time.time() - t0, 2)
@@ -587,7 +594,7 @@ def build(ctx, team=DEFAULT_TEAM, asof=None, sims_rank=2000, sims_match=6000, se
             if m["key"] in prev_out:
                 continue
             prev_out[m["key"]] = build_preview(V, m["key"], asof="prior", sims=4000, seed=seed,
-                                               epa_prior=ctx.prior)
+                                               epa_prior=ctx.prior, lib_teams=_lib_teams(X))
     return out, prev_out
 
 

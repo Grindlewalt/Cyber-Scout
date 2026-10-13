@@ -122,15 +122,19 @@
     const cur = evs.find(e => e.key === ev) || { key: ev, name: ev };
     const [o, others] = await Promise.all([CS.app("GET", `events/${encodeURIComponent(ev)}/overrides`),
       Promise.all(evs.filter(e => e.key !== ev).map(e => CS.app("GET", `events/${encodeURIComponent(e.key)}/overrides`).then(x => ({ e, n: (x.pending || []).length })).catch(() => ({ e, n: 0 }))))]);
-    const side = d => ["red", "blue"].filter(a => d && d[a] && Object.keys(d[a]).length)
-      .map(a => `${a}: ` + Object.entries(d[a]).map(([i, t]) => `#${esc(i)}→${esc(String(t).replace(/^frc/, ""))}`).join(", ")).join("; ") || "(no fixes)";
     const pend = o.pending || [], elsewhere = others.filter(x => x.n);
+    // fixes name robots by track idx: show them as the match page labels them (its m/<match>.json), else "#idx"
+    const shown = {};
+    await Promise.all([...new Set(pend.map(p => p.match))].map(m => api(`${ev}/m/${m}.json`)
+      .then(d => { shown[m] = Object.fromEntries((d.tracks || []).map((t, i) => [String(t.idx != null ? t.idx : i), t.team ? num(t.team) : null])); }).catch(() => { })));
+    const side = (d, m) => ["red", "blue"].filter(a => d && d[a] && Object.keys(d[a]).length)
+      .map(a => `${a}: ` + Object.entries(d[a]).map(([i, t]) => { const l = (shown[m] || {})[i]; return `${l ? `robot shown as ${esc(l)}` : `#${esc(i)}`} → ${esc(String(t).replace(/^frc/, ""))}`; }).join(", ")).join("; ") || "(no fixes)";
     $app.innerHTML = `<h1>Identity fixes</h1><div class="sub">Scouts' robot → team corrections at <b>${esc(cur.name || ev)}</b> wait here until a strategist or admin approves them; approved fixes are used on the worker's next pass.</div>
-      <div class="card">${pend.length ? `<div class="tablewrap"><table><thead><tr><th>Match</th><th>Requested</th><th data-pri="300">Now</th><th>By</th><th><span class="vh">Decide</span></th></tr></thead><tbody>
-        ${pend.map(p => `<tr data-id="${p.id}"><td><a href="#/${esc(ev)}/m/${esc(p.match)}">${esc(p.match.split("_").pop())}</a></td>
-          <td>${side(p.data)}</td><td class="small">${side(p.current)}${p.stale ? ' <span class="pill failed" title="changed since this was requested">changed</span>' : ""}</td>
+      <div class="card">${pend.length ? `<div class="tablewrap"><table><thead><tr><th>Match</th><th>Requested</th><th data-pri="300">Now</th><th>By</th><th data-pri="850"><span class="vh">Decide</span></th></tr></thead><tbody>
+        ${pend.map(p => `<tr data-id="${esc(p.id)}"><td><a href="#/${esc(ev)}/m/${esc(p.match)}">${esc(shortKey(p.match))}</a></td>
+          <td class="wrapc">${side(p.data, p.match)}</td><td class="small wrapc">${side(p.current, p.match)}${p.stale ? ' <span class="pill failed" title="changed since this was requested">changed</span>' : ""}</td>
           <td>${esc(p.by ? p.by.display_name : "?")}<div class="muted small">${esc(when(p.at))}</div></td>
-          <td style="white-space:nowrap"><button type="button" class="primary" data-act="approve">Approve</button> <button type="button" data-act="reject">Reject</button></td></tr>`).join("")}
+          <td class="wrapc"><button type="button" class="primary" data-act="approve">Approve</button> <button type="button" data-act="reject">Reject</button></td></tr>`).join("")}
         </tbody></table></div>` : `<div class="muted">Nothing waiting at this competition.</div>`}<div class="cserr" aria-live="polite"></div></div>
       ${elsewhere.length ? `<div class="note" style="margin-top:12px">Also waiting: ${elsewhere.map(x => `<a href="#/${esc(x.e.key)}/fixes">${esc(x.e.name || x.e.key)}</a> (${x.n})`).join(", ")}.</div>` : ""}`;
     $app.querySelectorAll("button[data-act]").forEach(b => b.onclick = async () => {

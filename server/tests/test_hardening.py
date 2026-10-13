@@ -508,3 +508,28 @@ def test_migrates_an_existing_db(data):
     assert c.execute("SELECT removed_at FROM notes").fetchone()[0] is None
     assert [tuple(r) for r in c.execute("SELECT version, data FROM picklist_versions")] == [(7, '{"stars":["frc1"]}')]
     assert c.execute("SELECT COUNT(*) FROM audit_log").fetchone()[0] == 0
+
+
+def test_compose_gives_api_an_env_allowlist():
+    """deploy/docker-compose.yml: the api gets the account settings from .env (explicit allowlist, defaults equal to
+    server/config.py) but no env_file and no TBA_KEY / EVENTS passthrough."""
+    import os, re
+    from server.config import Config
+    root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    txt = open(os.path.join(root, "deploy", "docker-compose.yml")).read()
+    api = txt.split("\n  api:\n", 1)[1].split("\n  web:\n", 1)[0]
+    api = "\n".join(ln.split("#", 1)[0] for ln in api.splitlines())          # settings only, not the comments
+    assert "env_file" not in api and "TBA_KEY" not in api and "EVENTS" not in api
+    env = dict(re.findall(r"^\s+([A-Z_]+): \$\{\1:-([^}]*)\}\s*$", api, re.M))
+    for k in ("SESSION_IDLE_DAYS", "SESSION_MAX_DAYS", "PASSWORD_MIN", "MEMBER_PASSWORD_MIN", "SETUP_CODE_REQUIRED",
+              "COOKIE_SECURE"):
+        assert k in env, k
+    saved = {k: os.environ.pop(k, None) for k in env}
+    try:
+        d = Config()
+    finally:
+        for k, v in saved.items():
+            if v is not None: os.environ[k] = v
+    assert float(env["SESSION_IDLE_DAYS"]) == d.SESSION_IDLE_DAYS and float(env["SESSION_MAX_DAYS"]) == d.SESSION_MAX_DAYS
+    assert int(env["PASSWORD_MIN"]) == d.PASSWORD_MIN and int(env["MEMBER_PASSWORD_MIN"]) == d.MEMBER_PASSWORD_MIN
+    assert (env["SETUP_CODE_REQUIRED"] != "0") == d.SETUP_CODE_REQUIRED and env["COOKIE_SECURE"] == d.COOKIE_SECURE

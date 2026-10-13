@@ -706,9 +706,37 @@ async function renderTimebar(p, ev) {
 })();
 
 // ------------------------------------------------------------------ router
+// Every hash segment is checked once here before any page sees it (security audit: fragment XSS into hrefs / innerHTML):
+// a plain character set everywhere, a well-formed event key, and the exact shape of match / team keys and snapshot
+// times. Pages may still check their own arguments; anything that fails shows "Page not found".
+const SEG_OK = /^[A-Za-z0-9_.,=?&%:-]{1,160}$/, MKEY_OK = /^[A-Za-z0-9_]{1,40}$/, TEAM_OK = /^frc\d{1,5}$/, TS_OK = /^\d{9,12}$/;
+function routeOk(p) {
+  if (!p.every(x => SEG_OK.test(x))) return false;
+  if (!p.length || CS.globalRoutes[p[0]]) return true;
+  if (!EVK.test(p[0])) return false;
+  const [, s, a, b] = p;
+  switch (s) {
+    case "m": case "a": return MKEY_OK.test((a || "").split("?")[0]);
+    case "t": return TEAM_OK.test(a || "");
+    case "dash": return !a || ((a === "live" || TS_OK.test(a)) && (!b || MKEY_OK.test(b)));
+    case "selection": case "picklist": return !a || TS_OK.test(a);
+    case "specs": return !a || TEAM_OK.test(a);
+    case "defense": return !a || a === "defenders" || TEAM_OK.test(a);
+    case "schedule": return !a || MKEY_OK.test(a);
+    case "compare": return !a || /^(frc)?\d{1,5}(,(frc)?\d{1,5}){0,2}$/.test(a);
+    default: return true;
+  }
+}
+CS.routeOk = routeOk;
 async function route(scroll = true) {
   cleanup.forEach(f => f()); cleanup = [];
   const p = location.hash.replace(/^#\/?/, "").split("/").filter(Boolean);
+  if (!routeOk(p)) {
+    renderTopNav([]); crumbs([["Page not found"]]); $updated.textContent = "";
+    $app.innerHTML = `<div class="empty" role="alert"><b>Page not found</b>This link isn't a page of Cyber-Scout. <div class="acts"><a class="cmp-btn" href="#/">Go to the competition</a></div></div>`;
+    if (scroll) window.scrollTo(0, 0);
+    return;
+  }
   try {
     renderTopNav(p);
     if (p.length && CS.globalRoutes[p[0]]) await CS.globalRoutes[p[0]](...p.slice(1));

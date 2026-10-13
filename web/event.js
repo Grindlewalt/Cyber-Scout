@@ -92,7 +92,7 @@ function teamsTable(el, d, ev) {
 // ------------------------------------------------------------------ compare
 async function comparePane(el, d, ev, arg) {
   let sel = (arg ? arg.split(",") : lsGet("cyberscout:cmp:" + ev, [])).filter(k => d.teams.some(t => t.key === k || t.key === "frc" + k)).map(k => k.startsWith("frc") ? k : "frc" + k).slice(0, 3);
-  const opts = d.teams.map(t => `<option value="${t.key}">${t.number} ${esc(t.nickname || "")}</option>`).join("");
+  const opts = d.teams.map(t => `<option value="${esc(t.key)}">${esc(t.number)} ${esc(t.nickname || "")}</option>`).join("");
   el.innerHTML = `<div class="controls">${[0, 1, 2].map(i => `<select data-i="${i}"><option value="">${i < 2 ? "choose team" : "(optional) third team"}</option>${opts}</select>`).join("")}</div>
     <div id="cmpbody" class="cmp"></div>`;
   const body = el.querySelector("#cmpbody");
@@ -160,6 +160,10 @@ function plSave(ev, st, onConflict) {
   }, 500);
 }
 const PL_DEFAULT = { blend: 4, made: 0, acc: 0, automade: 0, cycle: 0, climb: 0, defs: 0 };
+// weights come from the shared server picklist or localStorage: only the known keys, each a number in 0..5 (security
+// audit: never render a stored value as markup, in value="" or as the shown number)
+const plWeight = v => { const n = Number(v); return Number.isFinite(n) ? Math.max(0, Math.min(5, n)) : 0; };
+const plWeights = w => Object.fromEntries(Object.keys(PL_DEFAULT).map(k => [k, plWeight(w && k in w ? w[k] : PL_DEFAULT[k])]));
 const PL_KEYS = [["blend", "Blend", r => r.s?.rating?.blend, 1], ["made", "Video made/m", r => qv(VID(r, "made_pm")), 1], ["acc", "Video acc", r => qv(VID(r, "acc")), 1],
   ["automade", "Video auto", r => qv(VID(r, "auto_made")), 1], ["cycle", "Cycle s ↓", r => qv(VID(r, "cycle_s")), -1], ["climb", "Climb (TBA)", r => r.s?.climb?.rate, 1],
   ["defs", "Defense", r => VID(r, "def_matches"), 1]];
@@ -170,10 +174,10 @@ async function picklistPane(el, d, ev) {
   const { sd, rows } = await scoutRows(d, ev, ts);
   const fmtTs = t => { const x = new Date(t * 1000); return ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][x.getDay()] + " " + x.toTimeString().slice(0, 5); };
   const st = Object.assign({ stars: [], dnp: [], weights: { ...PL_DEFAULT } }, await plLoad(ev));
-  st.weights = { ...PL_DEFAULT, ...(st.weights && "blend" in st.weights ? st.weights : {}) };
+  st.weights = plWeights(st.weights && "blend" in st.weights ? st.weights : {});
   const climbOn = !!(sd && sd.event_stats && sd.event_stats.climb_matters);
   const save = () => plSave(ev, st, cur => {
-    Object.assign(st, { stars: [], dnp: [] }, cur); st.weights = { ...PL_DEFAULT, ...cur.weights };
+    Object.assign(st, { stars: [], dnp: [] }, cur); st.weights = plWeights(cur.weights);
     if (el.isConnected) render();
   });
   // z-scores across the event (missing = event mean); video metrics are already shrunk toward the event
@@ -181,7 +185,7 @@ async function picklistPane(el, d, ev) {
   PL_KEYS.forEach(([k, , g, sg]) => { const v = rows.map(g).filter(has), m = v.reduce((a, b) => a + b, 0) / Math.max(1, v.length);
     const s_ = Math.sqrt(v.reduce((a, b) => a + (b - m) ** 2, 0) / Math.max(1, v.length - 1)) || 1; zs[k] = r => { const x = g(r); return has(x) ? sg * (x - m) / s_ : 0; }; });
   let only = "all", mode = lsGet("cyberscout:plmode", "blend");
-  const W = k => (k === "climb" && !climbOn) ? 0 : (st.weights[k] || 0);
+  const W = k => (k === "climb" && !climbOn) ? 0 : plWeight(st.weights[k]);
   const custom = r => { let s_ = 0, w = 0; for (const [k] of PL_KEYS) { const wt = W(k); if (!wt) continue; s_ += wt * zs[k](r); w += wt; } return w ? s_ / w : 0; };
   const key = { blend: r => r.s?.rating?.blend, epa: r => r.s?.rating?.epa, opr: r => r.t.opr, custom };
   const maxB = Math.max(1, ...rows.map(r => (r.s?.rating?.blend || 0) + (r.s?.rating?.sd || 0)));
@@ -193,7 +197,7 @@ async function picklistPane(el, d, ev) {
     const shown = list.filter(x => only === "all" || (only === "star" && st.stars.includes(x.r.t.key)) || (only === "avail" && !st.dnp.includes(x.r.t.key)));
     const dis = x => x && x.r.s ? flagChips(x.r.s, ["video_higher", "video_lower", "auto_not_tracked"]) : "";
     el.innerHTML = `${ts ? `<div class="sc-banner"><b>Replay as of ${fmtTs(+ts)}</b>: ratings, ranks, OPR and video only from data posted before then.</div>` : dataBanner(sd, "ratings: end-of-event dashboard")}<div class="plwrap"><div class="plw card"><h2>Order by ${CS.help(`<span class="hl">Default: <b>blend</b> rating ± sd (expected points/match; best predictor here: rank-order agreement with the day-2 result .92 vs .65 for video-only stats).</span><span class="hl"><b>Custom</b> = weighted z-scores; video metrics are shrunk and missing values count as event average.</span>`, "How the order works")}</h2><div class="chips" id="plm"></div>
-      ${mode === "custom" ? PL_KEYS.map(([k, l]) => `<label class="wrow ${k === "climb" && !climbOn ? "sc-dis" : ""}" title="${k === "climb" && !climbOn ? `off: the best robot here averages ${fx(sd?.event_stats?.tower_pts_max)} tower pts/match (≤ 10)` : ""}"><span>${l}</span><input type="range" min="0" max="5" step="0.5" value="${st.weights[k] || 0}" data-k="${k}" ${k === "climb" && !climbOn ? "disabled" : ""}><b>${W(k)}</b></label>`).join("") : ""}
+      ${mode === "custom" ? PL_KEYS.map(([k, l]) => `<label class="wrow ${k === "climb" && !climbOn ? "sc-dis" : ""}" title="${k === "climb" && !climbOn ? `off: the best robot here averages ${fx(sd?.event_stats?.tower_pts_max)} tower pts/match (≤ 10)` : ""}"><span>${l}</span><input type="range" min="0" max="5" step="0.5" value="${plWeight(st.weights[k])}" data-k="${k}" ${k === "climb" && !climbOn ? "disabled" : ""}><b>${W(k)}</b></label>`).join("") : ""}
       <div class="controls"><button id="plreset">Reset weights</button><button id="plcopy">Copy list</button></div></div>
       <div class="plt card"><div class="pl-bar"><div class="chips" id="plf"></div>${CS.help(`<span class="hl">Video columns: verified matches only, shrunk (hover for raw and n); <i>grey italic</i> = n &lt; 3.</span><span class="hl">"video higher" = reconciled video FUEL ≥ 1.15× EPA FUEL + 8. Video FUEL numbers use only alliance results that reconcile with TBA within 20% (hover for n).</span><span class="hl">"video lower?" appears only with ≥ 3 reconciled matches: under-attribution made every "video says worse" call wrong.</span>${climbOn ? "" : `<span class="hl">Climb column hidden: no robot here averages more than 10 tower pts/match (max ${fx(sd?.event_stats?.tower_pts_max)}).</span>`}`, "How to read the picklist")}</div><div class="tablewrap"><table><thead><tr><th class="num" data-pri="1000">#</th><th data-pri="960"><span class="vh">Star / do not pick</span></th><th data-pri="990">Team</th><th class="num" data-pri="300">Rank</th><th data-pri="800">Blend ± sd</th><th class="num" data-pri="200">EPA</th><th class="num" data-pri="150">OPR</th>
         <th title="verified robot-video matches / played" data-pri="450">Video</th><th class="num" title="FUEL made per match on verified video (≥ = floor)" data-pri="600">Made/m</th><th class="num" data-pri="550">Acc</th><th class="num" data-pri="250">Auto</th>${climbOn ? '<th class="num" data-pri="240">Climb</th>' : ""}<th class="num" title="matches with defense played (episodes) on verified video: third-robot / defender value" data-pri="230">Def.</th><th class="num" title="stopped ≥ 30 s AND the alliance scored under 85% of expectation (TBA); ≥ 3 verified matches" data-pri="220">Dead</th>${mode === "custom" ? '<th class="num" data-pri="850">Score</th>' : ""}<th data-pri="400">Notes</th></tr></thead>
@@ -205,7 +209,7 @@ async function picklistPane(el, d, ev) {
         <td>${dis(x)}</td></tr>`; }).join("")}</tbody></table></div></div></div>`;
     chipRow(el.querySelector("#plm"), [["blend", "Blend"], ["epa", "EPA"], ["opr", "OPR"], ["custom", "Custom"]], mode, k => { mode = k; lsSet("cyberscout:plmode", k); render(); });
     chipRow(el.querySelector("#plf"), [["all", "All"], ["star", "Starred"], ["avail", "Hide do-not-pick"]], only, k => { only = k; render(); });
-    el.querySelectorAll(".wrow input").forEach(i => i.oninput = () => { st.weights[i.dataset.k] = +i.value; save(); i.nextElementSibling.textContent = i.value; clearTimeout(render.t); render.t = setTimeout(render, 120); });
+    el.querySelectorAll(".wrow input").forEach(i => i.oninput = () => { st.weights[i.dataset.k] = plWeight(i.value); save(); i.nextElementSibling.textContent = String(plWeight(i.value)); clearTimeout(render.t); render.t = setTimeout(render, 120); });
     el.querySelectorAll("[data-s]").forEach(b => b.onclick = () => { const k = b.dataset.s, i = st.stars.indexOf(k); i >= 0 ? st.stars.splice(i, 1) : st.stars.push(k); save(); render(); });
     el.querySelectorAll("[data-n]").forEach(b => b.onclick = () => { const k = b.dataset.n, i = st.dnp.indexOf(k); i >= 0 ? st.dnp.splice(i, 1) : st.dnp.push(k); save(); render(); });
     el.querySelector("#plreset").onclick = () => { st.weights = { ...PL_DEFAULT }; save(); render(); };

@@ -40,7 +40,7 @@ Everything below was read from the code at the commit named in `docs/guide/READM
 | `server/routers/admin.py` | `/admin/security` (lockdown, passwordless, review mode), `/admin/sessions/revoke`, `/audit` list / revert |
 | `server/routers/sources.py` | Video page: sources, layout boxes, calibration wizard, jobs, livestream status (logic in `live/sources.py`, `live/layout.py`) |
 | `server/routers/update.py` | `/admin/update*`: writes `update-request.json`, parses `update-status.json` |
-| `server/openapi.json` | committed snapshot of the schema (stale: see Docs vs code) |
+| `server/openapi.json` | committed snapshot of the schema (regenerated in the cleanup pass) |
 | `server/Dockerfile` | `python:3.12-slim`; installs `requirements.txt`; copies `server/` plus `live/sources.py` and `live/layout.py`; deletes `server/tests`; HEALTHCHECK on `/app/v1/health` |
 | `server/entrypoint.sh` | root phase (refuse symlinked `$DATA` / `$DATA/config`, `mkdir -p $DATA/config`, `chown -h` a fixed list of files) then `setpriv --reuid=$PUID --regid=$PGID --clear-groups --no-new-privs` uvicorn, 1 process, no access log, no server header |
 | `server/requirements.txt` | pinned runtime: fastapi 0.143.0, starlette 1.7.0, pydantic 2.14.1, uvicorn 0.54.0, argon2-cffi 25.1.0 |
@@ -710,9 +710,12 @@ policy path). Neither writes an audit entry.
 | `TBA_KEY`, `EVENTS` | empty | `config.py` -> `seed_from_env` | imported once into an empty DB |
 | `TZ`, `PYTHONDONTWRITEBYTECODE` | | compose | |
 
-The shipped `deploy/docker-compose.yml` passes only `DATA`, `PUID`, `PGID`, `TZ`, `COOKIE_SECURE` and
-`PYTHONDONTWRITEBYTECODE` to the api container, and the api has no `env_file`. Every other variable above only
-takes effect if you add it to the api service's `environment:`.
+The shipped `deploy/docker-compose.yml` gives the api no `env_file`; its `environment:` is an explicit allowlist:
+`DATA`, `PUID`, `PGID`, `TZ`, `COOKIE_SECURE`, `PYTHONDONTWRITEBYTECODE` and (since the cleanup pass)
+`SESSION_IDLE_DAYS`, `SESSION_MAX_DAYS`, `PASSWORD_MIN`, `MEMBER_PASSWORD_MIN`, `SETUP_CODE_REQUIRED`, each as `${VAR:-<config.py default>}`. `TBA_BASE`,
+`TBA_KEY` and `EVENTS` are not passed (the one-time `.env` import is off on purpose). A new api setting must be added
+to that block; `server/tests/test_hardening.py::test_compose_gives_api_an_env_allowlist` checks the list and its
+defaults.
 
 Container hardening (compose): `read_only: true`, tmpfs `/tmp` 64 MB, `cap_drop: ALL` + `CHOWN, DAC_OVERRIDE,
 SETUID, SETGID` for the entrypoint's root phase, `no-new-privileges`, `pids_limit 256`, `mem_limit
@@ -724,7 +727,7 @@ ${API_MEM_LIMIT:-1g}`, no published port.
 
 ```bash
 pip install -r server/requirements-dev.txt          # or use the repo's .venv
-python -m pytest server/tests                        # 147 tests, ~40 s; all pass at this commit
+python -m pytest server/tests                        # 161 tests after the cleanup pass, ~30 s
 ```
 
 `conftest.py`: the `data` fixture points `cfg` at a tmp dir, clears the limiters and the TBA cache, and replaces
@@ -738,7 +741,8 @@ tests use no-password teammates), `team` (one signed-in client per role).
 | `test_auth.py` | setup mode + code, cookie flags, raw token not stored, CSRF required, login/logout, login rate limit, idle and absolute expiry, password change, disable kills sessions, last-admin guard, TBA key never returned, setup without code, `.env` seeding, optional non-admin passwords, imported config still needs the wizard |
 | `test_roles.py` | parametrized role matrix (18 endpoint cases x 4 roles), anonymous 401s, options hidden from non-admins, note ownership, role change applies immediately |
 | `test_data.py` | wizard flow, worker.json `events: null` until configured, picklist versioning, overrides file, note validation, admin-only OpenAPI, picklist rejects markup |
-| `test_hardening.py` | audit of every change (who/where), append-only triggers, no secrets in the log, failed logins logged without user enumeration, fallback `http.*` audit, picklist history / restore / revert-of-revert, revert-user, note soft delete / hide / restore, note markup and invisible-char refusal, scout fix approval queue, direct mode, pending cap, note flood and picklist/global write limits, display-name rules, new accounts default to viewer, passwordless LAN-only and fail-closed proxy detection, policy switching, password unlocks a session, rate limit keyed on the real IP, lockdown, sign everyone out, disable is instant, no self-promotion, no usernames leak to teammates, settings refuse markup, settings/events revert, audit filters, migrating an old DB |
+| `test_hardening.py` | audit of every change (who/where), append-only triggers, no secrets in the log, failed logins logged without user enumeration, fallback `http.*` audit, picklist history / restore / revert-of-revert, revert-user, note soft delete / hide / restore, note markup and invisible-char refusal, scout fix approval queue, direct mode, pending cap, note flood and picklist/global write limits, display-name rules, new accounts default to viewer, passwordless LAN-only and fail-closed proxy detection, policy switching, password unlocks a session, rate limit keyed on the real IP, lockdown, sign everyone out, disable is instant, no self-promotion, no usernames leak to teammates, settings refuse markup, settings/events revert, audit filters, migrating an old DB, the compose api env allowlist (cleanup pass) |
+| `test_notes_ui.py` | (cleanup pass) the contract `web/notes.js` relies on: match notes tagged with a team appear on both pages, viewers read but can't write, own edit / delete / undo, strategist hide / restore (author can't undo a hide), lockdown answers 423 for notes and fixes while reads still work, the "Wrong team?" merge-then-PUT flow (202 pending → approve → merged file), scout "ask to clear" queued vs strategist clear applied |
 | `test_sources_api.py` | `POST /sources` rejects option-like, `file:`, `javascript:`, relative, private / loopback / Tailscale URLs; normalisation (Twitch, host lower-casing); `sample` validation; skipped if `live/sources.py` can't be imported |
 | `test_livestream.py` | `/livestream` states `no_source` / `not_running` / `recording` / stale, bad event key, needs login |
 | `test_update.py` | admin-only, 401, CSRF, not-installed, fixed-schema request + audit, strict apply body, display name can't break the request, busy/rollback rules, yt-dlp switch, lockdown doesn't block admins, rate limit, status parsing whitelist and types, garbage and symlinked status; plus the updater's own validator, helpers, yt-dlp lock validation and conf parsing (loads `deploy/updater/cs-updater.py` directly) |
@@ -779,13 +783,14 @@ Where the code and existing docs disagree (the code is what runs):
    ignore unknown keys.
 3. **`X-CS-Role`.** Documented as part of the nginx gate; the API sets it but nginx never reads it, so `/api/*` and
    `/media/*` are gated by "signed in" only. No role-based file gating exists.
-4. **`server/openapi.json` is stale**: it lacks `GET /admin/update` and `POST /admin/update/{check,apply,rollback}`
-   (diffed against `app.openapi()` at this commit).
+4. *(Fixed in the cleanup pass.)* `server/openapi.json` was stale (it lacked the `/admin/update` endpoints); it was
+   regenerated from `create_app().openapi()`.
 5. **Env vars.** `server/README.md` lists `SETUP_CODE_REQUIRED`, `SESSION_IDLE_DAYS`, `SESSION_MAX_DAYS`,
    `PASSWORD_MIN`, `MEMBER_PASSWORD_MIN`, `TBA_BASE`, `TBA_KEY`, `EVENTS` as API settings, and
    `deploy/README.md` says the api imports `TBA_KEY` / `EVENTS` from `.env` on first start. The shipped compose
-   gives the api neither an `env_file` nor those variables, so none of them reach the api unless added to
-   compose. The `.env` import upgrade path is therefore inactive (the worker still falls back to `.env`
+   gives the api no `env_file`; since the cleanup pass it passes the account settings (`SETUP_CODE_REQUIRED`,
+   `SESSION_*`, `PASSWORD_MIN`, `MEMBER_PASSWORD_MIN`) as an allowlist but still not `TBA_BASE` / `TBA_KEY` /
+   `EVENTS`. The `.env` import upgrade path is therefore inactive on purpose (the worker still falls back to `.env`
    `TBA_KEY` / `EVENTS` itself through `load_config()`).
 6. **Roles matrix "video sources / layout / calibration (reads: per B)".** Concretely: viewer+ can read
    `/sources`, `/layout`, `/calibration` (status) and `/livestream`; frames, wizard state and job status are

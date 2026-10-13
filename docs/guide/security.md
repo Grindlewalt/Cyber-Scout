@@ -28,8 +28,8 @@ Sources: the security audit of 2026-10-12 at ref `0e21afe` (`.work/security/REPO
   docker socket or host networking. The API port is not published. The API and worker run as uid 1000 with no
   capabilities. Every subprocess call uses an argv list (no shell), and nothing unsafe is deserialised.
 - **All 5 confirmed audit findings are fixed in code and deployed.** Two need the owner to confirm something or
-  carry a small residual risk: the Cloudflare tunnel exposure, and the client-side `Number()` coercion that was
-  never added.
+  carry a small residual risk: the Cloudflare tunnel exposure, and the client-side `Number()` coercion (added in the
+  cleanup pass, not yet deployed).
 - **The biggest real risks now are operational, not code:**
   1. The site is published on `0.0.0.0:7560`. Whether a dashboard-managed Cloudflare tunnel exposes it is not
      visible from the host.
@@ -335,7 +335,7 @@ Severity is the audit's overall rating. "Status" is what the current code (`cc62
 
 | # | sev | finding | fix | status (verified) | residual |
 |---|---|---|---|---|---|
-| A1 | **High** | Stored XSS via picklist weights. `PUT /events/{ev}/picklists/{name}` (strategist+) stored any JSON, and `web/event.js` put `weights` values into `innerHTML` raw. Strategist → admin session. | `a94d6ee`, plus CSP in `83b16b7` | **Fixed.** `server/routers/scouting.py: PicklistData` (`extra="forbid"`, TEAM_RE lists, numeric weights −10..10). CSP `script-src 'self'` blocks inline handlers. | (a) The client-side `Number()` coercion the audit asked for was **not** added: `web/event.js` still interpolates `st.weights[k]` raw (picklist `render`, `value="${st.weights[k] \|\| 0}"`). (b) Picklists saved before `a94d6ee` were copied into `picklist_versions` by a `server/db.py` migration. `GET` and `.../restore` (`apply_picklist_state`) return or re-save stored blobs **without re-validating**. Both are low risk with the CSP in place. |
+| A1 | **High** | Stored XSS via picklist weights. `PUT /events/{ev}/picklists/{name}` (strategist+) stored any JSON, and `web/event.js` put `weights` values into `innerHTML` raw. Strategist → admin session. | `a94d6ee`, plus CSP in `83b16b7` | **Fixed.** `server/routers/scouting.py: PicklistData` (`extra="forbid"`, TEAM_RE lists, numeric weights −10..10). CSP `script-src 'self'` blocks inline handlers. | (a) The client-side `Number()` coercion was added in the cleanup pass (`web/event.js` `plWeight` / `plWeights`: known keys, `Number()` clamped 0–5, for both `value=""` and the shown number). (b) Picklists saved before `a94d6ee` were copied into `picklist_versions` by a `server/db.py` migration. `GET` and `.../restore` (`apply_picklist_state`) return or re-save stored blobs **without re-validating**. Both are low risk with the CSP in place. |
 | A2 | Med | Un-normalised source URLs (admin): a leading `-` reached yt-dlp as an option; relative/`file:` paths skipped the root check; `javascript:` hrefs; `sample.video` unvalidated. | `74e84af` | **Fixed.** `classify_url`, `media_ok`, `clean_sample`; `--` in every yt-dlp call; `CS.safeHref` in `web/sources.js` (`urlHtml`). Covered by `tests/test_source_urls.py` (14 tests) and `server/tests/test_sources_api.py`. | — |
 | A3 | Med | Worker ran `pip install -U yt-dlp[default]` as root on every start, unpinned. | `83b16b7` | **Fixed.** No pip in `live/entrypoint.sh`; `live/requirements-ytdlp.txt` hash-pinned. Deployed `entrypoint.sh` verified. | An unpinned yt-dlp in the cached build layer (build-time, overridden). Updating yt-dlp now means editing the pin and rebuilding the image, which is blocked by the full disk (§7). |
 | A4 | Low | SSRF: TBA webcast/video values and admin URLs could make the worker fetch internal URLs (Portainer, restic, searxng on the gateway). | `74e84af` | **Fixed** for direct fetches: `safe_public_url`, YouTube/Twitch-only webcasts, YouTube-id check on TBA video keys. | DNS rebinding and in-tool redirects (§4.12). The network is still `internal=false`, so nothing stops code already running in the worker. |
@@ -418,8 +418,8 @@ In priority order:
 9. **Egress (optional).** Put worker and recorder on a network that can't reach the docker gateway's admin ports
    (host firewall rules for `172.25.0.0/16` → 8000, 9443, 8200, 8201, 8080, 9898, 3001), or bind those host
    services to specific interfaces.
-10. Small code follow-ups: `Number()` the picklist weights in `web/event.js`; re-validate picklist versions on
-    restore and GET; validate `p[0]` once in `route()`; fix the README and `SecurityOut` doc drift; `pw_strength`
+10. Small code follow-ups: re-validate picklist versions on restore and GET (the `Number()` coercion and a single
+    hash-route check in `route()`, `routeOk`, were done in the cleanup pass); fix the README and `SecurityOut` doc drift; `pw_strength`
     in `manage.py`; a checksum for `CS_MODEL_URL`; image digests.
 
 ---

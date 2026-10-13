@@ -40,3 +40,47 @@ def test_epa_sd_shrinks_toward_prior_with_few_rows():
     assert math.isclose(MD.epa_sd([], None), 80.0)
     rows = [_row(1, 1, .5, .5, 0, 10, 10)]
     assert MD.epa_sd(rows, None) < 80.0
+
+
+def test_defense_measured_only_when_library_says_significant():
+    """defense.json teams[].retention: 'measured' needs significant (BH + FCR-adjusted interval), not just the raw
+    90% interval below 100% (production had 5 such teams with q ~0.43 and 0 discoveries)."""
+    eff = {"retained": 0.71, "lo": 0.56, "hi": 0.88, "significant": True, "source": "library"}
+    loose = {"est": 0.55, "lo": 0.31, "hi": 0.93, "q": 0.43, "lo_adj": 0.2, "hi_adj": 1.4, "significant": False}
+    sig = {"est": 0.40, "lo": 0.25, "hi": 0.62, "q": 0.04, "lo_adj": 0.21, "hi_adj": 0.71, "significant": True}
+    X = {"defense_effect": eff, "lib_teams": {"frc488": {"team": "frc488", "retention": loose},
+                                              "frc254": {"team": "frc254", "retention": sig}}}
+    ret, kind, txt = MD.retention_for("frc488", X)
+    assert kind == "assumption" and ret == 0.71 and "event-wide" in txt
+    ret, kind, txt = MD.retention_for("frc254", X)
+    assert kind == "measured" and ret == 0.40 and "21–71%" in txt          # the adjusted interval is shown
+    assert MD.retention_for("frc9999", X)[1] == "assumption"
+    assert MD.lib_significant(loose) is None and MD.lib_significant(sig) is sig
+    assert MD.lib_significant({"est": 0.5, "significant": "yes"}) is None    # only a real True counts
+
+
+def test_preview_defense_factors_follow_the_library():
+    from types import SimpleNamespace
+    from live.strategy import preview as PV
+    comp = {c: {"beta": 1.0, "beta_sd": 1.0} for c in ("trans", "active", "endgame")}
+    M = SimpleNamespace(comp=comp)
+    al = {"p_win_auto": 0.5, "fuel": {"mean": 60.0}, "fuel_by_period_mean": {"auto": 10.0}}
+    S = {"p_red_win": 0.5, "n_sims": 100, "margin": {"mean": 0, "q25": -5, "q75": 5},
+         "alliances": {"red": al, "blue": al}}
+    bp = {p: 5.0 for p in ("auto", "transition", "shift1", "shift2", "shift3", "shift4", "endgame")}
+
+    def robot(t, a, rr):
+        return {"team": t, "number": t[3:], "alliance": a, "expected_fuel": {"total": 35.0, "by_period": bp},
+                "defended": {"rate_retained": rr}, "reliability": {"dead_rate": None},
+                "climb": {"end": {"L0": 1.0}, "n_obs": 0, "auto_l1": 0, "expected_pts": 0},
+                "data_quality": {"video_weight": 0.9, "n_video_matches": 4},
+                "rating": {"active": {"mean": 20.0, "sd": 4.0}}}
+    shrunk = {"v": 0.5, "n_eff": 3.0}                 # the old trigger: shrunk per-robot estimate < 75%
+    robots = [robot("frc1", "red", shrunk), robot("frc2", "red", None), robot("frc3", "red", None),
+              robot("frc4", "blue", shrunk), robot("frc5", "blue", None), robot("frc6", "blue", None)]
+    loose = {"est": 0.55, "lo": 0.31, "hi": 0.93, "significant": False}
+    sig = {"est": 0.40, "lo_adj": 0.21, "hi_adj": 0.71, "significant": True}
+    kinds = lambda F: {(f["team"], f.get("basis")) for f in F if f["kind"].startswith("defense_")}
+    lib = {"frc1": {"retention": loose}, "frc5": {"retention": sig}}
+    assert kinds(PV.key_factors(M, S, robots, [], [], lib)) == {("frc5", "measured")}
+    assert kinds(PV.key_factors(M, S, robots, [], [], None)) == {("frc1", "assumption"), ("frc4", "assumption")}

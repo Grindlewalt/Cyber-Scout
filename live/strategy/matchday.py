@@ -245,14 +245,22 @@ def library_effect(lib):
             "significant": bool(hi is not None and hi < 1.0), "placebo": pl, "n": g.get("tested")}
 
 
+def lib_significant(r):
+    """the defense library's per-team retention cell (defense.json teams[].retention) when it is `significant` (BH
+    q <= alpha and the FCR-adjusted interval excludes 100%), else None. The one rule for calling a team's defense
+    effect "measured" (dashboard plan, queue card, previews)."""
+    return r if isinstance(r, dict) and r.get("significant") is True and r.get("est") is not None else None
+
+
 def retention_for(team, X):
-    """(retained, basis, detail) for a defense target: the library's per-team placebo-controlled estimate only when its
-    interval excludes 100%; otherwise the event-wide effect, labelled an assumption."""
+    """(retained, basis, detail) for a defense target: the library's per-team placebo-controlled estimate only when it
+    is `significant` (multiple-testing corrected); otherwise the event-wide effect, labelled an assumption."""
     t = (X.get("lib_teams") or {}).get(team) or {}
-    r = t.get("retention") or {}
-    if r.get("est") is not None and r.get("hi") is not None and (r.get("significant") or r["hi"] < 1.0):
-        return float(r["est"]), "measured", (f"defense library: kept {r['est'] * 100:.0f}% "
-                                             f"({r['lo'] * 100:.0f}–{r['hi'] * 100:.0f}%, placebo-controlled)")
+    r = lib_significant(t.get("retention"))
+    if r:
+        lo, hi = r.get("lo_adj", r.get("lo")), r.get("hi_adj", r.get("hi"))
+        ci = f"{lo * 100:.0f}–{hi * 100:.0f}%, " if lo is not None and hi is not None else ""
+        return float(r["est"]), "measured", f"defense library: kept {r['est'] * 100:.0f}% ({ci}placebo-controlled)"
     e = X.get("defense_effect") or {}
     v = e.get("retained") or 0.75
     return float(v), "assumption", f"assumption: event-wide, defended robots keep ~{round(v * 20) * 5:.0f}% of their shot rate"
@@ -316,7 +324,8 @@ def event_extras(V, cov, cov_keys_full, lib=None):
             vis = {_short(k) for k in cov_keys_full.get(t, ())}
             d["def"] = [k for k in ld["matches"] if k in vis]
     return {"bonus_ever": ever, "fouls_given": given, "fouls_event": float(np.mean(all_given)) if all_given else None,
-            "defense_effect": eff, "defend_by": defend_by, "lib_teams": lib_teams}
+            "defense_effect": eff, "defend_by": defend_by, "lib_teams": lib_teams,
+            "has_library": bool(lib)}
 
 
 # ------------------------------------------------------------------------------------------------- queue card
@@ -514,12 +523,12 @@ def queue_card(nm, P, raw, X, cov, epa_wp, auto_bias, V, team):
         rs = [r for r in P["robots"] if r["team"] in nm["teams"][us]]
         top = max(rs, key=lambda r: sum(r["expected_fuel"]["by_period"][s_] for s_ in ("shift1", "shift2", "shift3", "shift4")))
         act = sum(top["expected_fuel"]["by_period"][s_] for s_ in ("shift1", "shift2", "shift3", "shift4"))
-        ret = (eff or {}).get("retained") or 0.75
+        ret, kind, _ = retention_for(top["team"], X)       # same rule as the defend line: per-team only if significant
         loss = act * (1 - ret) * 0.7
         mg = raw[us]["score"] - raw[them]["score"] - loss
         wd = float(((mg > 0) + 0.5 * (mg == 0)).mean())
         defenders["if_defended"] = {"defender": likely[0]["team"], "target": top["team"], "fuel_lost": _r(loss, 0),
-                                    "win_prob": _r(wd, 3), "basis": "measured" if (eff or {}).get("significant") else "assumption"}
+                                    "win_prob": _r(wd, 3), "basis": kind}
         defenders["ignores"] = (f"Win % ignores {_num(likely[0]['team'])}'s defense; if it shuts down our "
                                 f"{_num(top['team'])} (~{loss:.0f} FUEL) the win % is ~"
                                 + ("<5%" if wd < 0.05 else ">95%" if wd > 0.95 else f"{round(wd * 20) * 5}%") + ".")

@@ -124,6 +124,7 @@ async function analyzePage(ev, key) {
   const t0m = seekT != null ? seekT : d.t_start - 3;
 
   // ---- page
+  const canFix = !!(CS.platform && CS.user && CS.can("scout") && CS.idFix);    // propose identity fixes (notes.js)
   const W = d.winner, sr = d.red && d.red.score, sb = d.blue && d.blue.score;
   const helpLegend = `<span class="hl"><b>Arcs</b> are coloured by shooter; the ball is yellow in flight. Landing: <b style="color:#51cf66">✓ made</b>, <b style="color:#ff6b6b">✗ missed</b>, <b style="color:#e0b020">→ pass</b>.</span>
     <span class="hl"><b>Team numbers</b>: solid = identity confidence ≥ 80%, "?" = 50–80%, grey "unknown" = under 50%, hidden when the robot is lost. Dashed boxes: position interpolated, not seen.</span>
@@ -179,7 +180,8 @@ async function analyzePage(ev, key) {
     <details class="mv-sec" id="mvShots"><summary><span class="mv-st">Shots</span><span class="muted" id="anShotN"></span></summary>
       <div class="mv-sb"><div class="mv-fl"><select id="fOut" aria-label="Outcome"><option value="">All outcomes</option><option value="made">Made</option><option value="missed">Missed</option><option value="pass">Passes</option></select>
         <span class="muted small">Teams follow the Teams panel. Select a shot to jump to it.</span></div><div class="an-list" id="anList"></div></div></details>
-    ${COR.length || ID ? `<details class="mv-sec"><summary><span class="mv-st">Identity</span><span class="muted">${COR.length} correction${COR.length === 1 ? "" : "s"}${ID && ID.method ? ` · ${esc(ID.method)}` : ""}</span></summary><div class="mv-sb"><div class="an-list" id="anId"></div></div></details>` : ""}
+    ${COR.length || ID ? `<details class="mv-sec"><summary><span class="mv-st">Identity</span><span class="muted">${COR.length} correction${COR.length === 1 ? "" : "s"}${ID && ID.method ? ` · ${esc(ID.method)}` : ""}</span></summary><div class="mv-sb">${canFix ? `<div class="mv-fl"><span class="muted small">A robot labelled with the wrong team?</span><button type="button" id="mvFixB2">Propose a fix</button></div>` : ""}<div class="an-list" id="anId"></div></div></details>` : ""}
+    <section id="mvNotes"></section>
   </div>`;
 
   function robotsCard() {
@@ -204,14 +206,25 @@ async function analyzePage(ev, key) {
       <span class="hl"><b>Seen</b> is the share of the match the robot was directly detected; elsewhere its path is interpolated (drawn faded). Team labels are inferred across the event; low-confidence ones may be swapped within an alliance.</span>
       ${ID ? `<span class="hl"><b>Identity</b>: ${esc(ID.method || "")}, ${ID.n_reads ?? "?"} bumper-number reads, ${COR.length} identity correction${COR.length === 1 ? "" : "s"} (${COR.filter(c => c.anchored).length} anchored by a read); see Identity below.</span>` : ""}
       <span class="hl">Use the arrow at the end of a row for fire rate, cycles, intakes, defense and movement.</span>`;
-    return `<section class="card mv-robots" aria-labelledby="mvRobH"><div class="mv-sh"><h2 id="mvRobH">Robots</h2><span class="muted small">whole match</span>${CS.help(note, "How these robot stats are measured")}</div>
+    return `<section class="card mv-robots" aria-labelledby="mvRobH"><div class="mv-sh"><h2 id="mvRobH">Robots</h2><span class="muted small">whole match</span>${CS.help(note, "How these robot stats are measured")}${canFix ? `<button type="button" class="mv-fixb" id="mvFixB" aria-expanded="false" aria-controls="mvFix">Wrong team?</button>` : ""}</div>
       <div class="tablewrap"><table class="mv-rt"><thead><tr><th data-pri="1000">Team</th><th data-pri="60">Role</th><th class="num" data-pri="95" title="FUEL made / attempted">Made/Att</th><th class="num" data-pri="85">Acc</th>
         <th class="num" data-pri="70" title="auto FUEL made / attempted">Auto</th><th data-pri="65">Climb</th><th class="num" data-pri="55" title="share of the match the robot was directly detected">Seen</th><th data-pri="75" title="team label (identity) confidence">ID</th>
         <th class="num"${P0}>Fire /s</th><th class="num"${P0}>Volley</th><th class="num"${P0}>Cycle s</th><th class="num"${P0}>Intakes</th><th${P0}>Auto routine</th><th class="num"${P0}>Defense s</th><th class="num"${P0}>Contacts</th><th class="num"${P0}>Pins</th>
         <th class="num"${P0}>Distance m</th><th class="num"${P0}>Auto distance m</th><th class="num"${P0}>Top speed m/s</th><th class="num"${P0}>Own / neutral / opp. zone</th><th class="num"${P0} title="bumper-number OCR reads of this team in this match">Number reads</th></tr></thead>
-      <tbody>${rows}</tbody></table></div></section>`;
+      <tbody>${rows}</tbody></table></div><div id="mvFix" hidden></div></section>`;
   }
 
+  // ---- notes + identity fixes (notes.js; server/routers/scouting.py). Track idx = the key overrides.json uses.
+  {
+    const al = a => (d[a] && d[a].teams) || [];
+    const fixer = canFix ? CS.idFix.mount(document.getElementById("mvFix"), ev, key,
+      tracks.map(t => ({ idx: t.idx != null ? t.idx : t.i, alliance: t.alliance, team: t.team || "", label: t.label, color: t.color, tc: t.tc })),
+      { red: al("red"), blue: al("blue") }) : null;
+    const fb = document.getElementById("mvFixB"), fb2 = document.getElementById("mvFixB2");
+    if (fixer && fb) fb.onclick = () => { fixer.toggle(fb); fb.setAttribute("aria-expanded", String(!document.getElementById("mvFix").hidden)); };
+    if (fixer && fb2) fb2.onclick = () => { fixer.open(fb2); if (fb) fb.setAttribute("aria-expanded", "true"); };
+    if (CS.notes) CS.notes.mount(document.getElementById("mvNotes"), ev, { match: key, teams: [...al("red"), ...al("blue")] });
+  }
   // ---- elements
   const $ = id => document.getElementById(id), stageEl = $("mvStage"), ins = $("anIns");
   let vid = $("anVid");
