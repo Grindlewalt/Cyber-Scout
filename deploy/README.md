@@ -5,18 +5,44 @@ shows up on YouTube, it downloads the video, tracks all six robots from the over
 field camera, works out which robot is which team, and publishes everything to a
 scouting site that your team signs in to.
 
-## Install (any Linux box with Docker; NVIDIA GPU recommended)
+## Install (one command: Linux, macOS or Windows)
+
+**Linux** (recommended: an NVIDIA GPU + the NVIDIA Container Toolkit) and **macOS** (Docker Desktop, CPU only):
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Grindlewalt/Cyber-Scout/main/deploy/install.sh | bash
+# with options:  ... | bash -s -- --cpu --port 8080        from a checkout:  bash deploy/install.sh --help
 ```
 
-The installer checks Docker + Compose (and the NVIDIA Container Toolkit; without it it warns and runs CPU-only,
-~4x slower per match), clones the code into `/opt/cyber-scout/app` (asks; or `CS_DIR=...`), writes `.env` with
-infrastructure settings only (port, file owner, time zone, media dir), runs `docker compose up -d --build`, and
-prints the URL and a **one-time setup code**. At the end it offers to install the **updater** (one-click
-updates in Admin -> Updates, see below). Re-run it any time to update. Options: see the top of `install.sh`
-(`CS_PORT`, `CS_MODEL_URL` for the robot detector, `CS_CPU=1`, `CS_YES=1`, ...).
+**Windows 10/11** (Docker Desktop with the WSL2 backend; an NVIDIA GPU works through WSL2, else CPU), in PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/Grindlewalt/Cyber-Scout/main/deploy/install.ps1 -OutFile install.ps1
+powershell -ExecutionPolicy Bypass -File install.ps1          # options: -Cpu -Port 8080 -Dir D:\CyberScout ...
+```
+
+The installer checks Docker + Compose (Linux: offers Docker's official install script, only if you say yes; macOS /
+Windows: explains how to get Docker Desktop), the GPU (`nvidia-smi` + a `docker run --gpus all` test; otherwise
+CPU-only, ~4x slower per match), free disk space (warns under 20 GB: the worker image is ~3.5 GB) and the port
+(offers the next free one). It downloads the code into `<dir>/app` (git clone; a private GitHub repo works over
+SSH with your key; no git -> a tarball), writes `.env` with infrastructure settings only (port, bind address,
+file owner, time zone, media dir, CPU override / GPU ids), copies the robot detector if you give it
+(`--model PATH|URL`), runs `docker compose up -d --build`, waits until the site answers and prints the URL and a
+**one-time setup code** (`data/setup-code.txt`). On Linux it offers the **updater** (one-click updates in
+Admin -> Updates, see below). Re-run it any time to update (`data/` and `.env` are kept).
+
+| | Linux | macOS | Windows |
+|---|---|---|---|
+| default folder | `/opt/cyber-scout` | `~/CyberScout` | `%USERPROFILE%\CyberScout` |
+| GPU | NVIDIA + Container Toolkit | no (CPU) | NVIDIA via WSL2 |
+| one-click updater | yes (systemd) | no: re-run the installer | no: re-run the installer |
+| remove | `--uninstall [--purge]` | `--uninstall [--purge]` | `-Uninstall [-Purge]` |
+
+Uninstall removes the containers, network and images and keeps the folder; `--purge` also deletes the folder (all
+data) after you type `DELETE`. Useful options: `--dir`, `--port`, `--bind 127.0.0.1`, `--cpu` / `--gpu`,
+`--gpu-ids 1`, `--prefix NAME` (a second copy side by side), `--tarball PATH|URL` (offline), `--no-worker`,
+`--dry-run` (prints what it would do), `--yes`. Full list: `bash install.sh --help` / `Get-Help .\install.ps1 -Full`.
+Apple Silicon / ARM: the worker image is built for linux/amd64 and runs emulated (turn on Rosetta in Docker Desktop).
 
 ## First run
 

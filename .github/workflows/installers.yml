@@ -1,0 +1,41 @@
+# Installer checks: deploy/install.sh (Linux + macOS) and deploy/install.ps1 (Windows), dry-run only.
+# Nothing is installed or started; see deploy/tests/.
+name: installers
+
+on:
+  push:
+    paths: ["deploy/install.sh", "deploy/install.ps1", "deploy/tests/**", "deploy/docker-compose*.yml", ".github/workflows/installers.yml"]
+  pull_request:
+    paths: ["deploy/install.sh", "deploy/install.ps1", "deploy/tests/**", "deploy/docker-compose*.yml", ".github/workflows/installers.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  install-sh:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: shellcheck (Linux runners have it)
+        if: runner.os == 'Linux'
+        run: shellcheck --version
+      - name: install.sh checks (macOS: the system bash 3.2)
+        run: |
+          if [ "$RUNNER_OS" = macOS ]; then export BASH_BIN=/bin/bash; fi
+          bash deploy/tests/test-installers.sh
+
+  install-ps1:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: install.ps1 checks (PowerShell 7)
+        shell: pwsh
+        run: ./deploy/tests/test-install.ps1 -InstallAnalyzer
+      - name: install.ps1 checks (Windows PowerShell 5.1)
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File deploy\tests\test-install.ps1

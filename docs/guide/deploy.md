@@ -10,48 +10,94 @@ commands. Facts marked **(atomosserver)** were checked read-only on the producti
 
 ---
 
-## 1. Install (`deploy/install.sh`)
+## 1. Install (`deploy/install.sh`, `deploy/install.ps1`)
 
 ```bash
+# Linux / macOS
 curl -fsSL https://raw.githubusercontent.com/Grindlewalt/Cyber-Scout/main/deploy/install.sh | bash
-# or from a checkout, without git:
-CS_SOURCE=/path/to/checkout CS_DIR=/opt/cyber-scout bash deploy/install.sh
+curl -fsSL .../deploy/install.sh | bash -s -- --cpu --port 8080      # options after "bash -s --"
+bash deploy/install.sh --source . --dir /opt/cyber-scout             # from a checkout, without git
+bash deploy/install.sh --dry-run                                     # print the plan, change nothing
 ```
 
-What it does, in order:
+```powershell
+# Windows 10/11 (PowerShell 5.1 or 7; no execution-policy change needed beyond -ExecutionPolicy Bypass)
+irm https://raw.githubusercontent.com/Grindlewalt/Cyber-Scout/main/deploy/install.ps1 -OutFile install.ps1
+powershell -ExecutionPolicy Bypass -File install.ps1 [-Cpu] [-Port 8080] [-DryRun]
+```
 
-1. **Privileges.** Uses `sudo` when it isn't root. Records the invoking user's uid/gid (`SUDO_UID`/`SUDO_GID` or
-   `id -u`) as `PUID`/`PGID`.
-2. **Docker.** Requires `docker` and Compose v2. Falls back to `sudo docker` if the user isn't in the `docker`
-   group.
-3. **GPU.** Uses the GPU when `nvidia-smi -L` works and the NVIDIA container toolkit is present (`docker info`
-   runtimes, `nvidia-container-cli` or `nvidia-ctk`). Otherwise it warns and goes CPU-only, which needs Compose
-   ≥ 2.24.4 for `!reset`.
-4. **Location.** Asks for `CS_DIR` and `CS_PORT`, then creates and chowns `CS_DIR`.
-5. **Code into `app/`.** With `CS_SOURCE`, it tars the checkout (excluding `.git .venv .work data node_modules
-   __pycache__ .env *.key .roboflow_key`). If `app/.git` exists, it runs `git fetch/checkout/pull --ff-only`.
-   Otherwise it runs `git clone --depth 1 --branch $CS_BRANCH $CS_REPO app`. It refuses when `app/` exists but
-   isn't a git checkout and no `CS_SOURCE` is given. **The atomosserver stack is in that state.**
-6. **Compose files.** Copies `app/deploy/docker-compose.yml` and `docker-compose.cpu.yml` into the stack folder. A
-   changed old copy is saved as `*.bak`.
-7. **`.env`** (only if missing, umask 077): `WEB_PORT`, `PUID`, `PGID`, `TZ` (from `/etc/timezone` or
-   `timedatectl`), `MEDIA_DIR=./data/media`, `YT_FORCE_IPV4=1`, `CS_PREFIX` (if not the default) and, CPU-only,
-   `COMPOSE_FILE=docker-compose.yml:docker-compose.cpu.yml`. An existing `.env` is kept; only the CPU line is
-   added if needed.
-8. **Data.** Runs `mkdir -p data/{models,media,site/api,config}`. If `data/models/robot.onnx` is missing, it
-   downloads `CS_MODEL_URL`, or warns that matches won't be processed until the file is there (no restart needed;
-   the worker re-checks every 30 s).
-9. **Start.** Runs `docker compose up -d --build`, then polls `http://127.0.0.1:$CS_PORT/app/v1/health` for up to
-   120 s.
-10. **Report.** Prints the LAN and Tailscale URLs and the **one-time setup code** from `data/setup-code.txt`.
-11. **Updater (optional).** Offers to install the host updater (`CS_UPDATER=y|n`; with `CS_YES=1` the default is
-    `n`). See §6.
+What `install.sh` does, in order (`install.ps1` is the same unless noted):
 
-Options (environment variables): `CS_DIR` (`/opt/cyber-scout`), `CS_PORT` (7560), `CS_REPO`
-(`https://github.com/Grindlewalt/Cyber-Scout.git`), `CS_BRANCH` (`main`), `CS_SOURCE`, `CS_MODEL_URL`, `CS_CPU=1`,
-`CS_PREFIX` (`cyber-scout`), `CS_YES=1` (no questions), `CS_UPDATER`.
+1. **Options.** Flags or the matching environment variables (`CS_DIR`, `CS_PORT`, `CS_BIND`, `CS_REPO`,
+   `CS_BRANCH`, `CS_TARBALL`, `CS_SOURCE`, `CS_MODEL_URL`, `CS_MODEL_SHA256`, `CS_CPU=1`, `CS_GPU_IDS`,
+   `CS_PREFIX`, `CS_SERVICES`, `CS_YES=1`, `CS_UPDATER=y|n`, `CS_DRY_RUN=1`). `--help` lists them all. Run as
+   root without sudo it stops (PUID would be 0) unless `--allow-root`.
+2. **Docker.** Needs `docker` + Compose v2. Linux: if Docker is missing it offers `get.docker.com` (only after
+   you answer yes, or with `--install-docker`; it runs with sudo and adds you to the `docker` group); if your
+   user can't reach the daemon it uses `sudo docker` and says so. macOS / Windows: explains how to install
+   Docker Desktop, or offers to start it. Windows also needs Linux containers and warns without the WSL2 backend.
+3. **Same-name guard.** If containers of the compose project `CS_PREFIX` already run from another folder, it
+   stops (compose project names are global; it would otherwise recreate those containers).
+4. **GPU.** Linux: `nvidia-smi -L`, then the toolkit (docker runtime `nvidia`, `nvidia-ctk` or
+   `nvidia-container-cli`), then `docker run --rm --gpus all python:3.12-slim nvidia-smi -L`. Several GPUs: asks
+   for `GPU_IDS`. No working GPU: asks to continue CPU-only (needs Compose >= 2.24.4 for `!reset`). macOS:
+   always CPU. Windows: `nvidia-smi` on the host + the same container test through WSL2.
+   ARM hosts (Apple Silicon, Windows/Linux on ARM): `DOCKER_DEFAULT_PLATFORM=linux/amd64` in `.env`, because
+   `pupil-apriltags` ships no linux/aarch64 wheel; the worker runs emulated (Rosetta / binfmt).
+5. **Disk + memory.** Warns under 20 GB free where Docker keeps images (`DockerRootDir` on Linux, the Docker
+   Desktop VM disk on macOS, the drive of `%LOCALAPPDATA%\Docker` on Windows; 2 GB when no worker is built) and
+   when Docker has < 8 GB of memory.
+6. **Port.** If `CS_PORT` is taken (listener or a container's published port) and not by this stack's own
+   `web` container, it offers the next free port.
+7. **Folder.** Default `/opt/cyber-scout` (Linux; created with sudo and handed to you), `~/CyberScout` (macOS),
+   `%USERPROFILE%\CyberScout` (Windows). An existing `.env` means "update".
+8. **Code into `app/`.** `--source DIR`: copy of a checkout (no `.git .venv .work ./data node_modules
+   __pycache__ .env *.key .roboflow_key`). `--tarball PATH|URL`: unpacked (one top-level folder is stripped).
+   `app/.git` present: `git fetch origin BRANCH` + `checkout -B BRANCH FETCH_HEAD` (refuses with local changes).
+   Otherwise `git clone --depth 1` (https with prompts off; on failure, a GitHub repo is retried over SSH when
+   you have a key); without git, a GitHub tarball from codeload. Windows clones with `core.autocrlf=false` and
+   refuses a CRLF checkout (the container entrypoints are shell scripts). An `app/` that isn't a git checkout is
+   only replaced with `--replace-app` or after you say yes (kept as `app.bak-<time>`). **The atomosserver stack
+   is in that state.** Then `app/deploy/docker-compose*.yml` are copied next to `.env` (a changed old copy ->
+   `*.bak`).
+9. **`.env`** (only if missing, mode 600): `CS_PREFIX`, `WEB_PORT`, `WEB_BIND`, `PUID`/`PGID` (the invoking user;
+   1000 on Windows), `TZ` (IANA; converted from the Windows zone on Windows), `MEDIA_DIR=./data/media`,
+   `YT_FORCE_IPV4=1`, then `GPU_IDS` or `COMPOSE_FILE=docker-compose.yml:docker-compose.cpu.yml` (`;` as the
+   separator on Windows), and `DOCKER_DEFAULT_PLATFORM` on ARM. No secrets are needed: the api makes the setup
+   code. Windows writes UTF-8 without BOM, LF endings. On a re-run only what you pass (`--port`, `--bind`,
+   `--gpu-ids`, `--prefix`, `--gpu`) or what the hardware forces (CPU override) is changed.
+10. **Data + model.** `mkdir data/{models,media,site/api,config}`. If `data/models/robot.onnx` is missing and
+    `--model PATH|URL` is given, it is copied/downloaded (checked against `--model-sha256` if given); otherwise a
+    note says matches won't be processed until the file is there (the worker re-checks every 30 s).
+11. **Build + start.** `docker compose build` (with `GIT_SHA` = the checkout's short hash) then
+    `docker compose up -d --no-build`. `--services api,web` / `--no-worker` builds and starts only those (a later
+    plain `docker compose up -d`, or the updater, starts everything). `--worker-image IMG` tags an existing image
+    as `<prefix>-worker:latest` instead of building; `--use-images` builds nothing.
+12. **Health.** Polls `/app/v1/health` (`"ok":true`) and `/` on the bound address for up to 3 minutes, then
+    prints the LAN (and Tailscale) URL and the **one-time setup code** from `data/setup-code.txt`.
+13. **Updater (Linux + systemd only).** Offers `deploy/updater/install-updater.sh` (`--updater` / `--no-updater`;
+    with `--yes` the default is no). macOS, Windows and WSL: update by re-running the installer.
 
-Re-running `install.sh` is the documented update path when there is no updater and `app/` is a git checkout.
+**Uninstall:** `install.sh --uninstall [--dir DIR]` removes the updater units (if any), runs
+`docker compose down --remove-orphans --rmi all` and removes leftover `<prefix>-{worker,api,web}:*` tags; the
+folder stays. `--purge` then deletes the folder after you type `DELETE` (or with `--yes`); files a container
+wrote as another uid are removed through a throwaway container, then sudo. A `MEDIA_DIR` outside the folder is
+left alone. `--keep-images` keeps the images. Windows: `-Uninstall [-Purge] [-KeepImages]`.
+
+**Tests.** `bash deploy/tests/test-installers.sh` (syntax, shellcheck if installed, dry-run scenarios; works
+with macOS' bash 3.2) and `pwsh deploy/tests/test-install.ps1 [-InstallAnalyzer]` (parser, PSScriptAnalyzer
+incl. 5.1 syntax compatibility, dry-run scenarios). CI: `.github/workflows/installers.yml` (ubuntu, macOS,
+Windows with PowerShell 7 and 5.1). Real end-to-end run without touching production, on atomosserver (the
+classic builder reuses the production layers; no worker build):
+
+```bash
+ulimit -c 0; S=/mnt/nas/autoscout-scratch/agents/installer
+bash install.sh --dir $S/stack --prefix cs-instest --port 7596 --bind 127.0.0.1 --cpu --no-worker --yes --no-updater
+curl -s http://127.0.0.1:7596/app/v1/session      # setup_required: true
+bash install.sh --dir $S/stack --worker-image cyber-scout-worker:latest --yes --no-updater   # re-run = update, all 4
+bash install.sh --uninstall --purge --yes --dir $S/stack
+docker images -f dangling=true                    # a build without GIT_SHA can leave 1-2 <none> images: rmi by id
+```
 
 ### First run
 
