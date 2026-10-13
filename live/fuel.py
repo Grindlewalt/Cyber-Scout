@@ -32,6 +32,11 @@ How it works (model-free; ~4-9 ms CPU per processed frame incl. decode):
 * Frame gating: black (no-feed) frames, frames with a huge changed fraction (cuts,
   wipes) and a moving camera (phase correlation) reset the background; red<->blue
   swapped glitch frames are un-swapped (bump-colour test as process.swap_check).
+* Scene cuts (stream cuts / wipes / inserted graphics / spliced uploads: a big frame
+  difference or a luma-histogram jump vs ~0.1 s ago) skip the transition frames and reset
+  every running statistic (duplicate threshold, background, live tracks; no stitching
+  across a cut).  A run of "duplicates" while the picture keeps changing re-seeds the
+  duplicate threshold, so it can never stay inflated (fuel blind) after a missed cut.
 * Tracking: per-track quadratic prediction (last <=10 obs), acceleration-limited gates,
   birth links constrained by the blob's streak direction, Hungarian assignment,
   coasting <= 0.15 s; fragments are stitched (image extrapolation), split again at
@@ -68,6 +73,14 @@ TD = 45                         # min yellowness increase over the lagged backgr
 BG_TAU_UP = 0.8                 # s, background absorbs a new static yellow thing
 BG_TAU_DOWN = 0.05              # s, background forgets yellow that left
 GLITCH_FRAC = 0.03              # changed fraction of the ROI above this = glitch frame
+# scene cuts / feed changes (livestream cuts, wipes, inserted graphics, spliced uploads).  Measured
+# on clean wasam uploads: frame-to-frame changed % <= ~21 (camera bumps), luma-histogram shift
+# <= 3.5 % even over 0.5 s; a cut to graphics / another camera / black shifts 20-80 %.
+CUT_D = 35.0                    # % of sample pixels changed vs the last processed frame: hard cut
+CUT_HIST = 10.0                 # % of the luma histogram mass moved vs ~CUT_LAG s ago: transition
+CUT_LAG = 0.1                   # s (frames up to this long after a cut compare to the old scene -> skipped)
+DUP_RUN_MAX = 4                 # this many "duplicates" in a row while the picture changes (d >= DUP_STUCK_D)
+DUP_STUCK_D = 1.0               # = inflated duplicate threshold (30p-in-60p repeats a frame once): re-seed it
 
 VMAX = 2400.0                   # px/s (full res), fastest plausible image speed of fuel
 COAST_S = 0.15                  # established tracks survive this long unobserved
@@ -269,6 +282,12 @@ class FuelTracker:
         self._k3 = np.ones((3, 3), np.uint8)
         self.prev_sample = None
         self.ema_diff = None
+        self._dup_run = 0             # consecutive frames called duplicates
+        self._hist_q = []             # [(t, luma histogram of the sample)] of the last ~CUT_LAG s
+        self._in_cut = False          # inside a cut / transition (frames skipped)
+        self._dark = False
+        self.cuts = []                # [t] scene cuts (tracks are never joined across one)
+        self.n_cut_frames = self.n_dup_reset = 0
         self.tracks, self.done = [], []
         self.next_id = 0
         self.n_in = self.n_proc = self.n_dup = self.n_dark = self.n_swap = self.n_glitch = 0
@@ -323,21 +342,73 @@ class FuelTracker:
         self._step(int(frame_idx), float(t), yel)
 
     # -------------------------------------------------------------- frame gating
+    def _scene_cut(self, t):
+        """Cut / feed change at t: forget everything learned from the old picture (duplicate
+        threshold, background, recent frames, live tracks) and start over on the new one."""
+        if not self._in_cut:
+            self.cuts.append(round(float(t), 3))
+        self._in_cut = True
+        self.ema_diff = None; self._dup_run = 0
+        self.bg = None; self.recent = []
+        for tr in self.tracks:
+            self._finish(tr)
+        self.tracks = []
+
+    def _hist_jump(self, smp, t):
+        """% of the sample's luma-histogram mass that moved vs ~CUT_LAG s ago."""
+        h = np.bincount((smp >> 4).ravel(), minlength=16).astype(np.float32)
+        h /= max(float(h.sum()), 1.0)
+        q = self._hist_q
+        q.append((t, h))
+        while len(q) > 2 and q[1][0] <= t - CUT_LAG:
+            q.pop(0)
+        if q[0][0] > t - CUT_LAG or q[0][1].shape != h.shape:
+            return 0.0
+        return float(np.abs(h - q[0][1]).sum() * 50.0)
+
     def _gate_frame(self, smp, level):
-        """False for black (no-feed) frames and duplicated frames."""
+        """False for black (no-feed) frames, cut / transition frames and duplicated frames."""
+        t = self._t_cur
         if level <= NO_FEED_LEVEL:
             self.n_dark += 1
-            self.bg = None; self.prev_sample = None
+            if not self._dark:
+                self._scene_cut(t)           # the feed may come back as something else
+            self._dark = True
+            self.bg = None; self.prev_sample = None; self._hist_q = []
             return False
+        self._dark = False
         s = smp.astype(np.int16)
-        if self.prev_sample is not None and self.prev_sample.shape == s.shape:
-            # % of sample pixels that changed by > 10 levels: re-encoded duplicates of a
-            # 30p source in a 60p stream score ~0-0.4, real new frames ~1.3-3
-            d = float((np.abs(s - self.prev_sample) > 10).mean() * 100)
+        if self._hist_jump(smp, t) >= CUT_HIST:
+            # the picture's brightness distribution jumped (graphics, another camera, a wipe /
+            # dissolve in progress, black): skip it, restart everything after it
+            self.n_cut_frames += 1
+            self._scene_cut(t)
+            self.prev_sample = s
+            return False
+        has_prev = self.prev_sample is not None and self.prev_sample.shape == s.shape
+        # % of sample pixels that changed by > 10 levels: re-encoded duplicates of a
+        # 30p source in a 60p stream score ~0-0.4, real new frames ~1.3-3
+        d = float((np.abs(s - self.prev_sample) > 10).mean() * 100) if has_prev else 0.0
+        if d >= CUT_D and (self.ema_diff is None or d >= 6 * self.ema_diff):
+            # hard cut with a similar histogram: never let it seed / inflate ema_diff
+            # (an inflated duplicate threshold calls every real frame a duplicate)
+            self.n_cut_frames += 1
+            self._scene_cut(t)
+            self.prev_sample = s
+            return False
+        self._in_cut = False
+        if has_prev:
             ref = self.ema_diff if self.ema_diff is not None else max(d, 0.5)
             if d < 0.3 * ref:
-                self.n_dup += 1
-                return False                 # same picture as the last processed one
+                self._dup_run += 1
+                if self._dup_run < DUP_RUN_MAX or d < DUP_STUCK_D:
+                    self.n_dup += 1
+                    return False             # same picture as the last processed one
+                # many "duplicates" in a row although the picture changed: the threshold was
+                # inflated (a transition the cut tests missed) -> re-seed it from this frame
+                self.n_dup_reset += 1
+                self.ema_diff = None
+            self._dup_run = 0
             self.ema_diff = d if self.ema_diff is None else 0.9 * self.ema_diff + 0.1 * d
             # camera moving (a different / handheld camera, a bumped mount): everything
             # changes -> no fuel detection on this frame, restart the background
@@ -585,12 +656,12 @@ class FuelTracker:
         for tr in self.tracks:
             self._finish(tr)
         self.tracks = []
-        tracks = stitch(self.done)
+        tracks = stitch(self.done, cuts=self.cuts)
         out = []
         M = _Models(self.cam)
         for tr in tracks:
             out += finalize_track(tr, self.cam, M)
-        out = merge_ballistic(out, M)
+        out = merge_ballistic(out, M, cuts=self.cuts)
         out.sort(key=lambda d: d["t"][0])
         # does the picture match the calibrated view? (bump colours, smoothed +-2 s)
         if self.view:
@@ -610,6 +681,8 @@ class FuelTracker:
                "stats": {"frames_in": self.n_in, "frames_processed": self.n_proc,
                          "duplicates": self.n_dup, "dark": self.n_dark, "swapped": self.n_swap,
                          "glitch": self.n_glitch, "camera_moving": self.n_moving,
+                         "cuts": len(self.cuts), "cut_t": self.cuts[:50], "cut_frames": self.n_cut_frames,
+                         "dup_resets": self.n_dup_reset,
                          "view_ok_frac": round(float(vs.mean()), 3) if len(vs) else None,
                          "detections": self.n_dets,
                          "raw_tracks": len(self.done), "tracks": len(out),
@@ -648,9 +721,17 @@ def _arrays(tr):
             np.array(tr.r), np.array(tr.a), np.array(tr.L), np.array(tr.th))
 
 
-def stitch(tracks, max_gap=0.25):
+def _cut_between(cuts, t_end, t_start):
+    """Is there a scene cut c with t_end < c <= t_start (cuts sorted)?"""
+    if not len(cuts):
+        return False
+    i = int(np.searchsorted(cuts, t_end, side="right"))
+    return i < len(cuts) and cuts[i] <= t_start
+
+
+def stitch(tracks, max_gap=0.25, cuts=()):
     """Join fragments A -> B when B starts shortly after A ends and each one's
-    quadratic extrapolation lands on the other."""
+    quadratic extrapolation lands on the other (never across a scene cut)."""
     trs = sorted(tracks, key=lambda tr: tr.t[0])
     by_start = sorted(range(len(trs)), key=lambda i: trs[i].t[0])
     starts = np.array([trs[i].t[0] for i in by_start])
@@ -673,6 +754,8 @@ def stitch(tracks, max_gap=0.25):
             if B.n() < 3:
                 continue
             gap = B.t[0] - A.t[-1]
+            if _cut_between(cuts, A.t[-1], B.t[0]):
+                continue
             if math.hypot(B.u[0] - A.u[-1], B.v[0] - A.v[-1]) > 20 + (A.sp + 300) * gap:
                 continue
             c = _join_cost(A, B)
@@ -882,7 +965,7 @@ def split_track(T, U, V):
     return [(cuts[k], cuts[k + 1]) for k in range(len(cuts) - 1)]
 
 
-def merge_ballistic(out, M, max_gap=0.6):
+def merge_ballistic(out, M, max_gap=0.6, cuts=()):
     """Second stitching pass with the 3D ballistic model: join an airborne fragment to
     a later one when ONE free flight explains both (bridges the apex hidden behind the
     broadcast overlay, the net, a robot).  A following ball of the same volley flies
@@ -905,6 +988,8 @@ def merge_ballistic(out, M, max_gap=0.6):
             if ib == ia or ib in taken or B["t"][0] <= A["t"][0]:
                 continue
             gap = max(B["t"][0] - tA, 0.0)
+            if _cut_between(cuts, tA, B["t"][0]):
+                continue
             if math.dist(A["uv"][-1], B["uv"][0]) > 60 + 900 * gap:
                 continue
             T = np.r_[A["t"], B["t"]]; uv = np.r_[A["uv"], B["uv"]]
@@ -1074,7 +1159,8 @@ def track_fuel(video_path, cam, t_from, t_to, log=print, frame_iter=None, fps=No
     st = res["stats"]
     st["wall_s"] = round(time.time() - t_start, 1)
     log(f"  fuel: {st['frames_processed']}/{st['frames_in']} frames ({st['duplicates']} dup, "
-        f"{st['dark']} dark, {st['swapped']} swapped, {st['glitch']} glitch, {st['camera_moving']} cam-moving; "
+        f"{st['dark']} dark, {st['swapped']} swapped, {st['glitch']} glitch, {st['camera_moving']} cam-moving, "
+        f"{st['cuts']} cuts ({st['cut_frames']} frames), {st['dup_resets']} dup-resets; "
         f"view ok {st['view_ok_frac']}), {st['detections']} blobs, "
         f"{st['tracks']} tracks ({st['airborne_tracks']} airborne) in {st['wall_s']}s")
     return res
