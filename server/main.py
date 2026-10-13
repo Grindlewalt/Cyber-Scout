@@ -7,9 +7,10 @@ from fastapi import Depends, FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from . import audit, db as DB, workerconf
+from .idempotency import IdempotencyMiddleware
 from .config import cfg, PREFIX, CSRF_COOKIE, CSRF_HEADER
 from .deps import EVENT_RE, User, load_session, require_role
-from .routers import admin, auth, events, scouting, settings, sources, update, users
+from .routers import admin, auth, events, scouting, settings, sources, sync, update, users
 from .security import consteq
 
 log = logging.getLogger("cyberscout.api")
@@ -61,7 +62,11 @@ def create_app() -> FastAPI:
                   description="Accounts, roles, settings and shared scouting data. Cookie session auth; "
                               "send X-CSRF-Token (= cs_csrf cookie) on mutating requests. Roles: viewer < scout < "
                               "strategist < admin. Site JSON (/api/*) and media (/media/*) are served by nginx, "
-                              "gated by GET /app/v1/auth/check.")
+                              "gated by GET /app/v1/auth/check. Mutating requests may carry Idempotency-Key "
+                              "(replayed for 48 h per user); client sync: /app/v1/info, /app/v1/sync/* (docs/SYNC.md).")
+
+    # inner to the guard below (added first = runs after it): CSRF is checked before a stored answer is replayed
+    app.add_middleware(IdempotencyMiddleware)
 
     @app.middleware("http")
     async def guard(request: Request, call_next):
@@ -107,7 +112,7 @@ def create_app() -> FastAPI:
         return {"ok": True, "version": VERSION}
 
     for r in (auth.router, users.router, settings.router, events.router, scouting.router, sources.router, admin.router,
-              update.router):
+              update.router, sync.router):
         app.include_router(r, prefix=PREFIX)
     return app
 

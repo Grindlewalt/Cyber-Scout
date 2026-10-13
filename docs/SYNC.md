@@ -1,0 +1,110 @@
+# Client–server sync contract (v1)
+
+Goal: inference stays on the server; every client keeps a full local copy of the *data* and works offline.
+Venue Wi-Fi is slow and lossy (tunnel ≈ 0.6 s per request), so sync is **delta-based, bundled, resumable and
+idempotent**. Three parts implement this contract; none may change it without updating this file.
+
+```
+ phone/tablet browser ──(PWA: service worker + IndexedDB + outbox)──┐
+                                                                     ├──HTTPS──► server (nginx → api, static JSON, media)
+ laptop: Cyber-Scout Client (local server, http://127.0.0.1:7600) ──┘           inference runs here only
+          serves web/ + local mirror, outbox, sync engine
+```
+
+## 1. Server endpoints (all under `/app/v1/`, JSON unless noted)
+
+| Method & path | Auth | Purpose |
+|---|---|---|
+| `GET /info` | none | `{"app":"cyber-scout","api":1,"version":"<git short sha>","name":"<server display name>","time":<unix>}` — "Test connection". Tiny, cacheable 10 s. |
+| `GET /sync/events` | viewer | Followed events `[{key,name,start_date,end_date,status,progress:{tracked,total}}]` |
+| `GET /sync/manifest?ev=<ev>[&since=<cursor>]` | viewer | Data files for one event. Without `since`: everything. With `since`: changes after that cursor. Response: `{"ev","cursor":"<opaque>","full":bool,"files":[{"path","size","sha256","mtime"}],"deleted":["path",...]}` |
+| `POST /sync/bundle` body `{"ev","paths":[...]}` | viewer | **One request for many files**: `application/gzip` tar of the requested paths (each must be in the event's manifest; max 64 MB per bundle, client splits). Supports `Range` for resume. |
+| `GET /sync/media?ev=<ev>` | viewer | Media list `[{"path","size","sha256"?,"kind":"proxy"|"wide"|"inset"|"clip","match"}]`. `proxy` = small preview copy (≈480p, low bitrate). |
+| existing write endpoints (notes, picklists, overrides/fixes, …) | as today | **Accept `Idempotency-Key: <uuid>` header**: the server stores key → (status, body) for 48 h per user and replays the stored response for a repeated key instead of applying twice. Picklists keep `base_version` conflict handling (409 + current). |
+
+`path` values are relative to the site root and match the URLs the web app already fetches: data files are
+`api/<ev>/...` (served at `/api/<ev>/...`), media are `media/<ev>/...`. Global files (e.g. `api/events.json`) are
+listed in every event's manifest. sha256 is of the file bytes as served (uncompressed). Cursors are opaque
+strings (e.g. a max-mtime + count); a client that sends an unknown/old cursor gets `full:true`.
+
+Media proxies: the worker writes `media/<ev>/proxy/<match_key>.mp4` (H.264, ≈480p, ≈0.8–1.2 Mb/s, faststart)
+after a match is processed, if `MEDIA_PROXIES=1` (default on); a backfill command exists for already-processed
+matches.
+
+## 2. Cyber-Scout Client (local server, laptops)
+
+- Runs on `http://127.0.0.1:7600` (configurable). Opening it in a browser shows **the same web app** (the client
+  keeps a copy of the server's `web/` files, refreshed when the server version changes).
+- Serves `/api/...` and `/media/...` from its local mirror; proxies `/app/v1/...` to the server when online.
+  When offline, **write** requests (POST/PUT/PATCH/DELETE to `/app/v1/...`) are accepted into a durable **outbox**
+  (assigned an `Idempotency-Key`) and answered `202 {"queued":true,"id":...}`; reads of `/app/v1/...` that have no
+  local equivalent return `503 {"offline":true}`.
+- Local control API (exists **only** on the client — the web app uses it to detect client mode):
+
+| Method & path | Purpose |
+|---|---|
+| `GET /client/v1/status` | `{"client":true,"version","server":"<url>|null","online":bool,"signed_in":bool,"user":{display_name,role}|null,"last_sync":<unix>|null,"syncing":bool,"progress":{done,total,bytes}|null,"outbox":<n>,"events":[{key,synced_at,files,bytes,media_bytes}],"errors":[...]}` |
+| `PUT /client/v1/config` `{"server", "media":"none"|"proxy"|"full", "events":[...]}` | Settings |
+| `POST /client/v1/test` `{"server"}` | Calls the server's `/app/v1/info`; returns latency + version or a clear error |
+| `POST /client/v1/login` `{"username","password"}` / `POST /client/v1/logout` | Signs in to the server; the session is stored locally (file mode 0600), never exposed to the page |
+| `POST /client/v1/sync` `{"ev"?: "...", "media"?: bool}` | Sync now |
+| `GET /client/v1/outbox` / `DELETE /client/v1/outbox/<id>` | Inspect / discard queued changes |
+
+- Sync engine: on start and every N s while online (and immediately when connectivity returns): `/sync/events`
+  → for each followed event `/sync/manifest?since=` → download missing/changed files via `/sync/bundle` in
+  chunks (verify sha256, write atomically, resume partial bundles) → flush the outbox in order (stop on auth
+  errors; surface 409 conflicts to the user). Back-off with jitter on failures. Never more than 2 concurrent
+  requests (slow links).
+- Security: binds to 127.0.0.1 only by default; the control API requires a per-install random token in a cookie
+  set when the page is served by the client (prevents other local sites from driving it); no shell commands;
+  only the configured server is contacted.
+- Packaging: pure-Python (stdlib only, Python ≥ 3.9) single entry point `client/cyberscout_client.py`, plus
+  scripts to build standalone binaries (PyInstaller) for Windows/macOS/Linux; launches the browser on start.
+
+## 3. Web app (browser and client mode)
+
+- **Client mode** (when `GET /client/v1/status` answers): the Settings area gets a **Connection** section (server
+  address, Test connection, sign in/out, media option, which events to keep, storage used, Sync now, outbox list);
+  the app's own sign-in goes through `/client/v1/login`.
+- **Browser mode** (phones/tablets): a service worker caches the app shell (versioned files) and the data the user
+  views (stale-while-revalidate for `/api/...`), offers **"Save this event for offline"** (fetches the manifest +
+  bundle and stores it), and keeps an **IndexedDB outbox** for writes with `Idempotency-Key`, flushed when back
+  online (Background Sync where supported, else on `online`/focus events).
+- **Both modes**: a small, always-visible connection pill — `Online · synced 2 min ago`, `Syncing 40%`,
+  `Offline · 3 changes waiting` — plus a toast when going offline/online and when queued changes are sent or
+  conflict. Never block reading because of the network.
+
+## Deviations
+
+Server side (part 1), as implemented in `server/routers/sync.py`, `server/syncindex.py`, `server/idempotency.py`,
+`live/proxies.py`. Everything not listed here is as specified above.
+
+- **Livestream clips** are listed with their real URL path `media/live/<ev>/<video id>/clips/<file>.mp4` (that is
+  where the recorder keeps them and where nginx serves them), not under `media/<ev>/`. `match` is taken from the
+  stream's match records (null if no record names the clip). Other media paths: `media/<ev>/<match>.mp4` (wide),
+  `media/<ev>/insets/<match>.mp4` (inset), `media/<ev>/proxy/<match>.mp4` (proxy). `sha256` is given for proxies
+  only (from `media/<ev>/proxy/index.json`, written by the encoder); hashing GBs of full videos per request is not
+  practical.
+- **`POST /sync/bundle` needs the CSRF header** like every other POST (`X-CSRF-Token` = the `cs_csrf` cookie /
+  `csrf` from `GET /session`). It is treated as a read: no write budget, allowed during a lockdown, not audited,
+  no Idempotency-Key handling. Errors: 422 malformed path / body, 403 path outside the event (other event,
+  traversal, symlink), 404 not in the current manifest (re-fetch the manifest), 413 over 64 MB (sum of the
+  manifest `size`s, i.e. uncompressed). Tar member names are the manifest paths. Response headers:
+  `ETag` (send it back as `If-Range` with `Range: bytes=N-` to resume; the bytes are deterministic, also after the
+  server-side cache is evicted), `X-Bundle-Files`, `X-Bundle-Bytes`. If a file changed between the manifest and
+  the bundle, the bundle carries the new bytes: the sha256 check fails and the client should re-fetch the manifest.
+- **`GET /sync/events`** `status` values: `needs_setup` (no camera calibration) | `upcoming` | `in_progress` |
+  `finished`; an extra field `updated` (last site build, unix s) is included.
+- **`GET /sync/manifest`**: `ev` may also be an event that is not followed but has site data (404 if neither).
+  `mtime` is unix seconds (float). A cursor stays valid across API restarts; rewriting a file with identical bytes
+  is not a change.
+- **Idempotency-Key** details: keys are 1–128 chars of `A-Z a-z 0-9 . _ : -` (else 400). A replayed answer has the
+  header `Idempotent-Replayed: true`. The same key with a different method/path/query/body → 422. The same key
+  while the first request is still running → the server waits up to ~10 s, then answers **429** + `Retry-After`
+  (not 409, so it is never confused with a picklist conflict). Not stored (a retry runs again): 5xx and
+  401/403/408/423/425/429. Ignored on sign-in/out, password change, setup (they set cookies) and the bundle.
+  Requests without a session are passed through (the route answers 401).
+- **Media proxies**: ≤480p, ≤30 fps, ~1 Mb/s H.264 (main), faststart, no audio; ≈27 MB for a 3.5-min match. NVENC
+  is used when a test encode works on `PROXY_GPU`; with the current worker image (Debian ffmpeg 7.1) and the
+  server's NVIDIA 610 driver NVENC fails to open ("unsupported device"), so proxies are encoded with libx264
+  (2 threads, `nice -n 10`, ≈25 s per match) on a background thread of the worker.

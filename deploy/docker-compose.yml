@@ -28,6 +28,12 @@ services:
     env_file: .env
     environment:
       DATA: /data
+      # small preview copies for client sync (live/proxies.py): MEDIA_PROXIES=0 turns them off; PROXY_GPU = NVENC
+      # GPU index as this container sees it (none usable -> libx264 on 2 CPU threads, niced). "video" lets NVENC in.
+      MEDIA_PROXIES: ${MEDIA_PROXIES:-1}
+      PROXY_GPU: ${PROXY_GPU:-1}
+      PROXY_ENCODER: ${PROXY_ENCODER:-auto}
+      NVIDIA_DRIVER_CAPABILITIES: ${NVIDIA_DRIVER_CAPABILITIES:-compute,utility,video}
     volumes:
       - ./data:/data
       - ${MEDIA_DIR:-./data/media}:/media     # kept match videos for the interactive player
@@ -78,6 +84,8 @@ services:
     build:
       context: ./app
       dockerfile: server/Dockerfile
+      args:
+        GIT_SHA: ${GIT_SHA:-}                  # version shown by /app/v1/info (else VERSION file / code hash)
     image: ${CS_PREFIX:-cyber-scout}-api:latest
     container_name: ${CS_PREFIX:-cyber-scout}-api
     restart: unless-stopped
@@ -105,8 +113,13 @@ services:
       MEMBER_PASSWORD_MIN: ${MEMBER_PASSWORD_MIN:-4}
       SETUP_CODE_REQUIRED: ${SETUP_CODE_REQUIRED:-1}
       PYTHONDONTWRITEBYTECODE: "1"
+      # client sync (docs/SYNC.md): media list reads MEDIA (read-only mount below); bundle cache in data/cache/sync
+      MEDIA: /media
+      SERVER_NAME: ${SERVER_NAME:-}
+      SYNC_CACHE_MB: ${SYNC_CACHE_MB:-256}
     volumes:
       - ./data:/data
+      - ${MEDIA_DIR:-./data/media}:/media:ro  # only listed (/app/v1/sync/media); nginx serves the files
     # not published: only reachable through the web container (nginx) at /app/v1/
 
   web:

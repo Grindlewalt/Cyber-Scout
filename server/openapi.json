@@ -2,7 +2,7 @@
  "openapi": "3.1.0",
  "info": {
   "title": "Cyber-Scout API",
-  "description": "Accounts, roles, settings and shared scouting data. Cookie session auth; send X-CSRF-Token (= cs_csrf cookie) on mutating requests. Roles: viewer < scout < strategist < admin. Site JSON (/api/*) and media (/media/*) are served by nginx, gated by GET /app/v1/auth/check.",
+  "description": "Accounts, roles, settings and shared scouting data. Cookie session auth; send X-CSRF-Token (= cs_csrf cookie) on mutating requests. Roles: viewer < scout < strategist < admin. Site JSON (/api/*) and media (/media/*) are served by nginx, gated by GET /app/v1/auth/check. Mutating requests may carry Idempotency-Key (replayed for 48 h per user); client sync: /app/v1/info, /app/v1/sync/* (docs/SYNC.md).",
   "version": "1.0.0"
  },
  "paths": {
@@ -2992,6 +2992,199 @@
      }
     }
    }
+  },
+  "/app/v1/info": {
+   "get": {
+    "tags": [
+     "sync"
+    ],
+    "summary": "Server identity for 'Test connection' (no auth; cacheable 10 s)",
+    "operationId": "info_app_v1_info_get",
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/InfoOut"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/app/v1/sync/events": {
+   "get": {
+    "tags": [
+     "sync"
+    ],
+    "summary": "Followed events to keep in sync (viewer+)",
+    "operationId": "sync_events_app_v1_sync_events_get",
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "items": {
+          "$ref": "#/components/schemas/SyncEventOut"
+         },
+         "type": "array",
+         "title": "Response Sync Events App V1 Sync Events Get"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/app/v1/sync/manifest": {
+   "get": {
+    "tags": [
+     "sync"
+    ],
+    "summary": "Data files of one event (+ global files), all or changed since a cursor (viewer+)",
+    "operationId": "manifest_app_v1_sync_manifest_get",
+    "parameters": [
+     {
+      "name": "ev",
+      "in": "query",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "maxLength": 24,
+       "title": "Ev"
+      }
+     },
+     {
+      "name": "since",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string",
+         "maxLength": 64
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Since"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ManifestOut"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/app/v1/sync/bundle": {
+   "post": {
+    "tags": [
+     "sync"
+    ],
+    "summary": "Many files in one request: gzip tar of manifest paths; Range / If-Range (ETag) resumable (viewer+)",
+    "operationId": "sync_bundle_app_v1_sync_bundle_post",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/BundleIn"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "description": "gzip tar of the files",
+      "content": {
+       "application/gzip": {}
+      }
+     },
+     "206": {
+      "description": "partial content (Range)"
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/app/v1/sync/media": {
+   "get": {
+    "tags": [
+     "sync"
+    ],
+    "summary": "Videos of one event: proxies (small previews), full wide videos, insets, livestream clips (viewer+)",
+    "operationId": "sync_media_app_v1_sync_media_get",
+    "parameters": [
+     {
+      "name": "ev",
+      "in": "query",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "maxLength": 24,
+       "title": "Ev"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "array",
+         "items": {
+          "$ref": "#/components/schemas/MediaItem"
+         },
+         "title": "Response Sync Media App V1 Sync Media Get"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
   }
  },
  "components": {
@@ -3008,6 +3201,32 @@
     "additionalProperties": false,
     "type": "object",
     "title": "ApplyIn"
+   },
+   "BundleIn": {
+    "properties": {
+     "ev": {
+      "type": "string",
+      "maxLength": 24,
+      "title": "Ev"
+     },
+     "paths": {
+      "items": {
+       "type": "string"
+      },
+      "type": "array",
+      "maxItems": 20000,
+      "minItems": 1,
+      "title": "Paths",
+      "description": "manifest paths (api/<ev>/... or global api/<file>); at most 64 MB in total"
+     }
+    },
+    "additionalProperties": false,
+    "type": "object",
+    "required": [
+     "ev",
+     "paths"
+    ],
+    "title": "BundleIn"
    },
    "EventIn": {
     "properties": {
@@ -3264,6 +3483,42 @@
     "type": "object",
     "title": "HTTPValidationError"
    },
+   "InfoOut": {
+    "properties": {
+     "app": {
+      "type": "string",
+      "title": "App",
+      "default": "cyber-scout"
+     },
+     "api": {
+      "type": "integer",
+      "title": "Api",
+      "default": 1
+     },
+     "version": {
+      "type": "string",
+      "title": "Version",
+      "description": "git short sha of the deployed code (or src-<content hash> / dev)"
+     },
+     "name": {
+      "type": "string",
+      "title": "Name",
+      "description": "server display name (SERVER_NAME, else Cyber-Scout + team number)"
+     },
+     "time": {
+      "type": "integer",
+      "title": "Time",
+      "description": "server clock, unix seconds"
+     }
+    },
+    "type": "object",
+    "required": [
+     "version",
+     "name",
+     "time"
+    ],
+    "title": "InfoOut"
+   },
    "KeyIn": {
     "properties": {
      "key": {
@@ -3343,6 +3598,122 @@
      "username"
     ],
     "title": "LoginIn"
+   },
+   "ManifestFile": {
+    "properties": {
+     "path": {
+      "type": "string",
+      "title": "Path"
+     },
+     "size": {
+      "type": "integer",
+      "title": "Size"
+     },
+     "sha256": {
+      "type": "string",
+      "title": "Sha256"
+     },
+     "mtime": {
+      "type": "number",
+      "title": "Mtime"
+     }
+    },
+    "type": "object",
+    "required": [
+     "path",
+     "size",
+     "sha256",
+     "mtime"
+    ],
+    "title": "ManifestFile"
+   },
+   "ManifestOut": {
+    "properties": {
+     "ev": {
+      "type": "string",
+      "title": "Ev"
+     },
+     "cursor": {
+      "type": "string",
+      "title": "Cursor",
+      "description": "opaque; send back as ?since= for the changes after this manifest"
+     },
+     "full": {
+      "type": "boolean",
+      "title": "Full",
+      "description": "true: `files` is everything (no/unknown/expired cursor); delete local files not in it"
+     },
+     "files": {
+      "items": {
+       "$ref": "#/components/schemas/ManifestFile"
+      },
+      "type": "array",
+      "title": "Files"
+     },
+     "deleted": {
+      "items": {
+       "type": "string"
+      },
+      "type": "array",
+      "title": "Deleted"
+     }
+    },
+    "type": "object",
+    "required": [
+     "ev",
+     "cursor",
+     "full",
+     "files",
+     "deleted"
+    ],
+    "title": "ManifestOut"
+   },
+   "MediaItem": {
+    "properties": {
+     "path": {
+      "type": "string",
+      "title": "Path"
+     },
+     "size": {
+      "type": "integer",
+      "title": "Size"
+     },
+     "sha256": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Sha256"
+     },
+     "kind": {
+      "type": "string",
+      "title": "Kind",
+      "description": "proxy | wide | inset | clip"
+     },
+     "match": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Match"
+     }
+    },
+    "type": "object",
+    "required": [
+     "path",
+     "size",
+     "kind",
+     "match"
+    ],
+    "title": "MediaItem"
    },
    "NoteIn": {
     "properties": {
@@ -3827,6 +4198,24 @@
      "display_name"
     ],
     "title": "ProfileIn"
+   },
+   "Progress": {
+    "properties": {
+     "tracked": {
+      "type": "integer",
+      "title": "Tracked"
+     },
+     "total": {
+      "type": "integer",
+      "title": "Total"
+     }
+    },
+    "type": "object",
+    "required": [
+     "tracked",
+     "total"
+    ],
+    "title": "Progress"
    },
    "Region": {
     "properties": {
@@ -4383,6 +4772,77 @@
     },
     "type": "object",
     "title": "SourcePatch"
+   },
+   "SyncEventOut": {
+    "properties": {
+     "key": {
+      "type": "string",
+      "title": "Key"
+     },
+     "name": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Name"
+     },
+     "start_date": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Start Date"
+     },
+     "end_date": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "End Date"
+     },
+     "status": {
+      "type": "string",
+      "title": "Status",
+      "description": "needs_setup (no camera calibration) | upcoming | in_progress | finished"
+     },
+     "progress": {
+      "$ref": "#/components/schemas/Progress"
+     },
+     "updated": {
+      "anyOf": [
+       {
+        "type": "number"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Updated",
+      "description": "last site build (unix s)"
+     }
+    },
+    "type": "object",
+    "required": [
+     "key",
+     "name",
+     "start_date",
+     "end_date",
+     "status",
+     "progress"
+    ],
+    "title": "SyncEventOut"
    },
    "UpdateStatus": {
     "properties": {

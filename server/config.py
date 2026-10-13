@@ -24,6 +24,14 @@ class Config:
         # legacy .env values, imported into the DB once on first start (upgrade path for existing stacks)
         self.SEED_TBA_KEY = e("TBA_KEY", "")
         self.SEED_EVENTS = e("EVENTS", "")
+        # client sync (server/routers/sync.py, docs/SYNC.md)
+        self.SITE = os.path.join(self.DATA, "site")                       # site/api/<ev>/... = what nginx serves at /api/
+        self.MEDIA = e("MEDIA") or os.path.join(self.DATA, "media")      # kept videos (compose mounts MEDIA_DIR read-only)
+        self.SYNC_CACHE_DIR = e("SYNC_CACHE_DIR") or os.path.join(self.DATA, "cache", "sync")
+        self.SYNC_CACHE_MB = float(e("SYNC_CACHE_MB", "256"))            # bundle cache budget (oldest first over it)
+        self.SYNC_BUNDLE_MAX = int(float(e("SYNC_BUNDLE_MAX_MB", "64")) * 1024 * 1024)
+        self.SERVER_NAME = e("SERVER_NAME", "")                          # /info display name (else team settings)
+        self.VERSION = e("CS_VERSION", "")                               # else the VERSION file written at build time
         for k, v in over.items():
             setattr(self, k, v)
         return self

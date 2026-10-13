@@ -149,6 +149,34 @@ uses these clips right away. It does not wait for the per-match YouTube uploads 
   `LIVE_BACKFILL_MIN` (on first start, also record this many minutes the stream already played; default 60),
   and `LIVE_DIR` (default `MEDIA_DIR/live`).
 
+## Sync & clients
+
+Laptops (Cyber-Scout Client) and phones (offline mode of the web app) keep a full local copy of each event's
+data and queue changes while offline; the contract is `docs/SYNC.md`. The server side is part of the `api`
+service, nothing extra to run:
+
+* `GET /app/v1/info` (no sign-in): name + version, used by "Test connection". The version is the git short sha
+  when the image is built with `GIT_SHA=$(git -C app rev-parse --short HEAD) docker compose build`, else the
+  contents of an `app/VERSION` file, else `src-<hash of the code>` (still changes on every code change).
+  `SERVER_NAME=...` in `.env` sets the display name (default "Cyber-Scout · Team <n>").
+* `/app/v1/sync/*` (any signed-in role): event list, per-event file manifest with delta cursors, bundles (one
+  gzip tar for many files, resumable), media list. Bundles are cached in `data/cache/sync/bundles` (6 h, at
+  most `SYNC_CACHE_MB`, default 256 MB, oldest first) and the manifest index in `data/cache/sync/index`; both are
+  disposable. A full event (~340 files, 95 MB of JSON) is ~20 MB gzipped in two bundles.
+* The api container mounts `MEDIA_DIR` **read-only** at `/media` to list videos; nginx still serves the files.
+* **Media proxies**: after a match's video is kept, the worker writes a small copy for clients,
+  `MEDIA_DIR/<ev>/proxy/<match>.mp4` (≤480p, ~1 Mb/s, no audio, ~27 MB per match). Settings (`.env`):
+  `MEDIA_PROXIES=0` turns it off; `PROXY_GPU` (default `1`, GPU index *as the worker container sees it*) and
+  `PROXY_ENCODER=auto|cpu|nvenc`. Without a working NVENC it uses 2 CPU threads, niced (~25 s per match, in the
+  background). For matches processed before this existed (does not touch anything else):
+
+      docker compose exec worker python -m live.proxies /data /media 2026wasam            # whole event
+      docker compose exec worker python -m live.proxies /data /media 2026wasam --only qm12 f1m1
+
+  Disk: ~2 GB per 75-match event on `MEDIA_DIR`.
+* Writes from clients carry `Idempotency-Key`; the API remembers answers for 48 h per account (table
+  `idempotency` in `data/app.db`), so a change resent after a dropped connection is applied once.
+
 ## How it works
 
 1. `live/worker.py` polls TBA (ETag-cached) for played matches and picks the full-frame

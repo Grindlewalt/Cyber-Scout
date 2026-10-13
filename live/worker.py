@@ -168,6 +168,8 @@ def process_match(ev, m, cfg, status, meta_cache, live=None):
             try:
                 dst = os.path.join(MEDIA, ev, f"{m['key']}.mp4"); os.makedirs(os.path.dirname(dst), exist_ok=True)
                 shutil.move(best_path, dst)
+                import proxies                            # MEDIA_PROXIES=1: small preview copy for client sync
+                proxies.submit(MEDIA, ev, m["key"], log=lambda *a: log(m["key"], *a))
             except Exception as e:
                 log(f"{m['key']}: could not keep video: {e}")
         if HUBCAM and KEEP_VIDEO and V2 and best.get("source") != "livestream":
