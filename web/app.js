@@ -131,6 +131,19 @@ function ago(ts) {
   return `updated ${new Date(ts * 1000).toLocaleString()}`;
 }
 
+// ------------------------------------------------------------------ livestream fast results (live/liveingest.py LiveView.decorate_row)
+// Match rows (event.json matches[], m/<match>.json) may carry live {clip, tracking, score, ...} and score_source: "livestream" while
+// the score comes from the stream's results screen (TBA has not posted yet), "tba" after.
+CS.isStream = m => !!m && m.score_source === "livestream";
+CS.liveTag = (m, cls = "") => CS.isStream(m) ? `<span class="livetag ${cls}" title="Score read off the livestream's results screen. TBA hasn't posted this match yet.">LIVE · stream</span>` : "";
+/** a media file the site serves (relative "media/...", as the worker writes it), else null: never another scheme or host */
+CS.mediaUrl = u => typeof u === "string" && /^\/?media\/[\w\-./]+$/.test(u) && !/\.\./.test(u) ? u.replace(/^\//, "") : null;
+/** only http(s) URLs become links (security audit); everything else is shown as text */
+CS.safeHref = u => typeof u === "string" && /^https?:\/\/[^\s]+$/i.test(u.trim()) ? u.trim() : null;
+/** quiet status of a stream-result match: tracked = it already has tracking data */
+CS.liveTracking = (live, tracked) => !live || !live.tracking ? "" : tracked ? (live.tracking === "from_stream" ? "Tracked from stream" : "")
+  : live.tracking === "from_stream" ? "Tracking from stream" : "Waiting for uploads";
+
 // ------------------------------------------------------------------ "?" help: explanations stay out of the way until asked for
 // CS.help(html, label) -> a real <button aria-expanded> followed by its popover (inline content only: span/b/br/a, no <p>/<div>,
 // so it is valid inside paragraphs, table headers and summaries). One open at a time; click outside or Escape closes it.
@@ -282,20 +295,21 @@ async function eventPage(ev, tab, arg) {
 function sessionStorageGet(k) { try { return sessionStorage.getItem(k); } catch (e) { return null; } }
 function sessionStorageSet(k, v) { try { sessionStorage.setItem(k, v); } catch (e) { } }
 
-const STATE_LABEL = { done: "tracked", pending: "waiting", no_video: "no video yet", processing: "processing", error: "retrying", failed: "failed" };
+const STATE_LABEL = { done: "tracked", pending: "waiting", no_video: "no video yet", processing: "processing", error: "retrying", failed: "failed", live: "stream result" };
 function statusPill(m) {
   if (m.state === "done" && m.feed_ok != null && m.feed_ok < 0.9)
     return `<span class="pill no_video" title="the field camera was missing from the broadcast for part of this match">partial footage (${Math.round(m.feed_ok * 100)}%)</span>`;
+  if (m.state === "live" && m.live) return `<span class="pill live" title="${esc(m.live.tracking_note || "")}">${CS.liveTracking(m.live, false).toLowerCase() || "stream result"}</span>`;
   return `<span class="pill ${m.state}">${STATE_LABEL[m.state] || m.state}</span>`;
 }
 function matchesTable(el, d, ev) {
   const tl = (ts, al) => ts.map(t => `<a class="team ${al[0]}" href="#/${ev}/t/${t}">${num(t)}</a>`).join(" ");
   el.innerHTML = `<div class="tablewrap"><table><thead><tr><th>Match</th><th data-pri="800">Red</th><th class="num" data-pri="850">Score</th><th data-pri="790">Blue</th><th data-pri="40">Tracking</th><th data-pri="30" title="team label confidence">Labels</th></tr></thead><tbody>
     ${d.matches.map(m => `<tr>
-      <td>${m.state === "done" ? `<a href="#/${ev}/m/${m.key}">${esc(m.label)}</a>` : esc(m.label)}</td>
+      <td>${m.state === "done" || (m.live && CS.mediaUrl(m.live.clip)) ? `<a href="#/${ev}/m/${m.key}">${esc(m.label)}</a>` : esc(m.label)}</td>
       <td>${tl(m.red.teams, "red")}</td>
       <td class="num"><span class="score r ${m.winner === "red" ? "win" : ""}">${m.red.score ?? "–"}</span>
-        <span class="muted">–</span> <span class="score b ${m.winner === "blue" ? "win" : ""}">${m.blue.score ?? "–"}</span></td>
+        <span class="muted">–</span> <span class="score b ${m.winner === "blue" ? "win" : ""}">${m.blue.score ?? "–"}</span>${CS.liveTag(m, "blk")}</td>
       <td>${tl(m.blue.teams, "blue")}</td>
       <td>${statusPill(m)}</td>
       <td>${confBar(m.team_conf ?? m.id_conf)}</td></tr>`).join("")}</tbody></table></div>`;

@@ -30,6 +30,13 @@
   const covTag = c => !c ? "" : `<span class="mcov ${c.tier}" title="verified robot video: ${H(c.label)}">${c.n ? "vid " + c.n : "no vid"}</span>`;
   const plansOf = d => d.plans || (d.next_match ? [d.next_match] : []);
   const ALLY = a => a === "red" ? "Red" : "Blue";
+  // livestream fast result for a match TBA has not posted (S.live: event.json rows with score_source "livestream"; live view only)
+  const streamRes = s => {
+    const L = !s.played && S.live && S.live[s.key]; if (!L || !s.alliance) return null;
+    const us = s.alliance, op = us === "red" ? "blue" : "red", a = L[us] && L[us].score, b = L[op] && L[op].score;
+    if (a == null || b == null) return null;
+    return { [us]: a, [op]: b, won: L.winner === us, tie: L.winner === "tie" || (!L.winner && a === b), row: L };
+  };
 
   function mchip(k, R) {
     const r = R[k];
@@ -63,12 +70,20 @@
     if (!sc.length && !ps.length) return "";
     const items = sc.length ? sc : ps.map(p => ({ key: p.key, short: p.short, time: p.time, alliance: p.alliance, played: false, win_prob: p.prediction?.win_prob }));
     const played = items.filter(s => s.played && s.result), nOld = Math.max(0, played.length - 3);
+    const streamPill = (s, r) => {
+      const us = s.alliance, op = us === "red" ? "blue" : "red", wl = r.won ? "W" : r.tie ? "T" : "L";
+      const desc = `${s.label || s.short}: ${wl === "W" ? "won" : wl === "T" ? "tied" : "lost"} ${r[us]}–${r[op]} as ${us}, score from the livestream (TBA hasn't posted it yet)`;
+      return `<li><a class="rl-p ${us} rl-live" href="#/${S.ev}/m/${s.key}" title="${H(desc)}. Open the match." aria-label="${H(desc)}">
+        <span class="rl-k">${H(s.short)}</span><span class="res ${wl === "W" ? "w" : wl === "L" ? "l" : ""}">${wl}</span><span class="rl-sc">${r[us]}–${r[op]}</span>${CS.liveTag(r.row)}</a></li>`;
+    };
     let nowDone = false, k = 0;
     const nowMark = `<li class="rl-now"><span>${d.event?.asof ? "replay" : "now"}<b>${hhmm(d.event?.now)}</b></span></li>`;
     const more = nOld ? `<li class="rl-more"><button type="button" class="rl-mbtn" aria-expanded="false">+${nOld} earlier</button></li>` : "";
     const cells = items.map(s => {
       const pi = ps.findIndex(p => p.key === s.key);
       let pre = "";
+      const sr = streamRes(s);
+      if (sr) return streamPill(s, sr);
       if (!s.played && !nowDone) { nowDone = true; pre = nowMark; }
       if (s.played && s.result) {
         const r = s.result, us = s.alliance, op = us === "red" ? "blue" : "red", wl = r.won ? "W" : r.tie ? "T" : "L", i = k++;
@@ -262,7 +277,7 @@
         <td>${(s.partners || []).map(k => `<a href="#/${S.ev}/t/${k}">${tn(k)}</a>`).join(" ")}</td>
         <td>${(s.opponents || []).map(k => `<a href="#/${S.ev}/t/${k}">${tn(k)}</a>`).join(" ")}</td>
         <td class="num">${wp5(s.win_prob)}</td>
-        <td>${s.result ? `<span class="res ${s.result.won ? "w" : s.result.tie ? "" : "l"}">${s.result.won ? "W" : s.result.tie ? "T" : "L"}</span> ${s.result[us]}–${s.result[op]}` : pi >= 0 ? `<a href="#" data-plan="${pi}" class="small">plan</a>` : '<span class="muted">–</span>'}</td>
+        <td>${s.result ? `<span class="res ${s.result.won ? "w" : s.result.tie ? "" : "l"}">${s.result.won ? "W" : s.result.tie ? "T" : "L"}</span> ${s.result[us]}–${s.result[op]}` : streamRes(s) ? (r => `<span class="res ${r.won ? "w" : r.tie ? "" : "l"}">${r.won ? "W" : r.tie ? "T" : "L"}</span> ${r[us]}–${r[op]}${CS.liveTag(r.row)}`)(streamRes(s)) : pi >= 0 ? `<a href="#" data-plan="${pi}" class="small">plan</a>` : '<span class="muted">–</span>'}</td>
         <td class="num">${rpc(s)}</td>
         <td class="small">${s.played && s.analyze_url ? `<a href="${s.analyze_url}" title="analyze the match video">Analyze</a>` : ""}</td></tr>`; }).join("")}
       </tbody></table></div>`;
@@ -333,6 +348,7 @@
     const top = [...lv].sort((a, b) => a.gap_rank - b.gap_rank)[0];
     $app.innerHTML = `<div class="dash db${d.event?.asof ? " isreplay" : ""}">
       <h1 class="vh">Strategy for ${tn(d.team)}, ${H(d.event?.name || S.ev)}</h1>
+      ${!d.event?.asof && S.lsrec && CS.liveRecorder ? CS.liveRecorder.line(S.lsrec, S.ev) : ""}
       ${rail(d)}
       <div class="db-grid"><div class="db-main">${plansSection(d, R)}</div><div class="db-side">${ourEvent(d, R)}</div></div>
       <div class="dsecs">
@@ -385,6 +401,8 @@
 .rl-p.red { border-top-color: var(--red-fill); } .rl-p.blue { border-top-color: var(--blue-fill); }
 .rl-p:hover { background: var(--surface); border-color: var(--ink-3); }
 .rl-p .rl-k { font-weight: 650; } .rl-p .rl-sc { display: none; }
+.rl-p.rl-live .rl-sc { display: inline; font-variant-numeric: tabular-nums; } .rl-p .livetag { margin-left: 0; }
+.db > .lsline { margin-bottom: -6px; }
 .rl-m { display: flex; flex-direction: column; justify-content: space-between; gap: 4px; min-width: 64px; min-height: 52px; padding: 6px 10px 8px; border-radius: var(--r-p);
   border: 1px solid var(--line); border-top: 3px solid var(--line-strong); background: var(--surface); color: var(--ink); text-decoration: none; font: inherit; text-align: left; cursor: pointer; }
 .rl-m.red { border-top-color: var(--red-fill); } .rl-m.blue { border-top-color: var(--blue-fill); }
@@ -520,17 +538,25 @@ a.tgt { font-weight: 750; text-decoration-color: currentColor; } a.tgt.red { col
     if (ts === "live") ts = null;          // #/<ev>/dash/live/<plan> = live view with a plan tab open
     S = { ev, ts, tab: 0, sort: S && S.ev === ev ? S.sort : { k: "bt", dir: -1 } };
     injectStyle();
-    const d = await load(ev, ts);
+    const liveP = ts ? Promise.resolve(null) : api(`${ev}/event.json`).catch(() => null);
+    const [d, evj] = await Promise.all([load(ev, ts), liveP]);
+    if (evj) {
+      S.live = Object.fromEntries((evj.matches || []).filter(m => CS.isStream(m)).map(m => [m.key, m]));
+      if (CS.liveRecorder) { try { S.lsrec = await CS.liveRecorder.load(ev, evj); } catch (e) { S.lsrec = null; } }
+    }
     // linkable plan tabs: #/<ev>/dash/<ts|live>/<q51 | plan index>
     const want = (location.hash.split("/")[4] || "").toLowerCase(), ps = d.plans || [];
     const byKey = ps.findIndex(p => (p.short || "").toLowerCase() === want);
     S.tab = byKey >= 0 ? byKey : (/^\d+$/.test(want) && +want < ps.length ? +want : 0);
+    if (byKey < 0 && !/^\d+$/.test(want) && S.live) { const i = ps.findIndex(p => !S.live[p.key]); if (i > 0) S.tab = i; }   // a plan whose match the stream already scored is history
     CS.markActive && CS.markActive("dash");
     crumbs([[d.event?.name || ev, `#/${ev}`], ["Dashboard"]]);
     $updated.textContent = `Strategy for ${tn(d.team)} · ${d.event?.asof ? "replay at " : ""}${fmtT(d.event?.now)} · ${d.event?.quals_played ?? "?"}/${d.event?.quals_total ?? "?"} quals played`;
     render(d);
     if (!ts) {   // live: refresh every 60s without losing scroll
-      const iv = setInterval(async () => { try { const n = await load(ev, null); if (JSON.stringify(n.event) !== JSON.stringify(d.event) || n.next_match?.key !== d.next_match?.key) route(false); } catch (e) { } }, 60000);
+      const iv = setInterval(async () => { try { const n = await load(ev, null); if (JSON.stringify(n.event) !== JSON.stringify(d.event) || n.next_match?.key !== d.next_match?.key) return route(false);
+        const e2 = evj && await api(`${ev}/event.json`); if (e2 && e2.updated !== evj.updated) return route(false);
+        if (CS.liveRecorder && S.lsrec) { const st = await CS.liveRecorder.load(ev, e2); const el = document.querySelector(".db > .lsline"); if (el && st) el.outerHTML = CS.liveRecorder.line(st, ev) || "<span hidden></span>"; } } catch (e) { } }, 60000);
       cleanup.push(() => clearInterval(iv));
     }
   };

@@ -62,10 +62,23 @@ async function analyzePage(ev, key) {
   let seekT = null;
   { const qi = String(key || "").indexOf("?");
     if (qi >= 0) { const q = new URLSearchParams(key.slice(qi + 1)); key = key.slice(0, qi); const v = parseFloat(q.get("t")); if (Number.isFinite(v)) seekT = v; } }
-  const [d, evj] = await Promise.all([api(`${ev}/m/${key}.json`), api(`${ev}/event.json`).catch(() => null)]);
+  const evP = api(`${ev}/event.json`).catch(() => null);
+  let d;
+  try { d = await api(`${ev}/m/${key}.json`); }
+  catch (e) {                                   // not tracked yet: a livestream result (event.json row with live.clip) still has a page
+    const ej = await evP, row = ej && (ej.matches || []).find(m => m.key === key);
+    if (row && row.live && /404/.test(e.message)) return liveMatchPage(ev, key, row, ej);
+    throw e;
+  }
+  const evj = await evP;
   CS.markActive && CS.markActive("matches");
   crumbs([[evj ? evj.name : ev, `#/${ev}`], ["Matches", `#/${ev}/matches`], [d.label]]); $updated.textContent = "";
   const hz = d.hz || 10, v0 = d.t_start - 0.5, ts0 = d.t_teleop_start;
+  // livestream clip (live/liveingest.py): offered as a link; played here when there is no kept upload video and the match was
+  // tracked from that clip (same timeline as the tracking data)
+  const LV = d.live || null, clipUrl = LV && CS.mediaUrl(LV.clip);
+  const clipPlays = !d.video_local && clipUrl && LV.tracking === "from_stream";
+  if (clipPlays) d.video_local = clipUrl;
   let hasVideo = !!d.video_local;
   const cam = d.camera ? makeCamera(d.camera) : null;
   const N = d.tracks.length ? d.tracks[0].xy.length : 0;
@@ -123,7 +136,10 @@ async function analyzePage(ev, key) {
       ${d.start_detected === false ? `<span class="pill no_video" title="match start not detected from motion; using a default offset">start estimated</span>` : ""}
       ${d.feed_ok != null && d.feed_ok < 0.98 ? `<span class="pill no_video" title="the field camera was missing from the broadcast for part of this match; stats use only the filmed part">camera footage ${Math.round(d.feed_ok * 100)}%</span>` : ""}
       <span class="pill no_video" id="mvNote" hidden>match video unavailable here · showing the field replay</span>
-      ${d.video && d.video.id ? `<a class="mv-yt" href="https://youtu.be/${esc(d.video.id)}?t=${Math.floor(v0)}" target="_blank" rel="noopener">YouTube<span class="vh"> (opens a new tab)</span>${CS.icon("external")}</a>` : ""}
+      ${CS.liveTag(d)}
+      ${LV ? `<span class="mv-live">${clipPlays ? "Playing the livestream clip" : esc(CS.liveTracking(LV, true))}</span>` : ""}
+      ${clipUrl && !clipPlays ? `<a class="mv-yt" href="${esc(clipUrl)}" target="_blank" rel="noopener" title="this match cut from the event livestream">Clip<span class="vh"> (opens a new tab)</span>${CS.icon("external")}</a>` : ""}
+      ${d.video && d.video.id ? `<a class="mv-yt${clipUrl && !clipPlays ? " mv-yt2" : ""}" href="https://youtu.be/${esc(d.video.id)}?t=${Math.floor(v0)}" target="_blank" rel="noopener">YouTube<span class="vh"> (opens a new tab)</span>${CS.icon("external")}</a>` : ""}
     </div>
     <div class="mv-grid">
       <div class="mv-main">
@@ -799,4 +815,37 @@ async function analyzePage(ev, key) {
   cleanup.push(() => { dead = true; closePop(); document.removeEventListener("keydown", onKey); document.removeEventListener("pointerdown", onDocDown, true); removeEventListener("scroll", placePop, true); removeEventListener("resize", placePop);
     ro.disconnect(); cancelAnimationFrame(raf); if (vid && rv && vid.cancelVideoFrameCallback) vid.cancelVideoFrameCallback(rv);
     if (ins) { ins.pause(); ins.removeAttribute("src"); ins.load(); } if (vid) { vid.pause(); vid.removeAttribute("src"); vid.load(); } delete window.__an; });
+}
+
+// ------------------------------------------------------------------ livestream-only match (not tracked yet)
+// The recorder cut this match out of the event livestream (live/liveingest.py); TBA may not have posted it and there is no
+// tracking data yet, so the page is the stream's score + the clip in the player area.
+function liveMatchPage(ev, key, row, evj) {
+  const L = row.live || {}, clip = CS.mediaUrl(L.clip), W = row.winner;
+  CS.markActive && CS.markActive("matches");
+  crumbs([[evj ? evj.name : ev, `#/${ev}`], ["Matches", `#/${ev}/matches`], [row.label || key]]); $updated.textContent = "";
+  const teams = al => ((row[al] && row[al].teams) || []).map(t => `<a class="team ${al[0]}" href="#/${ev}/t/${esc(t)}">${esc(num(t))}</a>`).join(" ");
+  const st = CS.liveTracking(L, row.state === "done");
+  $app.innerHTML = `<div class="mv">
+    <h1 class="vh">${esc(row.label || key)}</h1>
+    <div class="mv-head">
+      <span class="mv-score"><span class="score r${W === "red" ? " win" : ""}">${row.red && row.red.score != null ? esc(row.red.score) : "–"}</span><span class="muted"> – </span><span class="score b${W === "blue" ? " win" : ""}">${row.blue && row.blue.score != null ? esc(row.blue.score) : "–"}</span>${W === "red" || W === "blue" ? ` <span class="muted small">${W === "red" ? "Red" : "Blue"} won</span>` : ""}</span>
+      ${CS.liveTag(row)}
+      ${st ? `<span class="mv-live" title="${esc(L.tracking_note || "")}">${esc(st)}</span>` : ""}
+      ${clip ? `<a class="mv-yt" href="${esc(clip)}" target="_blank" rel="noopener" title="this match cut from the event livestream">Clip<span class="vh"> (opens a new tab)</span>${CS.icon("external")}</a>` : ""}
+    </div>
+    <div class="mv-grid">
+      <div class="mv-main">
+        ${clip ? `<div class="mv-stage mv-clip"><video controls playsinline preload="metadata" src="${esc(clip)}"></video></div>
+          <div class="note">Livestream clip of this match. Robot tracking, shots and the field replay appear here once the match is tracked${L.tracking === "from_stream" ? " (from this clip, shortly)" : " from its per-match upload"}.</div>`
+        : `<div class="empty"><b>No video yet</b>The livestream recorder found this match, but its clip isn't available.</div>`}
+      </div>
+      <aside class="mv-side card" aria-label="Alliances"><div class="mv-sh"><h2>Teams</h2></div>
+        <div class="mv-al red"><div class="mv-alh"><b>Red</b></div><div class="mv-lt">${teams("red") || '<span class="muted">not read</span>'}</div></div>
+        <div class="mv-al blue"><div class="mv-alh"><b>Blue</b></div><div class="mv-lt">${teams("blue") || '<span class="muted">not read</span>'}</div></div>
+        <div class="note">From the livestream overlay${CS.isStream(row) ? "; TBA hasn't posted this match yet" : ""}.</div>
+      </aside>
+    </div></div>`;
+  const v = $app.querySelector(".mv-clip video");
+  if (v && L.auto_start_in_clip != null) v.addEventListener("loadedmetadata", () => { if (!v.currentTime) v.currentTime = Math.max(0, L.auto_start_in_clip - 3); }, { once: true });
 }

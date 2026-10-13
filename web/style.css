@@ -586,3 +586,19 @@ table.rate .tm { position: sticky; left: 0; background: var(--surface); z-index:
 .sect h2 .hlp-b { vertical-align: 2px; }
 td.wrapc { white-space: normal; }
 @media (max-width: 600px) { .pl-nick, .plt .sc-prb { display: none; } .plt button.star { padding: 2px 6px; } }
+
+/* ============================================================== livestream fast results (score from the stream until TBA posts) */
+.livetag { display: inline-block; margin-left: 6px; padding: 0 5px; border-radius: var(--r-tag); font-family: var(--font); font-stretch: normal; font-size: 11px; font-weight: 700;
+  line-height: 16px; letter-spacing: .02em; white-space: nowrap; vertical-align: 1px; color: var(--good);
+  border: 1px solid color-mix(in srgb, var(--good) 45%, transparent); background: color-mix(in srgb, var(--good) 9%, transparent); }
+.livetag.blk { display: block; width: max-content; margin: 2px 0 0 auto; }
+.pill.live { color: var(--good); border-color: color-mix(in srgb, var(--good) 45%, transparent); }
+.lsline { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 10px; font-size: var(--fs-foot); color: var(--ink-2); min-width: 0; }
+.lsline .ls-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ink-3); flex: none; }
+.lsline .ls-dot.on { background: var(--good); box-shadow: 0 0 0 3px color-mix(in srgb, var(--good) 22%, transparent); }
+.lsline .ls-dot.bad { background: var(--bad); } .lsline .ls-dot.warn { background: var(--caution); }
+.lsline b { color: var(--ink); font-weight: 600; } .lsline .ls-warn { color: var(--caution); font-weight: 600; } .lsline .ls-err { color: var(--bad); font-weight: 600; }
+.mv-live { font-size: var(--fs-foot); color: var(--ink-2); }
+.mv-yt.mv-yt2 { margin-left: 0; }
+.mv-clip video { display: block; width: 100%; aspect-ratio: 16 / 9; background: #000; border-radius: var(--r-p); }
+.mv-lt { display: flex; gap: 8px; flex-wrap: wrap; padding: 2px 2px 4px; font-weight: 600; font-variant-numeric: tabular-nums; }

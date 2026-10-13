@@ -16,6 +16,9 @@
   const TABS = [["sources", "Sources"], ["layout", "Layout"], ["calib", "Calibration"]];
   const h = s => esc(s);
   const when = ts => ts ? new Date(ts * 1000).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : "–";
+  // security audit: only http(s) URLs are links; file paths, javascript:, data: etc. are plain escaped text
+  const urlHtml = (u, code) => { const ok = CS.safeHref ? CS.safeHref(u) : (/^https?:\/\//i.test(u || "") ? u : null);
+    return ok ? `<a href="${h(ok)}" target="_blank" rel="noopener noreferrer">${code ? `<code>${h(u)}</code>` : h(u)}</a>` : code ? `<code>${h(u)}</code>` : `<span>${h(u)}</span>`; };
 
   // ---------------------------------------------------------------- API (CS.app from setup.js when present)
   function cookie(n) { const m = document.cookie.match(new RegExp("(?:^|; )" + n + "=([^;]*)")); return m ? decodeURIComponent(m[1]) : ""; }
@@ -46,6 +49,76 @@
   function loadImg(src) {
     return new Promise((res, rej) => { const im = new Image(); im.onload = () => res(im); im.onerror = () => rej(new Error("no frame yet")); im.src = src; });
   }
+
+  // ---------------------------------------------------------------- livestream recorder status
+  // GET events/<ev>/livestream (signed in; server/routers/sources.py), else event.json "livestream" (small summary written by the
+  // worker, may be minutes old). Shown as a card on the Sources tab and as one quiet line on the Dashboard (dash.js) while live.
+  const LS_LABEL = { recording: "Recording", waiting: "Waiting for the stream", starting: "Starting", stream_over: "Stream over", idle: "Idle",
+                     error: "Error", no_source: "No livestream source", disabled: "Off", stopped: "Stopped", not_running: "Not running" };
+  const LS_ACTIVE = ["recording", "waiting", "starting", "error"];
+  const dur = x => x == null ? "–" : x < 90 ? `${Math.round(x)} s` : x < 5400 ? `${Math.round(x / 60)} min` : `${(x / 3600).toFixed(1)} h`;
+  const gb = x => x == null ? "–" : x >= 100 ? `${Math.round(x)} GB` : `${Number(x).toFixed(1)} GB`;
+  const lsScore = sc => sc && sc.red != null && sc.blue != null ? `<span class="team r">${h(sc.red)}</span>–<span class="team b">${h(sc.blue)}</span>` : "";
+  const lsMatch = m => m ? `${h((m.key && shortKey(m.key)) || m.name || m.id || "?")}${lsScore(m.score) ? " " + lsScore(m.score) : ""}` : "";
+  const liveRec = {
+    async load(ev, evj) {
+      let st = null;
+      if (CS.platform && CS.user) { try { st = await A("GET", `events/${ev}/livestream`); } catch (e) { st = null; } }
+      if (!st || ((st.state === "no_source" || st.state === "not_running") && !st.updated)) {
+        let s = evj ? evj.livestream : undefined;
+        if (s === undefined) { try { s = (await api(`${ev}/event.json`)).livestream; } catch (e) { s = null; } }
+        if (s && s.state) {
+          const age = s.updated ? Date.now() / 1000 - s.updated : null;
+          st = { ...s, age_s: age == null ? null : Math.round(age), summary: true, stale: age != null && age > 600 && LS_ACTIVE.includes(s.state) };
+        }
+      }
+      return st;
+    },
+    /** recorder is doing something worth a line on the Dashboard (recording / waiting / error / stopped reporting) */
+    active: st => !!st && LS_ACTIVE.includes(st.state),
+    warn(st, short) {
+      if (!st) return "";
+      if (st.stale && LS_ACTIVE.includes(st.state)) return st.message && !st.summary && !short ? st.message : `recorder not reporting for ${dur(st.age_s)}`;
+      return "";
+    },
+    dot: st => st.state === "error" ? "bad" : liveRec.warn(st) ? "warn" : st.state === "recording" ? "on" : "",
+    /** one quiet line (Dashboard) */
+    line(st, ev) {
+      if (!liveRec.active(st)) return "";
+      const w = liveRec.warn(st, true), lm = st.last_match;
+      return `<div class="lsline" role="status"><span class="ls-dot ${liveRec.dot(st)}" aria-hidden="true"></span><span><b>Livestream</b> ${h((LS_LABEL[st.state] || st.state).toLowerCase())}</span>
+        ${st.behind_live_s != null && st.state === "recording" && !w ? `<span>${dur(st.behind_live_s)} behind live</span>` : ""}
+        ${lm ? `<span>last match ${lsMatch(lm)}</span>` : ""}
+        ${w ? `<span class="ls-warn">${CS.icon("warn", "ico")} ${h(w)}</span>` : st.state === "error" && st.message ? `<span class="ls-err">${h(st.message)}</span>` : ""}
+        ${CS.can && CS.can("admin") && ev ? `<a href="#/${ev}/sources">Recorder</a>` : ""}</div>`;
+    },
+    /** compact card (Video page, Sources tab) */
+    card(st, ev) {
+      if (!st) return "";
+      const w = liveRec.warn(st), lm = st.last_match, src = st.source || {}, dk = st.disk || {}, an = st.analyser || {}, tr = st.tracking, m = st.matches || {};
+      const errs = (st.errors || []).filter(Boolean);
+      const help = `<span class="hl">The recorder service records the event's livestream and cuts out each match about 20 s after the final buzzer, with teams and score read off the broadcast. Those results show on the site (marked <b>LIVE · stream</b>) until TBA posts.</span>
+        <span class="hl">Robots are tracked from the stream only when it shows a fixed field view: a <b>field</b> box in Layout and a calibration of that camera. Otherwise each match waits for its per-match upload.</span>`;
+      if (st.state === "no_source" || st.state === "disabled") return `<div class="card ls-card"><div class="lsline"><span class="ls-dot" aria-hidden="true"></span><span><b>Livestream recorder</b> ${h((LS_LABEL[st.state] || st.state).toLowerCase())}</span>
+        ${st.message ? `<span>${h(st.message)}</span>` : ""}${CS.help(help, "About the livestream recorder")}</div></div>`;
+      const clip = lm && CS.mediaUrl && CS.mediaUrl(lm.clip);
+      return `<div class="card ls-card"><div class="lsline"><span class="ls-dot ${liveRec.dot(st)}" aria-hidden="true"></span><span><b>Livestream recorder</b> ${h((LS_LABEL[st.state] || st.state).toLowerCase())}</span>
+          ${st.behind_live_s != null && st.state === "recording" && !w ? `<span>${dur(st.behind_live_s)} behind live</span>` : ""}
+          ${an.behind_chunks != null && an.behind_chunks > 2 ? `<span title="the analyser reads the recording in 5 s chunks">analyser ${dur(an.behind_chunks * 5)} behind</span>` : ""}
+          ${st.age_s != null ? `<span class="muted">${st.summary ? "status from the site data, " : ""}updated ${dur(st.age_s)} ago</span>` : ""}
+          ${CS.help(help, "About the livestream recorder")}</div>
+        ${w ? `<div class="ls-alert">${CS.icon("warn", "ico")} ${h(w)}</div>` : st.state === "error" && st.message ? `<div class="ls-alert bad">${h(st.message)}</div>` : st.message ? `<div class="muted small">${h(st.message)}</div>` : ""}
+        <dl class="ls-kv">
+          ${src.label || src.url || st.video_id ? `<div><dt>Stream</dt><dd>${h(src.label || "")}${src.url ? ` ${urlHtml(src.url)}` : ""}${st.video_id ? ` <span class="muted">· video ${h(st.video_id)}${st.live_status ? `, ${h(String(st.live_status).replace(/_/g, " "))}` : ""}</span>` : ""}</dd></div>` : ""}
+          <div><dt>Last match</dt><dd>${lm ? `${lsMatch(lm)}${clip ? ` · <a href="${h(clip)}" target="_blank" rel="noopener">clip</a>` : ""}` : "none detected yet"}${m.n_matches != null ? ` <span class="muted">· ${m.n_matches} match${m.n_matches === 1 ? "" : "es"} cut${m.n > m.n_matches ? `, ${m.n - m.n_matches} skipped` : ""}</span>` : ""}</dd></div>
+          ${tr ? `<div><dt>Tracking</dt><dd>${tr.ok ? "from the stream" : `uploads only <span class="muted">· ${h(tr.note || "")}</span>`}</dd></div>` : ""}
+          ${dk.free_gb != null || dk.seg_gb != null ? `<div><dt>Disk</dt><dd>${dk.free_gb != null ? `${gb(dk.free_gb)} free` : ""}${dk.seg_gb != null ? ` <span class="muted">· this stream ${gb(dk.seg_gb)} + clips ${gb(dk.clips_gb)}${dk.budget_gb != null ? ` (budget ${gb(dk.budget_gb)})` : ""}</span>` : ""}
+            ${dk.free_gb != null && dk.min_free_gb != null && dk.free_gb < dk.min_free_gb ? ` <span class="ls-warn">low: old segments are being deleted</span>` : ""}</dd></div>` : ""}
+        </dl>
+        ${errs.length ? `<details class="ls-errs"><summary>${errs.length} recent error${errs.length === 1 ? "" : "s"}</summary><ul>${errs.map(e => `<li><code>${h(e)}</code></li>`).join("")}</ul></details>` : ""}</div>`;
+    },
+  };
+  CS.liveRecorder = liveRec;
 
   // ---------------------------------------------------------------- page
   CS.route("sources", async (ev, tab, id) => {
@@ -80,19 +153,20 @@
         ${CS.help("Finds the event webcasts and the per-match uploads TBA links (grouped by title, e.g. “Wide Match N”).", "What Discover finds")}
         <span id="dst" class="muted small"></span>
       </div>
+      <div id="lsrec"></div>
       <div class="card vs-tw" style="margin-top:12px">
         <table class="mini vs-src"><thead><tr><th>Source</th><th>Type</th><th title="${h(Object.entries(ROLE_TIP).map(([k, v]) => k + ": " + v).join("\n"))}">Camera role</th>
           <th title="the overhead video the tracker processes">Tracked</th><th>Covers</th><th>Layout</th><th>On</th><th></th></tr></thead>
         <tbody>${S.length ? S.map(s => `<tr data-id="${h(s.id)}">
-          <td><b>${h(s.label || s.id)}</b><div class="muted small">${s.url ? `<a href="${h(s.url)}" target="_blank" rel="noopener">${h(s.url)}</a>` :
+          <td><b>${h(s.label || s.id)}</b><div class="muted small vs-url">${s.url ? urlHtml(s.url) :
             s.title_pattern ? `title ~ <code>${h(s.title_pattern)}</code>${s.example_title ? ` · e.g. “${h(s.example_title)}”` : ""}` : ""}</div></td>
-          <td><span class="pill">${h(s.kind)}</span> <span class="muted small">${h(s.provider || "")}${s.origin === "tba" ? " · TBA" : ""}</span></td>
-          <td><select data-f="role">${d.roles.map(r => `<option ${r === s.role ? "selected" : ""} title="${h(ROLE_TIP[r])}">${r}</option>`).join("")}</select></td>
-          <td style="text-align:center"><input type="radio" name="prim" data-f="primary" ${s.primary ? "checked" : ""}></td>
-          <td class="small">${cov(s)}</td>
-          <td><a href="#/${ev}/sources/layout/${encodeURIComponent(s.id)}">${s.has_layout ? "edit boxes" : "draw boxes"}</a></td>
-          <td style="text-align:center"><input type="checkbox" data-f="enabled" ${s.enabled !== false ? "checked" : ""}></td>
-          <td><button class="small" data-del>Remove</button></td></tr>`).join("") :
+          <td data-l="Type"><span><span class="pill">${h(s.kind)}</span> <span class="muted small">${h(s.provider || "")}${s.origin === "tba" ? " · TBA" : ""}</span></span></td>
+          <td data-l="Camera role"><select data-f="role" aria-label="Camera role of ${h(s.label || s.id)}">${d.roles.map(r => `<option ${r === s.role ? "selected" : ""} title="${h(ROLE_TIP[r])}">${r}</option>`).join("")}</select></td>
+          <td data-l="Tracked" class="vs-c"><input type="radio" name="prim" data-f="primary" aria-label="Track ${h(s.label || s.id)}" ${s.primary ? "checked" : ""}></td>
+          <td data-l="Covers" class="small">${cov(s)}</td>
+          <td data-l="Layout"><a href="#/${ev}/sources/layout/${encodeURIComponent(s.id)}">${s.has_layout ? "edit boxes" : "draw boxes"}</a></td>
+          <td data-l="On" class="vs-c"><input type="checkbox" data-f="enabled" aria-label="Use ${h(s.label || s.id)}" ${s.enabled !== false ? "checked" : ""}></td>
+          <td class="vs-x"><button class="small" data-del>Remove</button></td></tr>`).join("") :
           `<tr><td colspan="8" class="muted">No sources yet: discover them from TBA or paste a URL below.</td></tr>`}</tbody></table>
       </div>
       <div class="card" style="margin-top:12px">
@@ -106,10 +180,14 @@
         </form>
       </div>
       <div class="card muted small" style="margin-top:12px">
-        Worker video choice: prefer <code>${h((d.video_config || {}).prefer || "^Wide Match (default)")}</code>${(d.video_config || {}).reject ? `, skip <code>${h(d.video_config.reject)}</code>` : ""}${d.station_pattern ? ` · station-cam uploads <code>${h(d.station_pattern)}</code>` : ""}${d.livestream ? ` · livestream <code>${h(d.livestream)}</code>` : ""}.
+        Worker video choice: prefer <code>${h((d.video_config || {}).prefer || "^Wide Match (default)")}</code>${(d.video_config || {}).reject ? `, skip <code>${h(d.video_config.reject)}</code>` : ""}${d.station_pattern ? ` · station-cam uploads <code>${h(d.station_pattern)}</code>` : ""}${d.livestream ? ` · livestream ${urlHtml(d.livestream, true)}` : ""}.
         ${d.jobs_inline ? "" : "Frame grabs and calibration run in the worker (its video job runner must be on)."}
         Next: <a href="#/${ev}/sources/layout">draw the layout</a>, then <a href="#/${ev}/sources/calib">calibrate the cameras</a>.
       </div>`;
+    // livestream recorder status (refreshed while this tab is open)
+    const lsEl = document.getElementById("lsrec");
+    const lsDraw = async () => { const st = await liveRec.load(ev); if (lsEl.isConnected) lsEl.innerHTML = liveRec.card(st, ev); };
+    lsDraw(); const lsIv = setInterval(lsDraw, 15000); cleanup.push(() => clearInterval(lsIv));
     document.getElementById("disc").onclick = async () => {
       const st = document.getElementById("dst");
       try { st.textContent = "asking TBA…"; await job(ev, A("POST", `events/${ev}/sources/discover`), t => st.textContent = t); route(false); }
@@ -153,7 +231,9 @@
     V.toImg = ev => { const r = c.getBoundingClientRect(); return [(ev.clientX - r.left) / V.s, (ev.clientY - r.top) / V.s]; };
     V.render = () => {
       ctx.clearRect(0, 0, V.W, V.H);
-      if (V.img) ctx.drawImage(V.img, 0, 0, V.W, V.H); else { ctx.fillStyle = "#1b2330"; ctx.fillRect(0, 0, V.W, V.H); }
+      if (V.img) ctx.drawImage(V.img, 0, 0, V.W, V.H);
+      else { ctx.fillStyle = "#1b2330"; ctx.fillRect(0, 0, V.W, V.H);
+        if (V.empty) { ctx.fillStyle = "#c2d0d4"; ctx.font = `${15 / V.s}px system-ui, sans-serif`; ctx.textAlign = "center"; ctx.fillText(V.empty, V.W / 2, V.H / 2); ctx.textAlign = "start"; } }
       V.draw(ctx);
       if (V.mouse && V.img) {               // magnifier lens for precise clicks
         const [x, y] = V.mouse, z = V.zoom, L = lens.width / z;
@@ -184,7 +264,7 @@
     el.innerHTML = `
       <div class="vs-row">
         <label class="small">Source <select id="srcsel">${S.map(s => `<option value="${h(s.id)}" ${s.id === src.id ? "selected" : ""}>${h(s.label || s.id)} (${h(s.role)})</option>`).join("")}</select></label>
-        <label class="small">at <input id="ft" type="number" step="1" min="0" placeholder="s" style="width:70px"> s</label>
+        <label class="small">at <input id="ft" class="vs-num" type="number" step="1" min="0" placeholder="0" aria-label="Frame time in seconds"> s</label>
         <button id="grab">Grab frame</button>
         <button id="sug" title="graphics that never change, the 1 Hz clock, picture-in-picture rectangles, the field">Suggest boxes</button>
         <label class="small">compare with <select id="other"><option value="">(none)</option>${S.filter(s => s.id !== src.id).map(s => `<option value="${h(s.id)}">${h(s.label || s.id)}</option>`).join("")}</select></label>
@@ -197,14 +277,14 @@
           <div class="chips" id="kinds">${Object.keys(L.kinds).map(k => `<span class="chip ${k === kind ? "on" : ""}" data-k="${k}" title="${h(L.kinds[k])}"><i class="vs-sw" style="background:${KCOL[k]}"></i>${KSHORT[k] || k}</span>`).join("")}</div>
           <div id="sugbox"></div>
           <div id="rlist"></div>
-          <div class="vs-row" style="margin-top:10px"><button id="save" class="on">Save layout</button>
+          <div class="vs-row" style="margin-top:10px"><button id="save" class="primary">Save layout</button>
             <button id="dflt" title="the 2026 FIRST broadcast boxes the pipeline uses when there is no layout">Load 2026 FIRST defaults</button></div>
           <div class="small muted" id="savest">${saved ? `saved ${when(saved.updated_at)} by ${h(saved.updated_by || "?")}` : "not saved yet — the pipeline uses the 2026 FIRST defaults"}</div>
         </div>
       </div>`;
     const st = t => document.getElementById("lst").textContent = t;
     const V = FrameView(document.getElementById("cv"), { lens: true, zoom: 3 });
-    V.W = W; V.H = H; V.size();
+    V.empty = "No frame yet: Grab frame"; V.W = W; V.H = H; V.size();
     try { V.setImage(await loadImg(imgUrl(`events/${ev}/sources/${encodeURIComponent(src.id)}/frame.jpg`))); W = V.W; H = V.H; }
     catch (e) { st("no frame yet: Grab frame"); }
     document.getElementById("srcsel").onchange = e => { location.hash = `#/${ev}/sources/layout/${encodeURIComponent(e.target.value)}`; };
@@ -362,6 +442,7 @@
       </div>`;
     const st = t => document.getElementById("cst").textContent = t;
     const V = FrameView(document.getElementById("ccv"), { lens: true, zoom: 4 });
+    V.empty = "No frame yet: 1. Detect tags grabs one";
     let W = 1920, H = 1080, tags = {}, points = {}, NP = {}, NL = DEFAULT_LINES, lineClicks = {}, overlay = null, pick = null, report = null, drop = new Set();
     const show = { grid: true, lines: true, tags: true };
     ["sg", "sh", "st"].forEach((id, i) => document.getElementById(id).onchange = e => { show[["grid", "lines", "tags"][i]] = e.target.checked; V.render(); });
@@ -376,7 +457,7 @@
         report = w.report || null; await loadFrame();
         document.getElementById("fit").disabled = false; document.getElementById("acc").disabled = !w.camera;
         if (w.camera) st(w.accepted_at && w.accepted_at > (w.fitted_at || 0) ? "this fit is saved" : "last fit not accepted yet: Fit again to see its overlay");
-      } catch (e) { st("start with step 1"); V.size(); }
+      } catch (e) { st("start with step 1"); await loadFrame(); V.size(); }
     }
     V.draw = ctx => {
       const lw = 1.6 / V.s;
@@ -543,5 +624,26 @@
     .vs-pt:hover { background:var(--panel2); } .vs-pt.on { background:var(--panel2); outline:1px solid var(--accent); } .vs-pt.set { color:var(--caution); }
     .chip.set { color:var(--caution); }
     .vs-kv { margin-top:8px; line-height:1.55; } .vs-warn { color:var(--warn); }
-    button.small { padding:2px 8px; font-size:12px; }`;
+    button.small { padding:2px 8px; font-size:12px; }
+    .vs-src td:first-child { white-space:normal; overflow-wrap:anywhere; min-width:200px; } .vs-src td.vs-c { text-align:center; }
+    .vs-form input:not([type=checkbox]), .vs-num { background:var(--surface); color:var(--ink); border:1px solid var(--line-strong); border-radius:var(--r-s);
+      padding:6px 10px; font:inherit; font-size:var(--fs-foot); min-height:34px; min-width:0; }
+    .vs-form input:not([type=checkbox]):focus-visible, .vs-num:focus-visible { outline:2px solid var(--accent); outline-offset:0; border-color:var(--accent); }
+    .vs-form select { min-height:34px; } .vs-num { width:76px; }
+    .ls-card { margin-top:12px; display:grid; gap:8px; }
+    .ls-alert { display:flex; gap:6px; align-items:center; color:var(--caution); font-weight:600; font-size:var(--fs-foot); } .ls-alert.bad { color:var(--bad); }
+    .ls-kv { display:grid; grid-template-columns:max-content minmax(0,1fr); gap:4px 14px; margin:0; font-size:var(--fs-foot); }
+    .ls-kv div { display:contents; } .ls-kv dt { color:var(--ink-2); } .ls-kv dd { margin:0; min-width:0; overflow-wrap:anywhere; }
+    .ls-kv .team { font-weight:600; font-variant-numeric:tabular-nums; }
+    .ls-errs summary { cursor:pointer; font-size:var(--fs-foot); color:var(--ink-2); } .ls-errs ul { margin:6px 0 0; padding-left:18px; font-size:var(--fs-cap); }
+    @media (max-width: 1000px) {
+      .vs-tw { overflow:visible; }
+      .vs-src thead { display:none; }
+      .vs-src, .vs-src tbody, .vs-src tr { display:block; }
+      .vs-src tr { padding:10px 0; border-bottom:1px solid var(--line); } .vs-src tr:last-child { border-bottom:0; }
+      table.vs-src td { display:flex; align-items:center; gap:10px; padding:3px 0; border:0; white-space:normal; min-width:0; }
+      table.vs-src td:first-child { display:block; max-width:none; min-width:0; padding-bottom:6px; }
+      .vs-src td[data-l]::before { content:attr(data-l); flex:0 0 96px; color:var(--ink-2); font-size:var(--fs-cap); font-weight:400; }
+      .vs-src td.vs-c { text-align:left; } .vs-src td.vs-x { justify-content:flex-end; }
+    }`;
 })();

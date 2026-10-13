@@ -79,7 +79,12 @@
     const hasB = !!m.breakdown;
     const us = m.us ? team : null;
     let mid;
-    if (m.played) {
+    const L = !m.played && S.live && S.live[m.key];            // livestream result, TBA not posted yet (event.json row)
+    const ls = L && L.red && L.blue && L.red.score != null && L.blue.score != null ? { red: L.red.score, blue: L.blue.score, winner: L.winner || (L.red.score === L.blue.score ? "tie" : null) } : null;
+    if (ls) {
+      mid = `<td class="num sc2"><span class="t r ${ls.winner === "red" ? "win" : ""}">${ls.red}</span> – <span class="t b ${ls.winner === "blue" ? "win" : ""}">${ls.blue}</span>${CS.liveTag(L, "blk")}</td>
+        <td class="hide-s small muted">${H(CS.liveTracking(L.live, L.state === "done"))}</td>`;
+    } else if (m.played) {
       const r = m.result, rw = r.winner === "red", bw = r.winner === "blue";
       mid = `<td class="num sc2"><span class="t r ${rw ? "win" : ""}">${r.red}</span> – <span class="t b ${bw ? "win" : ""}">${r.blue}</span></td>
         <td class="hide-s small muted">${r.rp?.red != null ? `${r.rp.red}/${r.rp.blue} RP` : ""}</td>`;
@@ -90,9 +95,9 @@
         : `<td class="muted">–</td><td class="hide-s"></td>`;
     }
     const ours = m.us ? ` <span class="small ${m.us === "red" ? "" : ""}" title="${tn(team)} is on ${m.us}"><span class="adot ${m.us}"></span></span>` : "";
-    const wp = !m.played && hasB ? `<b class="${m.breakdown.win_prob >= .5 ? "pos" : "neg"}">${P(m.breakdown.win_prob)}</b>` : (m.played && m.us ? `<span class="res ${m.result.winner === m.us ? "w" : m.result.winner === "tie" ? "" : "l"}">${m.result.winner === m.us ? "W" : m.result.winner === "tie" ? "T" : "L"}</span>` : "");
+    const wp = ls && m.us ? `<span class="res ${ls.winner === m.us ? "w" : ls.winner === "tie" ? "" : "l"}">${ls.winner === m.us ? "W" : ls.winner === "tie" ? "T" : "L"}</span>` : !m.played && hasB ? `<b class="${m.breakdown.win_prob >= .5 ? "pos" : "neg"}">${P(m.breakdown.win_prob)}</b>` : (m.played && m.us ? `<span class="res ${m.result.winner === m.us ? "w" : m.result.winner === "tie" ? "" : "l"}">${m.result.winner === m.us ? "W" : m.result.winner === "tie" ? "T" : "L"}</span>` : "");
     return `<tr class="mrow ${hasB ? "exp" : ""} ${S.nextKey === m.key ? "next" : ""}" id="r-${m.key}" data-k="${m.key}">
-      <td><span class="chev">${hasB ? CS.icon("chevR") : ""}</span>${m.played && m.analyze_url ? `<a href="${m.analyze_url}" title="open the match video and replay"><b>${H(m.short)}</b></a>` : `<b>${H(m.short)}</b>`}${ours}<span class="mt">${fmtT(m.time)}</span></td>
+      <td><span class="chev">${hasB ? CS.icon("chevR") : ""}</span>${m.played && m.analyze_url ? `<a href="${m.analyze_url}" title="open the match video and replay"><b>${H(m.short)}</b></a>` : ls ? `<a href="#/${S.ev}/m/${m.key}" title="open the match (livestream clip)"><b>${H(m.short)}</b></a>` : `<b>${H(m.short)}</b>`}${ours}<span class="mt">${fmtT(m.time)}</span></td>
       <td class="tms">${teams(m.red, "r", us)}</td><td class="tms">${teams(m.blue, "b", us)}</td>${mid}<td class="num">${wp}</td></tr>
       ${hasB ? `<tr class="det" id="d-${m.key}" style="display:none"><td colspan="6">${breakdown(m, team)}</td></tr>` : ""}`;
   }
@@ -126,10 +131,12 @@
 
   CS.route("schedule", async function (ev, key) {
     css();
-    const d = await api(`${ev}/schedule.json`);
-    const nextOurs = d.matches.find(m => !m.played && m.us);
+    const [d, evj] = await Promise.all([api(`${ev}/schedule.json`), api(`${ev}/event.json`).catch(() => null)]);
+    const live = !d.asof && evj ? Object.fromEntries((evj.matches || []).filter(m => CS.isStream(m)).map(m => [m.key, m])) : null;
+    const nextOurs = d.matches.find(m => !m.played && m.us && !(live && live[m.key]));
     S = { ev, filter: S && S.ev === ev ? S.filter : (d.matches.some(m => m.us) ? "ours" : "all"), open: new Set(S && S.ev === ev ? S.open : []), nextKey: nextOurs?.key };
     if (nextOurs && !S.open.size) S.open.add(nextOurs.key);
+    S.live = live;
     crumbs([[ev, `#/${ev}`], ["Schedule"]]); $updated.textContent = d.asof ? "replay" : ago(d.generated);
     $app.innerHTML = `<div class="dash sc"><div class="dtop"><div><h1>Schedule</h1><div class="sub">${H(ev)} · ${tn(d.team)} ${CS.help(`Predictions for <b>${tn(d.team)}</b>'s matches break down where each alliance scores: tap a row with ▸ to expand it. Tap a played match to open its video and replay.`, "How the schedule works")}</div></div></div>
       ${d.asof ? "" : `<div class="sc-banner"><b>End-of-event data</b>, not replay time ${CS.help("Predictions for unplayed matches use everything posted so far. For a replay view, pick a time on the Dashboard.", "About end-of-event data")}</div>`}

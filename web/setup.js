@@ -39,8 +39,32 @@
   .evrow { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; align-items: center; padding: var(--sp-2) var(--sp-3);
     border-bottom: 1px solid var(--line); font-size: 13.5px; }
   .evrow b { font-weight: 600; } .evrow .muted { font-size: var(--fs-cap); }
-  .code { font-family: var(--mono); background: var(--surface-2); padding: 1px 6px; border-radius: var(--r-tag); }
-  @media (max-width: 640px) { #userbox .who { display: none; } }`;
+  .code { font-family: var(--mono); background: var(--surface-2); padding: 1px 6px; border-radius: var(--r-tag); white-space: nowrap; }
+  @media (max-width: 640px) { #userbox .who { display: none; } }
+  /* radios / checkboxes inside forms are not text fields */
+  .csform input[type=radio], .csform input[type=checkbox] { width: auto; min-height: 0; padding: 0; margin: 0; border: 0; flex: none; }
+  .csform input[type=radio]:focus-visible, .csform input[type=checkbox]:focus-visible { outline-offset: 2px; }
+  .csform input[type=number] { -moz-appearance: textfield; appearance: textfield; }
+  .csform input[type=number]::-webkit-inner-spin-button, .csform input[type=number]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+  .csform .opt { display: flex; gap: 10px; align-items: center; min-height: 36px; color: var(--ink); font-size: var(--fs-body); font-weight: 400; cursor: pointer; }
+  .csform .opt input[type=text], .csform .opt input:not([type]) { flex: 1; min-width: 0; }
+  .csform.opts { gap: var(--sp-1); } .csform.opts button { margin-top: var(--sp-2); }
+  /* empty status lines take no room (they stay in the DOM for aria-live) */
+  .csform .cserr:empty, .csform .csok:empty { position: absolute; min-height: 0; }   /* out of the grid flow: no gap */
+  .authcard .csform, .acctcard .csform { max-width: none; }
+  .acctcard .note { margin-top: var(--sp-3); }
+  .evctl select { min-height: 40px; font-size: var(--fs-body); }
+  .evctl #evkey { flex: 1 1 220px; max-width: 340px; }
+  @media (max-width: 480px) { .evrow .pill { display: none; } }
+  /* wizard: video step */
+  .vsl { display: grid; margin: var(--sp-2) 0 0; border-top: 1px solid var(--line); }
+  .vsr { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) auto; gap: var(--sp-1) var(--sp-4); align-items: center; padding: var(--sp-3) 0; border-bottom: 1px solid var(--line); }
+  .vsr b { font-weight: 600; } .vsr .vsm { display: grid; gap: 2px; font-size: var(--fs-foot); color: var(--ink-2); min-width: 0; overflow-wrap: anywhere; }
+  .vsr .vsm .ok { color: var(--good); } .vsr .vsm .ico { width: 14px; height: 14px; vertical-align: -2px; }
+  .vsr a.vsgo { display: inline-flex; align-items: center; gap: 4px; min-height: 36px; padding: 6px var(--sp-3); border: 1px solid var(--line-strong); border-radius: var(--r-s);
+    color: var(--ink); font-weight: 600; font-size: var(--fs-foot); text-decoration: none; white-space: nowrap; background: var(--surface); }
+  .vsr a.vsgo:hover { background: var(--surface-2); border-color: var(--ink-3); } .vsr a.vsgo svg { width: 14px; height: 14px; }
+  @media (max-width: 640px) { .vsr { grid-template-columns: minmax(0, 1fr); } .vsr a.vsgo { justify-self: start; } }`;
   document.head.appendChild(css);
 
   // ---------------------------------------------------------------- API client
@@ -159,7 +183,8 @@
       catch (x) { err.textContent = x.message || String(x); }
       finally { btn.disabled = false; }
     };
-    const first = f.querySelector("input:not([type=hidden])"); if (first) first.focus();
+    const first = f.querySelector("input:not([type=hidden])");
+    if (first && f.closest(".authcard, [data-autofocus]")) first.focus();
   }
   CS.form = form;
   CS.genPassword = () => {
@@ -188,7 +213,7 @@
     if (!CS.user) { goLogin(); return; }
     const u = CS.user;
     $app.innerHTML = `<h1>${esc(u.display_name || u.username)}</h1><div class="sub">Signed in as <b>${esc(u.username)}</b> · role <b>${esc(u.role)}</b> (${esc(ROLE_TIP[u.role])})</div>
-      <div class="card" style="max-width:480px"><h2>Change password</h2>
+      <div class="card acctcard" style="max-width:480px"><h2>Change password</h2>
       <form class="csform"><label>Current password<input name="current_password" type="password" autocomplete="current-password" placeholder="Leave blank if you don't have one"></label>
         <label>New password${u.role === "admin" ? " (10+ characters)" : " (optional: 4+ characters, blank = none)"}<input name="new_password" type="password" autocomplete="new-password" ${u.role === "admin" ? 'minlength="10" required' : 'minlength="4"'}></label>
         <label>Repeat new password<input name="again" type="password" autocomplete="new-password" required></label>
@@ -220,13 +245,13 @@
       const needle = q.trim().toLowerCase();
       const match = e => !needle || [e.key, e.name, e.city, e.state_prov, e.country, e.district].some(v => (v || "").toLowerCase().includes(needle));
       const mine = data.team_events.filter(match), all = data.events.filter(match);
-      el.innerHTML = `<div class="controls" style="margin-top:0"><select id="evyear">${[thisYear + 1, thisYear, thisYear - 1, thisYear - 2].map(y => `<option ${y === year ? "selected" : ""}>${y}</option>`).join("")}</select>
-          <input class="csin" id="evq" placeholder="Search name, city, key…" value="${esc(q)}" style="flex:1;min-width:180px"></div>
+      el.innerHTML = `<div class="controls evctl" style="margin-top:0"><select id="evyear" aria-label="Season">${[thisYear + 1, thisYear, thisYear - 1, thisYear - 2].map(y => `<option ${y === year ? "selected" : ""}>${y}</option>`).join("")}</select>
+          <input class="csin" id="evq" placeholder="Search name, city, key…" aria-label="Search events" value="${esc(q)}" style="flex:1;min-width:180px"></div>
         ${opts.showFollowed !== false && followed.size ? `<h3>Following</h3><div class="evpick">${[...followed].map(k => row(data.events.concat(data.team_events).find(e => e.key === k) || { key: k })).join("")}</div>` : ""}
         ${data.team_number ? `<h3>Team ${esc(data.team_number)}'s events</h3>${mine.length ? `<div class="evpick">${mine.map(row).join("")}</div>` : `<div class="muted small">None registered for ${year}${needle ? " matching the search" : ""}.</div>`}` : ""}
         <h3>All ${year} events</h3><div class="evpick">${all.slice(0, 80).map(row).join("") || `<div class="muted small">No events.</div>`}</div>
         ${all.length > 80 ? `<div class="note">Showing 80 of ${all.length}; search to narrow down.</div>` : ""}
-        <div class="controls"><input class="csin" id="evkey" placeholder="Or an event key, e.g. 2026wasam…" style="max-width:260px"><button id="evadd">Follow</button></div>
+        <div class="controls evctl"><input class="csin" id="evkey" placeholder="Or an event key, e.g. 2026wasam…" aria-label="Event key" autocapitalize="none" spellcheck="false"><button id="evadd">Follow</button></div>
         <div class="cserr" aria-live="polite"></div>`;
       el.querySelector("#evyear").onchange = e => { year = +e.target.value; load(); };
       const qi = el.querySelector("#evq");
@@ -280,7 +305,7 @@
     }).join("")}</div>`;
     const next = () => wizardState(step).then(s2 => { location.hash = "#/setup/" + s2.next; });
     if (step === "tba") {
-      $app.innerHTML = head + `<div class="card" style="max-width:620px"><h2>The Blue Alliance API key</h2>
+      $app.innerHTML = head + `<div class="card" data-autofocus style="max-width:620px"><h2>The Blue Alliance API key</h2>
         <div class="note" style="margin:0 0 12px">Cyber-Scout gets schedules, results and match videos from The Blue Alliance. Sign in at
         <a href="https://www.thebluealliance.com/account" target="_blank" rel="noopener">thebluealliance.com/account</a>, add a <b>Read API Key</b>
         (any description) and paste it here. It is checked with TBA and stored only on this server; browsers never see it again.</div>
@@ -288,27 +313,32 @@
         <form class="csform"><label>Read API key<input name="key" autocomplete="off" spellcheck="false" required minlength="20"></label>
         <div class="row"><button type="submit" class="primary">Check and save</button>${st.s.tba_key_set ? `<button type="button" id="skip">Keep current key</button>` : ""}</div>
         <div class="cserr" aria-live="polite"></div></form></div>`;
-      form($app, async d => { await CS.app("PUT", "settings/tba-key", { key: d.key.trim() }); next(); });
+      form($app, async d => {
+        try { await CS.app("PUT", "settings/tba-key", { key: d.key.trim() }); }
+        catch (e) { if (e.status === 422 && Array.isArray(e.data && e.data.detail)) throw new Error("That doesn't look like a TBA Read API key: it is letters and digits only. Copy it again from thebluealliance.com/account."); throw e; }
+        next();
+      });
       const sk = $app.querySelector("#skip"); if (sk) sk.onclick = next;
     } else if (step === "team") {
-      $app.innerHTML = head + `<div class="card" style="max-width:620px"><h2>Your team</h2>
+      $app.innerHTML = head + `<div class="card" data-autofocus style="max-width:620px"><h2>Your team</h2>
         <div class="note" style="margin:0 0 12px">Used to put your matches, your events and your season goal first.</div>
-        <form class="csform"><label>FRC team number<input name="team" type="number" min="1" max="99999" required value="${esc(st.s.team_number || "")}" inputmode="numeric"></label>
+        <form class="csform"><label>FRC team number<input name="team" type="number" min="1" max="99999" required value="${esc(st.s.team_number || "")}" inputmode="numeric" autocomplete="off"></label>
         <button type="submit" class="primary">Save</button><div class="cserr" aria-live="polite"></div></form>
         ${st.s.team_name ? `<div class="note">Saved: team ${esc(st.s.team_number)} <b>${esc(st.s.team_name)}</b>.</div>` : ""}</div>`;
       form($app, async d => { await CS.app("PATCH", "settings", { team_number: +d.team }); next(); });
     } else if (step === "goal") {
       const cur = st.s.season_goal || "", known = GOALS.some(g => g[0] === cur);
       $app.innerHTML = head + `<div class="card" style="max-width:620px"><h2>Season goal ${CS.help("The Rankings &amp; goals page tracks how close you are to this (points still needed, odds, what each match is worth).", "What the season goal is for")}</h2>
-        <form class="csform">${GOALS.map(([v, t]) => `<label style="display:flex;gap:8px;align-items:center;color:var(--text)"><input type="radio" name="goal" value="${esc(v)}" style="width:auto" ${cur === v ? "checked" : ""}> ${esc(t)}</label>`).join("")}
-          <label style="display:flex;gap:8px;align-items:center;color:var(--text)"><input type="radio" name="goal" value="__other" style="width:auto" ${cur && !known ? "checked" : ""}> Other:
-            <input name="other" maxlength="40" value="${known ? "" : esc(cur)}" style="flex:1"></label>
+        <form class="csform opts" aria-label="Season goal">${GOALS.map(([v, t]) => `<label class="opt"><input type="radio" name="goal" value="${esc(v)}" ${cur === v ? "checked" : ""}> ${esc(t)}</label>`).join("")}
+          <label class="opt"><input type="radio" name="goal" value="__other" ${cur && !known ? "checked" : ""}> Other:
+            <input name="other" maxlength="40" value="${known ? "" : esc(cur)}" aria-label="Other goal"></label>
           <button type="submit" class="primary">Save</button><div class="cserr" aria-live="polite"></div></form></div>`;
       form($app, async d => {
         const g = d.goal === "__other" ? (d.other || "").trim() : d.goal;
         if (!g) throw new Error("pick a goal");
         await CS.app("PATCH", "settings", { season_goal: g }); next();
       });
+      const oth = $app.querySelector("input[name=other]"); oth.oninput = () => { if (oth.value) $app.querySelector("input[value=__other]").checked = true; };
     } else if (step === "event") {
       $app.innerHTML = head + `<div class="card"><h2>Which event(s) should Cyber-Scout follow? ${CS.help("It processes every match of a followed event as soon as the video is up. You can follow several and change this later in Admin.", "What following an event does")}</h2>
         <div id="picker"></div><div class="controls"><button class="primary" id="cont" ${st.evs.length ? "" : "disabled"}>Continue</button></div></div>`;
@@ -321,13 +351,11 @@
           YouTube link), any extra camera angles, and what kind each one is (<b>wide overhead</b>, <b>dynamic broadcast</b> that switches cameras,
           or <b>alliance-side</b> station cams). Then draw boxes on a sample frame (field view, red / blue alliance views, scoreboard) and
           calibrate the camera. Without this, matches can't be tracked.</div>
-        <div class="tablewrap"><table><thead><tr><th>Event</th><th>Sources</th><th>Layout</th><th></th></tr></thead><tbody>
-        ${st.evs.map((e, i) => { const S = srcs[i];
-          return `<tr><td><b>${esc(e.name || e.key)}</b><div class="muted small">${esc(e.key)}</div></td>
-            <td>${S == null ? '<span class="muted">not available yet</span>' : S.length ? S.map(x => esc(x.label || x.kind || x.id)).join(", ") : '<span class="muted">none yet</span>'}</td>
-            <td>${S && S.some(x => x.has_layout) ? "✓ boxes drawn" : '<span class="muted">not drawn</span>'}</td>
-            <td><a href="#/${esc(e.key)}/sources"><b>Set up video →</b></a></td></tr>`; }).join("")}
-        </tbody></table></div>
+        <div class="vsl">${st.evs.map((e, i) => { const S = srcs[i];
+          return `<div class="vsr"><div><b>${esc(e.name || e.key)}</b><div class="muted small">${esc(e.key)}</div></div>
+            <div class="vsm"><span>${S == null ? "Video sources: not available yet" : S.length ? `${S.length} source${S.length === 1 ? "" : "s"}: ${S.map(x => esc(x.label || x.kind || x.id)).join(", ")}` : "No video sources yet"}</span>
+              <span>${S && S.some(x => x.has_layout) ? `<span class="ok">${CS.icon("check", "ico")} boxes drawn</span>` : "Layout boxes not drawn"}</span></div>
+            <a class="vsgo" href="#/${esc(e.key)}/sources">Set up video${CS.icon("chevR")}</a></div>`; }).join("") || `<div class="muted small" style="padding:12px 0">Follow an event first.</div>`}</div>
         <div class="controls"><button class="primary" id="cont">Continue</button> <span class="muted small">You can come back to this any time from the event's <b>Video</b> tab.</span></div></div>`;
       $app.querySelector("#cont").onclick = next;
     } else {
