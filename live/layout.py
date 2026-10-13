@@ -285,22 +285,42 @@ _RESOLVED = {}
 
 
 def is_remote(src):
-    return bool(re.match(r"^[a-z]+://", str(src)))
+    return bool(re.match(r"^[A-Za-z][A-Za-z0-9+.-]*://", str(src)))
+
+
+def public_url(url):
+    """SSRF guard (live/sources.py safe_public_url): http(s) only, every resolved address public."""
+    try:
+        import sources as _S
+    except ImportError:                                    # imported as a package module
+        from . import sources as _S
+    return _S.safe_public_url(url)
+
+
+def local_media(src):
+    """A local media path as an absolute path: never an option ('-x') nor an ffmpeg protocol ('concat:...')."""
+    src = str(src)
+    if not src or "\n" in src or "\0" in src: raise ValueError("bad media path")
+    return os.path.abspath(src)
 
 
 def resolve_media(url, max_age=1800):
     """A direct media URL ffmpeg can read for a YouTube/Twitch page URL (yt-dlp -4 -g), cached.
-    Direct .mp4/.m3u8 URLs and local paths pass through."""
-    if not is_remote(url) or re.search(r"\.(mp4|m3u8|ts|mkv|webm)(\?|$)", url):
+    Direct .mp4/.m3u8 URLs and local paths pass through (URLs only to public hosts; paths made absolute)."""
+    if not is_remote(url):
+        return local_media(url)
+    public_url(url)
+    if re.search(r"\.(mp4|m3u8|ts|mkv|webm)(\?|$)", url):
         return url
     hit = _RESOLVED.get(url)
     if hit and time.time() - hit[0] < max_age: return hit[1]
     r = subprocess.run([YTDLP, "-4", "--no-warnings", "-g", "-f",
-                        "bv*[height<=1080][ext=mp4]/bv*[height<=1080]/b[height<=1080]/b", url],
+                        "bv*[height<=1080][ext=mp4]/bv*[height<=1080]/b[height<=1080]/b", "--", url],
                        capture_output=True, text=True, timeout=120)
     lines = [l for l in r.stdout.strip().split("\n") if l.startswith("http")]
     if r.returncode != 0 or not lines:
         raise RuntimeError(f"could not resolve {url}: {r.stderr.strip()[-300:]}")
+    public_url(lines[0])                                   # the extractor's media URL: public too
     _RESOLVED[url] = (time.time(), lines[0])
     return lines[0]
 
@@ -308,7 +328,7 @@ def resolve_media(url, max_age=1800):
 def duration(src):
     try:
         r = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0",
-                            resolve_media(src)], capture_output=True, text=True, timeout=60)
+                            "-i", resolve_media(src)], capture_output=True, text=True, timeout=60)
         return float(r.stdout.strip())
     except Exception:
         return None
@@ -340,7 +360,7 @@ def grab_frames(src, times):
     if not is_remote(src) and os.path.exists(src):
         try:
             import av
-            c = av.open(src); s = c.streams.video[0]
+            c = av.open(local_media(src)); s = c.streams.video[0]
             for t in times:
                 c.seek(int(max(0.0, t - 1.0) / s.time_base), stream=s)
                 for f in c.decode(s):
@@ -378,9 +398,10 @@ def cached_download(url, max_mb=1500):
     d = os.path.join(data_dir(), "cache", "srcvid"); os.makedirs(d, exist_ok=True)
     p = os.path.join(d, hashlib.sha1(url.encode()).hexdigest()[:16] + ".mp4")
     if os.path.exists(p): return p
+    public_url(url)
     r = subprocess.run([YTDLP, "-4", "-q", "--no-warnings", "--no-playlist", "-f",
                         "bv*[height<=1080][ext=mp4]/bv*[height<=1080]", "--max-filesize", f"{max_mb}M",
-                        "-o", p + ".part.mp4", "--force-overwrites", url], capture_output=True, text=True, timeout=1800)
+                        "-o", p + ".part.mp4", "--force-overwrites", "--", url], capture_output=True, text=True, timeout=1800)
     if r.returncode == 0 and os.path.exists(p + ".part.mp4"):
         os.replace(p + ".part.mp4", p); return p
     return None
@@ -391,7 +412,7 @@ def grab_dense(src, t0, seconds=12.0, hz=10.0):
     import cv2
     if not is_remote(src) and os.path.exists(src):
         import av
-        c = av.open(src); s = c.streams.video[0]; s.thread_type = "AUTO"
+        c = av.open(local_media(src)); s = c.streams.video[0]; s.thread_type = "AUTO"
         c.seek(int(max(0.0, t0 - 1.0) / s.time_base), stream=s)
         out, nxt = [], t0
         for f in c.decode(s):

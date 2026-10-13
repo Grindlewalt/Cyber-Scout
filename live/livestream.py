@@ -806,9 +806,25 @@ def _ipv4_only():
     socket.getaddrinfo = gai
 
 
+def _public(url):
+    """SSRF guard (live/sources.py safe_public_url): http(s) only, every resolved address public."""
+    import sources as SRC
+    return SRC.safe_public_url(url)
+
+
+class _NoPrivateRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        _public(newurl)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+_OPENER = urllib.request.build_opener(_NoPrivateRedirect)
+
+
 def _http(url, timeout=20):
+    _public(url)
     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-    with urllib.request.urlopen(req, timeout=timeout) as r:
+    with _OPENER.open(req, timeout=timeout) as r:
         return r.read()
 
 
@@ -850,12 +866,20 @@ class Recorder:
         self.hls = None; self.hls_at = 0
 
     def resolve(self):
+        try:
+            _public(self.url)                       # http(s) to a public host only (SSRF guard)
+        except ValueError as e:
+            raise RuntimeError(f"livestream URL refused: {e}")
         r = subprocess.run([YTDLP, "-4", "--no-warnings", "-f", FORMAT, "--print", "%(id)s\t%(live_status)s\t%(format_id)s\t%(height)s",
-                            "-g", self.url], capture_output=True, text=True, timeout=120)
+                            "-g", "--", self.url], capture_output=True, text=True, timeout=120)
         lines = [l for l in r.stdout.strip().split("\n") if l]
         if r.returncode != 0 or len(lines) < 2:
             raise RuntimeError(f"yt-dlp: {r.stderr.strip()[-300:]}")
         vid, status, fmt, h = lines[0].split("\t")
+        try:
+            _public(lines[1])
+        except ValueError as e:
+            raise RuntimeError(f"stream URL refused: {e}")
         return vid, status, fmt, lines[1]
 
     def run(self):

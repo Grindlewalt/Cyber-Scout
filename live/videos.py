@@ -13,6 +13,13 @@ YTDLP = os.environ.get("YTDLP", "yt-dlp")
 # first (YT_FORCE_IPV4=0 disables; the last download attempt always tries without it as a fallback).
 IPV4 = os.environ.get("YT_FORCE_IPV4", "1") != "0"
 POLITE = ["--sleep-requests", "1", "--retry-sleep", "5"]
+YT_ID = re.compile(r"^[A-Za-z0-9_-]{11}$")      # TBA video keys are only ever used as YouTube ids
+
+
+def _vid(vid):
+    if not isinstance(vid, str) or not YT_ID.match(vid):
+        raise ValueError(f"not a YouTube video id: {str(vid)[:40]!r}")
+    return vid
 
 
 def _net(v4=True):
@@ -20,8 +27,9 @@ def _net(v4=True):
 
 
 def meta(vid):
+    if not isinstance(vid, str) or not YT_ID.match(vid): return None
     r = subprocess.run([YTDLP, *_net(), "--skip-download", "--no-warnings", "--print",
-                        "%(channel)s\t%(title)s\t%(duration)s\t%(height)s", f"https://youtu.be/{vid}"],
+                        "%(channel)s\t%(title)s\t%(duration)s\t%(height)s", "--", f"https://youtu.be/{vid}"],
                        capture_output=True, text=True, timeout=120)
     if r.returncode != 0 or "\t" not in r.stdout:
         return None
@@ -32,12 +40,12 @@ def meta(vid):
 
 def search(query, n=6):
     r = subprocess.run([YTDLP, "--flat-playlist", "--no-warnings", "--print",
-                        "%(id)s\t%(channel)s\t%(title)s", f"ytsearch{n}:{query}"],
+                        "%(id)s\t%(channel)s\t%(title)s", "--", f"ytsearch{int(n)}:{query}"],
                        capture_output=True, text=True, timeout=120)
     out = []
     for line in r.stdout.strip().split("\n"):
         p = line.split("\t")
-        if len(p) == 3: out.append(dict(id=p[0], channel=p[1], title=p[2]))
+        if len(p) == 3 and YT_ID.match(p[0]): out.append(dict(id=p[0], channel=p[1], title=p[2]))
     return out
 
 
@@ -54,7 +62,8 @@ def candidates(match, cfg, cache):
     cands = []
     for v in match.get("videos", []):
         if v.get("type") != "youtube": continue
-        vid = v["key"].split("?")[0]
+        vid = str(v.get("key") or "").split("?")[0].strip()
+        if not YT_ID.match(vid): continue             # never hand a non-id TBA value to yt-dlp
         if vid not in cache:
             cache[vid] = meta(vid)
         if cache[vid]: cands.append(cache[vid])
@@ -84,10 +93,11 @@ def match_fields(m):
 def download(vid, out, attempts=4):
     """yt-dlp with retries: YouTube intermittently answers 403 (rate limits, stale player JS)."""
     import time, random
+    _vid(vid)
     tmp = out + ".part.mp4"; err = ""
     for i in range(attempts):
         r = subprocess.run([YTDLP, *_net(i < attempts - 1 or attempts == 1), *POLITE, "-q", "--no-warnings", "-f", "bv*[height<=1080][ext=mp4]/bv*[height<=1080]",
-                            "-o", tmp, "--force-overwrites", f"https://youtu.be/{vid}"],
+                            "-o", tmp, "--force-overwrites", "--", f"https://youtu.be/{vid}"],
                            capture_output=True, text=True, timeout=1800)
         if r.returncode == 0 and os.path.exists(tmp):
             os.replace(tmp, out)

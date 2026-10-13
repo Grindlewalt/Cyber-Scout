@@ -28,7 +28,7 @@ Worker helpers: video_config(doc, cfg) -> videos.candidates() config (prefer / r
 primary per-match source), station_pattern(doc) -> title regex of the upload that holds the station insets,
 livestream_url(doc) -> URL for live/livestream.py, primary(doc).
 """
-import hashlib, json, os, re, subprocess, threading, time, traceback, urllib.parse, urllib.request
+import hashlib, ipaddress, json, os, re, socket, subprocess, threading, time, traceback, urllib.parse, urllib.request
 
 ROLES = ("wide", "dynamic", "alliance-side")
 KINDS = ("per_match", "livestream", "video", "file")
@@ -78,45 +78,86 @@ def primary(doc):
 
 # ---------------------------------------------------------------- URLs
 _YT_ID = re.compile(r"^[A-Za-z0-9_-]{11}$")
+_YT_LIST = re.compile(r"^[A-Za-z0-9_-]{2,64}$")
+_YT_BASE = re.compile(r"^/(@[A-Za-z0-9._%-]{1,100}|channel/[A-Za-z0-9_-]{1,64}|c/[A-Za-z0-9._%-]{1,100}|user/[A-Za-z0-9._%-]{1,100})(?=/|$)")
+_TWITCH_CH = re.compile(r"^[A-Za-z0-9_]{1,25}$")
+_HOST_RE = re.compile(r"^[a-z0-9.-]{1,253}$")
+_YT_HOSTS = ("youtube.com", "youtu.be", "music.youtube.com")
+
+
+def _bad_chars(u, allow_space=False):
+    return any(ord(c) < 32 or ord(c) == 127 or (c.isspace() and not allow_space) for c in u)
 
 
 def classify_url(url):
-    """-> dict(kind, provider, url (normalised), video?, playlist?) or raises ValueError."""
-    u = (url or "").strip()
+    """-> dict(kind, provider, url (normalised), video?, playlist?) or raises ValueError.
+
+    Accepted: an absolute local path (checked against allowed_roots() by the callers), a bare YouTube id,
+    an http(s) URL with a host (YouTube / Twitch URLs are rebuilt in canonical form, others returned as
+    urlsplit().geturl()), or a scheme-less YouTube / Twitch URL ("youtube.com/@x/live").  Never anything
+    starting with '-' (it would reach yt-dlp / ffmpeg as an option), file:, javascript:, data:, relative
+    paths or other schemes."""
+    u = (url if isinstance(url, str) else "").strip()
     if not u: raise ValueError("empty URL")
+    if u.startswith("-"): raise ValueError("a source must not start with '-'")
     if u.startswith("/"):
+        if _bad_chars(u, allow_space=True): raise ValueError("control characters in the path")
+        if u.startswith("//"): raise ValueError("enter an http(s) URL or an absolute file path")
         return dict(kind="file", provider="file", url=os.path.normpath(u))
+    if _bad_chars(u): raise ValueError("spaces or control characters in the URL")
     if _YT_ID.match(u):
         return dict(kind="video", provider="youtube", url=f"https://www.youtube.com/watch?v={u}", video=u)
-    p = urllib.parse.urlparse(u if "://" in u else "https://" + u)
-    host = (p.hostname or "").lower().removeprefix("www.").removeprefix("m.")
+    if "://" not in u:
+        # scheme-less: only the well-known video hosts (rebuilt below); never a relative path / other scheme
+        h = u.split("/", 1)[0].split("?", 1)[0].lower()
+        h = h.removeprefix("www.").removeprefix("m.")
+        if not (h in _YT_HOSTS or h == "twitch.tv" or h.endswith(".twitch.tv")):
+            raise ValueError("enter a full http(s) URL, a YouTube id, or an absolute file path")
+        u = "https://" + u
+    p = urllib.parse.urlsplit(u)
+    if p.scheme.lower() not in ("http", "https"):
+        raise ValueError("only http(s) URLs, YouTube ids or absolute file paths are supported")
+    raw_host = p.hostname or ""
+    if not raw_host: raise ValueError("the URL has no host")
+    if p.username is not None or p.password is not None: raise ValueError("URLs with a user name / password are not supported")
+    try:
+        p.port
+    except ValueError:
+        raise ValueError("invalid port in the URL")
+    if not _HOST_RE.match(raw_host):
+        try:
+            ipaddress.ip_address(raw_host)
+        except ValueError:
+            raise ValueError("invalid host in the URL")
+    host = raw_host.removeprefix("www.").removeprefix("m.")
     q = urllib.parse.parse_qs(p.query)
-    if host in ("youtube.com", "youtu.be", "music.youtube.com"):
-        if "list" in q and not q.get("v"):
-            return dict(kind="per_match", provider="youtube", url=f"https://www.youtube.com/playlist?list={q['list'][0]}",
-                        playlist=q["list"][0])
+    if host in _YT_HOSTS:
+        lst = (q.get("list") or [None])[0]
+        if lst and not q.get("v"):
+            if not _YT_LIST.match(lst): raise ValueError("unrecognised YouTube playlist id")
+            return dict(kind="per_match", provider="youtube", url=f"https://www.youtube.com/playlist?list={lst}", playlist=lst)
         vid = q.get("v", [None])[0]
         if host == "youtu.be": vid = p.path.strip("/").split("/")[0]
         m = re.match(r"^/(live|shorts|embed)/([A-Za-z0-9_-]{11})", p.path)
         if m: vid = m.group(2)
         if vid and _YT_ID.match(vid):
             return dict(kind="video", provider="youtube", url=f"https://www.youtube.com/watch?v={vid}", video=vid)
-        if re.match(r"^/(@[^/]+|channel/[^/]+|c/[^/]+|user/[^/]+)", p.path):
-            base = re.match(r"^/(@[^/]+|channel/[^/]+|c/[^/]+|user/[^/]+)", p.path).group(1)
+        m = _YT_BASE.match(p.path)
+        if m:
+            base = m.group(1)
             if p.path.rstrip("/").endswith("/live") or p.path.rstrip("/").endswith("/streams"):
                 return dict(kind="livestream", provider="youtube", url=f"https://www.youtube.com/{base}/live")
             return dict(kind="per_match", provider="youtube", url=f"https://www.youtube.com/{base}/videos")
         raise ValueError("unrecognised YouTube URL")
-    if host.endswith("twitch.tv"):
-        m = re.match(r"^/videos/(\d+)", p.path)
+    if host == "twitch.tv" or host.endswith(".twitch.tv"):
+        m = re.match(r"^/videos/(\d{1,20})(?:/|$)", p.path)
         if m: return dict(kind="video", provider="twitch", url=f"https://www.twitch.tv/videos/{m.group(1)}")
         ch = p.path.strip("/").split("/")[0]
-        if ch: return dict(kind="livestream", provider="twitch", url=f"https://www.twitch.tv/{ch}")
+        if ch and _TWITCH_CH.match(ch): return dict(kind="livestream", provider="twitch", url=f"https://www.twitch.tv/{ch}")
         raise ValueError("unrecognised Twitch URL")
-    if p.scheme in ("http", "https"):
-        kind = "livestream" if p.path.endswith(".m3u8") else "video"
-        return dict(kind=kind, provider="http", url=u)
-    raise ValueError("unsupported URL")
+    kind = "livestream" if p.path.endswith(".m3u8") else "video"
+    norm = urllib.parse.urlunsplit((p.scheme.lower(), p.netloc.lower(), p.path or "/", p.query, ""))
+    return dict(kind=kind, provider="http", url=norm)
 
 
 def allowed_roots():
@@ -127,23 +168,115 @@ def allowed_roots():
 
 
 def file_allowed(p):
+    if not isinstance(p, str) or not p.startswith("/"): return False
     rp = os.path.realpath(p)
     return any(rp == r or rp.startswith(r.rstrip("/") + "/") for r in allowed_roots())
 
 
+def media_ok(v):
+    """A stored source / sample value -> the normalised media string (YouTube id -> watch URL, URL, allowed
+    absolute path) or raises ValueError.  Re-validates sources.json written before classify_url was strict."""
+    if isinstance(v, str) and _YT_ID.match(v):
+        return f"https://www.youtube.com/watch?v={v}"
+    c = classify_url(v)
+    if c["kind"] == "file" and not file_allowed(c["url"]):
+        raise ValueError("file sources must be under the media or data directory")
+    return c["url"]
+
+
+# ---- SSRF guard: the worker / API only fetch public hosts
+_BLOCKED_NETS = tuple(ipaddress.ip_network(n) for n in (
+    "0.0.0.0/8", "10.0.0.0/8", "100.64.0.0/10", "127.0.0.0/8", "169.254.0.0/16", "172.16.0.0/12",
+    "192.0.0.0/24", "192.0.2.0/24", "192.168.0.0/16", "198.18.0.0/15", "198.51.100.0/24", "203.0.113.0/24",
+    "224.0.0.0/4", "240.0.0.0/4",
+    "::/128", "::1/128", "64:ff9b:1::/48", "100::/64", "2001:db8::/32", "fc00::/7", "fe80::/10", "fec0::/10", "ff00::/8"))
+_PUBLIC_OK = {}                       # (host, port) -> time of the last passing check (short cache for chunk loops)
+
+
+def _resolve(host, port):
+    """[ip strings] for host (tests replace this)."""
+    return sorted({i[4][0] for i in socket.getaddrinfo(host, port, 0, socket.SOCK_STREAM)})
+
+
+def _url_allow():
+    """CS_URL_ALLOW: comma separated host names / CIDRs an admin explicitly allows although private
+    (e.g. an OBS / NDI HLS server on the LAN)."""
+    hosts, nets = set(), []
+    for x in os.environ.get("CS_URL_ALLOW", "").split(","):
+        x = x.strip().lower()
+        if not x: continue
+        try: nets.append(ipaddress.ip_network(x, strict=False))
+        except ValueError: hosts.add(x)
+    return hosts, nets
+
+
+def ip_blocked(ip):
+    """True for loopback / RFC1918 / link-local / CGNAT (incl. Tailscale 100.64/10) / docker 172.16/12 /
+    multicast / reserved addresses and their IPv6 forms (incl. IPv4-mapped / 6to4 / Teredo)."""
+    ip = ipaddress.ip_address(str(ip).split("%", 1)[0])
+    if ip.version == 6:
+        for inner in (ip.ipv4_mapped, ip.sixtofour, (ip.teredo or (None, None))[1]):
+            if inner is not None and ip_blocked(inner): return True
+        if ip in ipaddress.ip_network("64:ff9b::/96"):            # NAT64: the embedded IPv4 address
+            if ip_blocked(ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF)): return True
+    if any(ip in n for n in _BLOCKED_NETS if n.version == ip.version): return True
+    return not ip.is_global or ip.is_multicast
+
+
+def safe_public_url(url, resolve=None, cache_s=60.0):
+    """-> url when it is http(s) with a host whose every address is public; raises ValueError otherwise.
+    Called before anything in live/ or the API hands a URL to yt-dlp / ffmpeg / urllib (SSRF guard: the
+    worker shares a docker bridge with the host's gateway and services)."""
+    if not isinstance(url, str) or url.startswith("-"): raise ValueError("not a URL")
+    p = urllib.parse.urlsplit(url.strip())
+    if p.scheme.lower() not in ("http", "https") or not p.hostname:
+        raise ValueError("only http(s) URLs with a host can be fetched")
+    if p.username is not None or p.password is not None: raise ValueError("URLs with credentials are not fetched")
+    host = p.hostname.lower().rstrip(".")
+    try:
+        port = p.port or (443 if p.scheme.lower() == "https" else 80)
+    except ValueError:
+        raise ValueError("invalid port")
+    allow_hosts, allow_nets = _url_allow()
+    if host in allow_hosts: return url
+    key = (host, port)
+    if resolve is None and cache_s and time.time() - _PUBLIC_OK.get(key, 0) < cache_s: return url
+    try:
+        addrs = [str(ipaddress.ip_address(host))]           # IP literal: no lookup
+    except ValueError:
+        addrs = None
+    try:
+        addrs = addrs or (resolve or _resolve)(host, port)
+    except (OSError, UnicodeError) as e:
+        raise ValueError(f"cannot resolve {host}: {e}")
+    if not addrs: raise ValueError(f"cannot resolve {host}")
+    for a in addrs:
+        try:
+            ip = ipaddress.ip_address(str(a).split("%", 1)[0])
+        except ValueError:
+            raise ValueError(f"{host}: unexpected address {a!r}")
+        if ip_blocked(ip) and not any(ip in n for n in allow_nets if n.version == ip.version):
+            raise ValueError(f"{host} resolves to a non-public address ({ip}); not fetched")
+    if resolve is None: _PUBLIC_OK[key] = time.time()
+    return url
+
+
 def webcast_url(w):
-    t, ch, fl = (w.get("type") or "").lower(), w.get("channel") or "", w.get("file") or ""
-    if t == "youtube": return f"https://www.youtube.com/watch?v={ch}" if _YT_ID.match(ch) else f"https://www.youtube.com/{ch}"
-    if t == "twitch": return f"https://www.twitch.tv/{ch}"
-    if t in ("html5", "direct_link", "dacast", "livestream", "iframe", "ustream", "stemtv", "mms", "rtmp"):
-        if fl.startswith("http"): return fl
-        if ch.startswith("http"): return ch
+    """TBA webcast -> canonical YouTube / Twitch URL, else None (other types: arbitrary URLs from TBA data)."""
+    t, ch = (w.get("type") or "").lower(), str(w.get("channel") or "").strip()
+    if t == "youtube":
+        if _YT_ID.match(ch): return f"https://www.youtube.com/watch?v={ch}"
+        m = _YT_BASE.match("/" + ch.strip("/"))
+        return f"https://www.youtube.com/{m.group(1)}/live" if m else None
+    if t == "twitch":
+        return f"https://www.twitch.tv/{ch}" if _TWITCH_CH.match(ch) else None
     return None
 
 
 # ---------------------------------------------------------------- titles / matches
 def oembed(vid, timeout=10):
     """YouTube title + channel without yt-dlp (works in the slim API container)."""
+    if not isinstance(vid, str) or not _YT_ID.match(vid): return None
     url = "https://www.youtube.com/oembed?format=json&url=" + urllib.parse.quote(f"https://www.youtube.com/watch?v={vid}")
     try:
         with urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": "cyber-scout"}), timeout=timeout) as r:
@@ -186,7 +319,13 @@ def match_key_from_title(title, ev, matches=None):
 
 
 def _yt_videos(m):
-    return [v["key"].split("?")[0] for v in (m.get("videos") or []) if v.get("type") == "youtube" and v.get("key")]
+    """TBA match videos -> YouTube ids (anything that is not an 11-char id is dropped: never fetched raw)."""
+    out = []
+    for v in (m.get("videos") or []):
+        if not isinstance(v, dict) or v.get("type") != "youtube" or not isinstance(v.get("key"), str): continue
+        k = v["key"].split("?")[0].strip()
+        if _YT_ID.match(k): out.append(k)
+    return out
 
 
 def _slug(s):
@@ -202,16 +341,17 @@ def discover(ev, event, matches, meta_fn=oembed, meta_cache=None, sample=10, log
     meta_cache = {} if meta_cache is None else meta_cache
     out = []
     for i, w in enumerate((event or {}).get("webcasts") or []):
-        u = webcast_url(w)
-        if not u: continue
+        u = webcast_url(w) if isinstance(w, dict) else None
+        if not u: continue                       # only YouTube / Twitch webcasts (canonical URLs)
         try:
             c = classify_url(u)
         except ValueError:
-            c = None
+            continue
+        u = c["url"]
         out.append(dict(id=f"tba-webcast-{i}", origin="tba", kind="livestream", provider=(w.get("type") or "").lower(),
                         url=u, role="dynamic", coverage={"mode": "all"}, enabled=True,
                         label=f"Event webcast ({w.get('type')}{', ' + w['date'] if w.get('date') else ''})",
-                        sample=dict(video=(c or {}).get("video") or u, t=None), webcast=w))
+                        sample=dict(video=c.get("video") or u, t=None), webcast=w))
     withv = sorted([m for m in matches or [] if _yt_videos(m)], key=_order)
     if withv:
         pick = withv if full else [withv[int(round(i))] for i in
@@ -275,6 +415,8 @@ def add(doc, url, role="wide", label=None, coverage=None, by=None, primary=False
     c = classify_url(url)
     if c["kind"] == "file" and not file_allowed(c["url"]):
         raise ValueError("file sources must be under the media or data directory")
+    if c["provider"] == "http":
+        safe_public_url(c["url"], cache_s=0)       # private / loopback / docker / Tailscale hosts: refused
     sid = "url-" + hashlib.sha1(c["url"].encode()).hexdigest()[:8]
     if get(doc, sid): raise ValueError("that source is already listed")
     if role not in ROLES: raise ValueError(f"role must be one of {ROLES}")
@@ -289,12 +431,45 @@ def add(doc, url, role="wide", label=None, coverage=None, by=None, primary=False
     return s
 
 
+_MATCH_KEY = re.compile(r"^[0-9]{4}[a-z0-9]{1,16}_[a-z0-9]{1,12}$")
+
+
+def clean_sample(v):
+    """PATCH sample -> {video, match, t} with video validated like a pasted URL (classify_url / allowed roots)."""
+    if not isinstance(v, dict): raise ValueError("sample must be an object")
+    out = {}
+    vid = v.get("video")
+    if vid is not None:
+        if not isinstance(vid, str) or len(vid) > 2000: raise ValueError("sample.video must be a string")
+        if _YT_ID.match(vid.strip()):
+            out["video"] = vid.strip()
+        else:
+            c = classify_url(vid)
+            if c["kind"] == "file" and not file_allowed(c["url"]):
+                raise ValueError("file sources must be under the media or data directory")
+            if c["provider"] == "http": safe_public_url(c["url"], cache_s=0)
+            out["video"] = c.get("video") or c["url"]
+    mk = v.get("match")
+    if mk is not None:
+        if not isinstance(mk, str) or not _MATCH_KEY.match(mk): raise ValueError("sample.match must be a match key")
+        out["match"] = mk
+    t = v.get("t")
+    if t is not None:
+        if isinstance(t, bool) or not isinstance(t, (int, float)) or not (0 <= float(t) <= 86400):
+            raise ValueError("sample.t must be seconds (0..86400)")
+        out["t"] = float(t)
+    else:
+        out["t"] = None
+    return out
+
+
 def update(doc, sid, patch, by=None):
     s = get(doc, sid)
     if s is None: raise KeyError(sid)
     for k, v in patch.items():
         if k not in USER_FIELDS or v is None: continue
         if k == "role" and v not in ROLES: raise ValueError(f"role must be one of {ROLES}")
+        if k == "sample": v = clean_sample(v)
         if k == "primary" and v:
             for o in doc.get("sources", []): o["primary"] = False
         s[k] = v
@@ -366,11 +541,10 @@ def media_for(s, match_key=None):
         vid = vids.get(match_key) if match_key else None
         vid = vid or (s.get("sample") or {}).get("video") or (next(iter(vids.values())) if vids else None)
         if not vid: return None, None
-        return (f"https://www.youtube.com/watch?v={vid}" if _YT_ID.match(vid) else vid), (s.get("sample") or {}).get("t") or 60.0
+        return media_ok(vid), (s.get("sample") or {}).get("t") or 60.0
     smp = s.get("sample") or {}
     v = smp.get("video") or s.get("url")
-    if v and _YT_ID.match(v): v = f"https://www.youtube.com/watch?v={v}"
-    return v, smp.get("t")
+    return (media_ok(v) if v else None), smp.get("t")
 
 
 # ---------------------------------------------------------------- jobs (frames, suggestions, calibration)
@@ -699,12 +873,14 @@ def job_index_playlist(data, ev, p, log=print):
     """Pasted playlist / channel: list its videos (yt-dlp --flat-playlist) and map titles to match keys."""
     doc = load(_ev_dir(data, ev)); s = get(doc, p["source"])
     if s is None or s.get("kind") != "per_match" or not s.get("url"): raise ValueError("not a playlist source")
+    url = safe_public_url(media_ok(s["url"]))
     r = subprocess.run([YTDLP, "-4", "--flat-playlist", "--no-warnings", "--print", "%(id)s\t%(title)s",
-                        "--playlist-end", "600", s["url"]], capture_output=True, text=True, timeout=600)
+                        "--playlist-end", "600", "--", url], capture_output=True, text=True, timeout=600)
     vids = {}
     for line in r.stdout.strip().split("\n"):
         if "\t" not in line: continue
         vid, title = line.split("\t", 1)
+        if not _YT_ID.match(vid): continue
         k = match_key_from_title(title, ev, p.get("_matches"))
         if k and k not in vids: vids[k] = vid
     doc = load(_ev_dir(data, ev)); s = get(doc, p["source"])

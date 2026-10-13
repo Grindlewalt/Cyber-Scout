@@ -350,11 +350,16 @@ def _norm_date(s):
 
 def resolve(url, timeout=90):
     """-> (video id, live_status) via yt-dlp (IPv4); raises when nothing is live / reachable."""
-    if url.startswith("/") or url.startswith("file:"):
+    if url.startswith("/"):
         return re.sub(r"[^A-Za-z0-9_-]", "_", os.path.basename(url))[:40], "is_live"
+    import sources as SRC
+    try:
+        SRC.safe_public_url(url)                 # http(s) to a public host only (SSRF guard)
+    except ValueError as e:
+        raise RuntimeError(f"livestream URL refused: {e}")
     ytdlp = os.environ.get("YTDLP", "yt-dlp")
     net = ["-4"] if os.environ.get("YT_FORCE_IPV4", "1") != "0" else []
-    r = subprocess.run([ytdlp, *net, "--no-warnings", "--skip-download", "--print", "%(id)s\t%(live_status)s", url],
+    r = subprocess.run([ytdlp, *net, "--no-warnings", "--skip-download", "--print", "%(id)s\t%(live_status)s", "--", url],
                        capture_output=True, text=True, timeout=timeout)
     lines = [l for l in r.stdout.strip().split("\n") if "\t" in l]
     if r.returncode != 0 or not lines:
@@ -500,14 +505,14 @@ class Service:
         fresh = not os.path.exists(os.path.join(out, "recorder.json"))
         os.makedirs(out, exist_ok=True)
         gpu = opts.get("gpu_device") if opts.get("gpu_device") is not None else os.environ.get("GPU_DEVICE", "0")
-        cmd = [sys.executable, "-u", os.path.join(HERE, "livestream.py"), src["url"], "--out", out,
+        cmd = [sys.executable, "-u", os.path.join(HERE, "livestream.py"), "--out", out,
                "--event", ev, "--source", src["id"], "--data", self.data, "--gpu", str(int(gpu)),
                "--max-hours", os.environ.get("LIVE_MAX_HOURS", "16"),
                "--budget-gb", os.environ.get("LIVE_BUDGET_GB", "60"),
                "--keep-hours", os.environ.get("LIVE_KEEP_HOURS", "2"),
                "--keep-match-hours", os.environ.get("LIVE_KEEP_MATCH_HOURS", "12"),
                "--backfill-min", os.environ.get("LIVE_BACKFILL_MIN", "60") if fresh else "0",
-               "--exit-on-new-video", "--tba-env", "/nonexistent"]
+               "--exit-on-new-video", "--tba-env", "/nonexistent", "--", src["url"]]   # "--": the URL is never an option
         env = dict(os.environ)
         if key: env["TBA_KEY"] = key                        # optional cross-check in the records
         if opts.get("cpu_only"): env["FORCE_CPU"] = "1"
@@ -657,6 +662,7 @@ class Service:
         """Segments of finished output dirs: gone after LIVE_KEEP_SEG_DAYS, oldest first while the disk is low.
         Active dirs are trimmed by their own recorder (--budget-gb / --keep-hours)."""
         root = live_dir()
+        if not os.path.isdir(root): return               # nothing recorded yet (fresh install)
         active = {k["out"] for k in self.kids.values()}
         segs = []
         for d in glob.glob(os.path.join(root, "*", "*")):
