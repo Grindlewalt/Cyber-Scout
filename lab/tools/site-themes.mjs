@@ -14,7 +14,7 @@ globalThis.window = globalThis;
 for (const f of ["themes.js", "ext/a.js", "ext/b.js", "ext/c.js", "ext/d.js"]) (0, eval)(readFileSync(join(lab, f), "utf8"));
 const L = globalThis.LAB;
 
-const DEFAULT = "sandearth";
+const DEFAULT = "jet";   // Jet & Paper, follows the system appearance
 // site order + names (the lab names some themes for comparison; users see these)
 const SITE = [
   ["sandearth", "Sand & Earth"], ["jetdark", "Jet"], ["earth", "Earth"], ["sandstone", "Sandstone"], ["jet", "Jet & Paper"],
