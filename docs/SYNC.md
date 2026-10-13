@@ -108,3 +108,23 @@ Server side (part 1), as implemented in `server/routers/sync.py`, `server/syncin
   is used when a test encode works on `PROXY_GPU`; with the current worker image (Debian ffmpeg 7.1) and the
   server's NVIDIA 610 driver NVENC fails to open ("unsupported device"), so proxies are encoded with libx264
   (2 threads, `nice -n 10`, ≈25 s per match) on a background thread of the worker.
+
+Client side (part 2), as implemented in `client/` (answer shapes of the control API: `client/README.md`).
+
+- **"Never more than 2 concurrent requests"** applies to the sync engine's background traffic (probe, events,
+  manifests, bundles, media, web-app refresh). Requests the page makes through the proxy (and the outbox send they
+  trigger), sign-in and Test connection go out at once, so the UI never waits behind a 32 MB bundle.
+- **Media** are downloaded with `GET /media/<path>` (Range-resumable; verified by sha256 when given, else by size),
+  not through `/sync/bundle` (which only takes manifest paths). A single data file over 48 MB is fetched the same
+  way via `GET /api/<path>` (a bundle can't exceed 64 MB).
+- **Writes while online** also go through the outbox (an `Idempotency-Key` is always added): with an empty outbox
+  the page gets the server's real answer if it arrives within 20 s, otherwise `202 {"queued":true,"id","key"}`.
+  With older changes still queued, new ones queue behind them (order is kept). Sign-in/out, password, setup and
+  `/sync/*` are never queued. `429`/`5xx`/`409 + Retry-After` keep the change queued and retry soon.
+- **The page's own `POST /app/v1/auth/login` / `logout`** are handled by the client (they sign the client in/out,
+  same as `/client/v1/login` / `logout`); every `csrf` the page sees is the client's local token.
+- **`GET /client/v1/status`**: `progress.done/total` count files (`done_bytes/total_bytes` = file bytes, `bytes` =
+  bytes received); `outbox` counts changes not yet accepted (queued + sending); conflicts and rejected changes
+  appear in `errors` (`kind` `conflict` / `failed`, with the server's answer) and in `GET /client/v1/outbox`.
+  Extra fields: `media`, `followed`, `available_events`, `offline_reason`, `server_info`, `web_version`, `storage`.
+  `POST /client/v1/test` always answers 200 with `ok:true|false`.
