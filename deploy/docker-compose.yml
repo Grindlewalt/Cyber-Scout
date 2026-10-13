@@ -26,6 +26,33 @@ services:
               count: all
               capabilities: [gpu]
 
+  # Live-stream recorder (same image as the worker): records each followed event's livestream (Video page
+  # source, or the TBA webcast) during the event's dates, cuts every match out of it with teams/scores read off
+  # the broadcast overlay, and the worker picks the clips up without waiting for YouTube uploads / TBA.
+  # Recordings + clips go to ${MEDIA_DIR}/live (~2 GB/h, trimmed to LIVE_BUDGET_GB per stream).
+  # Status: data/events/<ev>/livestream.json (GET /app/v1/events/<ev>/livestream).  LIVESTREAM=0 turns it off.
+  recorder:
+    build: ./app
+    image: ${CS_PREFIX:-cyber-scout}-worker:latest
+    container_name: ${CS_PREFIX:-cyber-scout}-recorder
+    restart: unless-stopped
+    command: ["--recorder"]
+    stop_grace_period: 30s
+    env_file: .env
+    environment:
+      DATA: /data
+    volumes:
+      - ./data:/data
+      - ${MEDIA_DIR:-./data/media}:/media
+    # overlay OCR (~10x real time on a GPU; CPU works but uses a few cores). Removed by docker-compose.cpu.yml.
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
   api:
     build:
       context: ./app

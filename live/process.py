@@ -392,9 +392,12 @@ def track_stats(xy, obs, alliance_name, t_auto_end, LEN, live=None):
 
 # ---------------------------------------------------------------- main
 def process(video, cam_path, onnx, tag_csv=None, log=print, start_hint=None, pose_guess=None,
-            teams=None, hooks=(), dump=None, extra_reads=None, event=None, layout=None):
+            teams=None, hooks=(), dump=None, extra_reads=None, event=None, layout=None, start_trusted=False):
     """start_hint: typical match-start offset for this kind of upload, used only
-    when neither the clock nor robot motion gives one.  pose_guess: {rvec, tvec} of
+    when neither the clock nor robot motion gives one.  start_trusted=True: start_hint is a measured
+    auto start (a livestream clip's auto_start_in_clip, live/livestream.py) -> used when the clock check
+    finds nothing, BEFORE robot motion (start_source "livestream").  Default False = unchanged.
+    pose_guess: {rvec, tvec} of
     the camera as last seen (a bump persists across matches).
     teams: {"red": [3 team keys], "blue": [3 team keys]} in TBA station order.  With
     it, bumper numbers are read during detection and every output track is one team
@@ -445,7 +448,8 @@ def process(video, cam_path, onnx, tag_csv=None, log=print, start_hint=None, pos
     reads = sampler.close() if sampler else np.zeros((0, 7))
     log(f"  detection: {n} frames, {len(det)} raw dets in {time.time() - t0:.0f}s")
     st = prepare(det, chas, body, n, clock, feed, reads, cam, log, start_hint,
-                 reads_open=sampler.open_rows() if sampler is not None and sampler.open_cands else None)
+                 reads_open=sampler.open_rows() if sampler is not None and sampler.open_cands else None,
+                 start_trusted=start_trusted)
     st.update(camera_pose=dict(rvec=cam.rvec.tolist(), tvec=cam.tvec.tolist()), pose=pose,
               cam_raw=cam.raw, teams=team_list, ocr_ok=sampler is not None)
     if open_teams and sampler is not None:
@@ -485,9 +489,11 @@ def _lineups(event):
     return out
 
 
-def prepare(det, chas, body, n, clock, feed, reads, cam, log=print, start_hint=None, reads_open=None):
+def prepare(det, chas, body, n, clock, feed, reads, cam, log=print, start_hint=None, reads_open=None,
+            start_trusted=False):
     """Raw detections -> tracking inputs inside the match window (+ match start).
-    reads_open: optional open-set read rows (ocr.OPEN_COLS, raw det row first) -> st["reads_open"]."""
+    reads_open: optional open-set read rows (ocr.OPEN_COLS, raw det row first) -> st["reads_open"].
+    start_trusted: start_hint is a measured start (livestream) -> preferred over robot motion."""
     idx = np.arange(len(det))
     keep = det[:, 7] >= CONF_TRACK
     d, ch, bo, idx = det[keep], chas[keep], body[keep], idx[keep]
@@ -499,11 +505,8 @@ def prepare(det, chas, body, n, clock, feed, reads, cam, log=print, start_hint=N
 
     t_clock = clock_start(clock, log)
     t_motion, found = match_start(d, xy, cam.cov(xy, su=2.0, sv=2.5), n, log, fallback=start_hint)
-    if t_clock is not None and 0 <= t_clock < 40:
-        t_start, found, how = t_clock, True, "clock"
-    else:
-        t_start, how = t_motion, "motion" if found else "default"
-    log(f"  match start {t_start:.2f}s from {how} (clock {t_clock}, motion {t_motion:.2f})")
+    t_start, found, how = pick_start(t_clock, t_motion, found, start_hint, start_trusted)
+    log(f"  match start {t_start:.2f}s from {how} (clock {t_clock}, motion {t_motion:.2f}, hint {start_hint})")
     f0 = max(0, int(round((t_start - 0.5) * FPS)))
     nf = min(n - f0, int(math.ceil((MATCH_S + 1.0) * FPS)))
     fw = np.ones(nf, bool); seg = feed[f0:f0 + nf]; fw[:len(seg)] = seg
@@ -540,6 +543,16 @@ def prepare(det, chas, body, n, clock, feed, reads, cam, log=print, start_hint=N
         ro = ro.reshape(len(ro), -1) if ro.size else ro.reshape(0, ro.shape[-1] if ro.ndim == 2 else 14)
         st["reads_open"] = remap(ro, ro.shape[1])
     return st
+
+
+def pick_start(t_clock, t_motion, motion_found, start_hint=None, start_trusted=False):
+    """-> (t_start, found, how).  Broadcast clock first; then a trusted (measured, livestream) start hint;
+    then robot motion (whose own fallback is the untrusted start_hint / START_FALLBACK)."""
+    if t_clock is not None and 0 <= t_clock < 40:
+        return t_clock, True, "clock"
+    if start_trusted and start_hint is not None and 0 <= start_hint < 60:
+        return float(start_hint), True, "livestream"
+    return t_motion, motion_found, "motion" if motion_found else "default"
 
 
 def match_integrity(st, tracks, team_list, d, xy, teams=None, lineups=None, match_key=None):

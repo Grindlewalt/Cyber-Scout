@@ -395,6 +395,39 @@ def calib_accept(target: str, ev: str = Depends(valid_event), user: User = Depen
     return _calib_status(ev, target)
 
 
+# ------------------------------------------------------------------ livestream recorder
+LIVE_STALE_S = 60      # the recorder service rewrites the status every ~10 s
+
+
+@router.get("/events/{ev}/livestream", summary="Livestream recorder status (viewer+)")
+def livestream_status(ev: str = Depends(valid_event), user: User = Depends(require_role("viewer"))):
+    """What the recorder service (compose service `recorder`, live/liveingest.py) is doing for this event:
+    state (recording / waiting / stream_over / idle / error / no_source / disabled / stopped), the source and
+    video, recorder + analyser progress (behind_live_s, analyser.behind_chunks x 5 s), the last detected
+    match and recent ones (teams, score, flags, clip URL under /media/), disk use, recent errors, and whether
+    the stream can be tracked (tracking.ok / note).  Written to DATA/events/<ev>/livestream.json."""
+    st = None
+    try:
+        st = json.load(open(os.path.join(_evd(ev), "livestream.json")))
+    except (OSError, ValueError):
+        pass
+    configured = None
+    if SRC is not None:
+        try:
+            configured = SRC.livestream_url(_doc(ev))
+        except Exception:
+            configured = None
+    if not st:
+        return dict(event=ev, state="not_running" if configured else "no_source", configured_url=configured,
+                    stale=True, message="no status from the recorder service yet" if configured else
+                    "no enabled livestream source (add one on the Video page)")
+    age = time.time() - float(st.get("updated") or 0)
+    st.update(event=ev, configured_url=configured, age_s=round(age, 1), stale=age > LIVE_STALE_S)
+    if st["stale"] and st.get("state") in ("recording", "waiting", "starting"):
+        st["message"] = f"recorder service not reporting for {age:.0f}s (is the `recorder` container running?)"
+    return st
+
+
 # ------------------------------------------------------------------ jobs
 @router.get("/events/{ev}/jobs/{jid}", summary="Job state / result (admin)")
 def job(jid: str, ev: str = Depends(valid_event), user: User = Depends(require_role("admin"))):

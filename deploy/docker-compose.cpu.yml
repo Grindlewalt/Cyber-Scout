@@ -5,3 +5,7 @@ services:
     deploy: !reset {}
     environment:
       FORCE_CPU: "1"
+  recorder:
+    deploy: !reset {}
+    environment:
+      FORCE_CPU: "1"

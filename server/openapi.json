@@ -2096,6 +2096,47 @@
     }
    }
   },
+  "/app/v1/events/{ev}/livestream": {
+   "get": {
+    "tags": [
+     "sources"
+    ],
+    "summary": "Livestream recorder status (viewer+)",
+    "description": "What the recorder service (compose service `recorder`, live/liveingest.py) is doing for this event:\nstate (recording / waiting / stream_over / idle / error / no_source / disabled / stopped), the source and\nvideo, recorder + analyser progress (behind_live_s, analyser.behind_chunks x 5 s), the last detected\nmatch and recent ones (teams, score, flags, clip URL under /media/), disk use, recent errors, and whether\nthe stream can be tracked (tracking.ok / note).  Written to DATA/events/<ev>/livestream.json.",
+    "operationId": "livestream_status_app_v1_events__ev__livestream_get",
+    "parameters": [
+     {
+      "name": "ev",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Ev"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
   "/app/v1/events/{ev}/jobs/{jid}": {
    "get": {
     "tags": [
@@ -2600,13 +2641,64 @@
     ],
     "title": "PasswordIn"
    },
+   "PicklistData": {
+    "properties": {
+     "stars": {
+      "anyOf": [
+       {
+        "items": {
+         "type": "string"
+        },
+        "type": "array",
+        "maxItems": 200
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Stars"
+     },
+     "dnp": {
+      "anyOf": [
+       {
+        "items": {
+         "type": "string"
+        },
+        "type": "array",
+        "maxItems": 200
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Dnp"
+     },
+     "weights": {
+      "anyOf": [
+       {
+        "additionalProperties": {
+         "type": "number"
+        },
+        "type": "object",
+        "maxProperties": 40
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Weights"
+     }
+    },
+    "additionalProperties": false,
+    "type": "object",
+    "title": "PicklistData",
+    "description": "Strict shape (web/event.js): team keys and numeric weights only -- anything else is rejected, so a\nstrategist can't store markup that another user's browser renders (security audit finding 1)."
+   },
    "PicklistIn": {
     "properties": {
      "data": {
-      "additionalProperties": true,
-      "type": "object",
-      "title": "Data",
-      "description": "client-defined JSON object (web/event.js: {stars:[team], dnp:[team], weights:{metric:w}})"
+      "$ref": "#/components/schemas/PicklistData",
+      "description": "{stars:[team], dnp:[team], weights:{metric: number}} (web/event.js)"
      },
      "base_version": {
       "anyOf": [

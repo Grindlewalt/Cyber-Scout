@@ -33,7 +33,7 @@ picks changes up on its next poll without a restart.
 
 ```
 /opt/cyber-scout/
-  docker-compose.yml   worker (GPU) + api (accounts/settings) + web (nginx, port 7560)
+  docker-compose.yml   worker (GPU) + recorder (live streams) + api (accounts/settings) + web (nginx, port 7560)
   docker-compose.cpu.yml   CPU-only override (enabled via COMPOSE_FILE in .env)
   .env                 infra only: WEB_PORT, PUID/PGID, TZ, MEDIA_DIR
   app/                 the code (git: github.com/Grindlewalt/Cyber-Scout)
@@ -45,6 +45,7 @@ picks changes up on its next poll without a restart.
                          status.json, overrides.json (manual team fixes)
     site/api/            generated site JSON (rebuilt automatically; served to signed-in users)
     media/               kept match videos (unless MEDIA_DIR points elsewhere)
+      live/<event>/<video>/  live-stream recordings: clips/, matches/ (records), seg/ (trimmed automatically)
     training/ tba/ cache/   disposable / re-downloadable
 ```
 
@@ -89,6 +90,50 @@ docker compose up -d --build           # after changing .env or pulling code (or
 * **Upgrading a stack that predates accounts** (settings in `.env`): add the new compose file, `docker compose up -d
   --build`; on first start the api imports `TBA_KEY` and `EVENTS` from `.env` once, then run setup in the browser
   (setup code in `data/setup-code.txt`) to create the admin. After that, manage them in the app.
+
+## Live streams: results without waiting for YouTube
+
+The `recorder` service records each followed event's live stream while the event is on (its dates on TBA) and
+cuts every match out of it about 20 s after the final buzzer, with teams, score, and start and end times read
+off the broadcast overlay. The final score comes from the results screen, so it includes penalties. The worker
+uses these clips right away. It does not wait for the per-match YouTube uploads or for TBA to post the result.
+
+* **Which stream:** the event's livestream source on the **Video page**. TBA webcasts are discovered as
+  livestream sources. If there are several, the recorder uses the one marked primary or *wide*, then the
+  webcast dated today, then one you added. One stream is recorded per event.
+* **Fast results (always):** each match row on the site gets `live` data: stream teams, score, start/end time,
+  and a link to the clip (`/media/live/...`). Until TBA posts, the row shows the stream's score
+  (`score_source: "livestream"`, state `live`). Playoff matches TBA hasn't created yet are listed from the
+  stream too.
+* **Robot tracking from the stream** works only when the stream shows a **fixed field view the tracker is
+  calibrated for**. That needs both of these:
+  1. a **field** (or **overhead**, if it is an inset) box on the livestream source in the layout editor, and
+  2. a calibration of that camera: `data/events/<ev>/camera_<source id>.json`. If you ran the calibration
+     wizard with the livestream as the primary source, its `camera.json` also counts.
+
+  Most event streams are a switching program feed with no fixed overhead camera (Bordie 2026 was one wide
+  oblique stands camera). Those get **fast results only**, and each match is tracked from its per-match
+  upload once that appears, as before. When the stream *is* trackable, a match is tracked as soon as its clip
+  exists. Teams come from TBA's schedule, or from the stream if TBA has no lineup yet. When TBA posts, the
+  worker checks the lineup (if it differs, the match is re-tracked) and re-runs the shot analysis with TBA's
+  score breakdown. If the stream clip turns out to be the wrong match, or fails twice, the upload path takes
+  over.
+* **Status:** `GET /app/v1/events/<ev>/livestream` (any signed-in user), from
+  `data/events/<ev>/livestream.json`. It reports the state (recording, waiting, stream_over, idle, error,
+  no_source, disabled), how far it is behind live, analyser progress, the last match detected with recent
+  matches, disk use, errors, and whether the stream is trackable. `docker compose logs -f recorder` shows
+  the same.
+* **Surviving problems:** the recorder fetches the stream's 5 s chunks by sequence number. After a network
+  drop, an expired URL or a container restart it resumes where it stopped and fills the gap (YouTube keeps
+  the chunks). A crashed recorder is restarted with back-off. A channel `/live` URL that moves to a new
+  video starts a new recording directory.
+* **Disk** (NAS, `MEDIA_DIR/live`): about 2 GB per hour of stream. Each stream is held under
+  `LIVE_BUDGET_GB` (default 60). Non-match footage goes after 2 h, match footage after 12 h, and clips are
+  kept. Segments of finished streams are deleted after 2 days, or sooner when the disk has less than
+  `LIVE_MIN_FREE_GB` (default 30) free.
+* Settings (`.env`): `LIVESTREAM=0` turns the recorder off. Also `LIVE_BUDGET_GB`, `LIVE_MIN_FREE_GB`,
+  `LIVE_BACKFILL_MIN` (on first start, also record this many minutes the stream already played; default 60),
+  and `LIVE_DIR` (default `MEDIA_DIR/live`).
 
 ## How it works
 

@@ -8,6 +8,10 @@ read off the official 2026 FIRST broadcast overlay (top-centre scoreboard + post
   python live/livestream.py URL --out DIR --record-only   # just the recorder   (--start-sq/--end-sq: a past window)
   python live/livestream.py --out DIR --analyze-only      # just the analyser (follows DIR/chunks.jsonl; restartable)
   python live/livestream.py --replay FILE --out DIR       # offline: a recorded file (mp4/ts) or a glob of segments
+  Managed at events by live/liveingest.py (compose service `recorder`): one process per followed event with
+  `URL --event EV --source SID --exit-on-new-video`, output in $LIVE_DIR/<ev>/<video id>/ (meta.json names the
+  event + source so the worker can find the stream's layout / calibration); exit code 3 = the URL moved to a
+  new video id.
 
 Recorder
   `yt-dlp -4 -g` resolves the stream's HLS media playlist (<=1080p, video only): 5 s MPEG-TS chunks addressed by
@@ -126,22 +130,27 @@ def apply_layout(L, source_id=None, log=print):
     return True
 
 
-def event_setup(ev, data=None, log=print):
-    """--event: the livestream URL from <DATA>/events/<ev>/sources.json (sources.livestream_url) and the
-    scoreboard geometry from the event's layout.json (layout.find(ev=...)).  Both optional."""
+def event_setup(ev, data=None, log=print, source=None):
+    """--event: the livestream URL from <DATA>/events/<ev>/sources.json (sources.livestream_url, or the
+    source `source` (id) when given) and the scoreboard geometry from the event's layout.json
+    (layout.find(ev=...)).  Both optional.  -> (url, source id)."""
     if data: os.environ["DATA"] = data
     import layout as LAY, sources as SRC
     url, sid = None, None
     for d in LAY.event_dirs(ev):
         doc = SRC.load(d)
-        url = SRC.livestream_url(doc)
-        if url:
-            sid = next((x["id"] for x in doc.get("sources", []) if x.get("url") == url), None)
-            break
+        if source:
+            s = SRC.get(doc, source)
+            url, sid = (s.get("url"), source) if s else (None, None)
+        else:
+            url = SRC.livestream_url(doc)
+            sid = next((x["id"] for x in doc.get("sources", []) if x.get("url") == url), None) if url else None
+        if url: break
+    sid = sid or source
     L = LAY.find(ev=ev)
     if not apply_layout(L, sid, log):
         log(f"layout: {'none for ' + ev if L is None else 'clock box = default'}: 2026 FIRST overlay boxes")
-    return url
+    return url, sid
 
 
 def utc(t):
@@ -438,7 +447,11 @@ def find_matches(reads, ticks, tol=0.9, min_n=6):
         clocks = set((ph, r["clock"]) for ph, r in zip(c["phases"], c["reads"]))
         # a real match: >= min_n readings of >= 4 distinct clock values (a frozen clock never qualifies)
         if len(c["reads"]) < min_n or len(clocks) < 4: continue
-        T0 = float(np.median(c["Ts"]))
+        # the integer second comes from the auto readings when there are enough: the teleop timer is not
+        # phase-locked to auto (Bordie ~0.15 s, 2026wasam ~0.9 s off -> a teleop-dominated median can land a
+        # whole tick late).  0:20 reads are left out (the static pre-match clock shows 0:20 too).
+        au = [T for T, ph, r in zip(c["Ts"], c["phases"], c["reads"]) if ph == "auto" and r["clock"] < AUTO_S]
+        T0 = float(np.median(au)) if len(au) >= 4 else float(np.median(c["Ts"]))
         T = refine_T(T0, ticks)
         out.append(dict(T=T, T_ocr=T0, reads=c["reads"], phases=c["phases"], n=len(c["reads"]),
                         t_first=min(ts), t_last=max(ts), n_values=len(clocks)))
@@ -655,6 +668,7 @@ class Assembler:
     def attach_results(self, mid, rs):
         d = self.done[mid]
         rec = json.load(open(d["record"]))
+        before = json.dumps(rec, sort_keys=True)
         if d.get("title"):
             same = [r for r in rs if r["match"] and list(r["match"]) == d["title"]]
             if same: rs = same
@@ -695,7 +709,8 @@ class Assembler:
             for a in ("red", "blue"):
                 if score[a] < rec["score_scoreboard"][a] - 5:
                     rec["flags"].append(f"results_score_below_scoreboard_{a}")
-        jsave(d["record"], rec)
+        if json.dumps(rec, sort_keys=True) != before:       # unchanged -> no rewrite (readers watch the files)
+            jsave(d["record"], rec)
         if d.get("results_logged") == [score, len(rs) > 5]: return
         d["results_logged"] = [score, len(rs) > 5]
         self.log(f"RESULTS {mid}: red {score['red']} blue {score['blue']} (scoreboard {rec['score_scoreboard']}) "
@@ -819,9 +834,11 @@ def parse_playlist(text):
 
 class Recorder:
     def __init__(self, url, out, log=print, seg_chunks=12, max_hours=4.0, budget_gb=20.0, keep_h=2.0,
-                 keep_match_h=12.0, backfill_min=0.0, start_sq=None, end_sq=None):
+                 keep_match_h=12.0, backfill_min=0.0, start_sq=None, end_sq=None, exit_on_new_video=False):
         self.url = url; self.out = out; self.log = log; self.seg_chunks = seg_chunks
         self.start_sq, self.end_sq = start_sq, end_sq
+        self.exit_on_new_video = exit_on_new_video      # managed (live/liveingest.py): one out dir per video id
+        self.new_video = None
         self.max_s = max_hours * 3600; self.budget = budget_gb * 1e9; self.keep_h = keep_h
         self.keep_match_h = keep_match_h; self.backfill = backfill_min * 60
         os.makedirs(os.path.join(out, "seg"), exist_ok=True)
@@ -852,6 +869,10 @@ class Recorder:
             try:
                 if self.hls is None or time.time() - self.hls_at > 3 * 3600:
                     vid, status, fmt, hls = self.resolve()
+                    if vid != self.video_id and self.video_id is not None and self.exit_on_new_video:
+                        self.log(f"recorder: new video id {vid} (was {self.video_id}): exiting (the service "
+                                 f"starts a new output dir for it)")
+                        self.new_video = vid; break
                     if vid != self.video_id and self.video_id is not None:
                         self.log(f"recorder: new video id {vid} (was {self.video_id}): sequence restarts")
                         self.last_sq = None
@@ -1160,6 +1181,7 @@ class FileClipper:
         r = subprocess.run(["ffmpeg", "-nostdin", "-loglevel", "error", "-y", "-ss", f"{max(0.0, start_in):.3f}", "-i", src,
                             "-t", f"{t1 - t0:.3f}", "-map", "0:v:0", "-c", "copy", "-avoid_negative_ts", "make_zero",
                             "-movflags", "+faststart", dst], capture_output=True, text=True)
+        start_in = max(0.0, start_in)              # a clip asked to start before the file starts at its start
         k = keyframe_before(src, start_in) if r.returncode == 0 else None
         if tmp: os.remove(tmp)
         if r.returncode != 0: raise RuntimeError(r.stderr[-300:])
@@ -1233,6 +1255,9 @@ def main():
     ap.add_argument("--event", help="event key: livestream URL from its sources.json (if no URL given), "
                                     "scoreboard boxes from its layout.json, and the TBA cross-check key")
     ap.add_argument("--data", help="data dir holding events/<key>/{sources,layout}.json (default $DATA)")
+    ap.add_argument("--source", help="with --event: the sources.json source id (URL + layout of that source)")
+    ap.add_argument("--exit-on-new-video", action="store_true",
+                    help="stop when the URL starts serving another video id (managed mode: live/liveingest.py)")
     ap.add_argument("--tba-event", help="optional TBA event key to cross-check against (default --event)")
     ap.add_argument("--tba-env", default="/opt/stacks/cyber-scout/.env", help="file with TBA_KEY= (read only)")
     a = ap.parse_args()
@@ -1246,10 +1271,18 @@ def main():
             print(s, flush=True); logf.write(s + "\n"); logf.flush()
 
     url = a.url
+    sid = a.source
     if a.event:
-        u = event_setup(a.event, a.data, log)
+        u, sid = event_setup(a.event, a.data, log, a.source)
         url = url or u
         a.tba_event = a.tba_event or a.event
+    # who this output dir belongs to: the worker maps records to the source's layout / calibration
+    mp = os.path.join(a.out, "meta.json")
+    meta = json.load(open(mp)) if os.path.exists(mp) else {}
+    meta.update(event=a.event or meta.get("event"), source=sid or meta.get("source"), url=url or meta.get("url"),
+                mode="replay" if a.replay else "live", started=meta.get("started") or time.time(), pid=os.getpid(),
+                replay=a.replay or meta.get("replay"))
+    jsave(mp, meta)
     tba = None
     if a.tba_event:
         k = tba_key(a.tba_env)
@@ -1266,9 +1299,10 @@ def main():
     if not url:
         ap.error("URL required for watch / record mode (or --event with a livestream in its sources.json)")
     rec = Recorder(url, a.out, log, max_hours=a.max_hours, budget_gb=a.budget_gb, keep_h=a.keep_hours,
-                   keep_match_h=a.keep_match_hours, backfill_min=a.backfill_min, start_sq=a.start_sq, end_sq=a.end_sq)
+                   keep_match_h=a.keep_match_hours, backfill_min=a.backfill_min, start_sq=a.start_sq, end_sq=a.end_sq,
+                   exit_on_new_video=a.exit_on_new_video)
     if a.record_only:
-        rec.run(); return
+        rec.run(); return 3 if rec.new_video else 0
     th = threading.Thread(target=rec.run, daemon=True); th.start()
     stop = threading.Event()
 
@@ -1276,7 +1310,8 @@ def main():
         th.join(); stop.set()
     threading.Thread(target=watch, daemon=True).start()
     analyse_live(a.out, log, a.gpu, tba, stop=stop)
+    return 3 if rec.new_video else 0      # 3 = the URL moved to a new video (managed mode restarts at once)
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main() or 0)

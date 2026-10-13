@@ -17,6 +17,11 @@ Everything stateful lives under $DATA:
   events/<key>/status.json        per-match state
   site/api/...                    generated JSON the web container serves
   tba/ cache/                     disposable caches
+
+Livestream (live/liveingest.py; recorded by the `recorder` service = this file with --recorder): match records
+in $MEDIA/live/<ev>/*/matches/ give fast results (site rows "live": teams, score, clip) before TBA posts, and --
+when the stream's layout has a field box and its camera is calibrated (camera_<source>.json) -- the match is
+tracked from the stream clip at once (process_match live=...), reconciled with TBA when it posts.
 """
 import json, os, sys, time, traceback, shutil
 import numpy as np
@@ -70,39 +75,55 @@ def ev_file(ev, name):
 
 
 # ------------------------------------------------------------------ processing
-def process_match(ev, m, cfg, status, meta_cache):
+def process_match(ev, m, cfg, status, meta_cache, live=None):
+    """live: livestream input (liveingest.LiveView.for_processing) -> its clip is tried first (copied: the
+    finally below deletes the working copies), then the per-match uploads as before."""
     st = status.setdefault(m["key"], {})
-    if st.get("state") == "no_video" and time.time() - st.get("at", 0) < RETRY_NO_VIDEO:
+    if live is None and st.get("state") == "no_video" and time.time() - st.get("at", 0) < RETRY_NO_VIDEO:
         return False
-    cands = videos.candidates(m, cfg, meta_cache)
-    if not cands:
+    if live is not None and (not live["tba_posted"] or not os.path.exists(ev_file(ev, "camera.json"))):
+        cands = []                                     # nothing uploaded yet / no upload calibration
+    else:
+        cands = videos.candidates(m, cfg, meta_cache)
+    tries = ([("live", live["video"])] if live is not None else []) + [("upload", v) for v in cands[:3]]
+    if not tries:
         st.update(state="no_video", at=time.time()); return False
     cache = os.environ.get("VIDEO_CACHE") or os.path.join(DATA, "cache"); os.makedirs(cache, exist_ok=True)
-    st.update(state="processing", at=time.time(), video=cands[0]["id"], attempts=st.get("attempts", 0) + 1)
+    st.update(state="processing", at=time.time(), video=tries[0][1]["id"], attempts=st.get("attempts", 0) + 1)
     jsave(os.path.join(ev_dir(ev), "status.json"), status)
     import process
-    best, best_path, errors, paths = None, None, [], []
+    best, best_path, best_cam, errors, paths = None, None, None, [], []
     try:
         # a broadcast upload can be missing camera footage (feed dropped out);
         # try the next acceptable upload of the same match and keep the better one
-        for v in cands[:3]:
+        for kind, v in tries:
             vpath = os.path.join(cache, f"{m['key']}_{v['id']}.mp4"); paths.append(vpath)
             try:
-                log(f"{m['key']}: downloading {v['id']} ({v['title']})")
-                videos.download(v["id"], vpath)
+                if kind == "live":                     # livestream clip: measured auto start, stream camera
+                    log(f"{m['key']}: livestream clip {live['clip']} (auto start {live['start']:.2f}s, "
+                        f"teams from {live['teams_from']})")
+                    shutil.copyfile(live["clip"], vpath)
+                    cam_p = live["camera"]
+                    pose_p = os.path.join(ev_dir(ev), f"pose_latest_{live['source']}.json")
+                    kw = dict(start_hint=live["start"], start_trusted=True, teams=live["teams"], layout=live["layout"],
+                              event=None if m.get("livestream") else event_ctx(ev, m))
+                else:
+                    log(f"{m['key']}: downloading {v['id']} ({v['title']})")
+                    videos.download(v["id"], vpath)
+                    cam_p, pose_p = ev_file(ev, "camera.json"), os.path.join(ev_dir(ev), "pose_latest.json")
+                    kw = dict(start_hint=start_hint(ev, v), teams=match_teams(m), event=event_ctx(ev, m))
                 log(f"{m['key']}: processing")
                 t0 = time.time()
-                pose_p = os.path.join(ev_dir(ev), "pose_latest.json")
-                extra = station_reads(ev, m, vpath, meta_cache) if HUBCAM else None
-                res = process.process(vpath, ev_file(ev, "camera.json"), MODEL, TAG_CSV,
-                                      log=lambda *a: log(m["key"], *a), start_hint=start_hint(ev, v),
-                                      pose_guess=jload(pose_p), teams=match_teams(m), extra_reads=extra,
-                                      event=event_ctx(ev, m))
+                extra = station_reads(ev, m, vpath, meta_cache) if HUBCAM and kind != "live" else None
+                res = process.process(vpath, cam_p, MODEL, TAG_CSV, log=lambda *a: log(m["key"], *a),
+                                      pose_guess=jload(pose_p), extra_reads=extra, **kw)
                 pc = res.get("pose", {})
                 if pc.get("tags", 0) >= 3 and (pc.get("applied") or (pc.get("moved_px") or 99) < 2.0):
                     jsave(pose_p, res["camera_pose"])          # verified pose: next match starts here
                 res.update(key=m["key"], video=dict(id=v["id"], title=v["title"], channel=v["channel"]),
                            processed_at=time.time(), seconds=round(time.time() - t0))
+                if kind == "live":
+                    res.update(source="livestream", camera_file=os.path.basename(cam_p), live=dict(live["info"]))
                 log(f"{m['key']}: {v['id']} camera coverage {res['feed_ok']:.0%} in {time.time() - t0:.0f}s")
                 ig = (res.get("identity") or {}).get("integrity")
                 wrong = bool(ig) and integrity.should_retry(ig)
@@ -112,18 +133,34 @@ def process_match(ev, m, cfg, status, meta_cache):
                     res["wrong_video"] = fl
                 if best is None or (best.get("wrong_video") and not wrong) or \
                         (bool(best.get("wrong_video")) == wrong and res["feed_ok"] > best["feed_ok"] + 0.02):
-                    best, best_path = res, vpath
+                    best, best_path, best_cam = res, vpath, cam_p
                 if res["feed_ok"] >= 0.9 and not wrong:
                     break
             except Exception as e:
                 traceback.print_exc(); errors.append(str(e)[-300:])
+        if best is not None and best.get("source") == "livestream" and best.get("wrong_video"):
+            # the stream clip's bumpers say it is another match: never use this record again; uploads later
+            st["live_rejected"] = live["info"]["record_path"]
+            log(f"{m['key']}: livestream clip rejected (bumper reads: {best['wrong_video'].get('likely_match')})")
+            st.update(state="no_video", at=time.time(), attempts=max(0, st.get("attempts", 1) - 1))
+            return False
+        if best is None and live is not None and not cands:
+            st["live_failed"] = st.get("live_failed", 0) + 1     # 2 failures -> wait for the uploads instead
+            st.update(state="no_video", at=time.time(), error="; ".join(errors)[-500:] or "livestream clip failed",
+                      attempts=max(0, st.get("attempts", 1) - 1))
+            return False
         if best is None:
             raise RuntimeError("; ".join(errors) or "no usable video")
+        if best.get("source") == "livestream" and not live["tba_posted"]:
+            st["live_reconcile"] = True                   # re-check teams / refresh shots once TBA posts
         jsave(os.path.join(ev_dir(ev), "matches", f"{m['key']}.json"), best)
         if V2:
             try:                                          # v2: fuel -> shots -> analytics
                 import enrich
-                enrich.enrich(ev_dir(ev), m["key"], best_path, ev_file(ev, "camera.json"), best, m,
+                # (before TBA posts, its match has score_breakdown: null, which shots.reconcile can't take)
+                em = m if best.get("source") != "livestream" else \
+                    {k_: v_ for k_, v_ in m.items() if not (k_ == "score_breakdown" and v_ is None)}
+                enrich.enrich(ev_dir(ev), m["key"], best_path, best_cam, best, em,
                               log=lambda *a: log(m["key"], *a))
             except Exception:
                 traceback.print_exc()                     # v1 data still published
@@ -133,13 +170,13 @@ def process_match(ev, m, cfg, status, meta_cache):
                 shutil.move(best_path, dst)
             except Exception as e:
                 log(f"{m['key']}: could not keep video: {e}")
-        if HUBCAM and KEEP_VIDEO and V2:
+        if HUBCAM and KEEP_VIDEO and V2 and best.get("source") != "livestream":
             try:                                          # optional: driver-station cams (hardware/time permitting)
                 import enrich
                 enrich.station_pass(DATA, MEDIA, ev, m["key"], best, m, meta_cache, log=lambda *a: log(m["key"], *a))
             except Exception:
                 traceback.print_exc()
-        st.update(state="done", at=time.time(), error=None, video=best["video"]["id"])
+        st.update(state="done", at=time.time(), error=None, video=best["video"]["id"], source=best.get("source", "upload"))
         log(f"{m['key']}: done ({best['video']['id']}, coverage {best['feed_ok']:.0%})")
         return True
     except Exception as e:
@@ -208,6 +245,9 @@ def team_num(k): return int(k[3:])
 
 def build_site(ev, tba):
     info = tba.event(ev); ms = sorted(tba.matches(ev), key=sort_key)
+    lv = live_view(ev)                                 # livestream records: fast results + not-yet-listed matches
+    if lv:
+        ms = sorted(ms + lv.extra_matches({m["key"] for m in ms}), key=sort_key)
     teams = {t["key"]: t for t in tba.teams(ev)}
     status = jload(os.path.join(ev_dir(ev), "status.json"), {})
     mdir = os.path.join(ev_dir(ev), "matches")
@@ -239,6 +279,8 @@ def build_site(ev, tba):
                    red=dict(teams=m["alliances"]["red"]["team_keys"], score=m["alliances"]["red"]["score"]),
                    blue=dict(teams=m["alliances"]["blue"]["team_keys"], score=m["alliances"]["blue"]["score"]),
                    winner=m.get("winning_alliance"), state="done" if r else st.get("state", "pending"))
+        if lv:
+            lv.decorate_row(row, m)                    # row["live"]; stream teams/score until TBA posts
         if r:
             lab = ids.get(k, {})
             row["id_conf"] = round(min([lab.get(a, {}).get("confidence", 0) for a in ("red", "blue")]), 2)
@@ -333,7 +375,7 @@ def build_site(ev, tba):
                     for mm_ in per_team.get(t["team"], {}).get("matches", [])[-1:]:
                         if mm_["match"] == k and w: mm_["analytics"] = w
                 v2["analytics"] = web
-            cal = jload(ev_file(ev, "camera.json"), {}) or {}
+            cal = jload(ev_file(ev, r.get("camera_file") or "camera.json"), {}) or {}   # stream camera if tracked live
             if cal:
                 pose = r.get("camera_pose") or {}
                 v2["camera"] = {"W": cal["W"], "H": cal["H"], "K": cal["K"], "dist": cal["dist"],
@@ -348,6 +390,9 @@ def build_site(ev, tba):
             if stn and os.path.exists(os.path.join(MEDIA, ev, "insets", f"{k}.mp4")):
                 v2["stations"] = stn                      # station cams for the Analyze camera switcher
             sb = m.get("score_breakdown") or {}
+            if row.get("live"):
+                v2["live"] = row["live"]
+                v2["score_source"] = row.get("score_source")
             jsave(os.path.join(out_dir, "m", f"{k}.json"), dict(**v2,
                 key=k, label=row["label"], short=row["short"], event=ev, hz=r["hz"], frames=r["frames"],
                 t_start=r["t_start"], start_detected=r.get("start_detected"),
@@ -408,7 +453,8 @@ def build_site(ev, tba):
         key=ev, name=info.get("name"), short_name=info.get("short_name"), year=info.get("year"),
         start=info.get("start_date"), end=info.get("end_date"), city=info.get("city"),
         state_prov=info.get("state_prov"), updated=time.time(), n_done=n_done, n_total=len(match_rows),
-        calibrated=os.path.exists(ev_file(ev, "camera.json")), matches=match_rows, teams=team_rows))
+        calibrated=os.path.exists(ev_file(ev, "camera.json")), matches=match_rows, teams=team_rows,
+        livestream=live_summary(ev)))
     evs = jload(os.path.join(API, "events.json"), [])
     evs = [e for e in evs if e["key"] != ev] + [dict(key=ev, name=info.get("name"), year=info.get("year"),
                                                       start=info.get("start_date"), n_done=n_done,
@@ -440,9 +486,80 @@ def build_site(ev, tba):
     log(f"{ev}: site rebuilt ({n_done}/{len(match_rows)} matches tracked)")
 
 
+# ------------------------------------------------------------------ livestream (live/liveingest.py)
+def live_view(ev):
+    """The event's livestream records (None when there are none / the module is unavailable)."""
+    try:
+        import liveingest
+        v = liveingest.LiveView(ev)
+        return v if v else None
+    except Exception:
+        traceback.print_exc(); return None
+
+
+def live_summary(ev):
+    try:
+        import liveingest
+        return liveingest.status_summary(ev, DATA)
+    except Exception:
+        return None
+
+
+def live_input(lv, m, played, status):
+    """Livestream clip input for process_match, unless this record was rejected / failed before."""
+    if lv is None: return None
+    try:
+        live = lv.for_processing(m, played)
+    except Exception:
+        traceback.print_exc(); return None
+    if live is None: return None
+    st = status.get(m["key"], {})
+    if st.get("live_rejected") == live["info"]["record_path"] or st.get("live_failed", 0) >= 2:
+        return None
+    return live
+
+
+def live_reconcile(ev, m, status):
+    """TBA posted a match that was tracked from the livestream before it did: if TBA's lineup differs from
+    the teams used (stream OCR / substitution), re-track (the result moves to <key>.live-teams.json); else
+    re-run the v2 enrichment with TBA's score breakdown (hub-active shifts, scoring reconciliation)."""
+    st = status.setdefault(m["key"], {})
+    p = os.path.join(ev_dir(ev), "matches", f"{m['key']}.json")
+    r = jload(p)
+    st.pop("live_reconcile", None)
+    if not r or r.get("source") != "livestream":
+        return
+    li = r.setdefault("live", {})
+    tba_teams = match_teams(m)
+    li["tba_score"] = {a: m["alliances"][a]["score"] for a in ("red", "blue")}
+    if li.get("teams") and li["teams"] != tba_teams:
+        log(f"{m['key']}: TBA lineup {tba_teams} != stream teams {li['teams']}: re-tracking")
+        os.replace(p, p[:-5] + ".live-teams.json")
+        st.update(state="pending", at=time.time())
+        return
+    if V2:
+        vid = os.path.join(MEDIA, ev, f"{m['key']}.mp4")
+        vid = vid if os.path.exists(vid) else li.get("clip")
+        if vid and os.path.exists(vid):
+            try:
+                import enrich
+                enrich.enrich(ev_dir(ev), m["key"], vid, ev_file(ev, r.get("camera_file") or "camera.json"), r, m,
+                              log=lambda *a: log(m["key"], *a))
+            except Exception:
+                traceback.print_exc()
+    li.update(tba_posted=True, reconciled_at=time.time())
+    jsave(p, r)
+    jsave(os.path.join(ev_dir(ev), "status.json"), status)
+    log(f"{m['key']}: reconciled with TBA (stream {li.get('stream_score')} / TBA {li['tba_score']})")
+
+
 # ------------------------------------------------------------------ loop
 def sync(ev, tba, max_new=None):
     ms = sorted(tba.matches(ev), key=lambda m: (m.get("actual_time") or m.get("time") or 0, sort_key(m)))
+    lv = live_view(ev)                                 # livestream records (live/liveingest.py)
+    if lv:
+        ms = sorted(ms + lv.extra_matches({m["key"] for m in ms}),
+                    key=lambda m: (m.get("actual_time") or m.get("time") or 0, sort_key(m)))
     status = jload(os.path.join(ev_dir(ev), "status.json"), {})
     cfg = jload(ev_file(ev, "event.json"), {}) or {}
     try:                                               # admin-configured video sources (Video page) -> which uploads to use
@@ -454,12 +571,16 @@ def sync(ev, tba, max_new=None):
     has_cam = os.path.exists(ev_file(ev, "camera.json"))
     done_any = False; n = 0
     for m in ms:
-        if not has_cam: break
-        played = m["alliances"]["red"]["score"] is not None and m["alliances"]["red"]["score"] >= 0
-        if not played: continue
+        played = m["alliances"]["red"]["score"] is not None and m["alliances"]["red"]["score"] >= 0 \
+            and not m.get("livestream")
+        live = live_input(lv, m, played, status)       # trackable livestream clip: process now, TBA or not
+        if not has_cam and live is None: continue
+        if not played and live is None: continue
+        if played and status.get(m["key"], {}).get("live_reconcile"):
+            live_reconcile(ev, m, status)              # TBA posted a match tracked from the stream
         if os.path.exists(os.path.join(ev_dir(ev), "matches", f"{m['key']}.json")): continue
         if status.get(m["key"], {}).get("state") == "failed": continue
-        if process_match(ev, m, cfg, status, meta_cache):
+        if process_match(ev, m, cfg, status, meta_cache, live=live):
             done_any = True; n += 1
             jsave(os.path.join(DATA, "cache", "ytmeta.json"), meta_cache)
             build_site(ev, tba)
@@ -504,15 +625,28 @@ def _conf_mtime():
     except OSError: return None
 
 
-def _sleep(seconds):
-    """Sleep, but wake early when the app settings change (e.g. an event was just added)."""
-    m0, t_end = _conf_mtime(), time.time() + seconds
+def _live_sig(events):
+    try:
+        import liveingest
+        return tuple(liveingest.records_signature(ev) for ev in events or [])
+    except Exception:
+        return None
+
+
+def _sleep(seconds, events=None):
+    """Sleep, but wake early when the app settings change (e.g. an event was just added) or the livestream
+    recorder wrote a new match record (process it now, not at the next poll)."""
+    m0, l0, t_end = _conf_mtime(), _live_sig(events), time.time() + seconds
     while time.time() < t_end:
         time.sleep(min(5, max(0.1, t_end - time.time())))
         if _conf_mtime() != m0: return
+        if events and _live_sig(events) != l0: return
 
 
 def main():
+    if "--recorder" in sys.argv[1:]:                  # compose service `recorder` (same image): live streams
+        import liveingest
+        return liveingest.Service(DATA, log=lambda *a: log("recorder:", *a)).run()
     try:                                               # Video page jobs: frame grabs, layout suggestions, calibration fits
         import threading, sources
         threading.Thread(target=sources.job_loop, args=(DATA,), kwargs={"log": log}, daemon=True).start()
@@ -538,7 +672,7 @@ def main():
             except Exception:
                 traceback.print_exc()
         if os.environ.get("ONCE") == "1": break
-        _sleep(POLL)
+        _sleep(POLL, events)
 
 
 if __name__ == "__main__":
