@@ -21,10 +21,10 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-      - name: shellcheck (Linux runners have it)
+      - name: "shellcheck (Linux runners have it)"
         if: runner.os == 'Linux'
         run: shellcheck --version
-      - name: install.sh checks (macOS: the system bash 3.2)
+      - name: "install.sh checks (macOS: the system bash 3.2)"
         run: |
           if [ "$RUNNER_OS" = macOS ]; then export BASH_BIN=/bin/bash; fi
           bash deploy/tests/test-installers.sh
@@ -33,9 +33,9 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-      - name: install.ps1 checks (PowerShell 7)
+      - name: "install.ps1 checks (PowerShell 7)"
         shell: pwsh
         run: ./deploy/tests/test-install.ps1 -InstallAnalyzer
-      - name: install.ps1 checks (Windows PowerShell 5.1)
+      - name: "install.ps1 checks (Windows PowerShell 5.1)"
         shell: powershell
         run: powershell -NoProfile -ExecutionPolicy Bypass -File deploy\tests\test-install.ps1
