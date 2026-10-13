@@ -5,7 +5,7 @@
   CS.nav({ label: "Admin", key: "admin", href: () => "#/admin", order: 95, global: true, group: "manage", icon: "admin", roles: ["admin"] });
 
   const when = ts => ts ? new Date(ts * 1000).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : "never";
-  const TABS = [["users", "Teammates"], ["settings", "Settings"], ["events", "Events"], ["updates", "Updates"]];
+  const TABS = [["users", "Teammates"], ["settings", "Settings"], ["events", "Competitions"], ["updates", "Updates"]];
 
   CS.globalRoute("admin", async tab => {
     crumbs([["Admin", "#/admin"]]); $updated.textContent = "";
@@ -124,18 +124,26 @@
     window.scrollTo(0, 0);
   }
 
-  // ---------------------------------------------------------------- events
+  // ---------------------------------------------------------------- competitions (followed events)
+  // Each one is separate (teams, matches, scoring, picklists, notes, identity fixes, video setup); the worker tracks the one
+  // on now first. The list/status helpers come from app.js (CS.comps; same rules as the competition switcher).
   async function events(el) {
     const evs = await CS.app("GET", "events");
-    el.innerHTML = `<div class="card"><h2>Followed events</h2>
-      ${evs.length ? `<div class="evpick" style="max-height:none">${evs.map(e => `<div class="evrow"><div><b>${esc(e.name || e.key)}</b><div class="muted">${esc(e.key)} · ${esc(e.start_date || "")}</div></div>
-        <div style="display:flex;gap:6px"><a href="#/${esc(e.key)}">open</a> · <a href="#/${esc(e.key)}/sources">video setup</a>
-        <button data-k="${esc(e.key)}" class="danger" title="stop following (processed data is kept)">Unfollow</button></div></div>`).join("")}</div>`
-        : `<div class="muted">Not following any event: the worker is idle.</div>`}
+    CS.comps && CS.comps(true).catch(() => { });
+    const today = new Date(), iso = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
+    const st = e => !e.start_date ? ["", "dates unknown"] : iso < e.start_date ? ["upcoming", "upcoming"] : iso > (e.end_date || e.start_date) ? ["", "done"] : ["live", "live now"];
+    const dates = e => [e.start_date, e.end_date && e.end_date !== e.start_date ? e.end_date : null].filter(Boolean).join(" – ");
+    el.innerHTML = `<div class="card"><h2>Followed competitions ${CS.help("Every competition is kept separate: its teams, matches, scoring, picklists, notes, identity fixes and video setup (sources, layout boxes, camera calibration). Teammates' accounts and roles, your team number, the TBA key and settings are shared. The worker tracks the competition that's on now first, then the others.", "How competitions work")}</h2>
+      ${evs.length ? `<div class="evpick" style="max-height:none">${evs.map(e => { const [cls, txt] = st(e);
+        return `<div class="evrow"><div><b>${esc(e.name || e.key)}</b> <span class="pill cmp-pill ${cls}">${esc(txt)}</span>${e.needs_setup ? ` <span class="pill cmp-pill no_video" title="no camera calibration yet: matches aren't tracked">needs video setup</span>` : ""}
+          <div class="muted">${esc(e.key)} · ${esc(dates(e))}${e.city ? " · " + esc([e.city, e.state_prov].filter(Boolean).join(", ")) : ""} · ${e.n_total ? `${e.n_done ?? 0}/${e.n_total} matches tracked` : "not built yet"}</div></div>
+        <div class="evacts" style="display:flex;gap:6px;align-items:center;flex-wrap:wrap"><a href="#/${esc(e.key)}">open</a> · <a href="#/${esc(e.key)}/sources">video setup</a>
+        <button data-k="${esc(e.key)}" class="danger" title="stop following (processed data is kept)">Unfollow</button></div></div>`; }).join("")}</div>`
+        : `<div class="muted">Not following any competition: the worker is idle.</div>`}
       <div class="cserr" aria-live="polite"></div></div>
-      <div class="card" style="margin-top:16px"><h2>Follow another event</h2><div id="picker"></div></div>`;
+      <div class="card" style="margin-top:16px"><h2>Follow another competition</h2><div class="note" style="margin:0 0 10px">After following one, set up its video (its own sources, layout boxes and camera calibration): matches are tracked only after that.</div><div id="picker"></div></div>`;
     el.querySelectorAll("button[data-k]").forEach(b => b.onclick = async () => {
-      if (!confirm(`Unfollow ${b.dataset.k}? Already processed matches are kept.`)) return;
+      if (!confirm(`Unfollow ${b.dataset.k}? Already processed matches, picklists and notes are kept.`)) return;
       try { await CS.app("DELETE", "events/" + b.dataset.k); await events(el); }
       catch (e) { el.querySelector(".cserr").textContent = e.message; }
     });

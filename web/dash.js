@@ -7,7 +7,7 @@
   const H = s => esc(s);
   const n0 = (v, d = 0) => v == null ? "–" : Number(v).toFixed(d);
   const tn = k => (k || "").replace("frc", "");
-  const US = "frc4911";
+  let US = "frc4911";     // our team: dashboard.json "team" (the app's team number), set per page load
   const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
   const fmtT = ts => { if (ts == null) return "–"; const d = new Date(ts * 1000); return DAYS[d.getDay()] + " " + d.toTimeString().slice(0, 5); };
   const hhmm = ts => ts == null ? "–" : new Date(ts * 1000).toTimeString().slice(0, 5);
@@ -539,10 +539,20 @@ a.tgt { font-weight: 750; text-decoration-color: currentColor; } a.tgt.red { col
     S = { ev, ts, tab: 0, sort: S && S.ev === ev ? S.sort : { k: "bt", dir: -1 } };
     injectStyle();
     const liveP = ts ? Promise.resolve(null) : api(`${ev}/event.json`).catch(() => null);
+    // recorder status in parallel with the page data (its only fallback is event.json, which api() shares)
+    const lsP = !ts && CS.liveRecorder ? CS.liveRecorder.load(ev).catch(() => null) : Promise.resolve(null);
     const [d, evj] = await Promise.all([load(ev, ts), liveP]);
+    if (d && d.team) US = d.team;
     if (evj) {
       S.live = Object.fromEntries((evj.matches || []).filter(m => CS.isStream(m)).map(m => [m.key, m]));
-      if (CS.liveRecorder) { try { S.lsrec = await CS.liveRecorder.load(ev, evj); } catch (e) { S.lsrec = null; } }
+      // wait briefly for the recorder line (instant on the LAN); over a slow link render first and add it when it lands
+      if (CS.liveRecorder) {
+        const late = {}, st = await Promise.race([lsP, new Promise(r => setTimeout(() => r(late), 250))]);
+        if (st !== late) S.lsrec = st;
+        else { const me = S; lsP.then(x => { if (S !== me || !x) return; S.lsrec = x;
+          const db = document.querySelector(".db"), h = db && db.querySelector(":scope > h1.vh");
+          if (h && !db.querySelector(":scope > .lsline") && !d.event?.asof) h.insertAdjacentHTML("afterend", CS.liveRecorder.line(x, ev)); }); }
+      }
     }
     // linkable plan tabs: #/<ev>/dash/<ts|live>/<q51 | plan index>
     const want = (location.hash.split("/")[4] || "").toLowerCase(), ps = d.plans || [];

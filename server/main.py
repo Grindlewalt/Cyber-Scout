@@ -1,6 +1,6 @@
 """Cyber-Scout platform API.  Run: `uvicorn server.main:app --host 0.0.0.0 --port 8000` (ONE worker process:
 the login and write rate limiters are in memory).  OpenAPI: /app/v1/openapi.json (admins only; no Swagger UI)."""
-import logging
+import logging, re
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, Request
@@ -88,7 +88,10 @@ def create_app() -> FastAPI:
         try:
             u = getattr(request.state, "user", None) or load_session(c, request)
             if u:
-                audit.record(c, request, u, "http." + request.method.lower(), request.url.path[:300], None, None,
+                # per-competition routes (/events/<ev>/...): file the entry under that competition (audit filter)
+                m = re.match(re.escape(PREFIX) + r"/events/([^/]+)/", request.url.path)
+                ev = m.group(1) if m and EVENT_RE.match(m.group(1)) else None
+                audit.record(c, request, u, "http." + request.method.lower(), request.url.path[:300], ev, None,
                              {"status": status})
         except Exception:                        # never fail a request because of the fallback log
             log.exception("fallback audit failed")

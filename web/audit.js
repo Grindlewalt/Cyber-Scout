@@ -4,7 +4,8 @@
 // "Identity fixes" queue (#/fixes: approve / reject scouts' robot->team fixes). Everything user-written is escaped.
 (function () {
   CS.nav({ label: "Activity", key: "activity", href: () => "#/activity", order: 96, global: true, group: "manage", icon: "specs", roles: ["admin"] });
-  CS.nav({ label: "Identity fixes", key: "fixes", href: () => "#/fixes", order: 94, global: true, group: "manage", icon: "check", minRole: "strategist" });
+  // identity fixes belong to one competition: #/<ev>/fixes (the old #/fixes link opens the current competition's queue)
+  CS.nav({ label: "Identity fixes", key: "fixes", href: ev => `#/${ev}/fixes`, order: 94, group: "manage", icon: "check", minRole: "strategist" });
 
   const when = ts => ts ? new Date(ts * 1000).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit", second: "2-digit" }) : "";
   const short = v => { if (v == null) return "—"; const s = JSON.stringify(v); return s.length > 140 ? s.slice(0, 140) + "…" : s; };
@@ -17,7 +18,8 @@
     crumbs([["Activity", "#/activity"]]); $updated.textContent = "";
     if (!CS.platform) { $app.innerHTML = `<div class="empty">No Cyber-Scout server here (static site).</div>`; return; }
     if (!CS.can("admin")) { $app.innerHTML = `<div class="empty">Admins only.</div>`; return; }
-    const [sec, users] = await Promise.all([CS.app("GET", "admin/security"), CS.app("GET", "users")]);
+    const [sec, users, evs] = await Promise.all([CS.app("GET", "admin/security"), CS.app("GET", "users"), CS.app("GET", "events").catch(() => [])]);
+    const evName = Object.fromEntries(evs.map(e => [e.key, e.short_name || e.name || e.key]));
     const lk = sec.lockdown;
     $app.innerHTML = `<h1>Activity</h1><div class="sub">Every change anyone made, and the switches for when something goes wrong.</div>
       <div class="grid2" style="align-items:start">
@@ -38,6 +40,7 @@
         <div class="row" style="flex-wrap:wrap;gap:8px;margin-bottom:10px">
           <label class="small">Who <select id="fuser"><option value="">anyone</option>${users.map(u => `<option value="${u.id}">${esc(u.display_name || u.username)} (${esc(u.username)})</option>`).join("")}</select></label>
           <label class="small">What <select id="ffam">${FAMILIES.map(([k, t]) => `<option value="${k}">${esc(t)}</option>`).join("")}</select></label>
+          <label class="small">Competition <select id="fev"><option value="">all</option>${evs.map(e => `<option value="${esc(e.key)}">${esc(e.name || e.key)}</option>`).join("")}<option value="none">none (accounts, settings)</option></select></label>
           <label class="small">From <select id="fvia"><option value="">anywhere</option><option value="lan">team network</option><option value="public">internet</option></select></label>
         </div>
         <div class="tablewrap"><table><thead><tr><th>When</th><th>Who</th><th>What</th><th data-pri="300">Change</th><th data-pri="500">From</th><th><span class="vh">Undo</span></th></tr></thead><tbody id="alog"></tbody></table></div>
@@ -66,7 +69,7 @@
     let before = null, rows = [];
     const who = u => u && (u.display_name || u.username) ? `${esc(u.display_name || u.username)}<div class="muted small">${esc(u.username || "")}${u.role ? " · " + esc(u.role) : ""}</div>` : `<span class="muted">—</span>`;
     const row = e => `<tr data-id="${e.id}"><td class="small" style="white-space:nowrap">${esc(when(e.at))}</td><td>${who(e.user)}</td>
-      <td><span class="code">${esc(e.action)}</span><div class="muted small">${esc(e.target || "")}</div></td>
+      <td><span class="code">${esc(e.action)}</span><div class="muted small">${e.event ? `<span class="pill" title="competition">${esc(evName[e.event] || e.event)}</span> ` : ""}${esc(e.target || "")}</div></td>
       <td class="small"><span class="muted">before</span> ${esc(short(e.before))}<br><span class="muted">after</span> ${esc(short(e.after))}</td>
       <td class="small" title="${esc(e.ua || "")}">${e.via === "public" ? '<span class="pill failed">internet</span>' : '<span class="pill">team net</span>'}<div class="muted small">${esc(e.ip || "")}</div></td>
       <td style="white-space:nowrap">${e.reverted_by ? `<span class="muted small">undone (#${e.reverted_by})</span>` : e.revertible ? `<button type="button" data-undo="${e.id}">Undo</button>` : ""}
@@ -74,15 +77,15 @@
     async function load(reset) {
       if (reset) { before = null; rows = []; tb.innerHTML = ""; }
       const q = new URLSearchParams({ limit: "100" });
-      const u = document.getElementById("fuser").value, f = document.getElementById("ffam").value, v = document.getElementById("fvia").value;
-      if (u) q.set("user_id", u); if (f) q.set("action", f); if (v) q.set("via", v); if (before) q.set("before_id", before);
+      const u = document.getElementById("fuser").value, f = document.getElementById("ffam").value, v = document.getElementById("fvia").value, ev = document.getElementById("fev").value;
+      if (u) q.set("user_id", u); if (f) q.set("action", f); if (v) q.set("via", v); if (ev) q.set("event", ev); if (before) q.set("before_id", before);
       try {
         const r = await CS.app("GET", "audit?" + q);
         rows = rows.concat(r.entries); before = r.next_before_id; more.hidden = !before;
         tb.insertAdjacentHTML("beforeend", r.entries.map(row).join("") || (reset ? `<tr><td colspan="6" class="muted">Nothing yet.</td></tr>` : ""));
       } catch (e) { msg("aerr", e.message); }
     }
-    ["fuser", "ffam", "fvia"].forEach(id => { document.getElementById(id).onchange = () => load(true); });
+    ["fuser", "ffam", "fvia", "fev"].forEach(id => { document.getElementById(id).onchange = () => load(true); });
     more.onclick = () => load(false);
     tb.onclick = async ev => {
       const b = ev.target.closest("button"); if (!b) return;
@@ -105,25 +108,34 @@
   });
 
   // ---------------------------------------------------------------- strategist+: identity fixes waiting for approval
-  CS.globalRoute("fixes", async () => {
-    crumbs([["Identity fixes", "#/fixes"]]); $updated.textContent = "";
+  // One queue per competition (#/<ev>/fixes); other competitions' waiting fixes are only counted, with a link.
+  CS.globalRoute("fixes", () => {
+    let ev = null; try { ev = localStorage.getItem("cs:lastev"); } catch (e) { }
+    location.replace(/^\d{4}[a-z0-9]{1,16}$/.test(ev || "") ? `#/${ev}/fixes` : "#/");
+  });
+  CS.route("fixes", async ev => {
+    CS.markActive && CS.markActive("fixes");
+    crumbs([["Identity fixes", `#/${ev}/fixes`]]); $updated.textContent = "";
     if (!CS.platform) { $app.innerHTML = `<div class="empty">No Cyber-Scout server here (static site).</div>`; return; }
     if (!CS.can("strategist")) { $app.innerHTML = `<div class="empty">Strategists and admins only.</div>`; return; }
     const evs = await CS.app("GET", "events");
-    const data = await Promise.all(evs.map(e => CS.app("GET", `events/${encodeURIComponent(e.key)}/overrides`).then(o => ({ e, o })).catch(() => ({ e, o: null }))));
+    const cur = evs.find(e => e.key === ev) || { key: ev, name: ev };
+    const [o, others] = await Promise.all([CS.app("GET", `events/${encodeURIComponent(ev)}/overrides`),
+      Promise.all(evs.filter(e => e.key !== ev).map(e => CS.app("GET", `events/${encodeURIComponent(e.key)}/overrides`).then(x => ({ e, n: (x.pending || []).length })).catch(() => ({ e, n: 0 }))))]);
     const side = d => ["red", "blue"].filter(a => d && d[a] && Object.keys(d[a]).length)
       .map(a => `${a}: ` + Object.entries(d[a]).map(([i, t]) => `#${esc(i)}→${esc(String(t).replace(/^frc/, ""))}`).join(", ")).join("; ") || "(no fixes)";
-    const pend = data.flatMap(({ e, o }) => (o && o.pending || []).map(p => ({ ev: e.key, evname: e.name || e.key, p })));
-    $app.innerHTML = `<h1>Identity fixes</h1><div class="sub">Scouts' robot → team corrections wait here until a strategist or admin approves them; approved fixes are used on the worker's next pass.</div>
+    const pend = o.pending || [], elsewhere = others.filter(x => x.n);
+    $app.innerHTML = `<h1>Identity fixes</h1><div class="sub">Scouts' robot → team corrections at <b>${esc(cur.name || ev)}</b> wait here until a strategist or admin approves them; approved fixes are used on the worker's next pass.</div>
       <div class="card">${pend.length ? `<div class="tablewrap"><table><thead><tr><th>Match</th><th>Requested</th><th data-pri="300">Now</th><th>By</th><th><span class="vh">Decide</span></th></tr></thead><tbody>
-        ${pend.map(({ ev, evname, p }) => `<tr data-ev="${esc(ev)}" data-id="${p.id}"><td><a href="#/${esc(ev)}/m/${esc(p.match)}">${esc(p.match.split("_").pop())}</a><div class="muted small">${esc(evname)}</div></td>
+        ${pend.map(p => `<tr data-id="${p.id}"><td><a href="#/${esc(ev)}/m/${esc(p.match)}">${esc(p.match.split("_").pop())}</a></td>
           <td>${side(p.data)}</td><td class="small">${side(p.current)}${p.stale ? ' <span class="pill failed" title="changed since this was requested">changed</span>' : ""}</td>
           <td>${esc(p.by ? p.by.display_name : "?")}<div class="muted small">${esc(when(p.at))}</div></td>
           <td style="white-space:nowrap"><button type="button" class="primary" data-act="approve">Approve</button> <button type="button" data-act="reject">Reject</button></td></tr>`).join("")}
-        </tbody></table></div>` : `<div class="muted">Nothing waiting.</div>`}<div class="cserr" aria-live="polite"></div></div>`;
+        </tbody></table></div>` : `<div class="muted">Nothing waiting at this competition.</div>`}<div class="cserr" aria-live="polite"></div></div>
+      ${elsewhere.length ? `<div class="note" style="margin-top:12px">Also waiting: ${elsewhere.map(x => `<a href="#/${esc(x.e.key)}/fixes">${esc(x.e.name || x.e.key)}</a> (${x.n})`).join(", ")}.</div>` : ""}`;
     $app.querySelectorAll("button[data-act]").forEach(b => b.onclick = async () => {
       const tr = b.closest("tr");
-      try { await CS.app("POST", `events/${encodeURIComponent(tr.dataset.ev)}/override-requests/${tr.dataset.id}/${b.dataset.act}`); route(false); }
+      try { await CS.app("POST", `events/${encodeURIComponent(ev)}/override-requests/${tr.dataset.id}/${b.dataset.act}`); route(false); }
       catch (e) { $app.querySelector(".cserr").textContent = e.message; }
     });
   });

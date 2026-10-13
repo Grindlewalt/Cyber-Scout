@@ -65,10 +65,23 @@ const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": 
 const num = k => (k || "").replace("frc", "");
 const pct = v => v == null ? "–" : Math.round(v * 100) + "%";
 const fx = (v, d = 1) => v == null ? "–" : Number(v).toFixed(d);
+// api(): one request per file at a time, and an answer is reused for a few seconds, so a page that asks for the same
+// file from several places (router + page + sidebar, or the boot prefetch at the end of this file) fetches it once.
+// Every caller gets its own parsed copy (pages add fields to what they get). Polls (60-90 s apart) always refetch;
+// each fetch still revalidates with the server (no-cache + ETag -> 304 when unchanged).
+const API_MEMO = new Map(), API_TTL = 5000;
 async function api(p) {
-  const r = await fetch("api/" + p, { cache: "no-cache" });
-  if (!r.ok) throw new Error(p + ": " + r.status);
-  return r.json();
+  const now = Date.now();
+  let e = API_MEMO.get(p);
+  if (!e || (e.t && now - e.t >= API_TTL)) {
+    for (const [k, v] of API_MEMO) if (v.t && now - v.t >= API_TTL) API_MEMO.delete(k);
+    const me = e = { t: 0 };
+    e.text = fetch("api/" + p, { cache: "no-cache" })
+      .then(r => { if (!r.ok) throw new Error(p + ": " + r.status); return r.text(); })
+      .then(x => { me.t = Date.now(); return x; }, err => { if (API_MEMO.get(p) === me) API_MEMO.delete(p); throw err; });
+    API_MEMO.set(p, e);
+  }
+  return JSON.parse(await e.text);
 }
 function confBar(c, what = "team label confidence") {
   if (c == null) return "";
@@ -121,7 +134,7 @@ function crumbs(parts) {
   const ps = parts.filter(([, h], i) => !(i === 0 && h && (h === `#/${ev}` || h === "#/")) || parts.length === 1);
   const last = ps[ps.length - 1];
   $crumbs.innerHTML = ps.map(([t, h], i) => i < ps.length - 1 && h ? `<a href="${h}">${esc(t)}</a><span class="sep" aria-hidden="true">/</span>` : `<span>${esc(t)}</span>`).join("");
-  document.title = last ? `${last[0]} · Cyber-Scout` : "Cyber-Scout";
+  pageTitle = last ? last[0] : ""; applyTitle();
 }
 function ago(ts) {
   if (!ts) return "";
@@ -264,15 +277,14 @@ function fieldCanvas(el, opts = {}) {
 
 // ------------------------------------------------------------------ pages
 async function home() {
-  crumbs([["Events"]]); $updated.textContent = "";
-  let evs = [];
-  try { evs = await api("events.json"); } catch (e) { }
-  if (evs.length === 1) { location.replace("#/" + evs[0].key); return; }
-  $app.innerHTML = `<h1>Events</h1><div class="sub">Automatically tracked FRC events</div>
-    <div class="evcards">${evs.map(e => `<a class="card" href="#/${e.key}"><h2>${esc(e.name)}</h2>
-      <div class="muted small">${esc(e.start || "")} · ${e.n_done}/${e.n_total} matches tracked</div>
-      <div class="progress"><div style="width:${e.n_total ? 100 * e.n_done / e.n_total : 0}%"></div></div></a>`).join("")
-      || `<div class="empty"><b>No events yet</b>An event appears here as soon as the worker has synced it.</div>`}</div>`;
+  crumbs([["Competitions"]]); $updated.textContent = "";
+  const l = await loadComps(true);
+  const sv = lsGet2(localStorage, "cs:lastev"), pick = l.find(c => c.key === sv) || defaultComp(l);
+  if (pick) { location.replace("#/" + pick.key); return; }
+  const admin = CS.platform && CS.user && CS.can("admin");
+  $app.innerHTML = `<div class="empty"><b>No competitions yet</b>${admin ? "Add the competition you want to scout: Cyber-Scout tracks its matches as they're played."
+    : "A competition appears here once an admin adds it (and the worker has synced it)."}${admin ? `<div class="acts"><button type="button" class="primary" id="addcomp">Add competition…</button></div>` : ""}</div>`;
+  const b = document.getElementById("addcomp"); if (b) b.onclick = () => openComps(null, true);
 }
 
 // Teams / Compare / Picklist / Matches: each is its own sidebar section (#/<ev>/<tab>); no second tab row.
@@ -352,6 +364,9 @@ const ICON = {
   warn: '<path d="M12 4l9 16H3z"/><path d="M12 10v4.5M12 17.2v.1"/>',
   check: '<path d="M5 12.5l4.5 4.5L19 7.5"/>',
   ban: '<circle cx="12" cy="12" r="8"/><path d="M6.5 6.5l11 11"/>',
+  updown: '<path d="M8 9.5l4-4 4 4M8 14.5l4 4 4-4"/>',
+  down: '<path d="M6.5 9.5l5.5 5.5 5.5-5.5"/>',
+  plus: '<path d="M12 5.5v13M5.5 12h13"/>',
 };
 CS.icon = (k, cls) => `<svg${cls ? ` class="${cls}"` : ""} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICON[k] || ICON.more}</svg>`;
 const withTs = (base, ts) => base + (ts ? "/" + ts : "");
@@ -365,14 +380,76 @@ const lsGet2 = (s, k) => { try { return s.getItem(k); } catch (e) { return null;
 const lsSet2 = (s, k, v) => { try { v == null ? s.removeItem(k) : s.setItem(k, v); } catch (e) { } };
 CS.asofGet = ev => lsGet2(sessionStorage, "cs:asof:" + ev) || null;
 CS.asofSet = (ev, ts) => lsSet2(sessionStorage, "cs:asof:" + ev, ts || null);
-const EVNAME = {};
-let evList = null;
-async function eventName(ev) {
-  if (EVNAME[ev]) return EVNAME[ev];
-  try { evList = evList || await api("events.json"); } catch (e) { evList = []; }
-  const e = (evList || []).find(x => x.key === ev);
-  return (EVNAME[ev] = e ? e.name : ev);
+// ------------------------------------------------------------------ competitions: the switcher
+// Every followed event is a separate competition: its own teams, matches, scoring, picklists, notes, identity fixes and
+// video setup (all under #/<ev>/... and app/v1/events/<ev>/...). Accounts, roles, team number and theme are shared.
+// List: app/v1/events when signed in (dates, place, progress, needs_setup), else the site's api/events.json.
+// The last one picked is remembered per device (localStorage cs:lastev); with none: live now > next upcoming > most recent.
+const EVK = /^\d{4}[a-z0-9]{1,16}$/;
+let comps = null, compsAt = 0, compsFor = null, compsP = null;
+const pad2 = n => String(n).padStart(2, "0");
+const todayIso = () => { const d = new Date(); return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`; };
+function compStatus(c) {
+  const s = c && c.start_date, e = (c && c.end_date) || s, t = todayIso();
+  return !s ? "unknown" : t < s ? "upcoming" : t > e ? "done" : "live";
 }
+const ST_ORDER = { live: 0, upcoming: 1, done: 2, unknown: 3 };
+/** live (earliest start first), upcoming (soonest first), done (most recent first), dates unknown */
+function sortComps(l) {
+  return l.slice().sort((a, b) => {
+    const sa = compStatus(a), sb = compStatus(b);
+    if (sa !== sb) return ST_ORDER[sa] - ST_ORDER[sb];
+    if (sa === "done") return (b.end_date || b.start_date || "").localeCompare(a.end_date || a.start_date || "");
+    return (a.start_date || "").localeCompare(b.start_date || "") || a.key.localeCompare(b.key);
+  });
+}
+const defaultComp = l => sortComps(l)[0] || null;
+function loadComps(force) {
+  const who = CS.platform ? (CS.user ? CS.user.id : 0) : -1;
+  if (!force && comps && compsFor === who && Date.now() - compsAt < 60000) return Promise.resolve(comps);
+  if (compsP) return compsP;
+  const norm = e => ({ key: e.key, name: e.name || e.key, short_name: e.short_name || null, start_date: e.start_date || e.start || null,
+    end_date: e.end_date || e.end || null, city: e.city || null, state_prov: e.state_prov || null, n_done: e.n_done ?? null, n_total: e.n_total ?? null,
+    needs_setup: e.needs_setup != null ? !!e.needs_setup : e.calibrated === false, updated: e.updated || null });
+  const src = CS.platform && CS.user ? CS.app("GET", "events") : api("events.json");
+  compsP = src.then(l => { comps = (Array.isArray(l) ? l : []).filter(e => e && EVK.test(e.key || "")).map(norm); compsAt = Date.now(); compsFor = who; return comps; },
+    () => (comps = comps || []))
+    .finally(() => { compsP = null; });
+  return compsP;
+}
+CS.comps = loadComps;
+CS.compInfo = ev => (comps || []).find(c => c.key === ev) || null;
+const compName = ev => (CS.compInfo(ev) || {}).name || ev;
+const compShort = ev => { const c = CS.compInfo(ev); return c ? c.short_name || c.name : ev; };
+const MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+function compDates(c) {
+  if (!c || !c.start_date) return "";
+  const [y0, m0, d0] = c.start_date.split("-").map(Number), [y1, m1, d1] = (c.end_date || c.start_date).split("-").map(Number);
+  const yr = y1 !== new Date().getFullYear() ? `, ${y1}` : "";
+  if (c.end_date === c.start_date || !c.end_date) return `${MON[m0 - 1]} ${d0}${yr}`;
+  return m0 === m1 && y0 === y1 ? `${MON[m0 - 1]} ${d0}–${d1}${yr}` : `${MON[m0 - 1]} ${d0} – ${MON[m1 - 1]} ${d1}${yr}`;
+}
+function compStatusText(c) {
+  const st = compStatus(c);
+  if (st === "live") return "Live now";
+  if (st === "done") return "Done";
+  if (st === "upcoming") { const days = Math.round((new Date(c.start_date + "T00:00:00") - new Date(todayIso() + "T00:00:00")) / 864e5);
+    return days <= 1 ? "Starts tomorrow" : days <= 14 ? `In ${days} days` : "Upcoming"; }
+  return "Dates unknown";
+}
+const compProgress = c => c && c.n_total ? `${c.n_done ?? 0}/${c.n_total} tracked` : c && compStatus(c) === "upcoming" ? "no schedule yet" : "not built yet";
+/** where switching to ev2 lands: the same page type (Teams -> Teams, Picklist -> Picklist); a team or match page falls back to
+ * the competition's team list / dashboard; pages outside a competition -> its dashboard */
+function compHref(ev2) {
+  const p = location.hash.replace(/^#\/?/, "").split("/").filter(Boolean);
+  if (!p.length || CS.globalRoutes[p[0]] || !EVK.test(p[0])) return `#/${ev2}`;
+  const s = p[1];
+  if (s === "t") return `#/${ev2}/teams`;
+  if (!s || s === "dash" || s === "m" || s === "a") return `#/${ev2}`;
+  const it = CS.navItems.find(i => !i.global && i.key === s);
+  return it ? it.href(ev2, null) : `#/${ev2}`;
+}
+CS.compHref = compHref;
 /** which nav key a hash belongs to (team page -> Teams, match/analyze -> Matches, ...) */
 function activeKey(p) {
   if (!p.length) return null;
@@ -399,10 +476,16 @@ function renderTopNav(p) {
   const bare = CS.platform && !CS.user;
   document.body.classList.toggle("bare", !!bare);
   // only well-formed event keys from the URL or storage reach the nav hrefs (security audit: fragment XSS)
-  const EVK = /^\d{4}[a-z0-9]{1,16}$/, sv = lsGet2(localStorage, "cs:lastev");
+  const sv = lsGet2(localStorage, "cs:lastev");
   const hev = p.length && !CS.globalRoutes[p[0]] && EVK.test(p[0]) ? p[0] : null;
-  const ev = hev || (EVK.test(sv || "") ? sv : null) || (evList && evList.length ? evList[0].key : null);
-  if (!ev && !evList) { eventName("").then(() => { if (evList && evList.length && location.hash.replace(/^#\/?/, "").split("/").filter(Boolean).join("/") === p.join("/")) renderTopNav(p); }); }
+  const known = comps && comps.length ? comps : null;
+  const last = EVK.test(sv || "") && (!known || known.some(c => c.key === sv)) ? sv : null;   // a competition no longer followed: default
+  const dc = known ? defaultComp(known) : null;
+  const ev = hev || last || (dc ? dc.key : null);
+  if (!bare) loadComps().then(l => {
+    if (location.hash.replace(/^#\/?/, "").split("/").filter(Boolean).join("/") !== p.join("/")) return;
+    if (!ev && l.length) renderTopNav(p); else renderComp(shellEv);
+  });
   if (hev) lsSet2(localStorage, "cs:lastev", hev);
   shellEv = ev; shellKey = activeKey(p);
   const ts = ev ? CS.asofGet(ev) : null;
@@ -412,20 +495,172 @@ function renderTopNav(p) {
   const groups = NAV_GROUPS.map(([g, t]) => { const its = items.filter(i => (i.group || (i.global ? "manage" : "scout")) === g); return its.length ? `<div class="sb-group" role="group" aria-label="${t}"><div class="sb-h">${t}</div>${its.map(i => link(i, "sb-item")).join("")}</div>` : ""; }).join("");
   const acct = CS.platform && CS.user ? `<div class="sb-group" role="group" aria-label="Account"><div class="sb-h">Account</div><a class="sb-item" data-navkey="account" href="#/account">${CS.icon("account")}<span>${esc(CS.user.display_name || CS.user.username)}</span></a></div>` : "";
   el.innerHTML = groups;
-  const sbe = document.getElementById("sbevent");
-  if (sbe) { if (ev) { sbe.innerHTML = `<b>${esc(EVNAME[ev] || ev)}</b>`; eventName(ev).then(n => { if (shellEv === ev) sbe.innerHTML = `<b>${esc(n)}</b>`; }); } else sbe.innerHTML = ""; }
+  renderComp(ev);
   // phone: four tabs + More
   const tb = document.getElementById("tabbar");
   if (tb) {
     const tabs = items.filter(i => i.tab), inTabs = tabs.some(i => key(i) === shellKey);
     tb.innerHTML = tabs.map(i => link(i, "")).join("") + `<button id="moretab" type="button"${!inTabs && shellKey ? ' aria-current="page"' : ""} aria-haspopup="dialog">${CS.icon("more")}<span>More</span></button>`;
     const ms = document.getElementById("moresheet"), body = document.getElementById("msbody");
-    body.innerHTML = groups + acct;
+    body.innerHTML = (ev && !bare ? `<div class="sb-group" role="group" aria-label="Competition"><div class="sb-h">Competition</div><button type="button" class="sb-item ms-comp" aria-haspopup="dialog">${CS.icon("updown")}<span>${esc(compName(ev))}</span></button></div>` : "") + groups + acct;
+    const mc = body.querySelector(".ms-comp"); if (mc) mc.onclick = () => { ms.close(); openComps(document.getElementById("tbcomp")); };
     document.getElementById("moretab").onclick = () => { try { ms.showModal(); } catch (e) { ms.setAttribute("open", ""); } };
     document.getElementById("msclose").onclick = () => ms.close();
     ms.onclick = e => { if (e.target === ms || e.target.closest("a")) ms.close(); };
   }
   renderTimebar(p, ev);
+}
+
+// ---- the competition switcher: sidebar header (desktop), toolbar subtitle (phone / Command / top bar / hidden sidebar), More sheet
+const compDot = c => `<i class="cmp-dot ${compStatus(c)}" aria-hidden="true"></i>`;
+function compMeta(c) {
+  if (!c) return "Switch competition";
+  return `${compDot(c)}<span>${esc(compStatusText(c))}${c.needs_setup ? " · needs video setup" : c.n_total ? " · " + esc(compProgress(c)) : ""}</span>`;
+}
+function tbChip() {
+  let b = document.getElementById("tbcomp"); if (b) return b;
+  const sub = document.getElementById("tbsub"); if (!sub) return null;
+  b = document.createElement("button"); b.type = "button"; b.id = "tbcomp"; b.hidden = true; b.setAttribute("aria-haspopup", "dialog"); b.setAttribute("aria-expanded", "false");
+  b.onclick = () => openComps(b);
+  sub.insertBefore(b, sub.firstChild);
+  return b;
+}
+function renderComp(ev) {
+  const bare = CS.platform && !CS.user, sbe = document.getElementById("sbevent"), chip = tbChip();
+  const admin = CS.platform && CS.user && CS.can("admin"), c = ev ? CS.compInfo(ev) : null;
+  if (sbe) {
+    sbe.innerHTML = bare ? "" : ev ? `<button type="button" class="cmp-trig" aria-haspopup="dialog" aria-expanded="false" title="Switch competition">
+        <span class="cmp-tx"><span class="vh">Competition: </span><b>${esc(compName(ev))}</b><span class="cmp-meta">${compMeta(c)}</span></span>${CS.icon("updown")}</button>`
+      : comps && !comps.length && admin ? `<button type="button" class="cmp-trig cmp-new" aria-haspopup="dialog">${CS.icon("plus")}<span class="cmp-tx"><b>Add competition</b></span></button>` : "";
+    const t = sbe.querySelector(".cmp-trig"); if (t) t.onclick = () => openComps(t, !ev);
+  }
+  if (chip) {
+    chip.innerHTML = ev ? `<span class="vh">Competition: </span><span class="cmp-n">${esc(compShort(ev))}</span>${CS.icon("down")}` : "";
+    chip.title = ev ? `${compName(ev)}: switch competition` : "";
+  }
+  placeComp(); applyTitle();
+}
+/** the toolbar chip shows only where the sidebar's switcher can't be seen */
+function placeComp() {
+  const chip = document.getElementById("tbcomp"); if (!chip) return;
+  const trig = document.querySelector("#sbevent .cmp-trig"), sb = document.getElementById("sidebar");
+  const sbShows = !!trig && trig.getClientRects().length > 0 && !document.body.classList.contains("sb-off") && (!sb || getComputedStyle(sb).visibility !== "hidden");
+  chip.hidden = !shellEv || sbShows || !!(CS.platform && !CS.user);
+}
+(function wireComp() {
+  addEventListener("resize", placeComp);
+  new MutationObserver(placeComp).observe(document.documentElement, { attributes: true, attributeFilter: ["data-layout", "data-style"] });
+  const b = document.getElementById("sbtoggle"); if (b) b.addEventListener("click", () => setTimeout(placeComp));
+})();
+
+let compDlg = null, compTrig = null;
+function compDialog() {
+  if (compDlg) return compDlg;
+  const d = compDlg = document.createElement("dialog"); d.className = "compsheet"; d.setAttribute("aria-labelledby", "cmph");
+  document.body.appendChild(d);
+  d.addEventListener("click", e => {
+    if (e.target === d) return d.close();                                   // backdrop
+    const x = e.target.closest("[data-x]"), back = e.target.closest("[data-back]"), add = e.target.closest("[data-add]"), a = e.target.closest("a[href]");
+    if (x) d.close(); else if (back) drawCompList(); else if (add) drawCompAdd();
+    else if (a) { if (a.dataset.ev && EVK.test(a.dataset.ev)) lsSet2(localStorage, "cs:lastev", a.dataset.ev); d.close(); }
+  });
+  d.addEventListener("keydown", e => {                                       // arrow keys move through the list
+    if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
+    const its = [...d.querySelectorAll(".cmp-row, .cmp-act")]; if (!its.length) return;
+    const i = its.indexOf(document.activeElement); e.preventDefault();
+    its[(i < 0 ? 0 : i + (e.key === "ArrowDown" ? 1 : its.length - 1)) % its.length].focus();
+  });
+  d.addEventListener("close", () => { if (compTrig) compTrig.setAttribute("aria-expanded", "false"); d.classList.remove("wide"); });
+  addEventListener("resize", () => { if (d.open) placeDlg(); });
+  return d;
+}
+function placeDlg() {
+  const d = compDlg; if (!d || !d.open) return;
+  const anchor = compTrig && compTrig.isConnected && compTrig.getClientRects().length ? compTrig : null;
+  if (matchMedia("(max-width: 760px)").matches || d.classList.contains("wide") || !anchor) { d.classList.remove("anchored"); d.style.left = d.style.top = d.style.maxHeight = ""; return; }
+  const r = anchor.getBoundingClientRect(), vw = document.documentElement.clientWidth, w = Math.min(420, vw - 32);
+  const left = Math.max(16, Math.min(r.left, vw - w - 16)), top = Math.round(r.bottom + 6);
+  d.classList.add("anchored"); d.style.left = left + "px"; d.style.top = top + "px"; d.style.maxHeight = `calc(100vh - ${top + 16}px)`;
+}
+function openComps(trigger, addMode) {
+  const d = compDialog();
+  compTrig = trigger && trigger.isConnected && trigger.getClientRects().length ? trigger : null;
+  if (addMode) drawCompAdd(true); else drawCompList(true);
+  if (!d.open) { try { d.showModal(); } catch (e) { d.setAttribute("open", ""); } }
+  if (compTrig) compTrig.setAttribute("aria-expanded", "true");
+  placeDlg();
+  const cur = d.querySelector(".cmp-row.on") || d.querySelector(".cmp-row"); if (cur) cur.focus();
+  if (!addMode) loadComps(true).then(() => { if (d.open && d.dataset.mode === "list") { const f = document.activeElement && document.activeElement.dataset.ev; drawCompList(); const n = f && d.querySelector(`.cmp-row[data-ev="${f}"]`); if (n) n.focus(); } renderComp(shellEv); });
+}
+CS.openComps = openComps;
+const DLG_HEAD = (title, back) => `<div class="cmp-h">${back ? `<button type="button" class="tb-btn" data-back aria-label="Back to competitions" title="Back">${CS.icon("chevL")}</button>` : ""}<h2 id="cmph">${title}</h2>
+  <button type="button" class="tb-btn" data-x aria-label="Close" title="Close">${CS.icon("close")}</button></div>`;
+function drawCompList() {
+  const d = compDialog(), cur = shellEv, admin = CS.platform && CS.user && CS.can("admin");
+  d.dataset.mode = "list"; d.classList.remove("wide");
+  const l = sortComps(comps || []);
+  if (cur && !l.some(c => c.key === cur)) l.unshift({ key: cur, name: cur, other: true });
+  const row = c => { const on = c.key === cur, place = [c.city, c.state_prov].filter(Boolean).join(", ");
+    return `<a class="cmp-row${on ? " on" : ""}" href="${esc(compHref(c.key))}" data-ev="${esc(c.key)}"${on ? ' aria-current="true"' : ""}>
+      <span class="cmp-ck">${on ? CS.icon("check") : ""}</span>
+      <span class="cmp-main"><b>${esc(c.name)}</b><span class="cmp-sub">${c.other ? "not followed (data kept)" : esc([compDates(c), place].filter(Boolean).join(" · ") || c.key)}</span></span>
+      ${c.other ? "" : `<span class="cmp-side"><span class="cmp-st ${compStatus(c)}">${compDot(c)}${esc(compStatusText(c))}</span>
+        <span class="cmp-prog${c.needs_setup ? " warn" : ""}">${c.needs_setup ? "Needs video setup" : esc(compProgress(c))}</span></span>`}</a>`; };
+  d.innerHTML = `<div class="cmp-in">${DLG_HEAD("Competitions")}
+    <div class="cmp-list" role="list">${l.map(row).join("") || `<div class="cmp-none">No competitions followed yet.${admin ? "" : " An admin adds them."}</div>`}</div>
+    ${admin ? `<div class="cmp-foot"><button type="button" class="cmp-act" data-add>${CS.icon("plus")}<span>Add competition…</span></button>
+      <a class="cmp-act" href="#/admin/events">${CS.icon("admin")}<span>Manage competitions</span></a></div>` : ""}</div>`;
+  placeDlg();
+}
+function drawCompAdd() {
+  const d = compDialog();
+  d.dataset.mode = "add"; d.classList.add("wide"); placeDlg();
+  d.innerHTML = `<div class="cmp-in">${DLG_HEAD("Add a competition", true)}<div class="cmp-body">
+    <p class="cmp-note">A competition gets its own teams, matches, scoring, picklists, notes and video setup. Accounts, roles, your team number and settings are shared.</p>
+    <div id="cmppick"></div></div></div>`;
+  CS.eventPicker(d.querySelector("#cmppick"), { showFollowed: false, allowUnfollow: false, onFollow: ev => { if (ev && EVK.test(ev.key || "")) drawCompAdded(ev); } });
+}
+function drawCompAdded(ev) {
+  const d = compDialog(), k = esc(ev.key), n = esc(ev.name || ev.key);
+  d.dataset.mode = "added";
+  loadComps(true).then(() => renderComp(shellEv));
+  d.innerHTML = `<div class="cmp-in">${DLG_HEAD("Competition added", true)}<div class="cmp-body">
+    <p><b>Now following ${n}.</b> Its schedule, rankings and predictions appear within a few minutes.</p>
+    <p class="cmp-note">Robots are tracked once its video is set up: which stream or uploads to use, the layout boxes and a camera calibration. Each competition has its own setup.</p>
+    <div class="cmp-go"><a class="cmp-btn primary" href="#/${k}/sources" data-ev="${k}">${CS.icon("video")}Set up video</a>
+      <a class="cmp-btn" href="#/${k}" data-ev="${k}">Open its dashboard</a><button type="button" class="cmp-btn" data-add>Add another</button></div></div></div>`;
+  const f = d.querySelector(".cmp-btn.primary"); if (f) f.focus();
+}
+
+/** shown on a competition's dashboard while it has no camera calibration */
+function compSetupBanner(ev) {
+  const at = location.hash;
+  loadComps().then(() => {
+    const c = CS.compInfo(ev); if (!c || !c.needs_setup || location.hash !== at || $app.querySelector(".cmp-setup")) return;
+    const admin = CS.platform && CS.user && CS.can("admin");
+    $app.insertAdjacentHTML("afterbegin", `<div class="cmp-setup" role="status">${CS.icon("warn")}<div><b>${esc(c.name)} needs video setup</b>
+      Robots aren't tracked here until its video is set up (stream or uploads, layout boxes, camera calibration: each competition has its own).
+      Schedule, rankings and predictions from TBA still work.</div>${admin ? `<a class="cmp-btn" href="#/${esc(ev)}/sources">Set up video</a>` : `<span class="muted small">Ask an admin to set it up.</span>`}</div>`);
+  });
+}
+/** a followed competition the worker hasn't built yet (no api/<ev>/event.json): say so instead of an error */
+async function compNotBuilt(ev) {
+  try { await api(`${ev}/event.json`); return false; } catch (e) { if (!/\b404\b/.test(e.message)) return false; }
+  await loadComps();
+  const c = CS.compInfo(ev), admin = CS.platform && CS.user && CS.can("admin");
+  crumbs([[c ? c.name : ev]]); $updated.textContent = "";
+  $app.innerHTML = `<div class="empty"><b>${esc(c ? c.name : ev)} isn't ready yet</b>${c ? `The worker builds a competition's pages on its next pass (every few minutes) once The Blue Alliance lists its teams.${c.needs_setup ? " Robots are tracked once its video is set up." : ""}`
+    : "This competition isn't followed, so there's nothing to show. Pick another one from the competition menu."}
+    <div class="acts">${c && c.needs_setup && admin ? `<a class="cmp-btn primary" href="#/${esc(ev)}/sources">Set up video</a>` : ""}<button type="button" id="routeretry">Try again</button></div></div>`;
+  document.getElementById("routeretry").onclick = () => route(false);
+  return true;
+}
+/** page title: "<page> · <competition> · Cyber-Scout" */
+let pageTitle = "";
+function applyTitle() {
+  const ev = location.hash.replace(/^#\/?/, "").split("/")[0] || "";
+  const c = EVK.test(ev) && !CS.globalRoutes[ev] ? compShort(ev) : "";
+  document.title = [pageTitle, c !== pageTitle ? c : "", "Cyber-Scout"].filter(Boolean).join(" · ");
 }
 
 // ---- the time control: one place, in the toolbar, on every event page
@@ -485,8 +720,10 @@ async function route(scroll = true) {
     else if (p[1] === "a") await analyzePage(p[0], p[2]);
     else if (p[1] === "t") await teamPage(p[0], p[2]);
     else await eventPage(p[0], p[1], p[2]);
+    if (p.length && EVK.test(p[0]) && !CS.globalRoutes[p[0]] && (!p[1] || p[1] === "dash")) compSetupBanner(p[0]);
   } catch (e) {
     console.error(e);
+    if (p.length && EVK.test(p[0]) && !CS.globalRoutes[p[0]] && /\b404\b/.test(e.message) && await compNotBuilt(p[0])) return;
     $app.innerHTML = `<div class="empty err" role="alert"><b>Couldn't load this page</b>${esc(e.message)}. It may not be processed yet, or the connection dropped.
       <div class="acts"><button type="button" id="routeretry">Try again</button></div></div>`;
     const rb = document.getElementById("routeretry"); if (rb) rb.onclick = () => route(false);
@@ -495,4 +732,18 @@ async function route(scroll = true) {
 }
 window.addEventListener("hashchange", () => route());
 FIELD.onload = () => { };
-if (document.readyState === "complete") route(); else window.addEventListener("load", () => route());
+// boot as soon as the DOM and all page scripts are in (not window "load", which also waits for fonts / images), and
+// start the URL's main JSON right away so it downloads while setup.js checks the session (saves a round trip).
+function bootPrefetch() {
+  const p = location.hash.replace(/^#\/?/, "").split("/").filter(Boolean), ok = s => /^[A-Za-z0-9_]{1,40}$/.test(s || "");
+  if (!p.length || CS.globalRoutes[p[0]] || !/^\d{4}[a-z0-9]{1,16}$/.test(p[0])) return;
+  const ev = p[0], k = (p[2] || "").split("?")[0], want = [`${ev}/event.json`];
+  if (!p[1] || p[1] === "dash") want.push(ok(k) && k !== "live" ? `${ev}/dash/${k}.json` : `${ev}/dashboard.json`);
+  else if ((p[1] === "m" || p[1] === "a") && ok(k)) want.push(`${ev}/m/${k}.json`);
+  else if (p[1] === "t" && ok(k)) want.push(`${ev}/t/${k}.json`, `${ev}/scout.json`);
+  else if (p[1] === "selection") want.push(ok(k) ? `${ev}/selection/${k}.json` : `${ev}/selection.json`, `${ev}/selection/index.json`);
+  else if (p[1] === "rankings" || p[1] === "schedule") want.push(`${ev}/${p[1]}.json`);
+  want.forEach(x => api(x).catch(() => { }));
+}
+function boot() { try { bootPrefetch(); } catch (e) { } route(); }
+if (document.readyState === "complete") boot(); else document.addEventListener("DOMContentLoaded", boot, { once: true });

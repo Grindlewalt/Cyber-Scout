@@ -5,6 +5,7 @@
 //   CS.user {id, username, display_name, role} | null      CS.can(role) -> bool (viewer < scout < strategist < admin)
 //   CS.platform  true when the API is present (false = legacy static site: no sign-in, localStorage only)
 //   CS.eventPicker(el, opts)  TBA event list (team's events first) with Follow buttons (admin)
+//                             opts: {year, showFollowed, allowUnfollow (default true), onFollow(ev | null)}
 //   CS.nav({..., roles: ["admin"]})  or  {minRole: "strategist"}: only shown to those roles
 (function () {
   const ROLES = ["viewer", "scout", "strategist", "admin"];
@@ -240,7 +241,7 @@
     }
     const row = e => `<div class="evrow"><div><b>${esc(e.name || e.key)}</b><div class="muted">${esc(e.key)} · ${esc(e.start_date || "")}
         ${e.end_date && e.end_date !== e.start_date ? "– " + esc(e.end_date) : ""} · ${esc([e.city, e.state_prov, e.country].filter(Boolean).join(", "))}${e.district ? " · " + esc(e.district.toUpperCase()) : ""}</div></div>
-        ${followed.has(e.key) ? `<span><span class="pill done">following</span> <button data-u="${esc(e.key)}" title="stop following (its data is kept)">Unfollow</button></span>` : `<button data-k="${esc(e.key)}">Follow</button>`}</div>`;
+        ${followed.has(e.key) ? opts.allowUnfollow === false ? `<span class="muted small">following</span>` : `<span><span class="pill done">following</span> <button data-u="${esc(e.key)}" title="stop following (its data is kept)">Unfollow</button></span>` : `<button data-k="${esc(e.key)}">Follow</button>`}</div>`;
     function draw() {
       const needle = q.trim().toLowerCase();
       const match = e => !needle || [e.key, e.name, e.city, e.state_prov, e.country, e.district].some(v => (v || "").toLowerCase().includes(needle));

@@ -8,7 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from .. import audit, db as DB
 from ..config import SESSION_COOKIE
-from ..deps import PASSWORDLESS, User, lockdown_state, passwordless_policy, public_name, require_role
+from ..deps import EVENT_RE, PASSWORDLESS, User, lockdown_state, passwordless_policy, public_name, require_role
 from ..security import token_hash
 from .events import apply_events_state
 from .scouting import apply_note_state, apply_override_state, apply_picklist_state, scout_overrides_mode
@@ -97,14 +97,20 @@ def _entry(r, reverted_by):
 
 @router.get("/audit", summary="Audit log, newest first (admin). Filter by account, action prefix, event, time")
 def list_audit(user_id: int | None = Query(None), action: str | None = Query(None, max_length=40,
-               description="prefix, e.g. 'picklist' or 'note.hide'"), event: str | None = Query(None, max_length=24),
+               description="prefix, e.g. 'picklist' or 'note.hide'"),
+               event: str | None = Query(None, max_length=24, description="a competition key (only its changes), or "
+                                         "'none' (changes not tied to one: accounts, settings, sign-ins)"),
                since: float | None = Query(None, description="unix seconds"), before_id: int | None = Query(None),
                via: Literal["lan", "public"] | None = Query(None), limit: int = Query(100, ge=1, le=500),
                user: User = Depends(require_role("admin")), db=Depends(DB.get_db)):
     q, a = "SELECT * FROM audit_log WHERE 1=1", []
     if user_id is not None: q += " AND user_id=?"; a.append(user_id)
     if action: q += " AND action LIKE ? ESCAPE '\\'"; a.append(action.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%")
-    if event: q += " AND event=?"; a.append(event)
+    if event == "none": q += " AND event IS NULL"
+    elif event:
+        if not EVENT_RE.match(event):
+            raise HTTPException(422, "bad event key (expected e.g. 2026wasam, or 'none')")
+        q += " AND event=?"; a.append(event)
     if since is not None: q += " AND at>=?"; a.append(since)
     if via: q += " AND via=?"; a.append(via)
     if before_id is not None: q += " AND id<?"; a.append(before_id)

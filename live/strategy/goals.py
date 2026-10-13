@@ -1057,7 +1057,7 @@ def selection_snapshots(data_dir, event, team=DEFAULT_TEAM, out_dir=None, sims=8
         if only_missing and os.path.exists(p):
             continue
         try:
-            site_build(data_dir, event, team, out_dir, "DCMP", sims, offline, log=log, asof=ts, snapshot_only=True)
+            site_build(data_dir, event, team, out_dir, None, sims, offline, log=log, asof=ts, snapshot_only=True)   # goal: DASH_GOAL (the app setting) like the live build
             done.append(ts)
         except Exception as ex:
             (log or print)(f"selection snapshot {ts}: {ex!r}")

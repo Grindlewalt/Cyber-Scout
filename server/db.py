@@ -134,6 +134,11 @@ MIGRATIONS = [
     ("notes", "removed_kind", "ALTER TABLE notes ADD COLUMN removed_kind TEXT"),     # deleted | hidden | reverted
     ("notes", "edited_by", "ALTER TABLE notes ADD COLUMN edited_by INTEGER"),
     ("override_log", "requested_by", "ALTER TABLE override_log ADD COLUMN requested_by INTEGER"),
+    # competition switcher: dates + place from TBA when the event is followed (older rows: filled from the site JSON)
+    ("events", "end_date", "ALTER TABLE events ADD COLUMN end_date TEXT"),
+    ("events", "city", "ALTER TABLE events ADD COLUMN city TEXT"),
+    ("events", "state_prov", "ALTER TABLE events ADD COLUMN state_prov TEXT"),
+    ("events", "country", "ALTER TABLE events ADD COLUMN country TEXT"),
 ]
 
 _extra = []

@@ -144,12 +144,12 @@ async function analyzePage(ev, key) {
     <div class="mv-grid">
       <div class="mv-main">
         <div class="mv-stage" id="mvStage">
-          <div class="mv-pane" data-src="ov">${hasVideo ? `<video id="anVid" playsinline muted preload="auto" src="${esc(d.video_local)}"></video>` : ""}<canvas></canvas><div class="mv-msg"></div></div>
+          <div class="mv-pane" data-src="ov">${hasVideo ? `<video id="anVid" playsinline muted preload="metadata" src="${esc(d.video_local)}"></video>` : ""}<canvas></canvas><div class="mv-msg"></div></div>
           ${ST ? ["red", "blue"].map(al => `<div class="mv-pane" data-src="${al}"><canvas></canvas><div class="mv-msg"></div></div>`).join("") : ""}
           <div class="mv-pane" data-src="field"><canvas></canvas><div class="mv-msg"></div></div>
           <div class="mv-id" id="mvId" hidden></div>
         </div>
-        ${ST ? `<video id="anIns" playsinline muted preload="auto" src="${esc(ST.video)}" style="display:none"></video>` : ""}
+        ${ST ? `<video id="anIns" playsinline muted preload="metadata" src="${esc(ST.video)}" style="display:none"></video>` : ""}
         <div class="an-scrub" id="anScrub" role="slider" tabindex="0" aria-label="Match timeline" aria-valuemin="0"></div>
         <div class="mv-ctl" role="toolbar" aria-label="Playback">
           <button type="button" class="mv-play" id="bPlay" aria-label="Play">${PLAY_I}</button>

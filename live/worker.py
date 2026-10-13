@@ -236,6 +236,17 @@ def start_hint(ev, v):
     return float(np.median(ts)) if len(ts) >= 3 else None
 
 
+def is_calibrated(ev):
+    """The competition can be tracked: an upload camera (camera.json, data dir or the repo's shipped one) or a
+    livestream camera (camera_<source>.json).  Without one, matches wait ("needs Video setup") -- never an error."""
+    if os.path.exists(ev_file(ev, "camera.json")):
+        return True
+    try:
+        return any(f.startswith("camera_") and f.endswith(".json") for f in os.listdir(ev_dir(ev)))
+    except OSError:
+        return False
+
+
 # ------------------------------------------------------------------ site JSON
 GRID = 0.5   # heatmap cell, metres
 
@@ -449,16 +460,21 @@ def build_site(ev, tba):
             heat=None if heat is None else (heat / max(heat.sum(), 1)).round(5).tolist()))
     team_rows.sort(key=lambda r: (r["rank"] or 999, r["number"]))
     n_done = sum(1 for r in match_rows if r["state"] == "done")
+    calibrated = is_calibrated(ev)
+    now = time.time()
     jsave(os.path.join(out_dir, "event.json"), dict(
         key=ev, name=info.get("name"), short_name=info.get("short_name"), year=info.get("year"),
         start=info.get("start_date"), end=info.get("end_date"), city=info.get("city"),
-        state_prov=info.get("state_prov"), updated=time.time(), n_done=n_done, n_total=len(match_rows),
-        calibrated=os.path.exists(ev_file(ev, "camera.json")), matches=match_rows, teams=team_rows,
+        state_prov=info.get("state_prov"), updated=now, n_done=n_done, n_total=len(match_rows),
+        calibrated=calibrated, needs_setup=not calibrated, matches=match_rows, teams=team_rows,
         livestream=live_summary(ev)))
     evs = jload(os.path.join(API, "events.json"), [])
-    evs = [e for e in evs if e["key"] != ev] + [dict(key=ev, name=info.get("name"), year=info.get("year"),
-                                                      start=info.get("start_date"), n_done=n_done,
-                                                      n_total=len(match_rows))]
+    evs = [e for e in evs if e["key"] != ev] + [dict(key=ev, name=info.get("name"), short_name=info.get("short_name"),
+                                                      year=info.get("year"),
+                                                      start=info.get("start_date"), end=info.get("end_date"),
+                                                      city=info.get("city"), state_prov=info.get("state_prov"),
+                                                      n_done=n_done, n_total=len(match_rows), updated=now,
+                                                      calibrated=calibrated)]
     jsave(os.path.join(API, "events.json"), sorted(evs, key=lambda e: e.get("start") or "", reverse=True))
     if os.environ.get("DASHBOARD", "1") == "1":       # strategy dashboard (EPA prior + video), replay snapshots
         try:
@@ -569,7 +585,12 @@ def sync(ev, tba, max_new=None):
         traceback.print_exc()
     meta_cache = jload(os.path.join(DATA, "cache", "ytmeta.json"), {}) or {}
     has_cam = os.path.exists(ev_file(ev, "camera.json"))
-    done_any = False; n = 0
+    if not has_cam and ev not in _NEEDS_SETUP_LOGGED:            # once per event: not an error, just not set up yet
+        _NEEDS_SETUP_LOGGED.add(ev)
+        log(f"{ev}: needs Video setup (no camera calibration): match tracking waits; results/rankings still published")
+    elif has_cam:
+        _NEEDS_SETUP_LOGGED.discard(ev)
+    done_any = False; n = 0; more = False
     for m in ms:
         played = m["alliances"]["red"]["score"] is not None and m["alliances"]["red"]["score"] >= 0 \
             and not m.get("livestream")
@@ -584,15 +605,78 @@ def sync(ev, tba, max_new=None):
             done_any = True; n += 1
             jsave(os.path.join(DATA, "cache", "ytmeta.json"), meta_cache)
             build_site(ev, tba)
-            if max_new and n >= max_new: break
+            if max_new and n >= max_new:
+                more = True; break
     jsave(os.path.join(DATA, "cache", "ytmeta.json"), meta_cache)
     if not done_any:
         build_site(ev, tba)
+    return more                                        # True: stopped at max_new (there may be more to do)
+
+
+_NEEDS_SETUP_LOGGED = set()
+
+
+# ------------------------------------------------------------------ several competitions
+def comp_dates(ev, tba):
+    """(start, end) ISO dates of an event from TBA (cached an hour), (None, None) when unknown."""
+    try:
+        e = tba.event(ev) or {}
+        return e.get("start_date"), e.get("end_date") or e.get("start_date")
+    except Exception:
+        return None, None
+
+
+def comp_order(events, tba, today=None):
+    """-> (ordered events, live set). Processing order: competitions on now first (earliest start first), then
+    upcoming ones (soonest first), then finished ones (most recent first), unknown dates last. Each competition keeps
+    its own data, calibration and site; the order only decides who gets the GPU first."""
+    import datetime as _dt
+    today = today or _dt.date.today().isoformat()
+    live, upcoming, done, unknown = [], [], [], []
+    for ev in events:
+        s, e = comp_dates(ev, tba)
+        if not s: unknown.append(ev)
+        elif s <= today <= (e or s): live.append((s, ev))
+        elif today < s: upcoming.append((s, ev))
+        else: done.append((e or s, ev))
+    order = [ev for _, ev in sorted(live)] + [ev for _, ev in sorted(upcoming)] + \
+            [ev for _, ev in sorted(done, reverse=True)] + unknown
+    return order, {ev for _, ev in live}
+
+
+# while a competition is on, others get at most this many new matches per pass, so the loop comes back to the
+# live one within a match or two (a backlog at a finished event never holds up today's matches)
+BACKLOG_BATCH = int(os.environ.get("COMP_BACKLOG_BATCH", "2"))
+
+
+def sync_all(events, tba, max_new=None):
+    """One pass over every followed competition (live first). True when work was left over (don't sleep long)."""
+    order, live = comp_order(events, tba)
+    more = False
+    for ev in order:
+        cap = max_new
+        if live and ev not in live:
+            cap = min(cap, BACKLOG_BATCH) if cap else BACKLOG_BATCH
+        try:
+            more = bool(sync(ev, tba, cap)) or more
+        except Exception:
+            traceback.print_exc()
+    return more
 
 
 # ------------------------------------------------------------------ config (platform agent)
 WORKER_CONF = os.path.join(DATA, "config", "worker.json")   # written by the api service on every settings change
-_ENV0 = {k: os.environ.get(k) for k in ("TBA_KEY", "GPU_DEVICE", "FORCE_CPU")}
+_ENV0 = {k: os.environ.get(k) for k in ("TBA_KEY", "GPU_DEVICE", "FORCE_CPU", "DASH_TEAM", "DASH_GOAL")}
+
+
+def engine_goal(season_goal):
+    """App season goal (setup wizard / Admin: "DCMP", "Worlds", "Einstein", "Win an event", "Scouting", free text) ->
+    the goals engine's goal (DCMP | Worlds | rank:N), or None when it has no equivalent (env / DCMP default then)."""
+    g = str(season_goal or "").strip().lower()
+    if g in ("dcmp", "district championship") or "dcmp" in g or "district champ" in g: return "DCMP"
+    if g.startswith(("worlds", "einstein", "champ")) or "worlds" in g or "einstein" in g: return "Worlds"
+    if g.startswith("rank:") and g[5:].isdigit() and int(g[5:]) > 0: return f"rank:{int(g[5:])}"
+    return None
 
 
 def _setenv(k, v):
@@ -617,6 +701,12 @@ def load_config():
     _setenv("TBA_KEY", key or None)
     _setenv("GPU_DEVICE", str(int(o["gpu_device"])) if o.get("gpu_device") is not None else _ENV0["GPU_DEVICE"])
     _setenv("FORCE_CPU", ("1" if o["cpu_only"] else None) if o.get("cpu_only") is not None else _ENV0["FORCE_CPU"])
+    try:                                     # team number + season goal (app settings) -> dashboard / goals perspective
+        tn = int(c["team_number"]) if c.get("team_number") else None
+    except (TypeError, ValueError):
+        tn = None
+    _setenv("DASH_TEAM", f"frc{tn}" if tn else _ENV0["DASH_TEAM"])
+    _setenv("DASH_GOAL", engine_goal(c.get("season_goal")) or _ENV0["DASH_GOAL"])   # app setting wins, env = fallback
     return key, list(events)
 
 
@@ -666,13 +756,9 @@ def main():
         if waiting: log("configured: following", ", ".join(events)); waiting = None
         if tba is None or tba.key != key:
             tba = TBA(key, os.path.join(DATA, "tba"))
-        for ev in events:
-            try:
-                sync(ev, tba, int(os.environ["MAX_NEW"]) if os.environ.get("MAX_NEW") else None)
-            except Exception:
-                traceback.print_exc()
+        more = sync_all(events, tba, int(os.environ["MAX_NEW"]) if os.environ.get("MAX_NEW") else None)
         if os.environ.get("ONCE") == "1": break
-        _sleep(POLL, events)
+        _sleep(5 if more and not os.environ.get("MAX_NEW") else POLL, events)   # backlog left: next pass soon
 
 
 if __name__ == "__main__":

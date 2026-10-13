@@ -594,7 +594,7 @@
     "tags": [
      "events"
     ],
-    "summary": "Followed events (viewer+)",
+    "summary": "Followed events with dates, place, progress, setup state (viewer+)",
     "operationId": "list_events_app_v1_events_get",
     "responses": {
      "200": {
@@ -2722,8 +2722,10 @@
          "type": "null"
         }
        ],
+       "description": "a competition key (only its changes), or 'none' (changes not tied to one: accounts, settings, sign-ins)",
        "title": "Event"
-      }
+      },
+      "description": "a competition key (only its changes), or 'none' (changes not tied to one: accounts, settings, sign-ins)"
      },
      {
       "name": "since",
@@ -2892,10 +2894,121 @@
      }
     }
    }
+  },
+  "/app/v1/admin/update": {
+   "get": {
+    "tags": [
+     "admin"
+    ],
+    "summary": "Update status (admin): version, changelog, progress",
+    "operationId": "get_update_app_v1_admin_update_get",
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/UpdateStatus"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/app/v1/admin/update/check": {
+   "post": {
+    "tags": [
+     "admin"
+    ],
+    "summary": "Ask the host updater to look for updates (admin)",
+    "operationId": "post_check_app_v1_admin_update_check_post",
+    "responses": {
+     "202": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     }
+    }
+   }
+  },
+  "/app/v1/admin/update/apply": {
+   "post": {
+    "tags": [
+     "admin"
+    ],
+    "summary": "Ask the host updater to update + restart everything (admin); rolls back by itself on failure",
+    "operationId": "post_apply_app_v1_admin_update_apply_post",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/ApplyIn"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "202": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/app/v1/admin/update/rollback": {
+   "post": {
+    "tags": [
+     "admin"
+    ],
+    "summary": "Ask the host updater to go back to the previous version (admin)",
+    "operationId": "post_rollback_app_v1_admin_update_rollback_post",
+    "responses": {
+     "202": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     }
+    }
+   }
   }
  },
  "components": {
   "schemas": {
+   "ApplyIn": {
+    "properties": {
+     "ytdlp": {
+      "type": "boolean",
+      "title": "Ytdlp",
+      "description": "also re-pin yt-dlp to its newest release (worker image: small rebuild)",
+      "default": false
+     }
+    },
+    "additionalProperties": false,
+    "type": "object",
+    "title": "ApplyIn"
+   },
    "EventIn": {
     "properties": {
      "key": {
@@ -2955,6 +3068,110 @@
      "added_at": {
       "type": "number",
       "title": "Added At"
+     },
+     "end_date": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "End Date"
+     },
+     "city": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "City"
+     },
+     "state_prov": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "State Prov"
+     },
+     "country": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Country"
+     },
+     "short_name": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Short Name",
+      "description": "TBA short name, e.g. Sammamish (site build)"
+     },
+     "n_done": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "N Done",
+      "description": "matches tracked so far (site build)"
+     },
+     "n_total": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "N Total",
+      "description": "matches known (TBA + livestream)"
+     },
+     "updated": {
+      "anyOf": [
+       {
+        "type": "number"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Updated",
+      "description": "last site build (unix s); null = never built"
+     },
+     "calibrated": {
+      "type": "boolean",
+      "title": "Calibrated",
+      "description": "an overhead/livestream camera calibration exists",
+      "default": false
+     },
+     "needs_setup": {
+      "type": "boolean",
+      "title": "Needs Setup",
+      "description": "no camera calibration yet: matches are not tracked until Video setup",
+      "default": true
      }
     },
     "type": "object",
@@ -4166,6 +4383,35 @@
     },
     "type": "object",
     "title": "SourcePatch"
+   },
+   "UpdateStatus": {
+    "properties": {
+     "installed": {
+      "type": "boolean",
+      "title": "Installed",
+      "description": "false: no updater heartbeat in the last 3 minutes (not installed / stopped)"
+     },
+     "state": {
+      "type": "string",
+      "enum": [
+       "idle",
+       "checking",
+       "ready",
+       "applying",
+       "done",
+       "failed",
+       "rolled_back"
+      ],
+      "title": "State"
+     }
+    },
+    "additionalProperties": true,
+    "type": "object",
+    "required": [
+     "installed",
+     "state"
+    ],
+    "title": "UpdateStatus"
    },
    "UserCreate": {
     "properties": {
