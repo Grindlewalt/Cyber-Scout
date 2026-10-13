@@ -12,7 +12,7 @@
     if (!CS.platform) { $app.innerHTML = `<div class="empty">No Cyber-Scout server here (static site): nothing to administer.</div>`; return; }
     if (!CS.can("admin")) { $app.innerHTML = `<div class="empty">Admins only.</div>`; return; }
     tab = TABS.some(t => t[0] === tab) ? tab : "users";
-    $app.innerHTML = `<h1>Admin</h1><div class="sub">Accounts, settings and the events Cyber-Scout follows. <a href="#/setup">Re-run the setup wizard</a></div>
+    $app.innerHTML = `<h1>Admin</h1><div class="sub"><a href="#/setup">Re-run the setup wizard</a></div>
       <div class="tabs">${TABS.map(([k, t]) => `<a class="tab ${k === tab ? "on" : ""}" href="#/admin/${k}">${t}</a>`).join("")}</div><div id="adm"></div>`;
     const el = document.getElementById("adm");
     await ({ users, settings, events })[tab](el);
@@ -24,21 +24,21 @@
     const list = await CS.app("GET", "users");
     const me = CS.user.id;
     el.innerHTML = `<div class="grid2" style="align-items:start">
-      <div class="card"><h2>Teammates</h2><div class="tablewrap"><table><thead><tr><th>User</th><th>Role</th><th>Last sign-in</th><th></th></tr></thead><tbody>
+      <div class="card"><h2>Teammates ${CS.help(CS.ROLES.map(r => `<span class="hl"><b>${r}</b>: ${esc(CS.ROLE_TIP[r])}</span>`).join(""), "What each role can do")}</h2><div class="tablewrap"><table><thead><tr><th>User</th><th>Role</th><th data-pri="300">Last sign-in</th><th data-pri="800"><span class="vh">Actions</span></th></tr></thead><tbody>
       ${list.map(u => `<tr data-id="${u.id}" class="${u.disabled ? "dnp" : ""}"><td><b>${esc(u.username)}</b>${u.id === me ? ' <span class="pill">you</span>' : ""}${u.has_password === false ? ' <span class="pill" title="signs in with just the username">no password</span>' : ""}<div class="muted small">${esc(u.display_name)}</div></td>
         <td><select data-role ${u.id === me ? "disabled" : ""}>${CS.ROLES.map(r => `<option value="${r}" ${r === u.role ? "selected" : ""}>${r}</option>`).join("")}</select></td>
         <td class="small">${u.disabled ? '<span class="pill failed">disabled</span>' : when(u.last_login)}${u.active_sessions ? `<div class="muted small">${u.active_sessions} session${u.active_sessions > 1 ? "s" : ""}</div>` : ""}</td>
         <td style="white-space:nowrap">${u.id === me ? `<a href="#/account" class="small">change password</a>` : `<button data-act="reset" title="set a new password (signs them out)">Reset password</button>
           <button data-act="toggle">${u.disabled ? "Enable" : "Disable"}</button> <button data-act="delete" class="danger" title="delete account (their notes stay)">✕</button>`}</td></tr>`).join("")}
       </tbody></table></div><div class="cserr" id="uerr"></div><div class="csok" id="uok"></div>
-      <div class="note">${CS.ROLES.map(r => `<b>${r}</b>: ${esc(CS.ROLE_TIP[r])}`).join("<br>")}</div></div>
-      <div class="card"><h2>Add a teammate</h2>
+</div>
+      <div class="card"><h2>Add a teammate ${CS.help(`Passwords are optional for everyone except admins (${MIN_ADMIN}+ characters). Share the username (+ password) with them in person; they can set or change it under their name (top right).`, "About passwords")}</h2>
         <form class="csform"><label>Username<input name="username" required minlength="2" maxlength="32" pattern="[A-Za-z0-9][A-Za-z0-9._-]+" autocapitalize="none" spellcheck="false" autocomplete="off"></label>
           <label>Name<input name="display_name" maxlength="64" autocomplete="off"></label>
           <label>Role<select name="role">${CS.ROLES.map(r => `<option value="${r}" ${r === "scout" ? "selected" : ""}>${r}: ${esc(CS.ROLE_TIP[r])}</option>`).join("")}</select></label>
           <label><span id="pwlabel"></span><div class="row"><input name="password" autocomplete="new-password" spellcheck="false"><button type="button" id="gen" style="flex:none">Generate</button></div></label>
           <button type="submit" class="primary">Create account</button><div class="cserr"></div><div class="csok"></div></form>
-        <div class="note">Passwords are optional for everyone except admins (${MIN_ADMIN}+ characters). Share the username (+ password) with them in person; they can set or change it under their name (top right).</div></div></div>`;
+</div></div>`;
     const f = el.querySelectorAll(".card")[1];
     const roleSel = f.querySelector("[name=role]"), pwIn = f.querySelector("[name=password]");
     const pwRule = () => {                    // admins: required, 10+; everyone else: optional
@@ -97,14 +97,14 @@
           Keys are made at <a href="https://www.thebluealliance.com/account" target="_blank" rel="noopener">thebluealliance.com/account</a> (Read API Keys). Stored on the server only.</div>
         <form class="csform" id="fkey"><label>${s.tba_key_set ? "Replace with" : "Key"}<input name="key" autocomplete="off" spellcheck="false" required minlength="20"></label>
           <button type="submit" class="primary">Check and save</button><div class="cserr"></div><div class="csok"></div></form></div></div>
-      <div class="card"><h2>Processing</h2><form class="csform" id="fopt">
+      <div class="card"><h2>Processing ${CS.help("Applied by the worker on its next check for matches, no restart needed. A GPU device change applies from the next match.", "When changes apply")}</h2><form class="csform" id="fopt">
         <label>Check TBA for new matches every (seconds)<input name="poll_seconds" type="number" min="30" max="3600" placeholder="default (120)" value="${o.poll_seconds ?? ""}"></label>
         <label>GPU<select name="gpu_mode"><option value="" ${o.cpu_only == null ? "selected" : ""}>default (from .env)</option>
           <option value="gpu" ${o.cpu_only === false ? "selected" : ""}>use the GPU</option><option value="cpu" ${o.cpu_only === true ? "selected" : ""}>CPU only (~4x slower)</option></select></label>
         <label>GPU device number (if there are several)<input name="gpu_device" type="number" min="0" max="15" placeholder="default (0)" value="${o.gpu_device ?? ""}"></label>
         <label>Driver-station cameras ("hub cams": camera switcher + shot checks, ~1-2 min extra per match)${tri("hubcam", o.hubcam, "on", "off")}</label>
         <button type="submit" class="primary">Save</button><div class="cserr"></div><div class="csok"></div></form>
-        <div class="note">Applied by the worker on its next check for matches, no restart needed. A GPU device change applies from the next match.</div></div></div>`;
+</div></div>`;
     const ok = (f, t) => { f.querySelector(".csok").textContent = t; setTimeout(() => { f.querySelector(".csok").textContent = ""; }, 4000); };
     const ft = el.querySelector("#fteam").parentElement, fk = el.querySelector("#fkey").parentElement, fo = el.querySelector("#fopt").parentElement;
     CS.form(ft, async (d, f) => {

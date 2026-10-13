@@ -55,33 +55,38 @@
     </svg>`;
   }
 
-  // ---------------------------------------------------------------- signature: our matches as one rail (played -> now -> plans)
+  // ---------------------------------------------------------------- signature: our matches as one wrapping strip (played -> now -> plans)
+  // Never scrolls sideways: played matches are compact result pills, upcoming plans are the prominent buttons.
+  // On a phone only the last three results show, behind a "+N earlier" toggle, so the next match is always on screen.
   function rail(d) {
     const sc = d.schedule || [], ps = plansOf(d);
     if (!sc.length && !ps.length) return "";
     const items = sc.length ? sc : ps.map(p => ({ key: p.key, short: p.short, time: p.time, alliance: p.alliance, played: false, win_prob: p.prediction?.win_prob }));
-    let nowDone = false;
-    const nowMark = `<li class="rl-now" aria-hidden="true"><span>${d.event?.asof ? "replay" : "now"}<b>${hhmm(d.event?.now)}</b></span></li>`;
+    const played = items.filter(s => s.played && s.result), nOld = Math.max(0, played.length - 3);
+    let nowDone = false, k = 0;
+    const nowMark = `<li class="rl-now"><span>${d.event?.asof ? "replay" : "now"}<b>${hhmm(d.event?.now)}</b></span></li>`;
+    const more = nOld ? `<li class="rl-more"><button type="button" class="rl-mbtn" aria-expanded="false">+${nOld} earlier</button></li>` : "";
     const cells = items.map(s => {
       const pi = ps.findIndex(p => p.key === s.key);
       let pre = "";
       if (!s.played && !nowDone) { nowDone = true; pre = nowMark; }
       if (s.played && s.result) {
-        const r = s.result, us = s.alliance, op = us === "red" ? "blue" : "red", wl = r.won ? "W" : r.tie ? "T" : "L";
-        return pre + `<li><a class="rl-m done ${us}" href="#/${S.ev}/m/${s.key}" title="${H(s.label || s.short)}: ${wl === "W" ? "won" : wl === "T" ? "tied" : "lost"} ${r[us]}–${r[op]} as ${us}, ${r.rp ?? "–"} RP. Open the match.">
-          <span class="rl-k">${H(s.short)}</span><span class="rl-r"><span class="res ${wl === "W" ? "w" : wl === "L" ? "l" : ""}">${wl}</span><span class="rl-sc">${r[us]}–${r[op]}</span></span></a></li>`;
+        const r = s.result, us = s.alliance, op = us === "red" ? "blue" : "red", wl = r.won ? "W" : r.tie ? "T" : "L", i = k++;
+        const desc = `${s.label || s.short}: ${wl === "W" ? "won" : wl === "T" ? "tied" : "lost"} ${r[us]}–${r[op]} as ${us}, ${r.rp ?? "–"} RP`;
+        return (i === nOld ? more : "") + pre + `<li class="${i < nOld ? "old" : ""}"><a class="rl-p ${us}" href="#/${S.ev}/m/${s.key}" title="${H(desc)}. Open the match." aria-label="${H(desc)}">
+          <span class="rl-k">${H(s.short)}</span><span class="res ${wl === "W" ? "w" : wl === "L" ? "l" : ""}">${wl}</span><span class="rl-sc">${r[us]}–${r[op]}</span></a></li>`;
       }
       if (pi >= 0) {
         const p = ps[pi], g = p.queue?.mode === "goal";
-        return pre + `<li><button type="button" role="tab" id="rt-${pi}" aria-selected="${pi === S.tab}" aria-controls="plans" data-i="${pi}" class="rl-m upc ${p.alliance}${pi === S.tab ? " on" : ""}" title="${H(p.label)} at ${fmtT(p.time)}, we are ${p.alliance}: model win ${wp5(p.prediction?.win_prob)}${g ? "; goal mode: play for the bonus RP" : ""}">
+        return pre + `<li><button type="button" id="rt-${pi}" aria-pressed="${pi === S.tab}" aria-controls="plans" data-i="${pi}" class="rl-m upc ${p.alliance}${pi === S.tab ? " on" : ""}" title="${H(p.label)} at ${fmtT(p.time)}, we are ${p.alliance}: model win ${wp5(p.prediction?.win_prob)}${g ? "; goal mode: play for the bonus RP" : ""}. Show its plan.">
           <span class="rl-k">${H(p.short)}<small>${hhmm(p.time)}</small></span><span class="rl-r"><b>${wp5(p.prediction?.win_prob)}</b>${g ? `<span class="rpg">RP</span>` : ""}</span></button></li>`;
       }
       return pre + `<li><span class="rl-m later ${s.alliance || ""}" title="${H(s.label || s.short)}: no plan yet"><span class="rl-k">${H(s.short)}<small>${hhmm(s.time)}</small></span><span class="rl-r">${wp5(s.win_prob)}</span></span></li>`;
     }).join("") + (nowDone ? "" : nowMark);
-    const done = sc.filter(s => s.played && s.result), w = done.filter(s => s.result.won).length, t = done.filter(s => s.result.tie).length;
+    const w = played.filter(s => s.result.won).length, t = played.filter(s => s.result.tie).length;
     return `<nav class="rail" aria-label="${tn(d.team)} matches">
-      <div class="rl-h"><span>${tn(d.team)}'s matches</span>${done.length ? `<span class="muted">${w}–${done.length - w - t}–${t}</span>` : ""}</div>
-      <ol class="rl" role="tablist" aria-label="Plans for remaining matches">${cells}</ol></nav>`;
+      <div class="rl-h"><span>${tn(d.team)}'s matches</span>${played.length ? `<span class="muted">${w}–${played.length - w - t}–${t}</span>` : ""}</div>
+      <ol class="rl">${cells}</ol></nav>`;
   }
 
   // ---------------------------------------------------------------- queue card (six lines, evidence quieter than the instruction)
@@ -126,7 +131,7 @@
       rp.hidden_why ? `TRAVERSAL hidden: ${H(rp.hidden_why)}.` : "");
     const L5 = line("Fouls", `${H(fl.text || "–")}`, `<span title="${H(fl.note || "")}">alliance-level${fl.note ? ": " + H(fl.note) : ""}</span>`, (fl.flag || []).length ? "warn" : "");
     const later = !first && d.event?.now ? `in ${dur(pl.time - d.event.now)}` : "";
-    return `<section class="qcard ${al}" id="plans" role="tabpanel" aria-labelledby="rt-${S.tab}">
+    return `<section class="qcard ${al}" id="plans" aria-labelledby="rt-${S.tab}">
       <header class="qhead">
         <div class="qid"><h2>${H(pl.label)}</h2><span class="weare ${al}">we are ${al.toUpperCase()}</span>
           <div class="qmeta">${fmtT(pl.time)} · ${stamp(pl)}</div></div>
@@ -148,16 +153,16 @@
         <div class="small muted">${H(x.why)}</div></div><div class="dgain">≈${n0(x.expected_gain_fuel)}<small>FUEL denied${x.basis === "measured" ? "" : " (assumed)"}</small></div></div>`).join("");
     const mu = (pd.auto?.matchups || []).map(x => `<div class="small"><b>${tn(x.team)}</b> <span class="muted">${x.alliance === pl.alliance ? "us" : "them"}</span> ${H(x.note)}</div>`).join("");
     const hist = q.auto?.history || {};
-    const ht = Object.entries(hist).map(([t, h]) => `<tr><td>${tn(t)} <span class="muted small">${(pl.teams?.[pl.alliance] || []).includes(t) ? "us" : "them"}</span></td>${h.map(x => `<td class="num" title="${H(x.match)}">${x.alliance_auto}<small class="muted"> ${H(x.match)}</small></td>`).join("")}</tr>`).join("");
+    const ht = Object.entries(hist).map(([t, h]) => `<div class="aht"><b>${tn(t)}</b> <span class="muted small">${(pl.teams?.[pl.alliance] || []).includes(t) ? "us" : "them"}</span> ${h.map(x => `<span title="${H(x.match)}">${x.alliance_auto}<small class="muted"> ${H(x.match)}</small></span>`).join(" ")}</div>`).join("");
     const eg = (pd.endgame || []).filter(x => (x.p_any || 0) >= 0.05);
     const egt = eg.length ? `<table class="mini"><thead><tr><th>Team</th><th class="num">L1</th><th class="num">L2</th><th class="num">L3</th></tr></thead><tbody>${eg.map(x => `<tr><td>${tn(x.team)}</td>${["L1", "L2", "L3"].map(l => `<td class="num">${pct(x.p_climb?.[l])}</td>`).join("")}</tr>`).join("")}</tbody></table>`
       : `<div class="muted small">Nobody in this match climbs in ≥5% of matches — climb odds hidden.</div>`;
     const kf = (pd.key_factors || []).map(f => `<div class="kf"><span>${H(f.text)}</span></div>`).join("");
     return `<div class="plan">
-      <div><h3>Defense options</h3><div class="muted small">FUEL denied ≈ live-shift FUEL × (1 − shot rate kept) × 70% engagement</div>${defs || '<div class="muted small">No target worth a defender (all under 2 FUEL).</div>'}${small.length ? `<div class="muted small">Not worth defending (&lt;2 FUEL): ${small.map(x => tn(x.target)).join(", ")}</div>` : ""}</div>
+      <div><h3>Defense options ${CS.help("FUEL denied ≈ live-shift FUEL × (1 − shot rate kept) × 70% engagement.", "How FUEL denied is estimated")}</h3>${defs || '<div class="muted small">No target worth a defender (all under 2 FUEL).</div>'}${small.length ? `<div class="muted small">Not worth defending (&lt;2 FUEL): ${small.map(x => tn(x.target)).join(", ")}</div>` : ""}</div>
       <div><h3>Auto</h3>${mu || '<div class="muted small">No routine data.</div>'}
-        <h3>TBA alliance auto FUEL, last 4 matches</h3><div class="muted small">the whole alliance's counted auto FUEL in each team's recent matches (TBA) — compare with the model's ${n0(q.auto?.our_expected)} (us) / ${n0(q.auto?.their_expected)} (them)</div>
-        <div class="tablewrap"><table class="mini"><tbody>${ht}</tbody></table></div>
+        <h3>TBA alliance auto FUEL, last 4 matches ${CS.help(`The whole alliance's counted auto FUEL in each team's recent matches (TBA). Compare with the model's ${n0(q.auto?.our_expected)} (us) / ${n0(q.auto?.their_expected)} (them).`, "What this table shows")}</h3>
+        <div class="ahts">${ht}</div>
         <h3>Endgame climb</h3>${egt}</div>
       <div><h3>Key factors</h3>${kf || '<div class="muted small">–</div>'}</div></div>`;
   }
@@ -233,7 +238,7 @@
     const o = d.our_team; if (!o) return "";
     const lv = [...(o.levers || [])].sort((a, b) => (a.gap_rank ?? 99) - (b.gap_rank ?? 99));
     const tr = o.trend || [];
-    return `<div class="small muted lv-legend">Biggest gap to the event best first · n≈ = verified matches behind our value · <span class="lk"><i class="we"></i> ours</span> <span class="lk"><i class="med"></i> median</span> <span class="lk"><i class="best"></i> best</span></div>
+    return `<div class="small muted lv-legend"><span class="lk"><i class="we"></i> ours</span> <span class="lk"><i class="med"></i> median</span> <span class="lk"><i class="best"></i> best</span></div>
       ${lv.map(lever).join("") || '<div class="muted small">No lever data.</div>'}
       <div class="trends2"><div><h3>Model rating after each match <span class="muted small">pts/match</span></h3>${spark(tr, "blend_total")}${sparkCap(tr, "blend_total")}</div>
         <div><h3>Our counted FUEL <span class="muted small">tracked video only</span></h3>${spark(tr, "fuel_made")}${sparkCap(tr, "fuel_made")}</div></div>`;
@@ -248,7 +253,7 @@
       if (s.bonus_probs) return `<span class="muted" title="expected RP us–them">${n0(s.bonus_probs.rp_mean, 1)}–${n0(s.bonus_probs_them?.rp_mean, 1)}</span>`;
       return "";
     };
-    return `<div class="small muted">Scores and RP are us–them. Win% = model win probability before the match (5% steps).</div><div class="tablewrap"><table class="sched"><thead><tr><th>Match</th><th>Time</th><th>Side</th><th>With</th><th>Against</th><th class="num">Win%</th><th>Result</th><th class="num">RP</th><th>Video</th></tr></thead><tbody>
+    return `<div class="tablewrap"><table class="sched"><thead><tr><th>Match</th><th>Time</th><th>Side</th><th>With</th><th>Against</th><th class="num">Win%</th><th>Result</th><th class="num">RP</th><th>Video</th></tr></thead><tbody>
       ${sc.map(s => { const isNext = d.next_match && d.next_match.key === s.key; const us = s.alliance, op = us === "red" ? "blue" : "red";
         const pi = (d.plans || []).findIndex(p => p.key === s.key);
         return `<tr class="${isNext ? "nextrow" : ""}">
@@ -278,12 +283,9 @@
     const th = c => `<th data-k="${c[0]}" class="${c[3]}${c[0] === key ? " sorted" : ""}" aria-sort="${c[0] === key ? (S.sort.dir > 0 ? "ascending" : "descending") : "none"}" tabindex="0">${c[1]}${c[0] === key ? (S.sort.dir > 0 ? " ▲" : " ▼") : ""}</th>`;
     const prbar = r => { const p = r.projection; if (!p) return ""; const L = v => ((v - 1) / Math.max(1, N - 1) * 100).toFixed(1);
       return `<div class="prb" title="mean ${n0(p.rank_mean, 1)}, 80% range ${p.rank_p10}-${p.rank_p90}"><i class="rg" style="left:${L(p.rank_p10)}%;width:${Math.max(1, L(p.rank_p90) - L(p.rank_p10))}%"></i><i class="mn" style="left:${L(p.rank_mean)}%"></i></div><span class="small">${p.rank_p10}–${p.rank_p90}</span>`; };
-    const src = d.model?.epa_source?.display === "statbotics" ? "Statbotics EPA" : "EPA computed here from TBA results as of this time (Statbotics offline)";
-    const vw = rows.map(r => r.video_weight || 0), vwm = vw.reduce((a, b) => a + b, 0) / Math.max(1, vw.length);
     const vcell = r => { const c = r.coverage; if (!c) return "–"; return `<span class="mcov ${c.tier}" title="verified robot video (v2 identity, team conf ≥ 0.6): ${H(c.label)}">${c.n ? `${c.n}${c.of ? "/" + c.of : ""}` : "none"}</span>${c.last ? ` <span class="muted small">last ${H(c.last)}</span>` : ""}`; };
     const dcell = r => { const x = r.disagree; if (!x || x.diff == null) return ""; return x.flag ? `<span class="mchipw" title="Model and EPA differ by ${n0(Math.abs(x.diff))} pts (more than 15 pts and 1.5 sd)">${x.diff > 0 ? "+" : "−"}${n0(Math.abs(x.diff))}</span>` : `<span class="muted small">${x.diff > 0 ? "+" : "−"}${n0(Math.abs(x.diff))}</span>`; };
-    return `<div class="small muted rlegend"><b>Model</b> = each team's pre-event EPA updated by this event's TBA results and, where available, verified robot video (video is on average ${Math.round(vwm * 100)}% of the information). ± = 1 sd.
-        <b>EPA</b> = ${H(src)}. <b>Δ</b> = Model − EPA; highlighted when they disagree by &gt;15 pts. <b>Video</b> = verified robot-video matches / matches played; dashed = fewer than 3 (treat as a hint).</div>
+    return `
       <div class="tablewrap"><table class="rate"><thead>
         <tr class="grp"><th colspan="6"></th><th colspan="3" class="num">Model by period</th><th colspan="3"></th></tr>
         <tr>${COLS.map(th).join("")}</tr></thead><tbody>
@@ -295,28 +297,35 @@
       </tbody></table></div>`;
   }
 
+  function ratingsHelp(d) {
+    const rows = d.ratings || []; if (!rows.length) return "";
+    const src = d.model?.epa_source?.display === "statbotics" ? "Statbotics EPA" : "EPA computed here from TBA results as of this time (Statbotics offline)";
+    const vw = rows.map(r => r.video_weight || 0), vwm = vw.reduce((a, b) => a + b, 0) / Math.max(1, vw.length);
+    return CS.help(`<b>Model</b> = each team's pre-event EPA updated by this event's TBA results and, where available, verified robot video (video is on average ${Math.round(vwm * 100)}% of the information). ± = 1 sd.
+        <b>EPA</b> = ${H(src)}. <b>Δ</b> = Model − EPA; highlighted when they disagree by &gt;15 pts. <b>Video</b> = verified robot-video matches / matches played; dashed = fewer than 3 (treat as a hint).`, "How the ratings are made");
+  }
+  // model track record: one honest line; the method and caveats sit behind "?"
   function model(d) {
     const b = d.model?.backtest_asof;
     if (!b) return "";
     const f3 = v => v == null ? "–" : Number(v).toFixed(3);
     const asof = d.event?.asof ? fmtT(d.event.asof) : "now";
-    if (!b.n || b.n < (b.min_n || 8)) return `<section class="dmodel"><h2>Can you trust the win %?</h2><p>Only ${b.n || 0} quals have been posted as of ${asof} — too few to grade the model yet. Until then, treat every number as a rough guide.</p></section>`;
+    if (!b.n || b.n < (b.min_n || 8)) return `<section class="dmodel"><b>Can you trust the win %?</b> Only ${b.n || 0} quals posted as of ${asof}: too few to grade the model yet, treat every number as a rough guide.</section>`;
     const br = b.brier || {}, dx = b.blend_minus_epa, vi = b.video_increment;
     const ci = x => x ? `90% interval ${f3(-x.ci90[1])} to ${f3(-x.ci90[0])}` : "";
     const sure = x => x && x.ci90[1] < 0 ? "better" : x && x.ci90[0] > 0 ? "worse" : "not distinguishable";
-    return `<section class="dmodel"><h2>Can you trust the win %?</h2>
-      <p>As of ${asof}: the ${b.n} quals already posted (through ${H(b.through)}), each predicted only from the matches before it.
-      Brier score (0 = perfect, 0.250 = coin flip): <b>Model ${f3(br.blend)}</b> · EPA ${f3(br.epa)} · Model without video ${f3(br.no_video)}.</p>
-      <p>Model vs EPA: ${f3(dx ? -dx.mean : null)} better (${ci(dx)}) — ${sure(dx)}. Video's extra help: ${f3(vi ? -vi.mean : null)} (${ci(vi)}) — ${sure(vi) === "better" ? "real" : "not yet distinguishable from zero"}.
-      Picked the winner: model ${pct(b.accuracy?.blend)}, EPA ${pct(b.accuracy?.epa)}.</p>
-      ${b.auto_bias_recent ? `<p class="muted">Alliance auto FUEL over ${H(b.auto_bias_recent.from)}–${H(b.auto_bias_recent.to)}: actual minus predicted ${b.auto_bias_recent.mean > 0 ? "+" : ""}${n0(b.auto_bias_recent.mean, 1)} on average (${b.auto_bias_recent.n_alliances} alliances).</p>` : ""}
-      <p class="muted">Not modelled: defense and congestion between robots, per-team fouls. Defense FUEL-denied numbers marked "assumption" are not measured.</p></section>`;
+    const help = `<span class="hl">As of ${asof}: the ${b.n} quals already posted (through ${H(b.through)}), each predicted only from the matches before it.</span>
+      <span class="hl">Brier score (0 = perfect, 0.250 = coin flip): Model ${f3(br.blend)} · EPA ${f3(br.epa)} · Model without video ${f3(br.no_video)}.</span>
+      <span class="hl">Model vs EPA: ${f3(dx ? -dx.mean : null)} better (${ci(dx)}): ${sure(dx)}. Video's extra help: ${f3(vi ? -vi.mean : null)} (${ci(vi)}): ${sure(vi) === "better" ? "real" : "not yet distinguishable from zero"}.</span>
+      ${b.auto_bias_recent ? `<span class="hl">Alliance auto FUEL over ${H(b.auto_bias_recent.from)}–${H(b.auto_bias_recent.to)}: actual minus predicted ${b.auto_bias_recent.mean > 0 ? "+" : ""}${n0(b.auto_bias_recent.mean, 1)} on average (${b.auto_bias_recent.n_alliances} alliances).</span>` : ""}
+      <span class="hl">Not modelled: defense and congestion between robots, per-team fouls. Defense FUEL-denied numbers marked "assumption" are not measured.</span>`;
+    return `<section class="dmodel"><b>Can you trust the win %?</b> Over ${b.n} posted quals the model picked the winner ${pct(b.accuracy?.blend)} of the time (EPA ${pct(b.accuracy?.epa)}); Brier ${f3(br.blend)} vs ${f3(br.epa)}, ${sure(dx) === "better" ? "measurably better than EPA" : sure(dx) === "worse" ? "worse than EPA" : "not distinguishable from EPA"}. ${CS.help(help, "How the win % is graded")}</section>`;
   }
 
   // ---------------------------------------------------------------- page
-  function disclosure(id, title, sum, body) {
+  function disclosure(id, title, sum, body, help) {
     if (!body) return "";
-    return `<details class="dsec" id="sec-${id}" data-sec="${id}"${OPEN(id) ? " open" : ""}><summary><span class="ds-t">${title}</span><span class="ds-s">${sum}</span><span class="ds-c" aria-hidden="true"></span></summary><div class="ds-b" id="body-${id}">${body}</div></details>`;
+    return `<details class="dsec" id="sec-${id}" data-sec="${id}"${OPEN(id) ? " open" : ""}><summary><span class="ds-t">${title}</span>${help || ""}<span class="ds-s">${sum}</span><span class="ds-c" aria-hidden="true"></span></summary><div class="ds-b" id="body-${id}">${body}</div></details>`;
   }
   function render(d) {
     const R = Object.fromEntries((d.ratings || []).map(r => [r.team, r]));
@@ -327,16 +336,16 @@
       ${rail(d)}
       <div class="db-grid"><div class="db-main">${plansSection(d, R)}</div><div class="db-side">${ourEvent(d, R)}</div></div>
       <div class="dsecs">
-      ${disclosure("sched", "Schedule and results", `${sc.length - up} played · ${up} to play`, sc.length ? schedule(d) : "")}
-      ${disclosure("levers", "Levers", top ? `pit material · biggest gap: ${H(LAB[top.name] || top.name)}` : "pit material", d.our_team ? levers(d) : "")}
-      ${disclosure("ratings", "Ratings", `${(d.ratings || []).length} teams · points per match · model and EPA side by side`, `<div id="rt">${ratings(d)}</div>`)}
+      ${disclosure("sched", "Schedule and results", `${sc.length - up} played · ${up} to play`, sc.length ? schedule(d) : "", CS.help("Scores and RP are us–them. Win% = model win probability before the match (5% steps).", "How to read the schedule"))}
+      ${disclosure("levers", "Levers", top ? `pit material · biggest gap: ${H(LAB[top.name] || top.name)}` : "pit material", d.our_team ? levers(d) : "", CS.help("Biggest gap to the event best first. n≈ = verified matches behind our value. On each track: the filled dot is ours, the thin tick the event median, the square the event best.", "How to read the levers"))}
+      ${disclosure("ratings", "Ratings", `${(d.ratings || []).length} teams · points per match · model and EPA side by side`, `<div id="rt">${ratings(d)}</div>`, ratingsHelp(d))}
       </div>
       ${model(d)}</div>`;
     startCountdown(d); wirePlans(d, R); wireSecs();
     const rt = () => { document.getElementById("rt").innerHTML = ratings(d); wireSort(rt); };
     wireSort(rt);
-    const on = document.querySelector(".rl-m.on"); if (on) on.scrollIntoView({ block: "nearest", inline: "center" });
-    else { const n = document.querySelector(".rl-now"); if (n) n.scrollIntoView({ block: "nearest", inline: "center" }); }
+    const mb = document.querySelector(".rl-mbtn");
+    if (mb) mb.onclick = () => { const r = mb.closest(".rail"), all = r.classList.toggle("all"); mb.setAttribute("aria-expanded", all); mb.textContent = all ? "Show fewer" : `+${r.querySelectorAll("li.old").length} earlier`; };
   }
   function wireSecs() {
     document.querySelectorAll("details.dsec").forEach(x => x.ontoggle = () => SETOPEN(x.dataset.sec, x.open));
@@ -347,11 +356,11 @@
       const p = (d.plans || [])[i];
       if (p) try { history.replaceState(null, "", `#/${S.ev}/dash/${S.ts || "live"}/${(p.short || i).toString().toLowerCase()}`); } catch (e) { }
       const el = document.getElementById("plans"); if (!el) return; el.outerHTML = plansSection(d, R);
-      document.querySelectorAll(".rail .rl-m.upc").forEach(b => { const on = +b.dataset.i === i; b.classList.toggle("on", on); b.setAttribute("aria-selected", on); b.tabIndex = on ? 0 : -1; });
+      document.querySelectorAll(".rail .rl-m.upc").forEach(b => { const on = +b.dataset.i === i; b.classList.toggle("on", on); b.setAttribute("aria-pressed", on); });
       if (focus) document.getElementById("rt-" + i)?.focus();
       wirePlans(d, R); startCountdown(d); };
     const tabs = [...document.querySelectorAll(".rail .rl-m.upc")];
-    tabs.forEach(b => { b.tabIndex = +b.dataset.i === S.tab ? 0 : -1; b.onclick = () => show(+b.dataset.i);
+    tabs.forEach(b => { b.onclick = () => show(+b.dataset.i);
       b.onkeydown = e => { const k = tabs.indexOf(b), n = e.key === "ArrowRight" ? k + 1 : e.key === "ArrowLeft" ? k - 1 : null; if (n != null && tabs[n]) { e.preventDefault(); show(+tabs[n].dataset.i, true); } }; });
     document.querySelectorAll("a[data-plan]").forEach(a => a.onclick = e => { e.preventDefault(); show(+a.dataset.plan); document.querySelector(".rail")?.scrollIntoView({ block: "start" }); });
   }
@@ -365,16 +374,20 @@
     if (document.getElementById("dash-m-style")) return;
     const st = document.createElement("style"); st.id = "dash-m-style";
     st.textContent = `
-/* ---- rail: our matches, played -> now -> plans (the screen's signature) */
+/* ---- rail: our matches, played -> now -> plans (the screen's signature). Wraps; never scrolls sideways. */
 .db { gap: 16px; }
 .rail { display: grid; gap: 6px; }
-.rl-h { display: flex; gap: 10px; align-items: baseline; font-size: var(--fs-foot); font-weight: 650; } .rl-h .rl-hint { margin-left: auto; font-weight: 400; font-size: var(--fs-cap); }
-.rl { list-style: none; margin: 0; padding: 2px 2px 8px; display: flex; gap: 6px; overflow-x: auto; scroll-snap-type: x proximity; scrollbar-width: thin; }
-.rl > li { flex: none; scroll-snap-align: center; display: flex; }
+.rl-h { display: flex; gap: 10px; align-items: baseline; font-size: var(--fs-foot); font-weight: 650; }
+.rl { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; align-items: stretch; }
+.rl > li { display: flex; }
+.rl-p { display: flex; align-items: center; gap: 6px; padding: 4px 8px; border-radius: 8px; border: 1px solid var(--line); border-top: 3px solid var(--line-strong);
+  color: var(--ink); text-decoration: none; font-size: var(--fs-foot); min-height: 36px; align-self: center; }
+.rl-p.red { border-top-color: var(--red-fill); } .rl-p.blue { border-top-color: var(--blue-fill); }
+.rl-p:hover { background: var(--surface); border-color: var(--line-strong); }
+.rl-p .rl-k { font-weight: 650; } .rl-p .rl-sc { display: none; }
 .rl-m { display: flex; flex-direction: column; justify-content: space-between; gap: 4px; min-width: 64px; min-height: 52px; padding: 6px 9px 7px; border-radius: 8px;
   border: 1px solid var(--line); border-top: 3px solid var(--line-strong); background: var(--surface); color: var(--ink); text-decoration: none; font: inherit; text-align: left; cursor: pointer; }
 .rl-m.red { border-top-color: var(--red-fill); } .rl-m.blue { border-top-color: var(--blue-fill); }
-.rl-m.done { background: transparent; min-width: 70px; } .rl-m.done:hover { background: var(--surface); }
 .rl-m.later { cursor: default; color: var(--ink-2); background: transparent; border-style: dashed; border-top-style: solid; }
 .rl-k { font-size: var(--fs-foot); font-weight: 650; display: flex; gap: 6px; align-items: baseline; } .rl-k small { font-weight: 400; color: var(--ink-2); font-size: var(--fs-cap); }
 .rl-r { display: flex; gap: 6px; align-items: center; font-size: var(--fs-cap); color: var(--ink-2); } .rl-r b { font-size: 15px; color: var(--ink); }
@@ -387,6 +400,12 @@
 .isreplay .rl-now span { border-color: var(--caution); color: var(--caution); }
 .rpg { font-size: 10.5px; font-weight: 800; color: var(--caution); border: 1px solid var(--caution-line); border-radius: 4px; padding: 0 4px; line-height: 15px; }
 .rl-m.upc.on .rpg { color: var(--bg); border-color: currentColor; }
+.rl > li.rl-more { display: none; }
+.rl-mbtn { min-height: 36px; align-self: center; padding: 4px 10px; font-size: var(--fs-foot); color: var(--ink-2); background: transparent; border-style: dashed; }
+@media (max-width: 760px) {
+  .rail:not(.all) .rl > li.old { display: none; }
+  .rl > li.rl-more { display: flex; }
+}
 
 /* ---- layout */
 .db-grid { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 16px; align-items: start; }
@@ -443,6 +462,7 @@ a.tgt { font-weight: 750; text-decoration-color: currentColor; } a.tgt.red { col
 .mf-tgt { fill-opacity: .22; stroke-width: 2; } .mf-tgt.red { fill: var(--red-fill); stroke: var(--red); } .mf-tgt.blue { fill: var(--blue-fill); stroke: var(--blue); }
 .mf-dot.red { fill: var(--red); } .mf-dot.blue { fill: var(--blue); }
 .rpt { width: auto; font-size: var(--fs-body); } .rpt th, .rpt td { border: 0; padding: 1px 14px 1px 0; background: none !important; position: static; cursor: default; }
+.rpt tbody { display: block; } .rpt tr { display: flex; flex-wrap: wrap; padding: 1px 0; } .rpt td, .rpt th { display: block; white-space: nowrap; }
 .rpt th { color: var(--ink); font-size: var(--fs-body); width: 48px; } .rpt tr.them, .rpt tr.them th { color: var(--ink-2); font-weight: 500; }
 .qdetails { margin-top: 10px; } .qdetails summary { cursor: pointer; color: var(--ink); font-size: var(--fs-foot); font-weight: 600; padding: 6px 0; }
 .plan { display: grid; grid-template-columns: 1.4fr 1.1fr 1fr; gap: 18px; margin-top: 8px; padding-top: 4px; border-top: 1px solid var(--line); }
@@ -451,6 +471,7 @@ a.tgt { font-weight: 750; text-decoration-color: currentColor; } a.tgt.red { col
 .dn { width: 20px; height: 20px; border-radius: 50%; background: var(--surface-2); text-align: center; line-height: 20px; font-size: var(--fs-cap); font-weight: 700; flex: none; }
 .dbody { flex: 1; min-width: 0; } .dgain { font-size: 20px; font-weight: 700; text-align: right; } .dgain small { display: block; font-size: 11px; color: var(--ink-2); font-weight: 400; }
 .shifts em { font-style: normal; font-size: var(--fs-cap); background: var(--surface-2); border: 1px solid var(--line); border-radius: 4px; padding: 0 5px; margin-left: 4px; }
+.ahts { font-size: var(--fs-foot); font-variant-numeric: tabular-nums; } .aht { padding: 3px 0; border-bottom: 1px solid var(--line); } .aht span { margin-right: 8px; white-space: nowrap; }
 .kf { padding: 5px 0; border-bottom: 1px solid var(--line); font-size: var(--fs-foot); }
 
 /* ---- our event (side) */
@@ -483,16 +504,15 @@ a.tgt { font-weight: 750; text-decoration-color: currentColor; } a.tgt.red { col
 .lv-legend { margin-bottom: 4px; } .lk { position: relative; display: inline-block; padding-left: 16px; margin-left: 8px; } .lk i { left: 6px; top: 1px; }
 .trends2 { margin-top: 14px; color: var(--ink); } .trends2 .spark { width: 100%; height: 48px; background: var(--surface-2); border-radius: 4px; }
 .sched td { padding: 6px 8px; } .rlegend { margin: 0 0 10px; line-height: 1.55; }
-.dmodel { padding: 14px 16px; background: transparent; border: 1px dashed var(--line-strong); border-radius: var(--r-m); font-size: var(--fs-foot); line-height: 1.6; }
-.dmodel h2 { font-size: var(--fs-body); margin: 0 0 4px; } .dmodel p { margin: 4px 0; }
+.dmodel { padding: 10px 14px; background: transparent; border: 1px dashed var(--line-strong); border-radius: var(--r-m); font-size: var(--fs-foot); line-height: 1.6; color: var(--ink-2); }
+.dmodel b { color: var(--ink); }
 
 @media (max-width: 760px) {
-  .rl-h .rl-hint { display: none; } .dchip .rt { display: none; } .qhead { margin-bottom: 10px; } .qid h2 { font-size: 24px; }
+  .dchip .rt { display: none; } .qhead { margin-bottom: 10px; } .qid h2 { font-size: 24px; }
   .qcard { padding: 14px 14px 10px; } .qid { min-width: 0; flex-basis: 100%; } .cd { text-align: left; } .cd > span { font-size: 28px; }
   .qteams { grid-template-columns: 1fr; } .qwin { grid-template-columns: 1fr; gap: 10px; }
   .ql { grid-template-columns: 1fr; gap: 2px; } .ql.hasfield .ql-body { grid-template-columns: minmax(0, 1fr) 74px; } .mfield { width: 74px; }
   .plan { grid-template-columns: 1fr; } .oe dd { font-size: 20px; }
-  .rpt td, .rpt th { display: inline-block; padding-right: 10px; } .rpt tr { display: block; padding: 2px 0; }
 }`;
     document.head.appendChild(st);
   }

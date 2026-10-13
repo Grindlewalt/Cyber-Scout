@@ -18,7 +18,8 @@
     st.textContent = `
 .sc,.sc>*,.sc .card{min-width:0;max-width:100%}.sc .card{overflow:hidden}.sc .tablewrap{max-width:100%;overflow-x:auto}.sc .vrow>*,.sc .detbox>*{min-width:0}
 .sc .filters{display:flex;gap:6px;flex-wrap:wrap;margin:0 0 12px}
-.sc .fchip{padding:4px 11px;border-radius:99px;border:1px solid var(--line);background:var(--panel2);color:var(--muted);font-size:12.5px;cursor:pointer}
+.sc .fchip{padding:4px 11px;min-height:30px;border-radius:99px;border:1px solid var(--line);background:var(--panel2);color:var(--muted);font-size:12.5px;cursor:pointer}
+.sc td.tms{white-space:normal;min-width:64px} .sc td.tms .t{margin:1px 2px 1px 0} .sc .mt{display:block;font-size:var(--fs-cap);color:var(--ink-2);font-weight:400}
 .sc .fchip.on{color:var(--text);border-color:var(--accent)}
 .sc table.sct td{padding:5px 8px;vertical-align:middle}
 .sc tr.mrow{cursor:default} .sc tr.mrow.exp{cursor:pointer}
@@ -70,8 +71,8 @@
         <div class="kvs"><span>Win <b>${P(b.win_prob)}</b></span><span>Win auto <b>${P(b.p_win_auto)}</b></span>
           <span>Score <b>${n0(b.score?.ours)}</b> – ${n0(b.score?.theirs)}</span><span>Margin <b>${sg(b.score?.margin)}</b> ± ${n0(b.score?.margin_sd)}</span>
           <span>Fouls to us/them <b>${n0(b.fouls?.ours)}</b>/${n0(b.fouls?.theirs)}</span></div></div>
-      <div><div class="per hd"><span>Period</span><span></span><span style="text-align:right">Us</span><span style="text-align:right">Them</span><span style="text-align:right">Δ</span></div>${rows}
-        <div class="muted small" style="margin-top:6px"><span class="act on"></span>our hub likely active (auto loser has shifts 1 and 3). Points per period, incl. human-player FUEL; Auto and Endgame also include tower (climb) points, split out on hover.</div></div></div>`;
+      <div><div class="per hd"><span>Period ${CS.help('<span class="act on"></span>= our hub likely active (the auto loser has shifts 1 and 3). Points per period, incl. human-player FUEL; Auto and Endgame also include tower (climb) points, split out on hover.', "How to read the period breakdown")}</span><span></span><span style="text-align:right">Us</span><span style="text-align:right">Them</span><span style="text-align:right">Δ</span></div>${rows}
+</div></div>`;
   }
 
   function rowHtml(m, team) {
@@ -91,10 +92,9 @@
     const ours = m.us ? ` <span class="small ${m.us === "red" ? "" : ""}" title="${tn(team)} is on ${m.us}"><span class="adot ${m.us}"></span></span>` : "";
     const wp = !m.played && hasB ? `<b class="${m.breakdown.win_prob >= .5 ? "pos" : "neg"}">${P(m.breakdown.win_prob)}</b>` : (m.played && m.us ? `<span class="res ${m.result.winner === m.us ? "w" : m.result.winner === "tie" ? "" : "l"}">${m.result.winner === m.us ? "W" : m.result.winner === "tie" ? "T" : "L"}</span>` : "");
     return `<tr class="mrow ${hasB ? "exp" : ""} ${S.nextKey === m.key ? "next" : ""}" id="r-${m.key}" data-k="${m.key}">
-      <td><span class="chev">${hasB ? "▸" : ""}</span><b>${H(m.short)}</b>${ours}</td><td class="small muted">${fmtT(m.time)}</td>
-      <td>${teams(m.red, "r", us)}</td><td>${teams(m.blue, "b", us)}</td>${mid}<td class="num">${wp}</td>
-      <td class="small">${m.played && m.analyze_url ? `<a href="${m.analyze_url}">Analyze</a>` : ""}</td></tr>
-      ${hasB ? `<tr class="det" id="d-${m.key}" style="display:none"><td colspan="8">${breakdown(m, team)}</td></tr>` : ""}`;
+      <td><span class="chev">${hasB ? "▸" : ""}</span>${m.played && m.analyze_url ? `<a href="${m.analyze_url}" title="open the match video and replay"><b>${H(m.short)}</b></a>` : `<b>${H(m.short)}</b>`}${ours}<span class="mt">${fmtT(m.time)}</span></td>
+      <td class="tms">${teams(m.red, "r", us)}</td><td class="tms">${teams(m.blue, "b", us)}</td>${mid}<td class="num">${wp}</td></tr>
+      ${hasB ? `<tr class="det" id="d-${m.key}" style="display:none"><td colspan="6">${breakdown(m, team)}</td></tr>` : ""}`;
   }
 
   function list(d) {
@@ -103,7 +103,7 @@
     if (f === "ours") ms = ms.filter(m => m.us);
     else if (f === "up") ms = ms.filter(m => !m.played);
     else if (f === "played") ms = ms.filter(m => m.played);
-    return `<table class="sct"><thead><tr><th>Match</th><th>Time</th><th>Red</th><th>Blue</th><th class="num">Result / P(red)</th><th class="hide-s">RP / score</th><th class="num">${tn(team)}</th><th></th></tr></thead><tbody>${ms.map(m => rowHtml(m, team)).join("")}</tbody></table>`;
+    return `<table class="sct"><thead><tr><th>Match</th><th data-pri="950">Red</th><th data-pri="940">Blue</th><th class="num" data-pri="800">Result / P(red)</th><th class="hide-s" data-pri="200">RP / score</th><th class="num" data-pri="700">${tn(team)}</th></tr></thead><tbody>${ms.map(m => rowHtml(m, team)).join("")}</tbody></table>`;
   }
 
   function wire(d) {
@@ -119,7 +119,7 @@
   function draw(d) {
     const cnt = { all: d.matches.length, ours: d.matches.filter(m => m.us).length, up: d.matches.filter(m => !m.played).length, played: d.matches.filter(m => m.played).length };
     const lab = { all: "All", ours: tn(d.team) + " only", up: "Upcoming", played: "Played" };
-    document.getElementById("sc-body").innerHTML = `<div class="filters">${Object.keys(lab).map(k => `<span class="fchip ${S.filter === k ? "on" : ""}" data-f="${k}">${lab[k]} <span class="muted">${cnt[k]}</span></span>`).join("")}</div>
+    document.getElementById("sc-body").innerHTML = `<div class="filters">${Object.keys(lab).map(k => `<button type="button" class="fchip ${S.filter === k ? "on" : ""}" data-f="${k}" aria-pressed="${S.filter === k}">${lab[k]} <span class="muted">${cnt[k]}</span></button>`).join("")}</div>
       <div class="tablewrap">${list(d)}</div>`;
     wire(d);
   }
@@ -131,8 +131,8 @@
     S = { ev, filter: S && S.ev === ev ? S.filter : (d.matches.some(m => m.us) ? "ours" : "all"), open: new Set(S && S.ev === ev ? S.open : []), nextKey: nextOurs?.key };
     if (nextOurs && !S.open.size) S.open.add(nextOurs.key);
     crumbs([[ev, `#/${ev}`], ["Schedule"]]); $updated.textContent = d.asof ? "replay" : ago(d.generated);
-    $app.innerHTML = `<div class="dash sc"><div class="dtop"><div><h1>Schedule</h1><div class="sub">${H(ev)} · predictions for <b>${tn(d.team)}</b>'s matches break down where each alliance scores. Click a row to expand.</div></div></div>
-      ${d.asof ? "" : `<div class="sc-banner"><b>End-of-event data</b>, not replay time: predictions for unplayed matches use everything posted so far. For a replay view, pick a time on the Dashboard.</div>`}
+    $app.innerHTML = `<div class="dash sc"><div class="dtop"><div><h1>Schedule</h1><div class="sub">${H(ev)} · ${tn(d.team)} ${CS.help(`Predictions for <b>${tn(d.team)}</b>'s matches break down where each alliance scores: tap a row with ▸ to expand it. Tap a played match to open its video and replay.`, "How the schedule works")}</div></div></div>
+      ${d.asof ? "" : `<div class="sc-banner"><b>End-of-event data</b>, not replay time ${CS.help("Predictions for unplayed matches use everything posted so far. For a replay view, pick a time on the Dashboard.", "About end-of-event data")}</div>`}
       <section class="card" id="sc-body"></section></div>`;
     draw(d);
     const target = key;                              // deep link #/<ev>/schedule/<matchkey>

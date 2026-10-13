@@ -112,7 +112,8 @@ function flagChips(row, only) {
 /** banner for pages that show end-of-event data (not the replay time the dashboard may be set to) */
 function dataBanner(sd, what = "") {
   const lv = sd && sd.last_verified ? shortKey(sd.last_verified) : null, vm = sd ? (sd.verified_matches || []) : [];
-  return `<div class="sc-banner"><b>End-of-event data</b>, not replay time${what ? " · " + esc(what) : ""}${sd ? ` · robot video: ${vm.length} verified matches${lv ? `, last ${lv}` : ""} · ${sd.quals_played} quals played <details><summary>Which matches</summary>${esc(vm.map(shortKey).join(", "))}</details>` : ""}</div>`;
+  const help = `<span class="hl">These numbers use everything posted so far, not the replay time the Dashboard may be set to.</span>${sd ? `<span class="hl">Robot video: ${vm.length} verified matches${lv ? `, last ${lv}` : ""} · ${sd.quals_played} quals played.</span><span class="hl">Which matches: ${esc(vm.map(shortKey).join(", "))}</span>` : ""}`;
+  return `<div class="sc-banner"><b>End-of-event data</b>${what ? " · " + esc(what) : ""}${sd ? ` · ${vm.length} verified video matches${lv ? `, last ${lv}` : ""}` : ""} ${CS.help(help, "About this data")}</div>`;
 }
 /** toolbar title: the last crumb is the page title, earlier ones are a back path. The event itself lives in the sidebar. */
 function crumbs(parts) {
@@ -129,6 +130,102 @@ function ago(ts) {
   if (s < 5400) return `updated ${Math.round(s / 60)} min ago`;
   return `updated ${new Date(ts * 1000).toLocaleString()}`;
 }
+
+// ------------------------------------------------------------------ "?" help: explanations stay out of the way until asked for
+// CS.help(html, label) -> a real <button aria-expanded> followed by its popover (inline content only: span/b/br/a, no <p>/<div>,
+// so it is valid inside paragraphs, table headers and summaries). One open at a time; click outside or Escape closes it.
+let hlpN = 0;
+CS.help = (html, label = "What this means") => {
+  const id = "hlp" + (++hlpN);
+  return `<span class="hlp"><button type="button" class="hlp-b" aria-expanded="false" aria-controls="${id}" aria-label="${esc(label)}" title="${esc(label)}">?</button><span class="hlp-p" id="${id}" role="note" hidden>${html}</span></span>`;
+};
+(function wireHelp() {
+  let open = null;
+  const close = focus => { if (!open) return; open.p.hidden = true; open.b.setAttribute("aria-expanded", "false"); if (focus) open.b.focus(); open = null; };
+  const place = () => {
+    if (!open) return;
+    const r = open.b.getBoundingClientRect(), p = open.p; if (!r.width || !open.b.isConnected) return close();
+    const vw = document.documentElement.clientWidth, vh = innerHeight, pw = p.offsetWidth, ph = p.offsetHeight;
+    let y = r.bottom + 6; if (y + ph > vh - 8 && r.top - ph - 6 > 8) y = r.top - ph - 6;
+    p.style.left = Math.max(8, Math.min(r.left - 10, vw - pw - 8)) + "px"; p.style.top = Math.max(8, y) + "px";
+  };
+  CS.closeHelp = close;
+  document.addEventListener("click", e => {
+    const b = e.target.closest && e.target.closest(".hlp-b");
+    if (b) {
+      e.preventDefault(); e.stopPropagation();
+      if (open && open.b === b) return close();
+      close(); const p = document.getElementById(b.getAttribute("aria-controls")); if (!p) return;
+      p.hidden = false; b.setAttribute("aria-expanded", "true"); open = { b, p }; place(); return;
+    }
+    if (open && !open.p.contains(e.target)) close();
+  }, true);
+  document.addEventListener("keydown", e => { if (e.key === "Escape" && open) { e.stopPropagation(); close(true); } }, true);
+  addEventListener("scroll", place, true); addEventListener("resize", place);
+})();
+
+// ------------------------------------------------------------------ tables never scroll sideways
+// Every <table> with a <thead> inside .tablewrap is fitted to its width: columns that do not fit (lowest priority first) fold into a
+// per-row "more" disclosure. Priority: <th data-pri="N"> (0 = details only, always folded); default keeps the first two columns
+// and folds from the right. Re-fits on render (MutationObserver), resize and <details> toggle.
+const CHEV = '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 4l4 4-4 4"/></svg>';
+function fitTable(t) {
+  const wrap = t.parentElement; if (!wrap || !t.tHead || !t.tHead.rows.length) return;
+  // reset
+  t.querySelectorAll(".fx-h").forEach(c => c.classList.remove("fx-h"));
+  t.querySelectorAll(".fx-t").forEach(c => c.remove()); t.querySelectorAll("tr.fx-d").forEach(r => r.remove()); t.classList.remove("fx");
+  const avail = wrap.clientWidth; if (!avail) return;
+  const head = t.tHead.rows[t.tHead.rows.length - 1], hs = [...head.cells];
+  if (hs.some(c => c.colSpan > 1)) return;
+  const n = hs.length, rows = [...t.tBodies].flatMap(b => [...b.rows]).filter(r => r.cells.length === n && ![...r.cells].some(c => c.colSpan > 1));
+  const pri = hs.map((h, j) => h.dataset.pri != null ? +h.dataset.pri : j === 0 ? 1000 : j === 1 ? 900 : 50 + (n - j));
+  const order = hs.map((_, j) => j).filter(j => pri[j] < 900).sort((a, b) => pri[a] - pri[b] || b - a);
+  const hidden = [];
+  const hide = j => { hidden.push(j); hs[j].classList.add("fx-h"); rows.forEach(r => r.cells[j].classList.add("fx-h")); };
+  const over = () => t.offsetWidth > avail + 1;
+  order.filter(j => pri[j] === 0).forEach(hide);
+  if (!hidden.length && !over()) { t.__fitW = avail; return; }
+  // the toggle column
+  t.classList.add("fx");
+  const th = document.createElement("th"); th.className = "fx-t"; th.innerHTML = '<span class="vh">More</span>'; head.appendChild(th);
+  [...t.tHead.rows].slice(0, -1).forEach(r => r.classList.add("fx-h"));
+  rows.forEach(r => { const td = document.createElement("td"); td.className = "fx-t";
+    const lab = (r.cells[0].textContent || "").trim().slice(0, 40);
+    td.innerHTML = `<button type="button" class="fx-x" aria-expanded="false" aria-label="More for ${esc(lab)}">${CHEV}</button>`; r.appendChild(td); });
+  for (const j of order) { if (!over()) break; if (!hidden.includes(j)) hide(j); }
+  // give back what fits again (a wide early column may have been the only problem), most important first
+  const unhide = j => { hidden.splice(hidden.indexOf(j), 1); hs[j].classList.remove("fx-h"); rows.forEach(r => r.cells[j].classList.remove("fx-h")); };
+  for (const j of hidden.slice().filter(j => pri[j] > 0).sort((a, b) => pri[b] - pri[a] || a - b)) { unhide(j); if (over()) hide(j); }
+  if (!hidden.length) { t.querySelectorAll(".fx-t").forEach(c => c.remove()); t.classList.remove("fx"); [...t.tHead.rows].forEach(r => r.classList.remove("fx-h")); }
+  t.__fit = { hidden: hidden.slice().sort((a, b) => a - b), hs };
+  t.__fitW = avail;
+}
+function fitDetail(btn) {
+  const tr = btn.closest("tr"), t = tr.closest("table"), f = t.__fit; if (!f) return;
+  const nx = tr.nextElementSibling;
+  if (nx && nx.classList.contains("fx-d")) { nx.remove(); btn.setAttribute("aria-expanded", "false"); return; }
+  const vis = [...tr.cells].filter(c => !c.classList.contains("fx-h")).length;
+  const lab = h => esc((h.textContent || "").replace(/[▲▼▾]/g, "").trim());
+  const d = document.createElement("tr"); d.className = "fx-d";
+  d.innerHTML = `<td colspan="${vis}"><dl class="fx-dl">${f.hidden.map(j => `<div><dt${f.hs[j].title ? ` title="${esc(f.hs[j].title)}"` : ""}>${lab(f.hs[j])}</dt><dd>${tr.cells[j].innerHTML || "–"}</dd></div>`).join("")}</dl></td>`;
+  tr.after(d); btn.setAttribute("aria-expanded", "true");
+}
+function fitAll(force) {
+  for (const t of $app.querySelectorAll(".tablewrap > table")) {
+    const w = t.parentElement.clientWidth;
+    const stale = t.classList.contains("fx") && [...t.tBodies].some(b => [...b.rows].some(r => !r.classList.contains("fx-d") && !r.querySelector(":scope > .fx-t") && r.cells.length > 1 && ![...r.cells].some(c => c.colSpan > 1)));
+    if (force || stale || t.__fitW !== w) fitTable(t);
+  }
+}
+CS.fit = fitAll;
+(function wireFit() {
+  let q = 0;
+  const later = force => { cancelAnimationFrame(q); q = requestAnimationFrame(() => fitAll(force)); };
+  new MutationObserver(() => fitAll()).observe($app, { childList: true, subtree: true });
+  addEventListener("resize", () => later(true));
+  document.addEventListener("toggle", () => later(), true);
+  document.addEventListener("click", e => { const b = e.target.closest && e.target.closest(".fx-x"); if (b) { e.stopPropagation(); fitDetail(b); } }, true);
+})();
 
 // ------------------------------------------------------------------ field canvas
 function fieldCanvas(el, opts = {}) {
@@ -193,7 +290,7 @@ function statusPill(m) {
 }
 function matchesTable(el, d, ev) {
   const tl = (ts, al) => ts.map(t => `<a class="team ${al[0]}" href="#/${ev}/t/${t}">${num(t)}</a>`).join(" ");
-  el.innerHTML = `<div class="tablewrap"><table><thead><tr><th>Match</th><th>Red</th><th class="num">Score</th><th>Blue</th><th>Tracking</th><th>Labels</th></tr></thead><tbody>
+  el.innerHTML = `<div class="tablewrap"><table><thead><tr><th>Match</th><th data-pri="800">Red</th><th class="num" data-pri="850">Score</th><th data-pri="790">Blue</th><th data-pri="40">Tracking</th><th data-pri="30" title="team label confidence">Labels</th></tr></thead><tbody>
     ${d.matches.map(m => `<tr>
       <td>${m.state === "done" ? `<a href="#/${ev}/m/${m.key}">${esc(m.label)}</a>` : esc(m.label)}</td>
       <td>${tl(m.red.teams, "red")}</td>
@@ -204,238 +301,10 @@ function matchesTable(el, d, ev) {
       <td>${confBar(m.team_conf ?? m.id_conf)}</td></tr>`).join("")}</tbody></table></div>`;
 }
 
-// ------------------------------------------------------------------ match replay
-let ytReady = null;
-function loadYT() {
-  if (ytReady) return ytReady;
-  ytReady = new Promise(res => {
-    window.onYouTubeIframeAPIReady = () => res(true);
-    const s = document.createElement("script"); s.src = "https://www.youtube.com/iframe_api";
-    s.onerror = () => res(false); document.head.appendChild(s);
-    setTimeout(() => res(!!window.YT && !!window.YT.Player), 8000);
-  });
-  return ytReady;
-}
-
-async function matchPage(ev, key) {
-  const [d, e] = await Promise.all([api(`${ev}/m/${key}.json`), api(`${ev}/event.json`).catch(() => null)]);
-  crumbs([[e ? e.name : ev, `#/${ev}`], [d.label]]); $updated.textContent = "";
-  const N = d.tracks.length ? d.tracks[0].xy.length : 0, hz = d.hz, T = N / hz;
-  const v0 = d.t_start - 0.5;     // video time of replay frame 0
-  const tracks = d.tracks.map(t => {
-    const al = t.alliance, k = d.tracks.filter(x => x.alliance === al).indexOf(t);
-    return { ...t, color: COLORS[al][k % 3], on: true, label: t.team ? num(t.team) : `${al[0].toUpperCase()}${k + 1}` };
-  });
-  // ---- v2: shots, periods
-  const ts0 = d.t_teleop_start, ae0 = d.t_auto_end;
-  const mt2ft = mt => mt < 20 ? mt + 0.5 : ts0 + (mt - 20);
-  const PER = (d.periods && d.periods.length ? d.periods : [["auto", 0, 20], ["transition", 20, 30], ["shift1", 30, 55], ["shift2", 55, 80], ["shift3", 80, 105], ["shift4", 105, 130], ["endgame", 130, 160]]
-    .map(([name, t0, t1]) => ({ name, t0, t1, active: { red: name === "shift1" || name === "shift3" || !/^shift/.test(name), blue: name === "shift2" || name === "shift4" || !/^shift/.test(name) } })))
-    .map(p => ({ ...p, f0: mt2ft(p.t0), f1: p.t1 >= 160 ? Math.min(T, mt2ft(p.t1)) : mt2ft(p.t1) }));
-  const SH = (d.shots || []).map(s => {
-    const o = s.origin, l = s.landing, ft = s.t - v0, dist = Math.hypot(l[0] - o[0], l[1] - o[1]);
-    const vh = s.v0 ? Math.hypot(s.v0[0], s.v0[1]) : 0, tf = Math.max(.35, Math.min(2.5, vh > .5 ? dist / vh : .3 + dist * .12));
-    const ti = s.shooter && s.shooter.track_idx;
-    return { ...s, ft, tf, tr: tracks[ti], ti };
-  }).filter(s => s.tr && !s.unattributed).sort((a, b) => a.ft - b.ft);
-  const SHU = (d.shots || []).filter(s => s.unattributed).map(s => ({ ...s, ft: s.t - v0, al: (s.shooter && s.shooter.alliance) || "red" })).sort((a, b) => a.ft - b.ft);
-  const hasShots = SH.length > 0 || SHU.length > 0, an = d.analytics || null;
-  const $ = id => document.getElementById(id);
-
-  $app.innerHTML = `<h1>${esc(d.label)}</h1>
-    <div class="sub"><a class="btn" href="#/${ev}/a/${key}" style="font-weight:600">Analyze (video + layers)</a> <span class="score r ${d.winner === "red" ? "win" : ""}">${d.red.score}</span> – <span class="score b ${d.winner === "blue" ? "win" : ""}">${d.blue.score}</span>
-     · video: <a href="https://youtu.be/${d.video.id}?t=${Math.floor(v0)}" target="_blank" rel="noopener">${esc(d.video.title)}</a>
-     ${d.start_detected ? "" : ' · <span class="pill no_video" title="match start not detected from motion; using a default offset">start estimated</span>'}
-     ${d.feed_ok < 0.98 ? ` · <span class="pill no_video" title="the field camera was missing from the broadcast for part of this match; stats use only the filmed part">camera footage ${Math.round(d.feed_ok * 100)}%</span>` : ""}</div>
-    <div class="match-layout">
-      <div class="stack"><div class="video"><div id="yt"></div></div>
-        <div class="card"><h2>Robots</h2><div class="tablewrap"><table><thead><tr><th></th><th>Team</th><th class="num">Dist (m)</th><th class="num">Auto (m)</th><th class="num">Top (m/s)</th><th class="num">Own</th><th class="num">Neutral</th><th class="num">Opp.</th><th class="num">Seen</th><th title="team label confidence (tracker v2)">ID conf</th><th class="num" title="bumper-number OCR reads of this team in this match">OCR reads</th></tr></thead>
-          <tbody>${tracks.map(t => `<tr><td><span class="sw" style="background:${t.color}"></span></td>
-            <td>${t.team ? `<a class="team ${t.alliance[0]}" href="#/${ev}/t/${t.team}">${num(t.team)}</a>` : `<span class="muted">${t.label}</span>`}</td>
-            <td class="num">${fx(t.stats.distance_m, 0)}</td><td class="num">${fx(t.stats.auto_distance_m)}</td><td class="num">${fx(t.stats.max_speed)}</td>
-            <td class="num">${pct(t.stats.time_own_zone)}</td><td class="num">${pct(t.stats.time_neutral)}</td><td class="num">${pct(t.stats.time_opp_zone)}</td>
-            <td class="num">${pct(t.stats.observed)}</td><td>${t.manual ? '<span class="pill">manual</span>' : confBar(tconf(t)) + " " + idPill(tconf(t))}</td>
-            <td class="num">${(d.identity && d.identity.per_team_reads && t.team) ? (d.identity.per_team_reads[t.team] || 0) : "–"}</td></tr>`).join("")}</tbody></table></div>
-          ${d.identity ? `<div class="note">Identity: ${esc(d.identity.method || "")}, ${d.identity.n_reads ?? "?"} number reads, ${(d.identity.corrections || []).length} identity corrections
-            (${(d.identity.corrections || []).filter(c => c.anchored).length} anchored by a read). <a href="#/${ev}/a/${key}">See them in Analyze</a>.</div>` : ""}
-          <div class="note">"Seen" is the share of the match the robot was directly detected; elsewhere its path is
-          interpolated (drawn faded). Team labels are inferred across the event; low-confidence ones may be swapped
-          within an alliance.</div></div>
-        ${an ? `<div class="card"><h2>Robot analytics</h2><div class="tablewrap"><table><thead><tr><th></th><th>Team</th><th>Role</th><th class="num">Made/Att</th><th class="num">Acc</th><th class="num">Fire /s</th><th class="num">Volley</th><th class="num">Cycle s</th>
-          <th class="num">Intakes</th><th class="num">Auto</th><th>Climb</th><th class="num">Def s</th><th class="num">Cont.</th><th class="num">Pins</th><th>Flags</th></tr></thead><tbody>
-          ${tracks.map((t, i) => { const a = an[i]; return a ? `<tr><td><span class="sw" style="background:${t.color}"></span></td><td><span class="team ${t.alliance[0]}">${t.label}</span></td><td>${esc(a.role || "")}</td>
-            <td class="num">${a.scoring.made}/${a.scoring.attempts}</td><td class="num">${pct(a.scoring.accuracy)}</td><td class="num">${fx(a.scoring.fire_rate)}</td><td class="num">${a.scoring.volley_size ?? "–"}</td><td class="num">${fx(a.scoring.cycle_s)}</td>
-            <td class="num">${a.collection.intakes}</td><td class="num">${a.auto.made}/${a.auto.shots}${a.auto.routine ? ` <span class="muted">${esc(a.auto.routine)}</span>` : ""}</td>
-            <td>${a.endgame.level ? "L" + a.endgame.level : a.endgame.attempted ? "failed" : "–"}</td><td class="num">${fx(a.defense.time_s)}</td><td class="num">${a.defense.contacts}</td><td class="num">${a.defense.pins}</td>
-            <td>${a.reliability.dead ? '<span class="pill failed">dead</span>' : ""}</td></tr>` : ""; }).join("")}</tbody></table></div>
-          <div class="note">Fuel stats are reconstructed from the broadcast video; counts can differ from the official hub counts. Accuracy = made / attempted (passes excluded).</div></div>` : ""}
-      </div>
-      <div><div class="card"><div class="fieldwrap" id="fw"></div>
-        <div class="controls"><button id="play">▶ Play</button><span class="clock" id="clock">–</span><span class="phase" id="phase"></span>
-          <input type="range" id="scrub" min="0" max="${Math.max(N - 1, 0)}" value="0" step="1"></div>
-        ${hasShots ? `<div class="tl" id="tl"><div class="tlseg" id="tlseg"></div><div class="tlact"><i class="r"></i><i class="b"></i></div><div class="tlhead" id="tlhead"></div></div>` : ""}
-        <div class="controls"><button id="trail" class="on">Trails</button>${hasShots ? '<button id="shots" class="on">Shots</button><button id="allshots">Shot history</button>' : ""}<button id="full">Full paths</button>
-          <button id="speed">1×</button><button id="sync" class="on" title="follow the video">Sync video</button></div>
-        ${hasShots ? `<div class="legendline"><svg width="34" height="10"><line x1="0" y1="5" x2="34" y2="5" stroke="#fff" stroke-width="2.4"/></svg>made
-          <svg width="34" height="10"><line x1="0" y1="5" x2="34" y2="5" stroke="#fff" stroke-width="2.4" stroke-dasharray="5 4"/></svg>missed
-          <svg width="34" height="10"><line x1="0" y1="5" x2="34" y2="5" stroke="#facc15" stroke-width="1.6" stroke-dasharray="1 4" stroke-linecap="round"/></svg>pass
-          <span class="muted small">arc colour = shooter</span></div><div id="sb" class="sb"></div>` : ""}
-        <div class="legend">${tracks.map((t, i) => `<label><input type="checkbox" data-i="${i}" checked>
-          <span class="sw" style="background:${t.color}"></span><span class="team ${t.alliance[0]}">${t.label}</span>
-          ${t.team ? confBar(tconf(t)) : ""}</label>`).join("")}</div></div></div>
-    </div>`;
-  const F = fieldCanvas(document.getElementById("fw"));
-  let f = 0, playing = false, last = 0, trail = true, full = false, speed = 1, sync = true, player = null, alive = true;
-  const scrub = document.getElementById("scrub");
-  let showShots = true, histShots = false, sbKey = "";
-  function drawShots(F, ft) {
-    const { ctx, P, S, c } = F, lw = Math.max(2, c.width / 400);
-    for (const s of SH) {
-      if (s.ft > ft) break;
-      const age = ft - (s.ft + s.tf), landed = age >= 0;
-      if (landed && age > 2.5 && !histShots) continue;
-      const [x0, y0] = P(s.origin[0], s.origin[1]), [x1, y1] = P(s.landing[0], s.landing[1]);
-      const dx = x1 - x0, dy = y1 - y0, L = Math.hypot(dx, dy), cx = (x0 + x1) / 2 - dy * .12, cy = (y0 + y1) / 2 + dx * .12 - L * .12;
-      const u = Math.min(1, (ft - s.ft) / s.tf), col = s.tr.color, pass = s.outcome === "pass", made = s.outcome === "made";
-      const alpha = landed ? (histShots ? Math.max(.18, 1 - age / 2.5 * .8) : 1 - age / 2.5) : 1;
-      ctx.globalAlpha = Math.max(0, alpha) * (s.outcome === "unknown" ? .5 : 1);
-      ctx.strokeStyle = pass ? "#facc15" : col; ctx.lineWidth = pass ? lw * .8 : lw * (made ? 1.15 : 1);
-      ctx.setLineDash(pass ? [1, c.width / 150] : made ? [] : [c.width / 120, c.width / 160]); ctx.lineCap = pass ? "round" : "butt";
-      ctx.beginPath(); ctx.moveTo(x0, y0);
-      const n = Math.max(2, Math.ceil(24 * u));
-      for (let k = 1; k <= n; k++) { const w = u * k / n, a = (1 - w) * (1 - w), b = 2 * (1 - w) * w, e = w * w; ctx.lineTo(a * x0 + b * cx + e * x1, a * y0 + b * cy + e * y1); }
-      ctx.stroke(); ctx.setLineDash([]);
-      if (!landed) {         // ball in flight
-        const w = u, a = (1 - w) * (1 - w), b = 2 * (1 - w) * w, e = w * w;
-        ctx.fillStyle = "#fff"; ctx.beginPath(); ctx.arc(a * x0 + b * cx + e * x1, a * y0 + b * cy + e * y1, Math.max(2.5, c.width / 260), 0, 7); ctx.fill();
-      } else {               // landing marker
-        const r = Math.max(3, c.width / 200);
-        ctx.lineWidth = lw; ctx.strokeStyle = pass ? "#facc15" : made ? col : "#fff";
-        if (made) { ctx.fillStyle = col; ctx.beginPath(); ctx.arc(x1, y1, r, 0, 7); ctx.fill(); ctx.strokeStyle = "#fff"; ctx.stroke(); }
-        else if (pass) { ctx.beginPath(); ctx.arc(x1, y1, r, 0, 7); ctx.stroke(); }
-        else { ctx.beginPath(); ctx.moveTo(x1 - r, y1 - r); ctx.lineTo(x1 + r, y1 + r); ctx.moveTo(x1 + r, y1 - r); ctx.lineTo(x1 - r, y1 + r); ctx.stroke(); }
-        if (s.hub_active === false && made) { ctx.globalAlpha *= .9; ctx.fillStyle = "#000"; ctx.font = `700 ${Math.max(9, c.width / 110)}px system-ui`; ctx.textAlign = "center"; ctx.fillText("0", x1, y1 - r * 1.8); }
-      }
-      ctx.globalAlpha = 1;
-    }
-  }
-  function updateBoard(ft) {
-    if (!hasShots) return;
-    const cnt = tracks.map(() => ({ am: 0, aa: 0, tm: 0, ta: 0, p: 0 }));
-    for (const s of SH) {
-      if (s.ft > ft) break; const k = cnt[s.ti];
-      if (s.outcome === "pass") { k.p++; continue; }
-      const au = s.period === "auto"; if (s.outcome === "made") au ? k.am++ : k.tm++; if (s.outcome === "made" || s.outcome === "missed") au ? k.aa++ : k.ta++;
-    }
-    const un = { red: { m: 0, a: 0, n: 0 }, blue: { m: 0, a: 0, n: 0 } };
-    for (const s of SHU) { if (s.ft > ft) break; const u = un[s.al] || un.red; u.n++; if (s.outcome === "made") u.m++; if (s.outcome === "made" || s.outcome === "missed") u.a++; }
-    const key = JSON.stringify([cnt, un]); if (key === sbKey) return; sbKey = key;
-    const col = al => { const idx = tracks.map((t, i) => t.alliance === al ? i : -1).filter(i => i >= 0), sum = f => idx.reduce((a, i) => a + cnt[i][f], 0);
-      return `<div class="sbcol ${al}"><div class="sbh"><b>${al.toUpperCase()}</b><span>fuel made <b>${sum("am") + sum("tm") + un[al].m}</b>/${sum("aa") + sum("ta") + un[al].a}</span></div>
-        <table><thead><tr><th></th><th class="num">Auto</th><th class="num">Teleop</th><th class="num">Total</th><th class="num">Pass</th></tr></thead><tbody>
-        ${idx.map(i => { const k = cnt[i], t = tracks[i]; return `<tr><td><span class="sw" style="background:${t.color}"></span> <span class="team ${al[0]}">${t.label}</span></td><td class="num">${k.am}/${k.aa}</td><td class="num">${k.tm}/${k.ta}</td><td class="num"><b>${k.am + k.tm}</b>/${k.aa + k.ta}</td><td class="num">${k.p || ""}</td></tr>`; }).join("")}
-        ${SHU.length ? `<tr class="unattr" title="${esc(UNATTR_TIP)}"><td><span class="muted">unattributed</span> <span class="info">i</span></td><td class="num" colspan="2">${un[al].n} shot${un[al].n === 1 ? "" : "s"}</td><td class="num"><b>${un[al].m}</b>/${un[al].a}</td><td></td></tr>` : ""}
-        </tbody></table></div>`; };
-    $("sb").innerHTML = col("red") + col("blue");
-  }
-  function buildTimeline() {
-    if (!hasShots) return;
-    $("tlseg").innerHTML = PER.map(p => `<div class="seg" style="left:${100 * p.f0 / T}%;width:${100 * (p.f1 - p.f0) / T}%" title="${esc(p.name)} ${p.t0}–${p.t1}s"><span>${esc((PLABEL[p.name] || p.name))}</span></div>`).join("");
-    $("tl").querySelector(".tlact").innerHTML = ["r", "b"].map(a => `<div class="row ${a}">${PER.map(p => `<i class="${p.active[a === "r" ? "red" : "blue"] ? "on" : ""}" style="left:${100 * p.f0 / T}%;width:${100 * (p.f1 - p.f0) / T}%"></i>`).join("")}</div>`).join("");
-    $("tl").onclick = e => { const r = $("tl").getBoundingClientRect(); f = Math.max(0, Math.min(N - 1, (e.clientX - r.left) / r.width * N)); if (sync && ytState() != null) player.seekTo(v0 + f / hz, true); draw(); };
-  }
-  const draw = () => {
-    const { ctx, P, S, bg, c } = F; bg(0.95);
-    const fi = Math.max(0, Math.min(N - 1, Math.round(f))), ftNow = f / hz;
-    if (hasShots) {
-      const cur = PER.find(p => ftNow >= p.f0 && ftNow < p.f1);
-      for (const al of ["red", "blue"]) {
-        const [hx, hy] = P(HUBS[al][0], HUBS[al][1]), act = cur ? cur.active[al] : null;
-        ctx.lineWidth = Math.max(2, c.width / 300); ctx.strokeStyle = act ? (al === "red" ? "#ff5a5f" : "#3e8bff") : "#8b98a8"; ctx.globalAlpha = act ? .95 : .45;
-        ctx.setLineDash(act ? [] : [4, 5]); ctx.beginPath(); ctx.arc(hx, hy, S(.75), 0, 7); ctx.stroke(); ctx.setLineDash([]);
-        if (act) { ctx.fillStyle = al === "red" ? "rgba(255,90,95,.18)" : "rgba(62,139,255,.18)"; ctx.fill(); }
-        ctx.globalAlpha = 1;
-      }
-    }
-    for (const t of tracks) {
-      if (!t.on) continue;
-      const a = full ? 0 : trail ? Math.max(0, fi - 3 * hz) : fi;
-      ctx.lineWidth = Math.max(2, c.width / 450); ctx.lineCap = "round"; ctx.lineJoin = "round";
-      for (let i = a + 1; i <= (full ? N - 1 : fi); i++) {
-        const [x0, y0] = P(t.xy[i - 1][0] / 100, t.xy[i - 1][1] / 100), [x1, y1] = P(t.xy[i][0] / 100, t.xy[i][1] / 100);
-        ctx.strokeStyle = t.color;
-        ctx.globalAlpha = (full ? 0.55 : 0.15 + 0.75 * (i - a) / Math.max(1, fi - a)) * (t.obs[i] ? 1 : 0.4);
-        ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke();
-      }
-      ctx.globalAlpha = 1;
-      const [x, y] = P(t.xy[fi][0] / 100, t.xy[fi][1] / 100), s = S(0.91);
-      ctx.fillStyle = t.color; ctx.globalAlpha = t.obs[fi] ? 0.95 : 0.45;
-      ctx.fillRect(x - s / 2, y - s / 2, s, s);
-      ctx.globalAlpha = 1; ctx.strokeStyle = "#0008"; ctx.lineWidth = Math.max(1, c.width / 800); ctx.strokeRect(x - s / 2, y - s / 2, s, s);
-      ctx.font = `700 ${Math.max(11, c.width / 75)}px system-ui`; ctx.textAlign = "center"; ctx.textBaseline = "middle";
-      ctx.fillStyle = "#000c"; ctx.fillText(t.label, x + 1, y - s * 0.95 + 1); ctx.fillStyle = "#fff"; ctx.fillText(t.label, x, y - s * 0.95);
-    }
-    if (hasShots && showShots) drawShots(F, ftNow);
-    const gap = (d.feed_gaps || []).find(([a, b]) => fi / hz >= a && fi / hz < b);
-    if (gap) {
-      ctx.fillStyle = "rgba(13,17,23,.72)"; ctx.fillRect(0, 0, c.width, c.height);
-      ctx.fillStyle = "#e6edf3"; ctx.font = `600 ${Math.max(13, c.width / 40)}px system-ui`; ctx.textAlign = "center";
-      ctx.fillText("No camera feed in the broadcast here", c.width / 2, c.height / 2);
-      ctx.font = `${Math.max(11, c.width / 60)}px system-ui`; ctx.fillStyle = "#8b98a8";
-      ctx.fillText("positions are not known for this stretch", c.width / 2, c.height / 2 + c.width / 30);
-    }
-    const tt = fi / hz, ae = d.t_auto_end, ts = d.t_teleop_start;
-    let clk, ph;
-    if (tt < 0.5) { clk = "0:20"; ph = "pre-match"; }
-    else if (tt < ae) { clk = fmt(20 - (tt - 0.5)); ph = "AUTO"; }
-    else if (tt < ts) { clk = "2:20"; ph = "transition"; }
-    else { clk = fmt(Math.max(0, 140 - (tt - ts))); ph = "TELEOP"; }
-    document.getElementById("clock").textContent = clk; document.getElementById("phase").textContent = ph;
-    scrub.value = fi;
-    if (hasShots) { updateBoard(ftNow); $("tlhead").style.left = (100 * Math.min(1, ftNow / T)) + "%"; }
-  };
-  const fmt = s => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
-  const setPlaying = p => { playing = p; document.getElementById("play").textContent = p ? "❚❚ Pause" : "▶ Play"; };
-  const loop = ts => {
-    if (!alive) return;
-    const st = ytState();
-    if (sync && (st === 1 || st === 2 || st === 3)) {
-      f = (player.getCurrentTime() - v0) * hz; setPlaying(st === 1);
-    } else if (playing) {
-      f += (ts - last) / 1000 * hz * speed;
-      if (f >= N - 1) { f = N - 1; setPlaying(false); }
-    }
-    last = ts; draw(); requestAnimationFrame(loop);
-  };
-  requestAnimationFrame(t => { last = t; loop(t); });
-  const ytState = () => { try { return player && player.getPlayerState ? player.getPlayerState() : null; } catch (e) { return null; } };
-  const standalone = () => { if (f >= N - 1) f = 0; setPlaying(!playing); };
-  document.getElementById("play").onclick = () => {
-    const st = ytState();
-    if (!sync || st == null) return standalone();
-    if (st === 1) { player.pauseVideo(); return; }
-    if (playing) { setPlaying(false); return; }
-    player.seekTo(v0 + f / hz, true); player.playVideo();
-    setTimeout(() => {           // video blocked / unavailable: run the replay on its own
-      if (alive && ![1, 3].includes(ytState())) { sync = false; document.getElementById("sync").classList.remove("on"); setPlaying(true); }
-    }, 2500);
-  };
-  scrub.oninput = () => { f = +scrub.value; if (sync && ytState() != null) player.seekTo(v0 + f / hz, true); draw(); };
-  const tog = (id, fn) => { const b = document.getElementById(id); b.onclick = () => b.classList.toggle("on", fn()); };
-  if (hasShots) { tog("shots", () => (showShots = !showShots)); tog("allshots", () => (histShots = !histShots)); buildTimeline(); }
-  tog("trail", () => (trail = !trail)); tog("full", () => (full = !full));
-  tog("sync", () => { sync = !sync; if (!sync && player && player.pauseVideo) player.pauseVideo(); return sync; });
-  document.getElementById("speed").onclick = e => { speed = speed === 1 ? 2 : speed === 2 ? 4 : speed === 4 ? 0.5 : 1; e.target.textContent = speed + "×"; };
-  document.querySelectorAll(".legend input").forEach(cb => cb.onchange = () => { tracks[+cb.dataset.i].on = cb.checked; });
-  const onResize = () => F.size(); window.addEventListener("resize", onResize);
-  cleanup.push(() => { alive = false; window.removeEventListener("resize", onResize); try { player && player.destroy(); } catch (e) { } });
-  if (await loadYT() && alive) {
-    player = new YT.Player("yt", { videoId: d.video.id, playerVars: { start: Math.floor(v0), rel: 0, modestbranding: 1, playsinline: 1 } });
-  } else {
-    document.getElementById("yt").innerHTML = `<div class="empty">Video unavailable here. <a href="https://youtu.be/${d.video.id}" target="_blank">Open on YouTube</a></div>`;
-    sync = false; document.getElementById("sync").classList.remove("on");
-  }
-}
+// ------------------------------------------------------------------ match page
+// One match page: the viewer in player.js (video / field / overlay, one View menu) with the Teams panel and Robots summary.
+// #/<ev>/a/<key> is the same page (kept for old links and the defense library's ?t=<video s>).
+const matchPage = (ev, key) => analyzePage(ev, key);
 
 // ------------------------------------------------------------------ shell: one navigation that never moves
 // Sidebar (desktop) / bottom tab bar + "More" sheet (phone) built from CS.nav items. Every section is always listed in

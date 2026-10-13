@@ -117,7 +117,7 @@ function chipRow(el, opts, cur, cb) {       // single-select chips
 // ------------------------------------------------------------------ team page
 const ROLE_TXT = { scorer: "Scorer", feeder: "Feeder / passer", collector: "Collector", defender: "Defender", hybrid: "Hybrid" };
 function section(id, title, body, note = "") {
-  return `<section class="card sect" id="s-${id}"><h2>${title}</h2>${body}${note ? `<div class="note">${note}</div>` : ""}</section>`;
+  return `<section class="card sect" id="s-${id}"><h2>${title}${note ? " " + CS.help(note, "About " + String(title).replace(/<[^>]*>/g, "").toLowerCase()) : ""}</h2>${body}</section>`;
 }
 
 // start spot in words (team frame: own wall at x = 16.54 m, driver's left = low y), not raw metres
@@ -151,11 +151,11 @@ async function teamPage(ev, tk) {
     <div class="sub">${d.rank ? `Rank ${d.rank} · ` : ""}${d.opr != null ? `OPR ${fx(d.opr)} · ` : ""}${CV.n} verified match${CV.n === 1 ? "" : "es"}${CV.of ? ` of ${CV.of} played` : ""}${d.tracked > CV.n ? ` <span class="muted small">(${d.tracked - CV.n} replay-only)</span>` : ""}
       ${role ? ` · <span class="pill role">${ROLE_TXT[val(role)] || val(role)}</span>` : ""}
       · ${covPill(CV)} ${flagChips(SR)} · <a href="https://www.thebluealliance.com/team/${d.number}/${(e && e.year) || ""}" target="_blank" rel="noopener">TBA</a></div></div>
-    <button id="star" class="${starred ? "on" : ""}">${starred ? "★ Starred" : "☆ Star"}</button></div>
+    <button id="star" class="${starred ? "on" : ""}" aria-pressed="${starred}">${starred ? "★ Starred" : "☆ Star"}</button></div>
     <nav class="jump">${navs.map(([k, l]) => `<a href="#" data-j="${k}">${l}</a>`).join("")}</nav>
     ${ag ? "" : `<div class="card empty">No quantitative analytics for this team yet.</div>`}
     ${dataBanner(scd)}
-    <section class="card sect"><h2>Scouting truth <span class="muted small">same numbers as Teams, Specs, Compare, Picklist · video: ${CV.n ? esc(label_(CV)) : "no verified video"}</span></h2>
+    <section class="card sect"><h2>Scouting truth ${CS.help(`<span class="hl">The same canonical numbers as Teams, Specs, Compare and Picklist.</span><span class="hl">Video: ${CV.n ? esc(label_(CV)) : "no verified video"}.</span>${(SR.flags || []).map(f => `<span class="hl">${esc(f.text)}</span>`).join("")}`, "Where these numbers come from")}</h2>
       <div class="sc-truth">
         <div><b>${has(RT.blend) ? fx(RT.blend) : "–"}<span class="sc-sd">±${fx(RT.sd, 0)}</span></b><span>Blend rating (pts/match)</span></div>
         <div><b>${fx(RT.epa)}</b><span>EPA, local as-of (TBA only)</span></div><div><b>${fx(d.opr)}</b><span>OPR (TBA)</span></div>
@@ -166,9 +166,9 @@ async function teamPage(ev, tk) {
         <div><b>${!(SR.trend && SR.trend.tba) ? "–" : SR.trend.tba.verdict === "flat" ? `<span class="muted">no clear trend</span>` : `${SR.trend.tba.diff > 0 ? "+" : ""}${SR.trend.tba.diff}<span class="sc-sd">${SR.trend.tba.ci[0]}…${SR.trend.tba.ci[1]}</span>`}</b><span title="alliance score minus fouls drawn minus partners' blend, last 4 quals vs earlier; shown only when the 90% interval excludes 0${SR.trend && SR.trend.tba ? ` (now ${SR.trend.tba.diff}, ${SR.trend.tba.ci[0]}…${SR.trend.tba.ci[1]})` : ""}">TBA trend, last 4</span></div>
         <div><b>${SR.trend && SR.trend.blend ? spark(SR.trend.blend.map(x => x[1]), { color: "#7cb4ff" }) : "–"}</b><span>Blend over the event${SR.trend && SR.trend.blend ? ` (${fx(SR.trend.blend[0][1], 0)} → ${fx(SR.trend.blend.slice(-1)[0][1], 0)})` : ""}</span></div>
       </div>
-      ${(SR.flags || []).length ? `<div class="note">${SR.flags.map(f => esc(f.text)).join("<br>")}</div>` : ""}
-      ${!tainted && d.matches.some(m => !m.verified) ? `<div class="note">All sections below use verified matches only (${CV.n}); ${esc(d.matches.filter(m => !m.verified).map(m => m.short).join(", "))} were tracked without verified identity and are replay-only.</div>` : ""}
-      ${tainted ? `<div class="note">Matches tracked without verified identity (${esc(d.matches.filter(m => !m.verified).map(m => m.short).join(", "))}) are replay-only: excluded from the shot chart, autos and trends; the intake map, heatmap and routine clusters are hidden because they mix them in.</div>` : ""}</section>
+      ${d.matches.some(m => !m.verified) ? `<div class="note">Verified matches only (${CV.n}) · ${esc(d.matches.filter(m => !m.verified).map(m => m.short).join(", "))} replay-only ${CS.help(tainted
+        ? "Matches tracked without verified identity are replay-only: excluded from the shot chart, autos and trends; the intake map, heatmap and routine clusters are hidden because they mix them in."
+        : "Every section below uses verified matches only. The listed matches were tracked without verified identity (v1 tracks or confidence under 60%) and are replay-only.", "Why some matches are replay-only")}</div>` : ""}</section>
     <div class="trends" style="${ms.filter(m => m.verified).length < 3 ? "display:none" : ""}">${trend("Accuracy", tr(a => a.scoring.accuracy), "p", C_MADE)}${trend("Made", tr(a => a.scoring.made), "0", "#7cb4ff")}${trend("Attempts", tr(a => a.scoring.attempts), "0", "#7cb4ff")}
       ${trend("Cycle s", tr(a => a.scoring.cycle_s), "1", "#fbbf24")}${trend("Dist m", tr(a => a.movement.distance_m), "0", "#a78bfa")}${trend("Defense s", tr(a => a.defense.time_s), "1", "#fb7185")}</div>
     <div class="stackv">
@@ -183,7 +183,7 @@ async function teamPage(ev, tk) {
         ${tile("1st shot (auto)", S.first_shot_auto, "1", " s")}${tile("1st shot (teleop)", S.first_shot_teleop, "1", " s")}</div>
       <h3>By period <span class="muted small">(made / attempts per match)</span></h3>${S.by_period ? periodBars(S.by_period) : ""}`,
       "Aggregates are per-match means over tracked matches. n = matches the metric was available in; the bar is confidence (coverage × sample size).")}
-    ${section("shots", "Shot chart", `<div class="chips" id="sc-p"></div><div class="chips" id="sc-m"></div><div id="shotmap"></div>
+    ${section("shots", "Shot chart", `<div class="chipbar"><div class="chips" id="sc-p"></div><div class="chips" id="sc-m"></div></div><div id="shotmap"></div>
       <div class="legendline"><i style="background:${C_MADE}"></i>made <i style="background:${C_MISS}"></i>missed <i style="background:${C_PASS}"></i>pass <span class="muted small" id="sc-n"></span></div>`,
       "Launch positions from the team's own end (own alliance wall on the left, hub ringed). Density shows where it shoots from, all attempts.")}
     ${section("intake", "Intake map", `<div id="intakemap"></div>
@@ -208,14 +208,14 @@ async function teamPage(ev, tk) {
     ${section("rel", "Reliability & role", `<div class="grid2"><div class="tiles">${tile("Dead matches", has(RL.dead_matches) ? { v: RL.dead_matches, n: RL.n } : null, "0", "", "no movement for 15 s or more mid-match, not climbing")}
         ${tile("Avg dead time", RL.mean_dead_s, "1", " s")}${tile("Low-coverage matches", has(RL.low_coverage_matches) ? RL.low_coverage_matches : null, "0")}</div>
       <div>${role ? `<h3>Role <span class="pill role">${ROLE_TXT[val(role)] || val(role)}</span> ${confBar(mc(role), "role confidence")} <span class="muted small">n=${mn(role)}</span></h3>${role.scores ? bars(Object.entries(role.scores).sort((a, b) => b[1] - a[1]).map(([k, v]) => [ROLE_TXT[k] || k, v, 1, pct(v)])) : ""}` : ""}</div></div>`)}
-    ${section("matches", "Matches", `<div class="tablewrap"><table><thead><tr><th>Match</th><th>All.</th><th class="num">Made/Att</th><th class="num">Acc</th><th class="num">Fire /s</th><th class="num">Volley</th><th class="num">Cycle s</th>
-      <th class="num">Intakes</th><th>Auto</th><th class="num">Auto made</th><th>Climb</th><th class="num">Def s</th><th class="num">Cont.</th><th class="num">Pins</th><th class="num">Dist m</th><th title="verified identity (v2, ≥ 60%)">Verified</th><th>Flags</th></tr></thead>
-      <tbody>${ms.map((m, i) => { const a = an[i]; const lo = mcf(m) != null && mcf(m) < IDC.low; if (!m.verified) return `<tr class="sc-dis"><td><a href="#/${ev}/m/${m.match}">${esc(m.short)}</a></td><td class="${m.alliance[0]}">${m.alliance[0].toUpperCase()}</td><td colspan="14" class="muted">identity not verified (v1 tracks or confidence &lt; 60%): replay only, feeds no numbers</td><td></td></tr>`;
+    ${section("matches", "Matches", `<div class="tablewrap"><table><thead><tr><th>Match</th><th>All.</th><th class="num" data-pri="800">Made/Att</th><th class="num" data-pri="700">Acc</th><th class="num" data-pri="200">Fire /s</th><th class="num" data-pri="190">Volley</th><th class="num" data-pri="300">Cycle s</th>
+      <th class="num" data-pri="180">Intakes</th><th data-pri="120">Auto</th><th class="num" data-pri="500">Auto made</th><th data-pri="450">Climb</th><th class="num" data-pri="170">Def s</th><th class="num" data-pri="160">Cont.</th><th class="num" data-pri="150">Pins</th><th class="num" data-pri="140">Dist m</th><th title="verified identity (v2, ≥ 60%)" data-pri="250">Verified</th><th data-pri="400">Flags</th></tr></thead>
+      <tbody>${ms.map((m, i) => { const a = an[i]; const lo = mcf(m) != null && mcf(m) < IDC.low; if (!m.verified) return `<tr class="sc-dis"><td><a href="#/${ev}/m/${m.match}">${esc(m.short)}</a></td><td class="${m.alliance[0]}">${m.alliance[0].toUpperCase()}</td><td colspan="15" class="muted wrapc" title="identity not verified (v1 tracks or confidence &lt; 60%): replay only, feeds no numbers">not verified · replay only</td></tr>`;
         return `<tr><td><a href="#/${ev}/m/${m.match}">${esc(m.short)}</a></td><td class="${m.alliance[0]}">${m.alliance[0].toUpperCase()}</td>` + (a ? `
         <td class="num">${a.scoring.made}/${a.scoring.attempts}</td><td class="num">${fmtV(a.scoring.accuracy, "p")}</td><td class="num">${fmtV(a.scoring.fire_rate)}</td><td class="num">${fmtV(a.scoring.volley_size, "0")}</td><td class="num">${fmtV(a.scoring.cycle_s)}</td>
         <td class="num">${a.collection.intakes}</td><td>${esc(a.auto.routine || "–")}</td><td class="num">${a.auto.made}/${a.auto.shots}</td><td>${a.endgame.level ? "L" + a.endgame.level : a.endgame.attempted ? "failed" : "–"}</td>
         <td class="num">${fmtV(a.defense.time_s)}</td><td class="num">${a.defense.contacts}</td><td class="num">${a.defense.pins}</td><td class="num">${fmtV(a.movement.distance_m, "0")}</td><td>✓</td>
-        <td>${a.reliability.dead ? '<span class="pill failed">dead</span>' : ""}${a.reliability.low_coverage ? '<span class="pill no_video">low cov.</span>' : ""}</td>` : `<td colspan="13" class="muted">no analytics</td><td>✓</td>`) + `</tr>`; }).join("")
+        <td>${a.reliability.dead ? '<span class="pill failed">dead</span>' : ""}${a.reliability.low_coverage ? '<span class="pill no_video">low cov.</span>' : ""}</td>` : `<td colspan="13" class="muted wrapc">no analytics</td><td>✓</td>`) + `</tr>`; }).join("")
         || `<tr><td colspan="16" class="empty">No tracked matches yet</td></tr>`}</tbody></table></div>`)}
     </div>`;
 
@@ -224,7 +224,7 @@ async function teamPage(ev, tk) {
     const p = typeof plLoad === "function" ? await plLoad(ev) : lsGet("cyberscout:picks:" + ev, {}); p.stars = p.stars || [];
     const i = p.stars.indexOf(tk); i >= 0 ? p.stars.splice(i, 1) : p.stars.push(tk);
     typeof plSave === "function" ? plSave(ev, p) : lsSet("cyberscout:picks:" + ev, p);
-    e_.target.classList.toggle("on", i < 0); e_.target.textContent = i < 0 ? "★ Starred" : "☆ Star";
+    e_.target.classList.toggle("on", i < 0); e_.target.setAttribute("aria-pressed", i < 0); e_.target.textContent = i < 0 ? "★ Starred" : "☆ Star";
   };
 
   // shot chart
@@ -249,7 +249,7 @@ async function teamPage(ev, tk) {
   document.getElementById("allautos").onchange = e_ => { showAll = e_.target.checked; AC.redraw(); };
   const rdiv = document.getElementById("routines");
   const drawR = () => {
-    rdiv.innerHTML = routines.length ? `<div class="tablewrap"><table><thead><tr><th>Routine</th><th class="num">Used</th><th class="num">Shots</th><th class="num">Made</th><th class="num">Neutral</th><th class="num">Consist.</th></tr></thead><tbody>
+    rdiv.innerHTML = routines.length ? `<div class="tablewrap"><table><thead><tr><th>Routine</th><th class="num">Used</th><th class="num" data-pri="300">Shots</th><th class="num" data-pri="400">Made</th><th class="num" data-pri="200">Neutral</th><th class="num" data-pri="100">Consist.</th></tr></thead><tbody>
       ${routines.map(r => `<tr class="${r.id === selR ? "sel" : ""} clk" data-r="${r.id}"><td><b>${esc(r.name || r.id)}</b><div class="small muted">start ${spotTxt(r.start_xy)} · ${esc((r.matches || []).join(", "))}</div></td>
       <td class="num">${r.n}/${r.of}<div class="bartiny"><i style="width:${100 * (r.freq ?? r.n / r.of)}%"></i></div></td><td class="num">${fx(r.shots_avg)}</td><td class="num">${fx(r.made_avg)}</td><td class="num">${pct(r.neutral_cross_rate)}</td><td class="num">${pct(r.consistency)}</td></tr>`).join("")}</tbody></table></div>`
       : `<div class="empty">No routines clustered yet.</div>`;

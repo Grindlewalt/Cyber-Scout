@@ -299,8 +299,7 @@
       form($app, async d => { await CS.app("PATCH", "settings", { team_number: +d.team }); next(); });
     } else if (step === "goal") {
       const cur = st.s.season_goal || "", known = GOALS.some(g => g[0] === cur);
-      $app.innerHTML = head + `<div class="card" style="max-width:620px"><h2>Season goal</h2>
-        <div class="note" style="margin:0 0 12px">The Rankings &amp; goals page tracks how close you are to this (points still needed, odds, what each match is worth).</div>
+      $app.innerHTML = head + `<div class="card" style="max-width:620px"><h2>Season goal ${CS.help("The Rankings &amp; goals page tracks how close you are to this (points still needed, odds, what each match is worth).", "What the season goal is for")}</h2>
         <form class="csform">${GOALS.map(([v, t]) => `<label style="display:flex;gap:8px;align-items:center;color:var(--text)"><input type="radio" name="goal" value="${esc(v)}" style="width:auto" ${cur === v ? "checked" : ""}> ${esc(t)}</label>`).join("")}
           <label style="display:flex;gap:8px;align-items:center;color:var(--text)"><input type="radio" name="goal" value="__other" style="width:auto" ${cur && !known ? "checked" : ""}> Other:
             <input name="other" maxlength="40" value="${known ? "" : esc(cur)}" style="flex:1"></label>
@@ -311,8 +310,7 @@
         await CS.app("PATCH", "settings", { season_goal: g }); next();
       });
     } else if (step === "event") {
-      $app.innerHTML = head + `<div class="card"><h2>Which event(s) should Cyber-Scout follow?</h2>
-        <div class="note" style="margin:0 0 4px">It processes every match of a followed event as soon as the video is up. You can follow several and change this later in Admin.</div>
+      $app.innerHTML = head + `<div class="card"><h2>Which event(s) should Cyber-Scout follow? ${CS.help("It processes every match of a followed event as soon as the video is up. You can follow several and change this later in Admin.", "What following an event does")}</h2>
         <div id="picker"></div><div class="controls"><button class="primary" id="cont" ${st.evs.length ? "" : "disabled"}>Continue</button></div></div>`;
       CS.eventPicker($app.querySelector("#picker"), { onFollow: () => CS.app("GET", "events").then(l => { $app.querySelector("#cont").disabled = !l.length; }) });
       $app.querySelector("#cont").onclick = next;

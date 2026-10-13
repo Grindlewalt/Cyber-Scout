@@ -80,14 +80,13 @@
       const evn = (g.events || []).find(x => x.event === e.event);
       const rows = (e.by_rank || []).map(r => `<tr><td>${H(r.outcome)}</td><td class="num">${P(r.share)}</td><td class="num"><b>${P(r.p_goal)}</b></td></tr>`).join("");
       const rows2 = (e.by_points || []).map(r => `<tr><td>${H(r.outcome)}</td><td class="num">${n0(r.points)} pts</td><td class="num"><b>${P(r.p_goal)}</b></td></tr>`).join("");
-      return `<div class="tablewrap"><div class="small"><b>${H(evn?.name || e.event)}</b> <span class="muted">odds given how the event goes (conditional, not causal)</span></div>
+      return `<div class="tablewrap"><div class="small"><b>${H(evn?.name || e.event)}</b> ${CS.help("Goal odds given how this event goes: conditional, not causal.", "How to read these odds")}</div>
         <table class="mini"><thead><tr><th>Outcome</th><th class="num">Chance</th><th class="num">P(goal)</th></tr></thead><tbody>${rows}${rows2}</tbody></table></div>`;
     }).join("");
     return `<section class="card goalcard">
-      <div><div class="muted small">SEASON GOAL · ${H(goalName)} · ${tn(g.team)}</div>
+      <div><div class="muted small">SEASON GOAL · ${H(goalName)} · ${tn(g.team)} ${CS.help(`${g.dcmp ? `<span class="hl">DCMP capacity ${g.dcmp.capacity} (about ${n0(g.dcmp.points_slots_mean)} places left for points after award pre-qualifiers).</span>` : ""}<span class="hl">Model: ${H(g.model?.theta || "")}; ${g.model?.sims} simulated seasons, alliance score sd ${n0(g.model?.sigma_alliance)}. District points follow the game manual (first two events + DCMP).</span><span class="hl">Bar: green = your projected points (10–90%), yellow = projected cutoff.</span>`, "How the season goal is projected")}</div>
         <div class="bigp ${col}">${P(p)}<small>${g.awards ? H(g.awards.headline) + " · " : ""}90% range ${P(ci[0])}–${P(ci[1])}${g.p_dcmp != null ? ` · DCMP ${P(g.p_dcmp)}` : ""}${g.dcmp?.is_prequalified ? " · pre-qualified by award" : ""}</small></div>
-        ${g.awards ? `<div class="small" style="margin-top:6px" title="${H(g.awards.note)}">${g.awards.contender ? `without awards ${P(g.awards.p_no_awards)}` : `+ random awards: <b>${P(g.awards.p_with_awards)}</b>`} · if we win Impact/EI: ${P(g.awards.p_if_impact_or_ei)}</div>` : ""}${bar}
-        <div class="small muted">green = your projected points (10–90%), yellow = projected cutoff</div></div>
+        ${g.awards ? `<div class="small" style="margin-top:6px" title="${H(g.awards.note)}">${g.awards.contender ? `without awards ${P(g.awards.p_no_awards)}` : `+ random awards: <b>${P(g.awards.p_with_awards)}</b>`} · if we win Impact/EI: ${P(g.awards.p_if_impact_or_ei)}</div>` : ""}${bar}</div>
       <div>
         <div class="tiles">
           <div class="tile"><div class="k">Points now</div><div class="v">${n0(g.current_points)}</div></div>
@@ -98,9 +97,8 @@
           <div class="tile"><div class="k">For 80% / 95%</div><div class="v">${n0(pn.p80?.still_needed)}<small>/ ${n0(pn.p95?.still_needed)} pts</small></div></div>
         </div>
         <h3>Events</h3>${evs || '<div class="muted small">No registered events.</div>'}
-        ${vm ? `<h3>Value of each remaining qual <span class="muted" style="text-transform:none">change in goal odds, win vs loss</span></h3>${vm}` : ""}
+        ${vm ? `<h3>Value of each remaining qual ${CS.help("Change in goal odds if we win vs lose that qual.", "What this value means")}</h3>${vm}` : ""}
         ${vev ? `<h3>What each event is worth</h3><div class="grid2">${vev}</div>` : ""}
-        <div class="note">${g.dcmp ? `DCMP capacity ${g.dcmp.capacity} (about ${n0(g.dcmp.points_slots_mean)} places left for points after award pre-qualifiers). ` : ""}Model: ${H(g.model?.theta || "")}; ${g.model?.sims} simulated seasons, alliance score sd ${n0(g.model?.sigma_alliance)}. District points follow the game manual (first two events + DCMP).</div>
       </div></section>`;
   }
 
@@ -118,12 +116,13 @@
       return (x - y) * S.sort.dir;
     });
     const maxDp = Math.max(1, ...rows.map(r => r.district?.p90 || 0));
-    const th = c => `<th data-k="${c[0]}" class="${c[3]}${c[0] === key ? " sorted" : ""}">${c[1]}${c[0] === key ? (S.sort.dir > 0 ? " ▲" : " ▼") : ""}</th>`;
+    const RPRI = { rank: 1000, team: 990, rs: 800, rp: 700, pr: 600, t8: 500, dc: 450, dn: 400, dp: 350, rec: 300 };
+    const th = c => `<th data-k="${c[0]}" data-pri="${RPRI[c[0]] ?? 100}" class="${c[3]}${c[0] === key ? " sorted" : ""}">${c[1]}${c[0] === key ? (S.sort.dir > 0 ? " ▲" : " ▼") : ""}</th>`;
     const prbar = r => { const p = r.projection; if (!p) return ""; const L = v => ((v - 1) / Math.max(1, N - 1) * 100).toFixed(1);
       return `<span class="prb" title="mean ${n0(p.rank_mean, 1)}, 10–90%: ${p.rank_p10}–${p.rank_p90}"><i class="rg" style="left:${L(p.rank_p10)}%;width:${Math.max(2, L(p.rank_p90) - L(p.rank_p10))}%"></i><i class="mn" style="left:${L(p.rank_mean)}%"></i></span><span class="small">${n0(p.rank_mean, 1)} <span class="muted">${p.rank_p10}–${p.rank_p90}</span></span>`; };
     const dpbar = r => { const q = r.district; if (!q || q.projected == null) return ""; const X = v => (v / maxDp * 100).toFixed(1);
       return `<span class="dp" title="projected ${n0(q.projected)}, 10–90%: ${n0(q.p10)}–${n0(q.p90)}"><i style="left:${X(q.p10)}%;width:${Math.max(2, X(q.p90) - X(q.p10))}%"></i><b style="left:${X(q.projected)}%"></b></span><span class="small">${n0(q.projected)} <span class="muted">${n0(q.p10)}–${n0(q.p90)}</span></span>`; };
-    return `<section class="card"><h2>Qualification rankings <span class="muted small">${d.quals_played}/${d.quals_total} quals played · RS = RP per match · projection = Monte Carlo of the remaining quals</span></h2>
+    return `<section class="card"><h2>Qualification rankings <span class="muted small">${d.quals_played}/${d.quals_total} quals played</span> ${CS.help(`<span class="hl">RS = RP per match. Projection = Monte Carlo of the remaining quals (mean and 10–90% range). Tap a header to sort.</span>${d.district ? `<span class="hl">Current district points count a team's first two district events (all points from finished events: qualification, alliance selection, playoffs, awards) plus rookie bonus. The playing event contributes once it finishes; its projection uses the simulated qualification, alliance selection, playoffs and awards.</span>` : ""}`, "How rankings are projected")}</h2>
       <div class="tablewrap"><table class="rate rkt"><thead><tr>${COLS.map(th).join("")}</tr></thead><tbody>
       ${sorted.map(r => `<tr class="${r.team === d.team ? "usrow" : ""}">
         <td class="num">${r.rank ?? "–"}</td><td class="tm"><a href="#/${S.ev}/t/${r.team}"><b>${r.number}</b> <span class="muted nick">${H(r.nickname || "")}</span></a></td>
@@ -131,8 +130,7 @@
         <td>${prbar(r)}</td><td class="num">${P(r.projection?.p_top8)}</td>
         <td class="num">${r.district ? n0(r.district.current) : "–"}</td><td>${dpbar(r)}</td>
         <td class="num">${r.district ? P(r.district.p_dcmp) : "–"}</td></tr>`).join("")}
-      </tbody></table></div>
-      ${d.district ? '<div class="note">Current district points count a team\'s first two district events (all points from finished events: qualification, alliance selection, playoffs, awards) plus rookie bonus. The playing event contributes once it finishes; its projection uses the simulated qualification, alliance selection, playoffs and awards.</div>' : ""}</section>`;
+      </tbody></table></div></section>`;
   }
 
   function wire(d) {
@@ -169,13 +167,13 @@
     if (d.status !== "projected" && d.status !== "fixed" || !u) {
       if (d.actual) return head + `<section class="card"><h3 style="margin-top:0">Actual alliances (event finished)</h3>
         ${d.actual_us ? `<div class="need">${tm}: ${d.actual_us.seed ? `A${d.actual_us.seed} ${ROLE_SHORT[d.actual_us.role] || d.actual_us.role}` : "not selected"} · ${n0(d.actual_us.event_points)} event pts · DCMP ${P5(d.actual_us.p_dcmp)}</div>` : ""}
-        <div class="tablewrap"><table class="mini"><thead><tr><th>Seed</th><th>Captain</th><th>R1</th><th>R2</th><th>Backup</th><th>Result</th></tr></thead><tbody>
+        <div class="tablewrap"><table class="mini"><thead><tr><th>Seed</th><th>Captain</th><th data-pri="800">R1</th><th data-pri="700">R2</th><th data-pri="300">Backup</th><th data-pri="600">Result</th></tr></thead><tbody>
         ${d.actual.map(a => `<tr><td>A${a.seed}</td>${[0, 1, 2, 3].map(i => { const t = a.picks[i]; return `<td class="${t === d.team ? "pos" : ""}">${t ? `<b>${tn(t)}</b> <span class="muted small">${n0(a.points[t])} pts</span>` : "–"}</td>`; }).join("")}<td>${H(a.status || "")}</td></tr>`).join("")}</tbody></table></div>
         <div class="small muted">Pick an earlier time in the toolbar to see the projection as it stood before selection.</div></section>`;
       return head + `<section class="card"><div class="empty">${d.status === "done" ? "This event is finished: district points are final, so there is no draft left to project. Pick an earlier time in the toolbar to see the projection as it stood." : "No selection projection for this event (not a district event, or the simulation was unavailable)."}</div></section>`;
     }
     const nd = u.need;
-    const who = (u.picked_by || []).map(x => `<tr><td><a href="#/${S.ev}/t/${x.captain}"><b>${tn(x.captain)}</b></a> <span class="muted small">${H((d.teams.find(t => t.team === x.captain) || {}).nickname || "").slice(0, 22)}</span></td><td colspan="2" class="small">${(x.slots || [x]).map(z => `A${z.seed} ${ROLE_SHORT[z.role]}`).join(", ")}</td><td class="num"><span class="hbar" style="width:${Math.round(x.p * 300)}px"></span>${P5(x.p)}</td></tr>`).join("");
+    const who = (u.picked_by || []).map(x => `<tr><td><a href="#/${S.ev}/t/${x.captain}"><b>${tn(x.captain)}</b></a> <span class="muted small">${H((d.teams.find(t => t.team === x.captain) || {}).nickname || "").slice(0, 22)}</span></td><td class="small wrapc">${(x.slots || [x]).map(z => `A${z.seed} ${ROLE_SHORT[z.role]}`).join(", ")}</td><td class="num"><span class="hbar" style="width:${Math.round(x.p * 90)}px"></span>${P5(x.p)}</td></tr>`).join("");
     const outs = (u.outcomes || []).filter(o => o.share >= 0.01).map(o => {
       const pl = o.playoffs || {};
       return `<tr><td><b>${o.seed ? "A" + o.seed + " " : ""}${ROLE_SHORT[o.role]}</b></td><td class="num">${P5(o.share)}</td><td class="num">${n0(o.event_points)}</td>
@@ -200,26 +198,22 @@
         <div class="kpis" style="margin-top:6px"><div class="kpi"><div class="k">Captain</div><div class="v">${P5(u.p_captain)}</div></div><div class="kpi"><div class="k">R1 pick</div><div class="v">${P5(u.p_r1)}</div></div>
           <div class="kpi"><div class="k">R2 pick</div><div class="v">${P5(u.p_r2)}</div></div><div class="kpi"><div class="k">Not picked</div><div class="v">${P5(u.p_unpicked)}</div></div>
           <div class="kpi" title="headline: no award for us at the remaining events; + awards = with random awards"><div class="k">DCMP (no awards)</div><div class="v">${P5(u.p_dcmp)}</div><div class="small muted">+awards ${P5(u.p_dcmp_with_awards)}</div></div><div class="kpi"><div class="k">Proj. rank</div><div class="v">${n0(u.rank_mean, 1)}</div></div></div>
-        ${nd ? `<h3>DCMP need, in pick terms</h3><div class="need"><b>${H(nd.text)}</b></div><div class="small muted">Season so far ${nd.current_points} pts; median projected cutoff ${n0(nd.final_points)} → ${n0(nd.need_here)} needed here, qual points ~${n0(nd.qual_points_median)} (median rank). ${H(nd.note)}.</div>${grid}
-          <div class="small muted">Cell = least playoff result that reaches the need from that slot (✕ = not even a win); % = chance that alliance seed gets at least that far in the simulation.</div>` : ""}
+        ${nd ? `<h3>DCMP need, in pick terms ${CS.help(`<span class="hl">Season so far ${nd.current_points} pts; median projected cutoff ${n0(nd.final_points)} → ${n0(nd.need_here)} needed here, qual points ~${n0(nd.qual_points_median)} (median rank). ${H(nd.note)}.</span><span class="hl">Grid cell = least playoff result that reaches the need from that slot (✕ = not even a win); % = chance that alliance seed gets at least that far in the simulation.</span>`, "How the need is computed")}</h3><div class="need"><b>${H(nd.text)}</b></div>${grid}` : ""}
       </div><div>
-        <h3>Who picks ${tm}</h3><div class="tablewrap"><table class="mini"><thead><tr><th>Captain</th><th colspan="2">As (most likely first)</th><th class="num">Chance</th></tr></thead><tbody>${who || '<tr><td colspan="4" class="muted">nobody in the simulation</td></tr>'}</tbody></table></div>
+        <h3>Who picks ${tm}</h3><div class="tablewrap"><table class="mini"><thead><tr><th>Captain</th><th data-pri="500">As (most likely first)</th><th class="num" data-pri="950">Chance</th></tr></thead><tbody>${who || '<tr><td colspan="3" class="muted">nobody in the simulation</td></tr>'}</tbody></table></div>
         <h3>Pitch cards</h3>${pitches}
       </div></div></section>
       <div style="height:14px"></div>
-      <section class="card"><div class="grid"><div><h3 style="margin-top:0">DCMP odds by outcome</h3><div class="tablewrap"><table class="mini"><thead><tr><th>Outcome</th><th class="num">Chance</th><th class="num">Event pts</th><th class="num">P(DCMP)</th><th>Needs</th><th>Playoffs from that slot</th></tr></thead><tbody>${outs}</tbody></table></div>
-        <div class="small muted">Conditional, not causal: share of simulated seasons with that outcome (and no award for us) that reached DCMP (thin = fewer than 15 sims). Needs = least playoff result from that slot that reaches the need (grid above).</div></div>
-        <div><h3 style="margin-top:0">If this captain takes ${tm} vs their next best</h3>
+      <section class="card"><div class="grid"><div><h3 style="margin-top:0">DCMP odds by outcome ${CS.help("Conditional, not causal: share of simulated seasons with that outcome (and no award for us) that reached DCMP (thin = fewer than 15 sims). Needs = least playoff result from that slot that reaches the need (grid above).", "How to read DCMP odds by outcome")}</h3><div class="tablewrap"><table class="mini"><thead><tr><th>Outcome</th><th class="num">Chance</th><th class="num" data-pri="400">Event pts</th><th class="num" data-pri="800">P(DCMP)</th><th data-pri="300">Needs</th><th data-pri="200">Playoffs from that slot</th></tr></thead><tbody>${outs}</tbody></table></div></div>
+        <div><h3 style="margin-top:0">If this captain takes ${tm} vs their next best ${CS.help(`Full re-simulation (draft + playoffs + district points) with the pick forced vs forbidden, same random numbers; only seasons where that team captains and ${tm} is still available. Δ win in percentage points.`, "How this comparison is simulated")}</h3>
         <div class="tablewrap"><table class="mini"><thead><tr><th>Captain</th><th>Next best</th><th class="num">Alliance wins<br>take / next</th><th class="num">Δ win</th><th class="num">Our DCMP<br>take / next</th></tr></thead><tbody>
         ${(u.captains || []).map(c => `<tr><td><b>${tn(c.captain)}</b> <span class="muted small">A${c.seed_mode}</span></td><td>${c.alt.map(a => tn(a.team)).join(" / ")}</td>
           <td class="num">${P5(c.take.p_win)} / ${P5(c.next.p_win)}</td><td class="num"><b class="${(c.delta_win || 0) >= 0 ? "pos" : "neg"}">${(c.delta_win || 0) >= 0 ? "+" : "−"}${Math.abs(Math.round((c.delta_win || 0) * 100))}</b></td>
-          <td class="num">${P5(c.take.p_dcmp)} / ${P5(c.next.p_dcmp)}</td></tr>`).join("") || '<tr><td colspan="5" class="muted">no likely captain</td></tr>'}</tbody></table></div>
-        <div class="small muted" style="margin-top:6px">Full re-simulation (draft + playoffs + district points) with the pick forced vs forbidden, same random numbers; only seasons where that team captains and ${tm} is still available. Δ win in percentage points.</div></div></div></section>
+          <td class="num">${P5(c.take.p_dcmp)} / ${P5(c.next.p_dcmp)}</td></tr>`).join("") || '<tr><td colspan="5" class="muted">no likely captain</td></tr>'}</tbody></table></div></div></div></section>
       <div style="height:14px"></div>
-      <section class="card"><h3 style="margin-top:0">Projected seeds</h3><div class="tablewrap"><table class="mini"><thead><tr><th>Seed</th><th>Captain (most likely)</th><th>R1 pick (most likely)</th><th class="num">Win</th><th class="num">Finalist</th></tr></thead><tbody>${seeds}</tbody></table></div></section>
+      <section class="card"><h3 style="margin-top:0">Projected seeds</h3><div class="tablewrap"><table class="mini"><thead><tr><th>Seed</th><th>Captain (most likely)</th><th data-pri="800">R1 pick (most likely)</th><th class="num" data-pri="700">Win</th><th class="num" data-pri="600">Finalist</th></tr></thead><tbody>${seeds}</tbody></table></div></section>
       <div style="height:14px"></div>
-      <section class="card"><h3 style="margin-top:0">Draft odds by team</h3><div class="tablewrap"><table class="mini"><thead><tr><th>Team</th><th class="num">Final rank (10–90%)</th><th class="num">Rating ± sd</th><th class="num">Captain</th><th class="num">R1</th><th class="num">R2</th><th>Most likely captain picking them</th><th class="num">DCMP</th></tr></thead><tbody>${trows}</tbody></table></div>
-      <div class="note">${H(d.model?.draft || "")}. Real captains decline, scout for fit and pick defenders; treat these as base rates. Ratings in points per match (incl. foul share).</div></section></div>`;
+      <section class="card"><h3 style="margin-top:0">Draft odds by team ${CS.help(`${H(d.model?.draft || "")}. Real captains decline, scout for fit and pick defenders; treat these as base rates. Ratings in points per match (incl. foul share).`, "How draft odds are simulated")}</h3><div class="tablewrap"><table class="mini"><thead><tr><th>Team</th><th class="num">Final rank (10–90%)</th><th class="num" data-pri="300">Rating ± sd</th><th class="num" data-pri="700">Captain</th><th class="num" data-pri="650">R1</th><th class="num" data-pri="600">R2</th><th data-pri="200">Most likely captain picking them</th><th class="num" data-pri="800">DCMP</th></tr></thead><tbody>${trows}</tbody></table></div></section></div>`;
   }
 
   CS.route("selection", async function (ev, ts) {

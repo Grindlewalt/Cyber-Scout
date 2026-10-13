@@ -52,8 +52,7 @@
     crumbs([[ev, `#/${ev}`], ["Video setup", `#/${ev}/sources`]]); $updated.textContent = "";
     if (CS.platform && !CS.can("admin")) { $app.innerHTML = `<div class="empty">Video setup is for admins.</div>`; return; }
     tab = TABS.some(t => t[0] === tab) ? tab : "sources";
-    $app.innerHTML = `<style>${CSS}</style><h1>Video setup</h1>
-      <div class="sub">Where the match video comes from, where things are in the frame, and where the cameras are. One-time per event; the pipeline reads it for every match.</div>
+    $app.innerHTML = `<style>${CSS}</style><h1>Video setup ${CS.help("Where the match video comes from, where things are in the frame, and where the cameras are. One-time per event; the pipeline reads it for every match.", "What video setup is for")}</h1>
       <div class="tabs">${TABS.map(([k, t]) => `<a class="tab ${k === tab ? "on" : ""}" href="#/${ev}/sources/${k}">${t}</a>`).join("")}</div>
       <div id="vs"></div>`;
     const el = document.getElementById("vs");
@@ -78,7 +77,7 @@
     el.innerHTML = `
       <div class="card vs-row">
         <button id="disc">Discover from The Blue Alliance</button>
-        <span class="muted small">Event webcasts + the per-match uploads TBA links (grouped by title, e.g. “Wide Match N”).</span>
+        ${CS.help("Finds the event webcasts and the per-match uploads TBA links (grouped by title, e.g. “Wide Match N”).", "What Discover finds")}
         <span id="dst" class="muted small"></span>
       </div>
       <div class="card vs-tw" style="margin-top:12px">
@@ -103,9 +102,8 @@
           <select name="role">${d.roles.map(r => `<option title="${h(ROLE_TIP[r])}">${r}</option>`).join("")}</select>
           <input name="label" placeholder="label (optional)" style="flex:1 1 160px">
           <label class="small"><input type="checkbox" name="primary"> tracked video</label>
-          <button>Add</button><span id="ast" class="muted small"></span>
+          <button>Add</button>${CS.help("Alternate angles (e.g. a team's own overhead recording) can be added the same way; mark the one the tracker should use as <i>tracked</i>.", "About alternate angles")}<span id="ast" class="muted small"></span>
         </form>
-        <div class="muted small" style="margin-top:6px">Alternate angles (e.g. a team's own overhead recording) can be added the same way; mark the one the tracker should use as <i>tracked</i>.</div>
       </div>
       <div class="card muted small" style="margin-top:12px">
         Worker video choice: prefer <code>${h((d.video_config || {}).prefer || "^Wide Match (default)")}</code>${(d.video_config || {}).reject ? `, skip <code>${h(d.video_config.reject)}</code>` : ""}${d.station_pattern ? ` · station-cam uploads <code>${h(d.station_pattern)}</code>` : ""}${d.livestream ? ` · livestream <code>${h(d.livestream)}</code>` : ""}.
@@ -195,7 +193,7 @@
       <div class="vs-edit">
         <div class="vs-wrap" id="cv"></div>
         <div class="vs-side">
-          <div class="small muted">Draw: pick a kind, drag on the frame. Click a box to select; drag to move, corners to resize; Delete removes.</div>
+          <div class="small muted">Draw boxes ${CS.help("Pick a kind, drag on the frame. Click a box to select; drag to move, corners to resize; Delete removes.", "How to draw boxes")}</div>
           <div class="chips" id="kinds">${Object.keys(L.kinds).map(k => `<span class="chip ${k === kind ? "on" : ""}" data-k="${k}" title="${h(L.kinds[k])}"><i class="vs-sw" style="background:${KCOL[k]}"></i>${KSHORT[k] || k}</span>`).join("")}</div>
           <div id="sugbox"></div>
           <div id="rlist"></div>
@@ -358,7 +356,7 @@
         <div class="vs-wrap" id="ccv"></div>
         <div class="vs-side">
           <div id="rep"></div>
-          <div class="small muted" style="margin-top:8px">2. Pick a line or point, then click on the frame (magnifier follows the mouse; drag a marker to adjust, right-click removes it). Lines are easiest: any 2+ points along a visible edge. Field frame: blue wall X = 0, the blue outpost / chute is on the Y = 0 long side.</div>
+          <div class="small muted" style="margin-top:8px">2. Pick a line or point, then click on the frame ${CS.help("The magnifier follows the mouse; drag a marker to adjust, right-click removes it. Lines are easiest: any 2+ points along a visible edge. Field frame: blue wall X = 0, the blue outpost / chute is on the Y = 0 long side.", "How to place field points")}</div>
           <div id="plist"></div>
         </div>
       </div>`;

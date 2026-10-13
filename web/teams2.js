@@ -57,6 +57,7 @@
     ["on_move", "On move", pc, "share of shots launched while moving > 0.5 m/s"], ["climb", "Climb", pc, "endgame climb rate (TBA, every played qual)"], ["flags", "", (v, x) => FLAGS(x), ""],
     ["def_recv", "Def. recv", v => v ?? 0, "defense episodes received"], ["def_play", "Def. played", v => v ?? 0, "defense episodes played"],
   ];
+  const SPRI = { number: 1000, made_pm: 800, acc: 700, n: 500, flags: 450, pts_min: 400, climb: 360, cycle: 350, rank: 300, fire: 200, hopper: 190, speed: 150, trench: 140, left: 130, on_move: 120, def_recv: 110, def_play: 100 };
   const FLAGS = x => flagChips({ flags: (x.flags || []).map(k => ({ k, text: k.replace(/_/g, " ") })) }, ["auto_not_tracked", "video_higher", "video_lower"]);
   async function listPage(ev) {
     css();
@@ -65,18 +66,18 @@
     let sk = "made_pm", sd = -1;
     const rows = ix.teams || [];
     $app.innerHTML = `<div class="sx-head"><div><h1>Spec sheets</h1>
-      <div class="sub">${rows.length} teams · ${(ix.matches || []).length} verified matches (v2 tracker; a team counts only where its identity ≥ 60%, frames and shots ≥ 50%). Grey italic = fewer than 3 verified matches.</div></div>
+      <div class="sub">${rows.length} teams · ${(ix.matches || []).length} verified matches ${CS.help(`<span class="hl">Verified = v2 tracker; a team counts only where its identity is ≥ 60%, frames and shots ≥ 50%.</span><span class="hl"><i>Grey italic</i> = fewer than 3 verified matches. Tap a header to sort; tap a row for the spec sheet.</span>`, "Which matches count")}</div></div>
       <div class="sx-links"><a href="#/${ev}/defense">Defense library</a></div></div>
       ${dataBanner(scd)}<div class="sx-card"><div class="tablewrap"><table class="sx-list sx-tbl" id="sxl"></table></div></div>`;
     const tb = document.getElementById("sxl");
     const draw = () => {
       const kv = (r, k) => k === "made_pm" && r.made_v ? r.made_v.v : r[k];
       const r = rows.slice().sort((a, b) => { const x = kv(a, sk), y = kv(b, sk); if (x == null) return 1; if (y == null) return -1; return (x > y ? 1 : x < y ? -1 : 0) * sd; });
-      tb.innerHTML = `<thead><tr>${COLS.map(([k, l, , t]) => `<th class="${k === "number" ? "" : "num"}" data-k="${k}" title="${H(t)}">${l}${k === sk ? (sd < 0 ? " ▾" : " ▴") : ""}</th>`).join("")}</tr></thead>
+      tb.innerHTML = `<thead><tr>${COLS.map(([k, l, , t]) => `<th class="${k === "number" ? "" : "num"}" data-k="${k}" data-pri="${SPRI[k] ?? 100}" title="${H(t)}">${l}${k === sk ? (sd < 0 ? " ▾" : " ▴") : ""}</th>`).join("")}</tr></thead>
       <tbody>${r.map(x => `<tr class="clk" data-t="${x.team}">${COLS.map(([k, , f]) => k === "number"
         ? `<td><a href="#/${ev}/specs/${x.team}"><b>${x.number}</b></a> <span class="sx-mini">${H((x.nickname || "").slice(0, 22))}</span></td>`
         : `<td class="${k === "flags" ? "" : "num"}">${f(x[k], x)}</td>`).join("")}</tr>`).join("")}</tbody>`;
-      tb.querySelectorAll("th").forEach(th => th.onclick = () => { const k = th.dataset.k; if (k === sk) sd = -sd; else { sk = k; sd = k === "rank" || k === "number" ? 1 : -1; } draw(); });
+      tb.querySelectorAll("th").forEach(th => th.onclick = () => { const k = th.dataset.k; if (!k || k === "flags") return; if (k === sk) sd = -sd; else { sk = k; sd = k === "rank" || k === "number" ? 1 : -1; } draw(); });
       tb.querySelectorAll("tr.clk").forEach(tr => tr.onclick = ev_ => { if (ev_.target.tagName !== "A") location.hash = `#/${ev}/specs/${tr.dataset.t}`; });
     };
     draw();
@@ -199,7 +200,7 @@
     const lvls = CL.levels || {}, nL = Object.values(lvls).reduce((a, b) => a + b, 0);
     const ownN = (LN.own || {}).n || 0;
     $app.innerHTML = `<div class="sx-head"><div><h1>${sp.number} <small>${H(sp.nickname || "")}</small></h1>
-      <div class="sub">${sp.rank ? `Rank ${sp.rank} · ` : ""}${covPill(sp.coverage)} verified: ${matchTxt} ${flagChips(TR)}</div></div>
+      <div class="sub">${sp.rank ? `Rank ${sp.rank} · ` : ""}${covPill(sp.coverage)} ${(sp.matches || []).length ? CS.help(`<span class="hl">Verified matches (alliance, identity-valid share of the match):</span><span class="hl">${matchTxt}</span>`, "Which matches are verified") : ""} ${flagChips(TR)}</div></div>
       <div class="sx-links"><a href="#/${ev}/t/${team}">Team page</a><a href="#/${ev}/defense/${team}">How to defend ${sp.number}</a><a href="#/${ev}/specs">All specs</a></div></div>
     ${dataBanner(sd)}${(sp.coverage?.n || 0) < 3 ? `<div class="sc-banner"><b>n=${sp.coverage?.n || 0}</b>: fewer than 3 verified matches. Every video number on this page is an anecdote, not a rate.</div>` : ""}
     <div class="sx-grid3">
@@ -223,13 +224,13 @@
       <div class="sx-card"><h2>Lanes <small>${ownN} own-side crossings · trench ${pc(LN.trench_share)} · left ${pc(LN.left_share)}</small></h2>
         <div id="sxLane"></div>
         <div class="sx-leg"><span><i style="background:${LANE_COL.trench}"></i>trench</span><span><i style="background:${LANE_COL.bump}"></i>bump</span>
-          <span>arrow ← toward own wall, → outbound · numbers = crossings per lane</span>${LN.trench_capable === false ? "<span>no trench run seen</span>" : ""}</div></div>
+          ${LN.trench_capable === false ? "<span>no trench run seen</span>" : ""}${CS.help("Numbers = crossings per lane. Arrow ← = toward own wall, → = outbound.", "How to read the lanes")}</div></div>
       <div class="sx-card"><h2>Shooting locations <small id="sxShN"></small></h2>
         <div class="sx-ctl"><span class="chips" id="sxShP" style="margin:0"></span><span class="chips" id="sxShM" style="margin:0"></span></div>
         <div id="sxShot"></div>
-        <div class="sx-leg"><span><i class="dot" style="background:${C_MADE}"></i>made</span><span><i class="dot" style="background:${C_MISS}"></i>missed</span><span>■ = launched on the move</span><span>own end left, hub ringed</span></div></div>
+        <div class="sx-leg"><span><i class="dot" style="background:${C_MADE}"></i>made</span><span><i class="dot" style="background:${C_MISS}"></i>missed</span>${CS.help("■ = launched on the move, ● = stopped. Own end on the left, hub ringed.", "How to read the shot map")}</div></div>
     </div>
-    <div class="sx-card" style="margin-top:14px"><h2>Shooting paths <small>drive leading into each volley, aligned on the first shot</small></h2>
+    <div class="sx-card" style="margin-top:14px"><h2>Shooting paths ${CS.help(`<span class="hl">The drive leading into each volley, aligned on the first shot.</span><span class="hl">Lead-in starts at the latest of: previous volley, last floor intake, leaving the neutral zone (crossing back over the own hub line), a tracking hole, or 10 s. Moving = robot speed &gt; 0.5 m/s at the first shot.</span><span class="hl">Tap a row to highlight one path.</span>`, "How shooting paths work")}</h2>
       <div class="sx-ctl"><select id="sxPm"><option value="">all matches</option>${(sp.matches || []).map(m => `<option>${m.m}</option>`).join("")}</select>
         <select id="sxPp"><option value="tele">teleop</option><option value="auto">auto</option><option value="">all periods</option></select>
         <select id="sxPn"><option value="3">volleys ≥ 3</option><option value="1">all launches</option><option value="8">volleys ≥ 8</option></select>
@@ -239,8 +240,7 @@
         <div class="sx-leg"><span><i style="background:${LANE_COL.trench}"></i>came via trench</span><span><i style="background:${LANE_COL.bump}"></i>via bump</span>
           <span><i style="background:${LANE_COL.neutral}"></i>from neutral</span><span><i style="background:${LANE_COL.zone}"></i>inside zone</span><span><i style="background:#4ade80"></i>shooting</span><span>× first shot</span></div>
         <div id="sxAppr" style="margin-top:8px"></div></div>
-        <div><div class="tablewrap" style="max-height:420px;overflow:auto"><table class="sx-tbl" id="sxPt"></table></div></div></div>
-      <div class="note">Lead-in starts at the latest of: previous volley, last floor intake, leaving the neutral zone (crossing back over the own hub line), a tracking hole, or 10 s. Moving = robot speed &gt; 0.5 m/s at the first shot.</div></div>
+        <div><div class="tablewrap" style="max-height:420px;overflow-y:auto"><table class="sx-tbl" id="sxPt"></table></div></div></div></div>
     <div class="sx-card" style="margin-top:14px"><h2>Defense <small><a href="#/${ev}/defense/${team}">open in defense library</a></small></h2>
       <div class="sx-grid"><div><dl class="sx-kv">
         <dt>Defended (episodes)</dt><dd>${recv.n ?? 0} <small>(${recv.tested ?? 0} testable, ${recv.succ ?? 0} clearly reduced)</small></dd>
@@ -280,7 +280,7 @@
     const anim = pathsAnim(document.getElementById("sxPath"), () => cur, () => sel);
     const table = () => {
       const t = document.getElementById("sxPt");
-      t.innerHTML = `<thead><tr><th>Match</th><th class="num">Clock</th><th class="num">Made/n</th><th>From</th><th class="num">Lead s</th><th>Start</th><th>Approach</th><th></th></tr></thead>
+      t.innerHTML = `<thead><tr><th>Match</th><th class="num">Clock</th><th class="num" data-pri="800">Made/n</th><th data-pri="300">From</th><th class="num" data-pri="500">Lead s</th><th data-pri="400">Start</th><th data-pri="450">Approach</th><th data-pri="600"><span class="vh">Video</span></th></tr></thead>
         <tbody>${cur.map((p, i) => `<tr class="clk${sel === p ? " sel" : ""}" data-i="${i}"><td>${p.m}</td><td class="num">${f1(p.t)}</td><td class="num">${p.made}/${p.hub}</td>
         <td>${H(p.from)}</td><td class="num">${f1(p.lead_s)}</td><td>${p.moving == null ? "–" : p.moving ? "moving" : "stopped"}</td>
         <td><i style="display:inline-block;width:8px;height:8px;border-radius:2px;background:${LANE_COL[apprKey(p)]}"></i> ${apprTxt(p)}</td>

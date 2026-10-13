@@ -13,40 +13,60 @@
   const METHODS = ["pin", "contact", "shadow", "zone-denial"];
   const C_D = "#22d3ee", C_T = "#facc15";
   const CSS = `
-  .dx-sum{display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:6px;margin-bottom:12px}
-  .dx-sum div{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:7px 10px}
-  .dx-sum b{display:block;font-size:19px;font-variant-numeric:tabular-nums}.dx-sum b small{font-size:11.5px;color:var(--muted);font-weight:500}
-  .dx-sum span{font-size:11.5px;color:var(--muted)}
-  .dx-flt{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:0 0 10px;font-size:12px}
-  .dx-flt select,.dx-flt button{background:var(--panel2);color:var(--text);border:1px solid var(--line);border-radius:6px;padding:4px 6px;font-size:12px;max-width:170px}
-  .dx-flt button.on{border-color:var(--ink);color:var(--ink);background:var(--sel)}
-  .dx-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(310px,1fr));gap:10px}
+  .dx{display:flex;flex-direction:column;gap:14px}
+  .dx .titlebar{align-items:center}.dx h1{margin:0}
+  .dx-ev{font-size:var(--fs-body);color:var(--ink);line-height:1.5}
+  .dx .sc-banner{margin:0}
+  .dx-q{display:flex;flex-wrap:wrap;gap:10px;align-items:center}
+  .dx-seg{width:auto;grid-template-columns:auto auto}.dx-seg button{padding:4px 14px}
+  .dx-pick{flex:1 1 240px;max-width:380px;min-width:0}.dx-pick select{min-height:36px;width:100%;font-size:var(--fs-body);padding:6px 8px}
+  .dx-ans{padding:16px 18px}
+  .dx-ah{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px}.dx-ah h2{margin:0}
+  .dx-nick{font-weight:400;font-size:var(--fs-body)}.dx-small{margin-left:auto;font-size:var(--fs-foot);color:var(--ink-2)}
+  .dx-ret{display:grid;grid-template-columns:auto minmax(0,1fr);gap:20px;align-items:center;margin:4px 0 12px}
+  .dx-retn b{display:block;font-size:44px;font-weight:800;line-height:1;letter-spacing:-.02em;font-variant-numeric:tabular-nums}
+  .dx-retn span{font-size:var(--fs-cap);color:var(--ink-2);text-transform:uppercase;letter-spacing:.05em;font-weight:600}
+  .dx-retb{max-width:420px}
+  .dx-rb{position:relative;height:10px;background:var(--surface-2);border-radius:5px}
+  .dx-rb .rg{position:absolute;top:0;bottom:0;background:var(--line-strong);border-radius:5px}
+  .dx-rb .one{position:absolute;top:-4px;bottom:-4px;width:2px;margin-left:-1px;background:var(--ink-3)}
+  .dx-rb .mn{position:absolute;top:-3px;width:16px;height:16px;margin-left:-8px;border-radius:50%;background:var(--ink);border:2px solid var(--surface)}
+  .dx-rb.sm{height:6px;width:120px;flex:none}.dx-rb.sm .mn{width:10px;height:10px;margin-left:-5px;top:-2px;border-width:1px}.dx-rb.sm .one{top:-3px;bottom:-3px}
+  .dx-rbl{position:relative;height:16px;font-size:11px;color:var(--ink-3);margin-top:4px}.dx-rbl span{position:absolute}.dx-rbl span:first-child{left:0}.dx-rbl span:last-child{right:0}.dx-rbl span:nth-child(2){transform:translateX(-50%)}
+  .dx-rett{font-size:var(--fs-foot);color:var(--ink-2);margin-top:4px;display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+  .dx-tag{font-size:11px;padding:0 6px;border-radius:4px;border:1px dashed var(--ink-2);white-space:nowrap;color:var(--ink-2)}.dx-tag.measured{border-style:solid;color:var(--ink)}
+  .dx-adv{margin:0 0 10px;padding-left:18px;font-size:var(--fs-body);line-height:1.6}
+  .dx-defs{font-size:var(--fs-foot);margin-bottom:8px}
+  .dx-more2 summary{cursor:pointer;font-size:var(--fs-foot);font-weight:600;padding:6px 0;color:var(--ink)}
+  .dx-3{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;margin-top:6px}
+  .dx-rank{list-style:none;margin:0;padding:0;display:grid;grid-template-columns:repeat(auto-fill,minmax(min(300px,100%),1fr));gap:2px 16px}.dx-rank li{min-width:0}
+  .dx-rank button{display:flex;align-items:center;gap:10px;width:100%;min-height:40px;background:none;border:0;border-bottom:1px solid var(--line);border-radius:0;padding:6px 4px;text-align:left;color:var(--ink);font-size:var(--fs-body)}
+  .dx-rank button:hover{background:var(--surface-2)}
+  .dx-rk{font-weight:700;min-width:44px}.dx-rank .dx-nick{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:var(--fs-foot)}
+  .dx-rv{min-width:96px;text-align:right;font-size:var(--fs-foot)}
+  .dx-clips{display:flex;flex-direction:column;gap:10px}
+  .dx-ch{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.dx-ch h2{margin:0}.dx-sp{flex:1}
+  .dx-all{margin-left:auto}
+  .dx-vt{width:auto;grid-template-columns:auto auto}.dx-vt button{padding:2px 12px;min-height:28px}
+  .dx-fp{width:min(300px,calc(100vw - 16px))}
+  .dx-fr{display:grid;grid-template-columns:80px minmax(0,1fr);align-items:center;gap:8px;margin-bottom:6px}.dx-fr span{color:var(--ink-2)}.dx-fr select{width:100%}
+  .dx-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:10px}
   .dx-clip{background:var(--panel);border:1px solid var(--line);border-radius:9px;overflow:hidden;min-width:0}
-  .dx-clip.success{border-color:rgba(63,185,80,.55)}.dx-clip.focus{box-shadow:0 0 0 2px var(--accent)}
+  .dx-clip.success{border-color:color-mix(in srgb,var(--good) 55%,transparent)}.dx-clip.focus{box-shadow:0 0 0 2px var(--ink-2)}
   .dx-clip canvas{display:block;width:100%;aspect-ratio:16/10;background:#2b3038;cursor:pointer}
-  .dx-cb{padding:7px 10px 9px;font-size:12.5px;display:flex;flex-direction:column;gap:3px}
+  .dx-cb{padding:8px 10px 10px;font-size:12.5px;display:flex;flex-direction:column;gap:4px}
   .dx-ct{display:flex;justify-content:space-between;gap:6px;align-items:center}
-  .dx-ct b{font-variant-numeric:tabular-nums}.dx-ct a{color:var(--text)}
+  .dx-ct b{font-variant-numeric:tabular-nums}
   .dx-cs{color:var(--muted);font-size:12px}
-  .dx-ce{display:flex;gap:8px;align-items:center;font-variant-numeric:tabular-nums;font-size:12px}
-  .dx-cl{display:flex;gap:10px;font-size:12px}
+  .dx-ce{display:flex;gap:8px;align-items:center;font-variant-numeric:tabular-nums;font-size:12px;flex-wrap:wrap}
+  .dx-cl{display:flex;gap:8px;align-items:center;font-size:12.5px}
   .dx-v{display:inline-block;padding:0 7px;border-radius:99px;font-size:11px;border:1px solid var(--line);color:var(--muted);white-space:nowrap}
-  .dx-v.good{color:var(--good);border-color:rgba(63,185,80,.45)}.dx-v.warn{color:var(--warn);border-color:rgba(210,153,34,.45)}.dx-v.bad{color:var(--bad);border-color:rgba(248,81,73,.45)}
-  .dx-v.sig{background:rgba(63,185,80,.15)}
-  .dx-panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px 14px;margin-bottom:12px}
-  .dx-panel h2{font-size:14px;margin:0 0 8px;text-transform:uppercase;letter-spacing:.04em;color:var(--ink);display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap}
-  .dx-panel h2 small{text-transform:none;letter-spacing:0;font-weight:500;color:var(--muted);font-size:12px}
-  .dx-2{display:grid;grid-template-columns:minmax(0,1.1fr) minmax(0,1fr);gap:14px}@media (max-width:860px){.dx-2{grid-template-columns:minmax(0,1fr)}}
-  .dx-tbl td,.dx-tbl th{padding:4px 6px;font-size:12.5px}
+  .dx-v.good{color:var(--good);border-color:currentColor}.dx-v.warn{color:var(--warn);border-color:var(--caution-line)}.dx-v.bad{color:var(--bad);border-color:currentColor}
+  .dx-v.sig{background:color-mix(in srgb,var(--good) 15%,transparent)}
+  .dx-tbl td,.dx-tbl th{padding:5px 6px;font-size:12.5px}
   .dx-tbl tr.clk{cursor:pointer}
-  .dx-adv{margin:0;padding-left:18px;font-size:13px;line-height:1.55}
-  .dx-note{font-size:12px;color:var(--muted);line-height:1.5;margin-top:8px}
-  .dx-more{display:block;margin:12px auto;background:var(--panel2);color:var(--text);border:1px solid var(--line);border-radius:7px;padding:6px 16px}
-  .dx-tabs{display:flex;gap:4px;margin:4px 0 10px;border-bottom:1px solid var(--line)}
-  .dx-tabs span{padding:6px 12px;cursor:pointer;color:var(--muted);border-bottom:2px solid transparent;font-size:13px}
-  .dx-tabs span.on{color:var(--text);border-color:var(--accent)}
-  .dx-tchips{display:flex;flex-wrap:wrap;gap:6px}
-  .dx-tchips a{font-size:12px;padding:3px 9px;border-radius:99px;background:var(--panel2);color:var(--text)}
+  .dx-more{display:block;margin:4px auto;padding:6px 16px}.dx-defall{margin-top:8px}
+  @media (max-width:640px){.dx-ret{grid-template-columns:1fr;gap:8px}.dx-retn b{font-size:38px}.dx-rank{grid-template-columns:minmax(0,1fr)}.dx-rb.sm{width:70px}.dx-grid{grid-template-columns:1fr}.dx-all{margin-left:0}}
   `;
   function css() { if (!document.getElementById("dx-css")) { const s = document.createElement("style"); s.id = "dx-css"; s.textContent = CSS; document.head.appendChild(s); } }
 
@@ -178,45 +198,49 @@
   }
 
   // ------------------------------------------------------------------ page
+  // Built around the strategist's two questions: "how do I defend team X?" (pick a team, get the answer + best clips) and
+  // "who defends well?". Event-level statistics are one honest line with the details behind "?"; filters live in one popover.
   async function page(ev, target) {
     css();
     const [d, e, scd] = await Promise.all([api(`${ev}/defense.json`), api(`${ev}/event.json`).catch(() => null), scoutData(ev)]);
+    const mode = target === "defenders" ? "defenders" : "team";
+    if (target === "defenders") target = "";
     crumbs([[e ? e.name : ev, `#/${ev}`], ["Defense library"]]); $updated.textContent = "";
     const nick = {}; ((e && e.teams) || []).forEach(t => nick[t.key] = t.nickname);
-    const eps = d.episodes || [], G = d.global || {}, PL = G.placebo || {};
+    const eps = d.episodes || [], G = d.global || {}, PL = G.placebo || {}, TM = d.teams_meta || {}, EVR = TM.event || null;
+    const RET = Object.fromEntries((d.teams || []).filter(t => t.retention).map(t => [t.team, t.retention]));
     const uniq = k => [...new Set(eps.map(x => x[k]))].sort((a, b) => (+tn(a) || 0) - (+tn(b) || 0) || String(a).localeCompare(String(b)));
     const zones = [...new Set(eps.map(x => x.zone + " · " + x.side))].sort();
     const F = { target: target || "", defender: "", zone: "", shift: "", method: "", verdict: "", sort: "denied", view: "clips" };
-    const opt = (k, lab, vals, fmt = x => x) => `<select data-f="${k}"><option value="">${lab}</option>${vals.map(v => `<option value="${H(v)}"${F[k] === v ? " selected" : ""}>${H(fmt(v))}</option>`).join("")}</select>`;
-    $app.innerHTML = `<div class="titlebar"><div><h1>Defense library</h1>
-      <div class="sub">Every time an opponent stayed within ${d.params?.radius_m ?? 1.5} m of a robot in its own scoring area for ≥ ${d.params?.min_s ?? 2} s,
-        scored against that robot's own output in comparable undefended time (same zone mix and hub state). ${(d.matches || []).length} verified matches
-        (${H((d.matches || []).map(shortKey).join(", "))}); both robots must have verified identity. Per-team effects rest on a handful of episodes: read them as anecdotes until n ≥ 3.</div></div>
-      <a class="dbtn" href="#/${ev}/specs" style="white-space:nowrap">Spec sheets</a></div>${dataBanner(scd)}
-    <div class="dx-sum">
-      <div><b>${G.n ?? 0}</b><span>episodes detected</span></div>
-      <div><b>${G.tested ?? 0}</b><span>with ≥ 2 pts at stake (testable)</span></div>
-      <div><b>${G.succ ?? 0}<small> / ${G.tested ?? 0}</small></b><span>clearly reduced output</span></div>
-      <div><b>${G.sig ?? 0}</b><span>significant after multiple-testing</span></div>
-      <div title="sum observed / sum expected over testable episodes, bootstrap 90% CI over episodes"><b>${pc(G.ratio)}<small> ${G.ratio_ci ? pc(G.ratio_ci[0]) + "–" + pc(G.ratio_ci[1]) : ""}</small></b><span>defended output vs expected</span></div>
-      ${d.teams_meta && d.teams_meta.event ? `<div title="divided by the same ratio over ${d.teams_meta.placebo_windows} random undefended placebo windows (${d.teams_meta.placebo_ratio}); ${d.teams_meta.discoveries} of ${d.teams_meta.tests} team estimates significant after multiple testing"><b>${pc(d.teams_meta.event.est)}<small> ${pc(d.teams_meta.event.lo)}–${pc(d.teams_meta.event.hi)}</small></b><span>placebo-controlled retention (event)</span></div>` : ""}
-      <div title="random undefended windows scored exactly like episodes"><b>${pc(PL.pooled_ratio)}<small> · ${pc(PL.rate)} false</small></b><span>placebo windows (calibration)</span></div>
-    </div>
-    <div id="dxTarget"></div>
-    <div class="dx-flt">${opt("target", "any target", uniq("target"), tn)}${opt("defender", "any defender", uniq("defender"), tn)}
-      ${opt("zone", "any zone", zones)}${opt("shift", "any period", ["transition", "shift1", "shift2", "shift3", "shift4", "endgame"], SH)}
-      ${opt("method", "any method", METHODS)}${opt("verdict", "any verdict", Object.keys(VERD), v => VERD[v][0])}
-      <select data-f="sort"><option value="denied">sort: points denied</option><option value="rate">sort: Δ rate</option><option value="p">sort: p-value</option><option value="match">sort: match</option><option value="dur">sort: duration</option></select>
-      <button id="dxSucc">successful only</button><span class="muted" id="dxN"></span></div>
-    <div class="dx-tabs"><span data-v="clips" class="on">Clips</span><span data-v="table">Table</span><span data-v="defenders">Defenders</span></div>
-    <div id="dxBody"></div>
-    <div class="dx-note">How to read an effect: the grey band is the 90% range of the target's points in comparable undefended windows of the same length (placebo windows),
-      the tick is their mean (expected), the dot is what it actually scored while defended (green = below the band). <b>Clearly reduced</b> = ≥ 2 points expected,
-      ≤ 50% scored, one-sided p ≤ 0.10; <b>✓ significant</b> = p ≤ 0.05 and Benjamini-Hochberg q ≤ 0.2 across all testable episodes. With ~2 matches per team,
-      single episodes are noisy: on placebo windows the "clearly reduced" rule fires ${pc(PL.rate)} of the time. Inactive-hub episodes are judged on shot attempts.
-      Only robot-frames with identity confidence ≥ ${d.params?.id_conf_min ?? 0.5} count.</div>`;
+    const targets = Object.entries(d.targets || {}).filter(([, t]) => t.received && t.received.n).map(([k]) => k).sort((a, b) => +tn(a) - +tn(b));
+    const nm = k => `${tn(k)}${nick[k] ? " " + nick[k] : ""}`;
 
-    let succOnly = false, shown = 24, focus = null;
+    // one honest line for the whole event; every number and the method behind "?"
+    const evHelp = `<span class="hl"><b>What counts as defense:</b> an opponent stayed within ${d.params?.radius_m ?? 1.5} m of a robot in its own scoring area for ≥ ${d.params?.min_s ?? 2} s. Each episode is scored against that robot's own output in comparable undefended time (same zone mix and hub state). Both robots must have verified identity (frames with identity confidence ≥ ${d.params?.id_conf_min ?? 0.5}).</span>
+      <span class="hl"><b>This event:</b> ${G.n ?? 0} episodes detected · ${G.tested ?? 0} with ≥ 2 pts at stake (testable) · ${G.succ ?? 0} clearly reduced output · ${G.sig ?? 0} significant after multiple testing · defended output ${pc(G.ratio)} of expected (${G.ratio_ci ? pc(G.ratio_ci[0]) + "–" + pc(G.ratio_ci[1]) : "–"}, bootstrap 90%)${EVR ? ` · placebo-controlled retention ${pc(EVR.est)} (${pc(EVR.lo)}–${pc(EVR.hi)}) over ${TM.placebo_windows} placebo windows` : ""} · placebo windows score ${pc(PL.pooled_ratio)} with ${pc(PL.rate)} false "clearly reduced" calls (calibration).</span>
+      <span class="hl"><b>Read per-team numbers as anecdotes until n ≥ 3.</b> ${TM.discoveries ?? 0} of ${TM.tests ?? 0} team estimates are significant after multiple testing.</span>
+      <span class="hl"><b>Matches used (${(d.matches || []).length} verified):</b> ${esc((d.matches || []).map(shortKey).join(", "))}.</span>`;
+    const evLine = `Defended scorers kept <b>${EVR ? pc(EVR.est) : pc(G.ratio)}</b> of their expected output across the event <span class="muted">(${EVR ? `${pc(EVR.lo)}–${pc(EVR.hi)}, placebo-controlled` : G.ratio_ci ? `${pc(G.ratio_ci[0])}–${pc(G.ratio_ci[1])}` : ""}; ${G.tested ?? 0} testable episodes)</span>${TM.discoveries === 0 ? `; no single team's effect is significant yet` : ""}. ${CS.help(evHelp, "How the defense numbers are measured")}`;
+    const effHelp = `<span class="hl">Each clip is a top-down replay of the episode: the <b style="color:${C_D}">defender</b> and the <b style="color:${C_T}">target</b> are circled, the yellow strip on the time bar is the episode. Click a clip to pause.</span>
+      <span class="hl"><b>Effect bar:</b> the grey band is the 90% range of the target's points in comparable undefended windows of the same length, the tick is their mean (expected), the dot is what it actually scored while defended (green = below the band).</span>
+      <span class="hl"><b>Clearly reduced</b> = ≥ 2 points expected, ≤ 50% scored, one-sided p ≤ 0.10; <b>✓ significant</b> = p ≤ 0.05 and Benjamini-Hochberg q ≤ 0.2 across all testable episodes. With ~2 matches per team single episodes are noisy: on placebo windows the "clearly reduced" rule fires ${pc(PL.rate)} of the time. Inactive-hub episodes are judged on shot attempts.</span>`;
+
+    $app.innerHTML = `<div class="dx">
+      <div class="titlebar"><h1>Defense library</h1><a class="dbtn" href="#/${ev}/specs">Spec sheets</a></div>
+      <div class="dx-ev">${evLine}</div>
+      ${dataBanner(scd)}
+      <div class="dx-q">
+        <div class="mv-seg dx-seg" role="radiogroup" aria-label="Question">
+          <button type="button" role="radio" aria-checked="${mode === "team"}" data-mode="team">Defend a team</button>
+          <button type="button" role="radio" aria-checked="${mode === "defenders"}" data-mode="defenders">Who defends well</button>
+        </div>
+        ${mode === "team" ? `<label class="dx-pick"><span class="vh">Team to defend</span><select id="dxTeam"><option value="">Choose a team…</option>${targets.map(k => `<option value="${H(k)}"${F.target === k ? " selected" : ""}>${H(nm(k))}</option>`).join("")}</select></label>` : ""}
+      </div>
+      <div id="dxAnswer"></div>
+      <section class="dx-clips" id="dxClips"></section>
+    </div>`;
+
+    let succOnly = false, shown = 3, focus = null, expanded = false, defAll = false;
     const obs = new IntersectionObserver(ents => ents.forEach(en => { const p = en.target.__player; if (p) en.isIntersecting ? p.play() : p.stop(); }), { rootMargin: "100px" });
     cleanup.push(() => { obs.disconnect(); document.querySelectorAll(".dx-clip canvas").forEach(c => c.__player && c.__player.stop()); });
 
@@ -232,87 +256,158 @@
     function cardHTML(x) {
       return `<div class="dx-clip ${x.verdict === "success" ? "success" : ""}${focus === x.id ? " focus" : ""}" id="dx-${x.id}">
         <canvas data-id="${x.id}" title="click to pause"></canvas>
-        <div class="dx-cb"><div class="dx-ct"><span><b style="color:${C_D}">${tn(x.defender)}</b> on <a href="#/${ev}/specs/${x.target}"><b style="color:${C_T}">${tn(x.target)}</b></a></span>${vpill(x)}</div>
-          <div class="dx-cs">${x.m} · ${SH(x.shift)} (${x.active ? "hub active" : "hub inactive"}) · ${f1(x.dur)} s · <b>${x.method}</b> · ${H(x.zone)} ${x.side}${x.double ? " · double-team" : ""}${x.maybe_collecting ? ` · <span class="dx-v warn" title="defender spent most of the episode in the target's outpost corner with little contact: it may have been collecting spilled fuel rather than defending">maybe collecting</span>` : ""}</div>
+        <div class="dx-cb"><div class="dx-ct"><span><b style="color:${C_D}">${tn(x.defender)}</b> on <b style="color:${C_T}">${tn(x.target)}</b></span>${vpill(x)}</div>
+          <div class="dx-cs">${x.m} · ${SH(x.shift)}${x.active ? "" : " (hub inactive)"} · ${f1(x.dur)} s · ${x.method} · ${H(x.zone)} ${x.side}${x.double ? " · double-team" : ""}${x.maybe_collecting ? ` · <span class="dx-v warn" title="defender spent most of the episode in the target's outpost corner with little contact: it may have been collecting spilled fuel rather than defending">maybe collecting</span>` : ""}</div>
           <div class="dx-ce">${effGlyph(x.effect)}<span>${effText(x.effect)}</span></div>
-          <div class="dx-cs">p ${f1(pOf(x.effect), 2)}${x.effect.q != null ? ` · q ${f1(x.effect.q, 2)}` : ""} · contact ${f1(x.feat.contact_s)} s${x.disp.pushed_m ? ` · pushed ${f1(x.disp.pushed_m)} m` : ""}${x.cycle.delta != null ? ` · cycle ${x.cycle.delta > 0 ? "+" : ""}${f1(x.cycle.delta)} s` : ""}</div>
-          <div class="dx-cl"><a href="#/${ev}/a/${x.key}?t=${f1(x.clip.v0)}">Open video at ${f1(x.t_match, 0)} s</a><a href="#/${ev}/defense/${x.target}">vs ${tn(x.target)}</a></div></div></div>`;
+          <div class="dx-cl"><a href="#/${ev}/a/${x.key}?t=${f1(x.clip.v0)}">Watch at ${f1(x.t_match, 0)} s</a>
+            ${CS.help(`p ${f1(pOf(x.effect), 2)}${x.effect.q != null ? ` · q ${f1(x.effect.q, 2)}` : ""} · contact ${f1(x.feat.contact_s)} s${x.disp.pushed_m ? ` · pushed ${f1(x.disp.pushed_m)} m` : ""}${x.cycle.delta != null ? ` · cycle ${x.cycle.delta > 0 ? "+" : ""}${f1(x.cycle.delta)} s` : ""}`, "Episode statistics")}</div></div></div>`;
     }
     async function mount(cv) {
       const x = eps.find(y => y.id === cv.dataset.id); if (!x) return;
       try { const c = await getClip(ev, x); if (!cv.isConnected) return; cv.__player = clipPlayer(cv, c, x); cv.__player.once(); obs.observe(cv); }
       catch (err) { const g = cv.getContext("2d"); cv.width = 320; cv.height = 200; g.fillStyle = "#8b98a8"; g.font = "12px system-ui"; g.fillText("clip unavailable", 12, 20); }
     }
-    function body() {
-      const r = filtered(), el = document.getElementById("dxBody");
-      document.getElementById("dxN").textContent = `${r.length} episode${r.length === 1 ? "" : "s"}`;
-      document.querySelectorAll(".dx-clip canvas").forEach(c => { c.__player && c.__player.stop(); obs.unobserve(c); });
-      if (F.view === "clips") {
-        el.innerHTML = r.length ? `<div class="dx-grid">${r.slice(0, shown).map(cardHTML).join("")}</div>${r.length > shown ? `<button class="dx-more" id="dxMore">Show ${Math.min(24, r.length - shown)} more (${r.length - shown} left)</button>` : ""}`
-          : `<div class="empty">No episodes match these filters.</div>`;
-        el.querySelectorAll(".dx-clip canvas").forEach(mount);
-        const mb = document.getElementById("dxMore"); if (mb) mb.onclick = () => { shown += 24; body(); };
-        if (focus) { const fc = document.getElementById("dx-" + focus); fc && fc.scrollIntoView({ block: "center" }); }
-      } else if (F.view === "table") {
-        el.innerHTML = `<div class="tablewrap"><table class="dx-tbl"><thead><tr><th>Ep.</th><th>Defender</th><th>Target</th><th class="num">Clock</th><th>Period</th><th class="num">Dur</th><th>Method</th><th>Zone</th>
-          <th class="num" title="observed / expected points (or attempts when the hub was inactive)">Obs/Exp</th><th class="num">Δ /s</th><th class="num">p</th><th class="num">q</th><th class="num">Contact s</th><th class="num">Pushed m</th><th class="num">Cycle Δ</th><th>Verdict</th><th></th></tr></thead>
-          <tbody>${r.map(x => { const ef = x.effect, m = ef.metric === "attempts" ? "att" : "pts";
-            return `<tr class="clk" data-id="${x.id}"><td>${x.id}</td><td>${tn(x.defender)}</td><td><a href="#/${ev}/specs/${x.target}">${tn(x.target)}</a></td><td class="num">${f1(x.t_match, 0)}</td>
-            <td>${SH(x.shift)}${x.active ? "" : " (inact.)"}</td><td class="num">${f1(x.dur)}</td><td>${x.method}</td><td>${H(x.zone)} ${x.side}</td>
-            <td class="num">${ef[m + "_obs"]}/${f1(ef[m + "_exp"])}</td><td class="num">${f1(ef.d_rate, 2)}</td><td class="num">${f1(pOf(ef), 2)}</td><td class="num">${f1(ef.q, 2)}</td>
-            <td class="num">${f1(x.feat.contact_s)}</td><td class="num">${f1(x.disp.pushed_m)}</td><td class="num">${f1(x.cycle.delta)}</td><td>${vpill(x)}</td>
-            <td><a href="#/${ev}/a/${x.key}?t=${f1(x.clip.v0)}">video</a></td></tr>`; }).join("")}</tbody></table></div>`;
-        el.querySelectorAll("tr.clk").forEach(tr => tr.onclick = ev_ => { if (ev_.target.tagName === "A") return; focus = tr.dataset.id; F.view = "clips";
-          const r2 = filtered(), i = r2.findIndex(y => y.id === focus); if (i >= shown) shown = i + 1; tabs(); body(); });
-      } else {
-        const rows = Object.entries(d.defenders || {}).filter(([k]) => !F.defender || k === F.defender).sort((a, b) => (b[1].denied ?? 0) - (a[1].denied ?? 0));
-        el.innerHTML = `<div class="tablewrap"><table class="dx-tbl"><thead><tr><th>Defender</th><th class="num">Episodes</th><th class="num">Seconds</th><th class="num">Testable</th><th class="num">Clear</th><th class="num">Sig.</th>
-          <th class="num" title="victims' points while defended / expected">Victims' output</th><th class="num">90% CI</th><th class="num">Pts denied</th><th>Methods</th><th>Targets</th></tr></thead>
-          <tbody>${rows.map(([k, p]) => `<tr><td><a href="#" data-def="${k}"><b>${tn(k)}</b></a> <span class="muted small">${H((nick[k] || "").slice(0, 18))}</span></td><td class="num">${p.n}</td><td class="num">${f1(p.secs, 0)}</td>
-            <td class="num">${p.tested}</td><td class="num">${p.succ}</td><td class="num">${p.sig}</td><td class="num">${pc(p.ratio)}</td><td class="num">${p.ci ? pc(p.ci[0]) + "–" + pc(p.ci[1]) : "–"}</td>
-            <td class="num">${f1(p.denied)}</td><td>${Object.entries(p.methods || {}).map(([m, c]) => `${m} ${c}`).join(", ")}</td>
-            <td>${Object.entries(p.targets || {}).map(([t, c]) => `<a href="#/${ev}/defense/${t}">${tn(t)}</a>${c > 1 ? "×" + c : ""}`).join(" ")}</td></tr>`).join("")}</tbody></table></div>
-          <div class="dx-note">Victims' output pools all testable episodes of a defender: Σ observed / Σ expected points. CI = bootstrap over episodes (shown with ≥ 3 testable episodes).</div>`;
-        el.querySelectorAll("a[data-def]").forEach(a => a.onclick = ev_ => { ev_.preventDefault(); F.defender = a.dataset.def; F.view = "clips"; syncSel(); tabs(); body(); });
-      }
+
+    // ---- the answer for one team
+    const retBar = (r, est) => {   // 0..150% scale, 100% = defense made no difference
+      const X = v => Math.max(0, Math.min(100, v / 1.5 * 100)).toFixed(1);
+      return `<div class="dx-rb" role="img" aria-label="keeps ${pc(r ? r.est : est)}${r ? `, 90% range ${pc(r.lo)} to ${pc(r.hi)}` : ""}">
+        ${r ? `<i class="rg" style="left:${X(r.lo)}%;width:${Math.max(1, X(r.hi) - X(r.lo))}%"></i>` : ""}<i class="one" style="left:${X(1)}%"></i><i class="mn" style="left:${X(r ? r.est : est)}%"></i></div>
+        <div class="dx-rbl"><span>0%</span><span style="left:${X(1)}%">no effect</span><span>150%</span></div>`;
+    };
+    function answer() {
+      const el = document.getElementById("dxAnswer");
+      if (mode === "defenders") { el.innerHTML = defendersPanel(); wireDefenders(); return; }
+      if (!F.target) { el.innerHTML = overview(); el.querySelectorAll("[data-pick]").forEach(b => b.onclick = () => pick(b.dataset.pick)); return; }
+      const t = (d.targets || {})[F.target];
+      if (!t) { el.innerHTML = `<div class="card dx-ans"><h2>How to defend ${tn(F.target)}</h2><div class="muted">No tracked defense data for this team.</div></div>`; return; }
+      const R = t.received || {}, B = t.baseline || {}, rr = RET[F.target];
+      const meas = rr && rr.significant;
+      const tag = rr ? (meas ? `<span class="dx-tag measured" title="significant after adjusting for ${TM.tests} team tests">measured</span>` : `<span class="dx-tag" title="not significant: plan with the event-wide ${EVR ? pc(EVR.est) : ""} instead">not significant</span>`)
+        : `<span class="dx-tag" title="fewer than 3 testable episodes">too few episodes</span>`;
+      const retHelp = rr ? `<span class="hl">Placebo-controlled retention ${pc(rr.est)} (90% CI ${pc(rr.lo)}–${pc(rr.hi)}; adjusted for ${TM.tests} team tests ${pc(rr.lo_adj)}–${pc(rr.hi_adj)}; n_eff ${rr.n_eff}; ${rr.n_testable} testable of ${rr.n_episodes} episodes).</span>
+          <span class="hl">${meas ? "Measured: defense reliably cuts this team's output." : `Not significant: use the event-wide ${EVR ? pc(EVR.est) : ""} (an assumption) rather than this team's own number.`}</span>`
+        : `<span class="hl">Fewer than 3 testable episodes: no team-specific estimate${EVR ? `; plan with the event-wide placebo-controlled retention ${pc(EVR.est)} (${pc(EVR.lo)}–${pc(EVR.hi)}), an assumption` : ""}.</span>`;
+      const base = `<span class="hl">Baseline: ${B.pts_per_active_s != null ? f1(B.pts_per_active_s * 60) : "–"} pts per active-hub minute over ${f1(B.active_s, 0)} s of free active time (${f1(B.free_s, 0)} s free teleop). Defended: ${R.n} episodes, output ${pc(R.ratio)} of expected${R.ci ? ` (90% CI ${pc(R.ci[0])}–${pc(R.ci[1])})` : ""}.</span>`;
+      const defs = (t.defenders || []).filter(x => x.tested).sort((a, b) => (a.ratio ?? 9) - (b.ratio ?? 9)).slice(0, 3);
+      const row = (k, p) => `<tr><td>${H(k)}</td><td class="num">${p.n}</td><td class="num">${p.tested}</td><td class="num">${p.succ}${p.sig ? ` (${p.sig}✓)` : ""}</td><td class="num">${p.obs}/${f1(p.exp)}</td><td class="num">${pc(p.ratio)}</td></tr>`;
+      const tbl = (title, obj) => { const e2 = Object.entries(obj || {}).filter(([, p]) => p.n); return e2.length ? `<div class="tablewrap"><table class="dx-tbl"><thead><tr><th>${title}</th><th class="num" title="episodes">Ep.</th><th class="num" title="testable episodes">Test.</th><th class="num" title="clearly reduced">Clear</th><th class="num">Pts obs/exp</th><th class="num">Output</th></tr></thead><tbody>${e2.map(([k, p]) => row(k, p)).join("")}</tbody></table></div>` : ""; };
+      el.innerHTML = `<section class="card dx-ans" aria-labelledby="dxAnsH">
+        <div class="dx-ah"><h2 id="dxAnsH">How to defend ${tn(F.target)} <span class="muted dx-nick">${H(nick[F.target] || "")}</span></h2>
+          <a class="dx-small" href="#/${ev}/specs/${F.target}">Spec sheet</a></div>
+        <div class="dx-ret"><div class="dx-retn"><b>${rr ? pc(rr.est) : pc(R.ratio)}</b><span>of its scoring kept when defended</span></div>
+          <div class="dx-retb">${retBar(rr, R.ratio ?? 1)}<div class="dx-rett">${rr ? `90% range ${pc(rr.lo)}–${pc(rr.hi)}` : `raw, ${R.tested ?? 0} testable episode${R.tested === 1 ? "" : "s"}`} ${tag} ${CS.help(retHelp + base, "How sure is this?")}</div></div></div>
+        ${(t.advice || []).length ? `<ul class="dx-adv">${t.advice.map(a => `<li>${H(a)}</li>`).join("")}</ul>` : ""}
+        ${defs.length ? `<div class="dx-defs"><span class="muted">Defenders that slowed it most:</span> ${defs.map(x => `<b>${tn(x.team)}</b> <span class="muted">${pc(x.ratio)} kept, ${x.tested} testable</span>`).join(" · ")}</div>` : ""}
+        <details class="dx-more2"><summary>By method, place and hub state</summary><div class="dx-3">${tbl("Method", t.by_method)}${tbl("Where", t.by_zone)}${tbl("Hub state", t.by_state)}</div></details>
+      </section>`;
     }
-    function targetPanel() {
-      const el = document.getElementById("dxTarget");
-      if (!F.target) {
-        const top = Object.entries(d.targets || {}).filter(([, t]) => t.received && t.received.n).sort((a, b) => b[1].received.n - a[1].received.n);
-        el.innerHTML = `<div class="dx-panel"><h2>How to defend… <small>pick a scorer</small></h2><div class="dx-tchips">${top.map(([k, t]) =>
-          `<a href="#/${ev}/defense/${k}" title="${t.received.n} episodes, ${t.received.succ} clearly reduced">${tn(k)} <span class="muted">${t.received.n}</span></a>`).join("")}</div></div>`;
+    function overview() {
+      const rows = Object.entries(RET).filter(([k]) => (d.targets || {})[k]).sort((a, b) => a[1].est - b[1].est);
+      const X = v => Math.max(0, Math.min(100, v / 1.5 * 100)).toFixed(1);
+      return `<section class="card dx-ans"><div class="dx-ah"><h2>Who is easiest to slow down</h2>${CS.help("Teams with at least 3 testable defended episodes, lowest placebo-controlled retention first. The bar is the 90% range; the tick at 100% means defense made no difference. Wide bars are honest: most teams have only a few episodes.", "How to read this list")}</div>
+        <ol class="dx-rank">${rows.slice(0, 8).map(([k, r]) => `<li><button type="button" data-pick="${H(k)}"><span class="dx-rk">${tn(k)}</span><span class="dx-nick muted">${H(nick[k] || "")}</span>
+          <span class="dx-rb sm" aria-hidden="true"><i class="rg" style="left:${X(r.lo)}%;width:${Math.max(1, X(r.hi) - X(r.lo))}%"></i><i class="one" style="left:${X(1)}%"></i><i class="mn" style="left:${X(r.est)}%"></i></span>
+          <span class="dx-rv"><b>${pc(r.est)}</b> kept${r.significant ? "" : ' <span class="muted">· n.s.</span>'}</span></button></li>`).join("")}</ol>
+        ${rows.length > 8 ? `<div class="muted small">Pick any team above for the rest (${rows.length} with an estimate).</div>` : ""}</section>`;
+    }
+    function pick(k) {
+      F.target = k || ""; F.defender = ""; shown = 3; expanded = false; focus = null;
+      history.replaceState(null, "", `#/${ev}/defense${F.target ? "/" + F.target : ""}`);
+      const s = document.getElementById("dxTeam"); if (s) s.value = F.target;
+      answer(); body();
+    }
+    function defendersPanel() {
+      const all = Object.entries(d.defenders || {}).sort((a, b) => (b[1].denied ?? 0) - (a[1].denied ?? 0)), rows = defAll ? all : all.slice(0, 10);
+      return `<section class="card dx-ans"><div class="dx-ah"><h2>Who defends well</h2>${CS.help("Victims' output pools all testable episodes of a defender: Σ observed / Σ expected points (lower = better defense). CI = bootstrap over episodes, shown with ≥ 3 testable episodes. Points denied = expected − observed, summed. Pick a defender to see its clips.", "How defenders are rated")}</div>
+        <div class="tablewrap"><table class="dx-tbl"><thead><tr><th>Defender</th><th class="num" data-pri="95" title="points denied, summed over testable episodes">Pts denied</th><th class="num" data-pri="90" title="victims' points while defended / expected">Victims kept</th><th class="num" data-pri="80">90% CI</th><th class="num" data-pri="70">Testable</th><th class="num" data-pri="40">Episodes</th><th class="num" data-pri="30">Clear</th><th class="num" data-pri="0">Sig.</th><th class="num" data-pri="0">Seconds</th><th data-pri="0">Methods</th><th data-pri="0">Targets</th></tr></thead>
+        <tbody>${rows.map(([k, p]) => `<tr class="${F.defender === k ? "sel" : ""}"><td><a href="#" data-def="${k}"><b>${tn(k)}</b></a> <span class="muted small">${H((nick[k] || "").slice(0, 18))}</span></td>
+          <td class="num">${f1(p.denied)}</td><td class="num">${pc(p.ratio)}</td><td class="num">${p.ci ? pc(p.ci[0]) + "–" + pc(p.ci[1]) : "–"}</td><td class="num">${p.tested}</td><td class="num">${p.n}</td><td class="num">${p.succ}</td><td class="num">${p.sig}</td><td class="num">${f1(p.secs, 0)}</td>
+          <td>${Object.entries(p.methods || {}).map(([m, c]) => `${m} ${c}`).join(", ")}</td><td>${Object.entries(p.targets || {}).map(([t, c]) => `${tn(t)}${c > 1 ? "×" + c : ""}`).join(" ")}</td></tr>`).join("")}</tbody></table></div>
+        ${all.length > 10 ? `<button type="button" class="mv-sm dx-defall" id="dxDefAll">${defAll ? "Show top 10" : `Show all ${all.length}`}</button>` : ""}</section>`;
+    }
+    function wireDefenders() {
+      const da = document.getElementById("dxDefAll"); if (da) da.onclick = () => { defAll = !defAll; answer(); };
+      document.querySelectorAll("a[data-def]").forEach(a => a.onclick = ev_ => { ev_.preventDefault(); F.defender = F.defender === a.dataset.def ? "" : a.dataset.def; shown = 6; answer(); body();
+        document.getElementById("dxClips").scrollIntoView({ block: "start", behavior: "smooth" }); });
+    }
+
+    // ---- clips: a few best ones up front; everything else behind "All episodes" with one Filter popover
+    const FL = [["defender", "Defender", () => uniq("defender"), tn], ["zone", "Place", () => zones, x => x], ["shift", "Period", () => ["transition", "shift1", "shift2", "shift3", "shift4", "endgame"], SH],
+      ["method", "Method", () => METHODS, x => x], ["verdict", "Verdict", () => Object.keys(VERD), v => VERD[v][0]]];
+    const nAct = () => FL.filter(f => F[f[0]] && !(f[0] === "defender" && mode === "defenders")).length + (succOnly ? 1 : 0);
+    function body() {
+      const r = filtered(), el = document.getElementById("dxClips");
+      document.querySelectorAll(".dx-clip canvas").forEach(c => { c.__player && c.__player.stop(); obs.unobserve(c); });
+      const who = F.defender ? `${tn(F.defender)}'s defense${F.target ? ` on ${tn(F.target)}` : ""}` : F.target ? `Defense on ${tn(F.target)}` : "Strongest episodes";
+      if (!expanded) {
+        el.innerHTML = `<div class="dx-ch"><h2>${who}</h2>${CS.help(effHelp, "How to read a clip")}<span class="muted small">${r.length} episode${r.length === 1 ? "" : "s"}</span>
+            ${r.length > shown ? `<button type="button" class="dx-all" id="dxAll">All ${r.length} episodes</button>` : ""}</div>
+          ${r.length ? `<div class="dx-grid">${r.slice(0, shown).map(cardHTML).join("")}</div>` : `<div class="empty">No defended episodes${F.target ? ` against ${tn(F.target)}` : ""}.</div>`}`;
+        el.querySelectorAll(".dx-clip canvas").forEach(mount);
+        const all = document.getElementById("dxAll"); if (all) all.onclick = () => { expanded = true; shown = 12; body(); };
         return;
       }
-      const t = (d.targets || {})[F.target];
-      if (!t) { el.innerHTML = `<div class="dx-panel"><h2>How to defend ${tn(F.target)}</h2><div class="muted">No tracked data for this team.</div></div>`; return; }
-      const R = t.received || {}, B = t.baseline || {};
-      const row = (k, p) => `<tr><td>${H(k)}</td><td class="num">${p.n}</td><td class="num">${p.tested}</td><td class="num">${p.succ}${p.sig ? ` (${p.sig}✓)` : ""}</td><td class="num">${p.obs}/${f1(p.exp)}</td><td class="num">${pc(p.ratio)}</td></tr>`;
-      const tbl = (title, obj) => { const e2 = Object.entries(obj).filter(([, p]) => p.n); return e2.length ? `<table class="dx-tbl"><thead><tr><th>${title}</th><th class="num">Ep.</th><th class="num">Test.</th><th class="num">Clear</th><th class="num">Pts obs/exp</th><th class="num">Output</th></tr></thead><tbody>${e2.map(([k, p]) => row(k, p)).join("")}</tbody></table>` : ""; };
-      el.innerHTML = `<div class="dx-panel"><h2>How to defend ${tn(F.target)} <small>${H(nick[F.target] || "")} · <a href="#/${ev}/specs/${F.target}">spec sheet</a> · <a href="#/${ev}/defense">all targets</a></small></h2>
-        <div class="dx-2"><div><ul class="dx-adv">${(t.advice || []).map(a => `<li>${H(a)}</li>`).join("")}</ul>
-          <div class="dx-note">Baseline: ${B.pts_per_active_s != null ? f1(B.pts_per_active_s * 60) : "–"} pts per active-hub minute over ${f1(B.active_s, 0)} s of free active time
-           (${f1(B.free_s, 0)} s free teleop). Defended: ${R.n} episodes, output ${pc(R.ratio)} of expected${R.ci ? ` (90% CI ${pc(R.ci[0])}–${pc(R.ci[1])})` : ""}.</div>
-          ${(() => { const tr = (d.teams || []).find(x => x.team === F.target), rr = tr && tr.retention, evd = d.teams_meta && d.teams_meta.event;
-            return rr ? `<div class="dx-note"><b>Placebo-controlled retention: ${pc(rr.est)}</b> (90% CI ${pc(rr.lo)}–${pc(rr.hi)}; adjusted for ${d.teams_meta.tests} team tests ${pc(rr.lo_adj)}–${pc(rr.hi_adj)}; n_eff ${rr.n_eff}) —
-              ${rr.significant ? "<b>measured</b>: defense reliably cuts this team's output" : `not significant: use the event-wide ${evd ? pc(evd.est) : ""} (an assumption) rather than this team's own number`}.</div>`
-              : `<div class="dx-note">Fewer than 3 testable episodes: no team-specific estimate${evd ? `; event-wide placebo-controlled retention ${pc(evd.est)} (${pc(evd.lo)}–${pc(evd.hi)}), an assumption` : ""}.</div>`; })()}</div>
-        <div>${tbl("Method", t.by_method || {})}${tbl("Where", t.by_zone || {})}${tbl("Hub state", t.by_state || {})}
-          ${(t.defenders || []).length ? `<div class="dx-note">Defenders faced: ${t.defenders.map(x => `<b>${tn(x.team)}</b> ${x.n}× (${pc(x.ratio)})`).join(", ")}</div>` : ""}</div></div></div>`;
+      const fpop = `<div class="dx-fw"><button type="button" class="dx-fb" id="dxFB" aria-haspopup="dialog" aria-expanded="false" aria-controls="dxFP">Filter${nAct() ? ` · ${nAct()}` : ""}</button>
+        <div class="mv-pop dx-fp" id="dxFP" role="dialog" aria-label="Filter episodes" hidden>
+          ${FL.filter(f => !(f[0] === "defender" && mode === "defenders")).map(([k, lab, vals, fmt]) => `<label class="dx-fr"><span>${lab}</span><select data-f="${k}"><option value="">Any</option>${vals().map(v => `<option value="${H(v)}"${F[k] === v ? " selected" : ""}>${H(fmt(v))}</option>`).join("")}</select></label>`).join("")}
+          <label class="dx-fr"><span>Sort</span><select data-f="sort">${[["denied", "Points denied"], ["rate", "Δ rate"], ["p", "p-value"], ["match", "Match"], ["dur", "Duration"]].map(([v, t]) => `<option value="${v}"${F.sort === v ? " selected" : ""}>${t}</option>`).join("")}</select></label>
+          <label class="mv-ck"><input type="checkbox" id="dxSucc"${succOnly ? " checked" : ""}> Clearly reduced only</label>
+          ${nAct() ? `<button type="button" class="mv-sm" id="dxClr">Clear filters</button>` : ""}</div></div>`;
+      el.innerHTML = `<div class="dx-ch"><h2>${who}</h2>${CS.help(effHelp, "How to read a clip")}<span class="muted small">${r.length} episode${r.length === 1 ? "" : "s"}</span>
+          <span class="dx-sp"></span>${fpop}
+          <div class="mv-seg dx-vt" role="radiogroup" aria-label="Show as"><button type="button" role="radio" aria-checked="${F.view === "clips"}" data-v="clips">Clips</button><button type="button" role="radio" aria-checked="${F.view === "table"}" data-v="table">Table</button></div>
+          <button type="button" class="mv-sm" id="dxLess">Show fewer</button></div>
+        <div id="dxBody"></div>`;
+      const bodyEl = document.getElementById("dxBody");
+      if (F.view === "clips") {
+        bodyEl.innerHTML = r.length ? `<div class="dx-grid">${r.slice(0, shown).map(cardHTML).join("")}</div>${r.length > shown ? `<button class="dx-more" id="dxMore">Show ${Math.min(12, r.length - shown)} more (${r.length - shown} left)</button>` : ""}`
+          : `<div class="empty">No episodes match these filters.</div>`;
+        bodyEl.querySelectorAll(".dx-clip canvas").forEach(mount);
+        const mb = document.getElementById("dxMore"); if (mb) mb.onclick = () => { shown += 12; body(); };
+        if (focus) { const fc = document.getElementById("dx-" + focus); fc && fc.scrollIntoView({ block: "center" }); }
+      } else {
+        bodyEl.innerHTML = `<div class="tablewrap"><table class="dx-tbl"><thead><tr><th>Defender</th><th>Target</th><th class="num" data-pri="80" title="observed / expected points (or attempts when the hub was inactive)">Obs/Exp</th><th data-pri="70">Verdict</th><th data-pri="75">Match</th><th class="num" data-pri="60">Clock</th><th data-pri="55">Period</th><th class="num" data-pri="50">Dur</th><th data-pri="45">Method</th><th data-pri="40">Place</th>
+          <th class="num" data-pri="0">Δ /s</th><th class="num" data-pri="0">p</th><th class="num" data-pri="0">q</th><th class="num" data-pri="0">Contact s</th><th class="num" data-pri="0">Pushed m</th><th class="num" data-pri="0">Cycle Δ</th><th data-pri="0">Video</th></tr></thead>
+          <tbody>${r.map(x => { const ef = x.effect, m = ef.metric === "attempts" ? "att" : "pts";
+            return `<tr class="clk" data-id="${x.id}"><td>${tn(x.defender)}</td><td>${tn(x.target)}</td><td class="num">${ef[m + "_obs"]}/${f1(ef[m + "_exp"])}</td><td>${vpill(x)}</td><td>${x.m}</td><td class="num">${f1(x.t_match, 0)}</td>
+            <td>${SH(x.shift)}${x.active ? "" : " (inact.)"}</td><td class="num">${f1(x.dur)}</td><td>${x.method}</td><td>${H(x.zone)} ${x.side}</td>
+            <td class="num">${f1(ef.d_rate, 2)}</td><td class="num">${f1(pOf(ef), 2)}</td><td class="num">${f1(ef.q, 2)}</td><td class="num">${f1(x.feat.contact_s)}</td><td class="num">${f1(x.disp.pushed_m)}</td><td class="num">${f1(x.cycle.delta)}</td>
+            <td><a href="#/${ev}/a/${x.key}?t=${f1(x.clip.v0)}">video</a></td></tr>`; }).join("")}</tbody></table></div>`;
+        bodyEl.querySelectorAll("tr.clk").forEach(tr => tr.onclick = ev_ => { if (ev_.target.closest("a,button")) return; focus = tr.dataset.id; F.view = "clips";
+          const r2 = filtered(), i = r2.findIndex(y => y.id === focus); if (i >= shown) shown = i + 1; body(); });
+      }
+      wireFilter();
+      el.querySelectorAll(".dx-vt button").forEach(b => b.onclick = () => { F.view = b.dataset.v; body(); });
+      document.getElementById("dxLess").onclick = () => { expanded = false; shown = 3; body(); el.scrollIntoView({ block: "nearest" }); };
     }
-    function syncSel() { document.querySelectorAll(".dx-flt select").forEach(s => s.value = F[s.dataset.f] || ""); }
-    function tabs() { document.querySelectorAll(".dx-tabs span").forEach(s => s.classList.toggle("on", s.dataset.v === F.view)); }
-    document.querySelectorAll(".dx-flt select").forEach(s => s.onchange = () => {
-      F[s.dataset.f] = s.value || (s.dataset.f === "sort" ? "denied" : ""); shown = 24; focus = null;
-      if (s.dataset.f === "target") { history.replaceState(null, "", `#/${ev}/defense${F.target ? "/" + F.target : ""}`); targetPanel(); }
-      body();
-    });
-    document.getElementById("dxSucc").onclick = ev_ => { succOnly = !succOnly; ev_.target.classList.toggle("on", succOnly); shown = 24; body(); };
-    document.querySelectorAll(".dx-tabs span").forEach(s => s.onclick = () => { F.view = s.dataset.v; tabs(); body(); });
+    let fpOpen = false;
+    function wireFilter() {
+      const b = document.getElementById("dxFB"), p = document.getElementById("dxFP"); if (!b) return;
+      const place = () => { if (p.hidden) return; const r = b.getBoundingClientRect(), vw = document.documentElement.clientWidth, pw = p.offsetWidth;
+        p.style.left = Math.max(8, Math.min(r.left, vw - pw - 8)) + "px"; p.style.top = (r.bottom + 6) + "px"; };
+      const open = on => { fpOpen = on; p.hidden = !on; b.setAttribute("aria-expanded", on); if (on) { place(); const f = p.querySelector("select"); f && f.focus(); } };
+      if (fpOpen) open(true);
+      b.onclick = () => open(p.hidden);
+      p.onkeydown = e => { if (e.key === "Escape") { e.stopPropagation(); open(false); b.focus(); } };
+      p.onchange = e => { const s = e.target;
+        if (s.id === "dxSucc") succOnly = s.checked; else if (s.dataset.f) F[s.dataset.f] = s.value || (s.dataset.f === "sort" ? "denied" : "");
+        shown = 12; focus = null; body(); };
+      const clr = document.getElementById("dxClr"); if (clr) clr.onclick = () => { FL.forEach(f => { if (!(f[0] === "defender" && mode === "defenders")) F[f[0]] = ""; }); succOnly = false; body(); };
+      fpPlace = place; fpClose = () => open(false);
+    }
+    let fpPlace = () => { }, fpClose = () => { };
+    const fpAway = e => { const p = document.getElementById("dxFP"), b = document.getElementById("dxFB"); if (p && !p.hidden && !p.contains(e.target) && !b.contains(e.target)) fpClose(); };
+    const fpScroll = () => fpPlace();
+    document.addEventListener("pointerdown", fpAway, true); addEventListener("scroll", fpScroll, true);
+    cleanup.push(() => { document.removeEventListener("pointerdown", fpAway, true); removeEventListener("scroll", fpScroll, true); });
+
+    document.querySelectorAll(".dx-seg button").forEach(b => b.onclick = () => { location.hash = `#/${ev}/defense${b.dataset.mode === "defenders" ? "/defenders" : F.target ? "/" + F.target : ""}`; });
+    const sel = document.getElementById("dxTeam"); if (sel) sel.onchange = () => pick(sel.value);
     const onR = () => document.querySelectorAll(".dx-clip canvas").forEach(c => c.__player && c.__player.once());
     window.addEventListener("resize", onR); cleanup.push(() => window.removeEventListener("resize", onR));
     FIELD.complete || FIELD.addEventListener("load", onR, { once: true });
-    targetPanel(); body();
+    answer(); body();
   }
 
   CS.route("defense", (ev, target) => page(ev, target));
