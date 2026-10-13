@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#f3f3f1" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#050505" media="(prefers-color-scheme: dark)">
+<title>Docs · Cyber-Scout</title>
+<meta name="description" content="How Cyber-Scout works: the system on one page, from a played match to the queue card, measured accuracy and a glossary.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230b0b0b'/%3E%3Cpath d='M7 23c3-9 8-13 13-13' stroke='%23fff' stroke-width='3' fill='none' stroke-linecap='round'/%3E%3Ccircle cx='23.5' cy='10' r='3.5' fill='%23fff'/%3E%3C/svg%3E">
+<link rel="preload" href="fonts/instrument-sans.woff2" as="font" type="font/woff2" crossorigin>
+<script src="assets/mode.js"></script>
+<link rel="stylesheet" href="assets/site.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="top">
+  <div class="wrap">
+    <a class="brand" href="index.html" aria-label="Cyber-Scout home"><svg viewBox="0 0 32 32" aria-hidden="true"><rect class="m-bg" width="32" height="32" rx="8"/><path class="m-fg" d="M7 23c3-9 8-13 13-13" stroke-width="3" fill="none" stroke-linecap="round"/><circle class="m-dot" cx="23.5" cy="10" r="3.5"/></svg>Cyber-Scout</a>
+    <nav class="nav" aria-label="Site">
+      <a href="index.html#how">How it works</a><a href="index.html#strategy">Strategy</a><a href="index.html#accuracy">Accuracy</a><a href="docs.html" aria-current="page">Docs</a><a href="download.html">Download</a>
+    </nav>
+    <a class="btn primary" href="demo/">Live demo</a>
+    <details class="menu">
+      <summary aria-label="Menu"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg></summary>
+      <nav class="menu-p" aria-label="Site">
+        <a href="index.html#how">How it works</a><a href="index.html#strategy">Strategy</a><a href="index.html#accuracy">Accuracy</a><a href="docs.html" aria-current="page">Docs</a><a href="download.html">Download</a>
+      </nav>
+    </details>
+  </div>
+</header>
+
+<main id="main">
+  <div class="wrap page-h">
+    <h1 class="display">How Cyber-Scout works</h1>
+    <p class="lead">A readable overview of the guide in the repository: the parts, what happens after a match is played, the measured numbers, and the words the app uses. The <a href="#more">full guide</a> goes file by file.</p>
+  </div>
+
+  <div class="wrap doc">
+    <nav class="toc" aria-label="On this page">
+      <b>On this page</b>
+      <ol>
+        <li><a href="#parts">The system on one page</a></li>
+        <li><a href="#flow">From a match to the queue card</a></li>
+        <li><a href="#numbers">Measured numbers</a></li>
+        <li><a href="#glossary">Glossary</a></li>
+        <li><a href="#more">Read further</a></li>
+      </ol>
+    </nav>
+
+    <article class="prose">
+      <h2 id="parts">The system on one page</h2>
+      <p>Cyber-Scout is four containers built from one repository, plus an optional updater on the host. The worker and the API never call each other: they share one <b>data folder</b>. The API writes settings and requests there; the worker reads them on its next poll and writes everything the site shows.</p>
+      <div class="sysmap">
+        <div><b>worker</b><span>Polls TBA, picks and downloads videos, tracks, rebuilds shots, builds the strategy JSON.</span><span class="k">GPU</span></div>
+        <div><b>recorder</b><span>Records the event's livestream and cuts one clip and result per match from the broadcast overlay.</span><span class="k">same image</span></div>
+        <div><b>api</b><span>Accounts, roles, settings, picklists, notes, identity fixes, sync for clients.</span><span class="k">FastAPI + SQLite</span></div>
+        <div><b>web</b><span>Serves the app, the generated JSON and videos, after checking each request's session.</span><span class="k">nginx, port 7560</span></div>
+      </div>
+      <p>Browsers reach the web container over the LAN, Tailscale or a tunnel. Laptops with the Cyber-Scout Client and phones in offline mode keep a copy of the data and queue their changes; tracking only ever runs on the server.</p>
+
+      <h2 id="flow">From "a match is played" to "a strategist reads the queue card"</h2>
+      <ol>
+        <li><b>The match ends.</b> The recorder, reading the broadcast clock and overlay, writes a stream result about 20 seconds after the final buzzer, so the score shows before TBA posts. Separately the worker polls TBA every two minutes.</li>
+        <li><b>The worker picks a video</b> for each played match without tracking: FIRST Washington's overhead "Wide Match N" upload first. If nothing is up yet, it tries again five minutes later.</li>
+        <li><b>Download</b> into the cache.</li>
+        <li><b>Process</b>, about 3 to 4 minutes on the GPU: check the camera wasn't bumped (AprilTags and the centre line), find the match start, run the robot detector at 30 Hz, build field-space tracklets, read bumper numbers and solve which tracklet is which of the six teams in one integer program. Every robot gets a per-frame identity confidence. If the bumpers say this is another match's video, the next upload is tried.</li>
+        <li><b>Enrich</b>: FUEL tracking, shot reconstruction (a 3D ballistic arc per ball; shooter; made, missed or pass; period and hub state, reconciled against TBA's per-period hub counts), floor intakes and per-robot analytics. Frames with identity confidence under 0.5 are quarantined: shots launched there aren't credited to a team.</li>
+        <li><b>Keep the video</b> and mark the match done.</li>
+        <li><b>Build the site</b>: event, match and team JSON, then the dashboard (ratings, Monte-Carlo predictions, a plan with a queue card for each remaining match of your team, rank projections), the scouting pages (verified-only team pages, spec sheets, the defense library) and the goals pages (rankings, district points, championship odds, schedule, alliance selection), each with replay snapshots every 30 minutes.</li>
+        <li><b>A strategist opens the Dashboard.</b> The queue card for the next match gives the win chance (with EPA beside it), what winning or losing auto does to your active shifts, who to defend, when and where, which opponent is likely to defend you, the ranking-point line and foul risk. When the match is nearly decided, it shows the bonus RP closest to a coin flip instead ("goal mode").</li>
+      </ol>
+      <p>Nothing in that chain needs a person, except setting up an event's video once (sources, layout boxes, camera calibration) and, when the tracker gets a robot wrong, a "Wrong team?" fix.</p>
+
+      <h2 id="numbers">Measured numbers</h2>
+      <p>Measured on 2026 PNW District Sammamish (2026wasam).</p>
+      <div class="scroll-x">
+        <table class="req">
+          <tbody>
+            <tr><th scope="row">Identity, all samples right</th><td>87.6% on 19 hand-labelled matches (95.3% of answered; 98.9% at confidence 0.8 or more)</td></tr>
+            <tr><th scope="row">Identity with station-camera reads</th><td>answered 95.6% → 98.5% (10-match dev set)</td></tr>
+            <tr><th scope="row">Made shots, traced / TBA</th><td>about 0.91–1.00 per alliance, held out</td></tr>
+            <tr><th scope="row">Shot attribution / made / missed calls</th><td>~96% / ~90% / ~60% (missed vs pass 0.83)</td></tr>
+            <tr><th scope="row">Intakes</th><td>precision ~0.88, recall ~0.45 (a lower bound)</td></tr>
+            <tr><th scope="row">Win probability, Brier, 58 quals</th><td>blend .1185, no video .1333, EPA .1474, coin .25</td></tr>
+            <tr><th scope="row">Blend minus EPA</th><td>−.029, 90% interval [−.051, −.009]</td></tr>
+            <tr><th scope="row">What video adds</th><td>−.015, 90% interval [−.036, +.004]: not significant</td></tr>
+            <tr><th scope="row">Defense</th><td>defended scorers keep 0.71 [0.56, 0.88] of their scoring, event-wide and placebo-controlled; 0 of 39 per-team tests significant, so every queue-card defense effect is labelled an assumption</td></tr>
+            <tr><th scope="row">District points</th><td>exact vs TBA on all 309 2026 PNW team-events</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h2 id="glossary">Glossary</h2>
+      <dl class="gloss">
+        <div><dt>2026 REBUILT</dt><dd>The FRC game Cyber-Scout is built for. A 16.5 × 8.1 m field, point-symmetric, blue alliance wall at one end and red at the other.</dd></div>
+        <div><dt>FUEL and HUB</dt><dd>FUEL are 15 cm yellow foam balls; robots and the human player shoot them into their alliance's HUB. One point per FUEL in an active hub. TBA reports counted FUEL per alliance and period.</dd></div>
+        <div><dt>Periods</dt><dd>AUTO 0–20 s, TRANSITION 20–30, SHIFT 1 to SHIFT 4 (25 s each), END GAME 130–160.</dd></div>
+        <div><dt>Hub shifts</dt><dd>Both hubs are active in AUTO, TRANSITION and END GAME. In the shifts they alternate: the alliance that won auto has its hub inactive in shifts 1 and 3. So winning auto is a schedule decision, and the time to defend an opponent is during their active shifts.</dd></div>
+        <div><dt>ENERGIZED, SUPERCHARGED, TRAVERSAL</dt><dd>The bonus ranking points: at least 100 FUEL counted, at least 360 FUEL counted, at least 50 TOWER points. TRAVERSAL is hidden while nobody at the event has earned it.</dd></div>
+        <div><dt>Wide camera</dt><dd>The fixed high field camera in FIRST Washington broadcasts. All robot tracking uses it. The driver-station insets are optional extra bumper reads.</dd></div>
+        <div><dt>Camera calibration</dt><dd>The lens model and pose fitted from AprilTags and straight field lines, once per venue; checked every match and re-solved if the camera moved.</dd></div>
+        <div><dt>Tracklet</dt><dd>A short, clean piece of one robot's path in field metres, cut wherever the bumper reads change team.</dd></div>
+        <div><dt>Identity</dt><dd>Bumper numbers read by OCR, scored against the six teams; one integer program assigns tracklets to team paths. Each track has a whole-match and a per-frame confidence.</dd></div>
+        <div><dt>Quarantine</dt><dd>Frames whose identity confidence is under 0.5 count as unobserved, and shots launched there are credited to no team. Nothing is guessed.</dd></div>
+        <div><dt>Identity fix</dt><dd>"Wrong team?" on a match page. A scout's fix waits for approval; a strategist's applies at once, on the worker's next build.</dd></div>
+        <div><dt>Shot</dt><dd>One reconstructed FUEL flight: shooter, 3D launch point and velocity, landing, target hub, made / missed / pass, period, hub state, confidence.</dd></div>
+        <div><dt>Verified video match</dt><dd>A match tracked by the current tracker in which the team's track has confidence 0.6 or more. Only these feed team numbers.</dd></div>
+        <div><dt>Coverage tiers</dt><dd>3 or more verified matches: shown as fact. 1 or 2: shown grey, with the match list. None: hidden. Always "as of" the last verified match.</dd></div>
+        <div><dt>EPA and blend</dt><dd>EPA is a Statbotics-style points rating. The blend is the dashboard's rating: the EPA prior, updated by this event's TBA results and by verified video.</dd></div>
+        <div><dt>Queue card</dt><dd>The six-line plan for one upcoming match. Goal mode: when win chance is under 10% or over 90%, the headline becomes the bonus RP lever.</dd></div>
+        <div><dt>Replay</dt><dd>Snapshots every 30 minutes of each event day let you view the event as of that time, using only results posted before it.</dd></div>
+        <div><dt>Honest footer</dt><dd>The dashboard's accuracy line: a backtest over quals posted before the view's time, each predicted only from earlier matches.</dd></div>
+        <div><dt>Selection</dt><dd>A simulation of the rest of the quals, the draft and the playoffs: each team's chance to captain or be picked, per-captain re-runs, pitch cards, and the district points you still need.</dd></div>
+        <div><dt>Defense library</dt><dd>Every detected defense episode, compared with random undefended windows of the same scorer; a team's effect is marked significant only when it survives a multiple-testing correction.</dd></div>
+        <div><dt>Livestream record</dt><dd>What the recorder writes per match from the stream: teams and score read off the overlay, start and end time, clip. Fast results before TBA.</dd></div>
+      </dl>
+
+      <h2 id="more">Read further</h2>
+      <p>The complete guide lives in the repository under <code>docs/guide/</code>. Read order for a newcomer: architecture, pipeline (skim), strategy, then whichever part you're about to touch.</p>
+      <ul class="readmore">
+        <li><a href="https://github.com/Grindlewalt/Cyber-Scout/blob/main/docs/guide/architecture.md">Architecture</a>: services, volumes, ports, users, where every piece of state lives.</li>
+        <li><a href="https://github.com/Grindlewalt/Cyber-Scout/blob/main/docs/guide/pipeline.md">Pipeline</a>: the video pipeline stage by stage, and the livestream ingest.</li>
+        <li><a href="https://github.com/Grindlewalt/Cyber-Scout/blob/main/docs/guide/strategy.md">Strategy</a>: the rating model, simulator, queue card, backtests, rankings, selection, defense library.</li>
+        <li><a href="https://github.com/Grindlewalt/Cyber-Scout/blob/main/docs/guide/server.md">Server</a>: every API endpoint, auth, roles, audit and revert, the database.</li>
+        <li><a href="https://github.com/Grindlewalt/Cyber-Scout/blob/main/docs/guide/web.md">Web app</a>: boot order, router, every page, themes and layouts, the design lab.</li>
+        <li><a href="https://github.com/Grindlewalt/Cyber-Scout/blob/main/docs/guide/deploy.md">Deploy</a>: install, settings, GPUs, updates, backups, troubleshooting.</li>
+        <li><a href="https://github.com/Grindlewalt/Cyber-Scout/blob/main/docs/guide/security.md">Security</a>: threat model and defences layer by layer.</li>
+        <li><a href="https://github.com/Grindlewalt/Cyber-Scout/blob/main/docs/SYNC.md">Client–server sync</a>: how laptops and phones stay in sync over bad Wi-Fi.</li>
+        <li><a href="https://github.com/Grindlewalt/Cyber-Scout/blob/main/client/README.md">Cyber-Scout Client</a>: install, first run, offline behaviour, building the binaries.</li>
+      </ul>
+    </article>
+  </div>
+</main>
+
+<footer class="foot">
+  <div class="wrap">
+    <nav aria-label="Footer"><a href="index.html">Home</a><a href="demo/">Live demo</a><a href="download.html">Download</a><a href="https://github.com/Grindlewalt/Cyber-Scout">Source</a></nav>
+    <span>No cookies, no analytics.</span>
+    <div class="mode" role="group" aria-label="Appearance"><button type="button" value="auto" aria-pressed="false">Auto</button><button type="button" value="light" aria-pressed="false">Light</button><button type="button" value="dark" aria-pressed="false">Dark</button></div>
+  </div>
+</footer>
+<script src="assets/site.js" defer></script>
+</body>
+</html>

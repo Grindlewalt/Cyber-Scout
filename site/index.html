@@ -1,0 +1,280 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#f3f3f1" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#050505" media="(prefers-color-scheme: dark)">
+<title>Cyber-Scout · autonomous FRC scouting from the broadcast video</title>
+<meta name="description" content="Cyber-Scout tracks all six robots and every FUEL ball from the FRC broadcast video, identifies teams from their bumper numbers, reconstructs every shot and turns it into match plans. Open source, runs on your own server.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230b0b0b'/%3E%3Cpath d='M7 23c3-9 8-13 13-13' stroke='%23fff' stroke-width='3' fill='none' stroke-linecap='round'/%3E%3Ccircle cx='23.5' cy='10' r='3.5' fill='%23fff'/%3E%3C/svg%3E">
+<link rel="preload" href="fonts/instrument-sans.woff2" as="font" type="font/woff2" crossorigin>
+<script src="assets/mode.js"></script>
+<link rel="stylesheet" href="assets/site.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="top">
+  <div class="wrap">
+    <a class="brand" href="index.html" aria-label="Cyber-Scout home"><svg viewBox="0 0 32 32" aria-hidden="true"><rect class="m-bg" width="32" height="32" rx="8"/><path class="m-fg" d="M7 23c3-9 8-13 13-13" stroke-width="3" fill="none" stroke-linecap="round"/><circle class="m-dot" cx="23.5" cy="10" r="3.5"/></svg>Cyber-Scout</a>
+    <nav class="nav" aria-label="Site">
+      <a href="#how">How it works</a><a href="#strategy">Strategy</a><a href="#accuracy">Accuracy</a><a href="#offline">Offline</a><a href="#server">Your server</a><a href="docs.html">Docs</a><a href="download.html">Download</a>
+    </nav>
+    <a class="btn primary" href="demo/">Live demo</a>
+    <details class="menu">
+      <summary aria-label="Menu"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg></summary>
+      <nav class="menu-p" aria-label="Site">
+        <a href="#how">How it works</a><a href="#strategy">Strategy</a><a href="#accuracy">Accuracy</a><a href="#offline">Offline</a><a href="#server">Your server</a><a href="docs.html">Docs</a><a href="download.html">Download</a>
+      </nav>
+    </details>
+  </div>
+</header>
+
+<main id="main">
+  <section class="hero" aria-labelledby="h1">
+    <div class="wrap">
+      <h1 id="h1" class="display">Scouting from the broadcast video alone.</h1>
+      <div class="hero-row">
+        <p class="lead">Cyber-Scout watches an FRC event on The Blue Alliance. When a match video appears, it tracks <b>all six robots and every FUEL ball</b>, works out which robot is which team from the <b>bumper numbers</b>, reconstructs <b>every shot</b>, and turns it into a plan for your next match. Nobody has to sit in the stands with a tablet.</p>
+        <div>
+          <div class="acts"><a class="btn primary" href="demo/">Open the live demo</a><a class="btn" href="download.html">Install it</a></div>
+          <p class="hero-note">Open source (MIT). Runs on your team's own computer. Built for 2026 REBUILT.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <div class="plate">
+    <div class="wrap">
+      <figure>
+        <img src="img/q12-overlay.webp" srcset="img/q12-overlay-960.webp 960w, img/q12-overlay.webp 1920w" sizes="(max-width: 1240px) 100vw, 1192px"
+          width="1920" height="878" fetchpriority="high"
+          alt="Overhead broadcast frame of Qualification 12 at PNW District Sammamish with six robots boxed and labelled by team number, and a side panel listing each robot's made and attempted shots and the traced-versus-official FUEL count for Shift 4.">
+        <figcaption><b>Qualification 12, Shift 4</b><span>Cyber-Scout's accuracy-check view: each robot boxed and labelled from its bumper number, shots counted per robot (4911: 51 made of 63), and the traced FUEL compared with the official count as the match runs.</span></figcaption>
+      </figure>
+    </div>
+  </div>
+
+  <section class="sec" id="how" aria-labelledby="how-h">
+    <div class="wrap">
+      <div class="sec-h">
+        <h2 id="how-h" class="display">From a played match to a queue card, untouched.</h2>
+        <p class="lead">Each match takes about 3 to 4 minutes on a GPU, starting as soon as its video is up. The only manual step is setting up a venue's camera once, about 15 minutes.</p>
+      </div>
+      <ol class="pipe">
+        <li><span class="n" aria-hidden="true">1</span><h3>Notice the match</h3><p>Polls The Blue Alliance for results and records the event livestream, cutting each match as its final buzzer sounds.</p><span class="out">fast scores before TBA posts</span></li>
+        <li><span class="n" aria-hidden="true">2</span><h3>Find the camera</h3><p>Downloads the overhead "Wide" video and checks the camera pose against AprilTags and the centre line, re-solving it if someone bumped it.</p><span class="out">pixels to field metres</span></li>
+        <li><span class="n" aria-hidden="true">3</span><h3>Track the robots</h3><p>A YOLO robot detector at 30 frames per second, stitched into field-space paths with the tracker from autoscout.</p><span class="out">six paths per match</span></li>
+        <li><span class="n" aria-hidden="true">4</span><h3>Read the bumpers</h3><p>OCR reads bumper numbers; one integer program assigns paths to the six teams. Every frame gets a confidence; low-confidence stretches are set aside, never guessed.</p><span class="out">who is who, frame by frame</span></li>
+        <li><span class="n" aria-hidden="true">5</span><h3>Rebuild every shot</h3><p>Yellow FUEL in flight becomes a 3D arc: shooter, launch point, made, missed or pass, period and hub state, checked against TBA's per-period counts.</p><span class="out">shots, intakes, defense</span></li>
+        <li><span class="n" aria-hidden="true">6</span><h3>Plan the next match</h3><p>Ratings, Monte-Carlo predictions, a queue card for each of your remaining matches, rank projections, alliance selection odds.</p><span class="out">the pages your strategist reads</span></li>
+      </ol>
+      <p class="pipe-foot">Everything is replayable: snapshots every 30 minutes let you see the event "as of" any moment, using only results posted before then.</p>
+      <div class="pair">
+        <figure class="shot">
+          <div class="frame"><img src="img/q12-fuel.webp" width="1280" height="720" loading="lazy" decoding="async" alt="Broadcast frame of Qualification 12 with a FUEL ball's flight path traced in green dots from a robot to the hub; a caption reads airborne fuel tracked: 690."></div>
+          <figcaption><b>Every ball in the air.</b> Qualification 12: 690 airborne FUEL tracked across the match, each one followed from launch to the hub or the floor.</figcaption>
+        </figure>
+        <figure class="shot">
+          <div class="frame">
+            <img class="on-light" src="img/match-light.webp" width="1600" height="1067" loading="lazy" decoding="async" alt="Cyber-Scout match page for Qualification 17 in field view at 1:13 of Shift 3: robots on a top-down field with their trails, reconstructed shot lines to the hubs, and FUEL made per team.">
+            <img class="on-dark" src="img/match-dark.webp" width="1600" height="1067" loading="lazy" decoding="async" alt="Cyber-Scout match page for Qualification 17 in field view at 1:13 of Shift 3: robots on a top-down field with their trails, reconstructed shot lines to the hubs, and FUEL made per team.">
+          </div>
+          <figcaption><b>Replay any match from above.</b> Qualification 17, field view: paths, shot arcs, made and attempted FUEL per robot, with the broadcast video and overlay alongside on your own server.</figcaption>
+        </figure>
+      </div>
+    </div>
+  </section>
+
+  <section class="sec" id="strategy" aria-labelledby="strategy-h">
+    <div class="wrap">
+      <div class="sec-h">
+        <h2 id="strategy-h" class="display">What your drive team reads before queueing.</h2>
+        <p class="lead">The Dashboard turns the tracking into a six-line queue card for your next match: the win chance, what winning auto does to your hub shifts, who to defend, when and where, and the ranking-point line.</p>
+      </div>
+      <div class="strat">
+        <figure class="shot">
+          <div class="frame">
+            <img class="on-light" src="img/dashboard-light.webp" width="2000" height="1333" loading="lazy" decoding="async" alt="Cyber-Scout Dashboard for team 4911 at the Sunday 09:00 replay: Qualification 47 queue card with alliances, an 80% win chance versus 70% from EPA alone, auto plan, who to defend and where, and ranking-point odds.">
+            <img class="on-dark" src="img/dashboard-dark.webp" width="2000" height="1333" loading="lazy" decoding="async" alt="Cyber-Scout Dashboard for team 4911 at the Sunday 09:00 replay: Qualification 47 queue card with alliances, an 80% win chance versus 70% from EPA alone, auto plan, who to defend and where, and ranking-point odds.">
+          </div>
+          <figcaption><b>The real Dashboard</b>, team 4911 at PNW District Sammamish, replayed at Sunday 09:00: Qual 47 is 12 minutes away. This exact page is in the <a href="demo/">live demo</a>.</figcaption>
+        </figure>
+        <figure class="shot phone">
+          <div class="frame">
+            <img class="on-light" src="img/phone-light.webp" width="780" height="1688" loading="lazy" decoding="async" alt="The same Dashboard on a phone: match strip, Qual 47 header and the 80% win chance.">
+            <img class="on-dark" src="img/phone-dark.webp" width="780" height="1688" loading="lazy" decoding="async" alt="The same Dashboard on a phone: match strip, Qual 47 header and the 80% win chance.">
+          </div>
+          <figcaption>Same page on a phone in the queue line.</figcaption>
+        </figure>
+      </div>
+      <dl class="feat">
+        <div><dt>Match plans and the queue card</dt><dd>A plan for every remaining match of your team. When a match is nearly decided, the card switches to the bonus ranking point that is closest to a coin flip.</dd></div>
+        <div><dt>Selection</dt><dd>Simulates the rest of the quals, the draft and the playoffs: each team's chance to captain or be picked, "if they take us" re-runs, and pitch cards.</dd></div>
+        <div><dt>Picklist</dt><dd>One shared list per event. Strategists edit it, everyone signed in sees it, and edits made offline are sent when you reconnect.</dd></div>
+        <div><dt>Defense library</dt><dd>Every detected defense episode, measured against undefended windows of the same scorer, so you know which effects are real and which are guesses.</dd></div>
+        <div><dt>Rankings and district points</dt><dd>Projected ranks, district points computed by the official rules, and your odds of reaching the District Championship.</dd></div>
+        <div><dt>Team pages and spec sheets</dt><dd>Scoring, shot charts, auto routines, intakes, movement, climbs and reliability, from verified video only, always with how many matches back each number.</dd></div>
+      </dl>
+      <div class="gallery">
+        <figure class="shot">
+          <div class="frame"><img class="on-light" src="img/selection-light.webp" width="1600" height="1067" loading="lazy" decoding="async" alt="Alliance selection page: 4911's chances to be captain or a first or second pick, the captains most likely to pick 4911, and pitch cards."><img class="on-dark" src="img/selection-dark.webp" width="1600" height="1067" loading="lazy" decoding="async" alt="Alliance selection page: 4911's chances to be captain or a first or second pick, the captains most likely to pick 4911, and pitch cards."></div>
+          <figcaption><b>Selection</b> at Sunday 09:00</figcaption>
+        </figure>
+        <figure class="shot">
+          <div class="frame"><img class="on-light" src="img/team-light.webp" width="1600" height="1067" loading="lazy" decoding="async" alt="Team page for 4911 CyberKnights: scouting truth numbers such as blend rating, made FUEL per match and accuracy, each with the number of verified matches."><img class="on-dark" src="img/team-dark.webp" width="1600" height="1067" loading="lazy" decoding="async" alt="Team page for 4911 CyberKnights: scouting truth numbers such as blend rating, made FUEL per match and accuracy, each with the number of verified matches."></div>
+          <figcaption><b>Team page</b>, 4911 CyberKnights</figcaption>
+        </figure>
+        <figure class="shot">
+          <div class="frame"><img class="on-light" src="img/defense-light.webp" width="1600" height="1067" loading="lazy" decoding="async" alt="Defense library: defended scorers kept 71% of expected output, the teams easiest to slow down, and the strongest defense episodes drawn on the field."><img class="on-dark" src="img/defense-dark.webp" width="1600" height="1067" loading="lazy" decoding="async" alt="Defense library: defended scorers kept 71% of expected output, the teams easiest to slow down, and the strongest defense episodes drawn on the field."></div>
+          <figcaption><b>Defense library</b>, 421 episodes</figcaption>
+        </figure>
+      </div>
+    </div>
+  </section>
+
+  <section class="sec" id="accuracy" aria-labelledby="accuracy-h">
+    <div class="wrap">
+      <div class="sec-h">
+        <h2 id="accuracy-h" class="display">How accurate it is, measured.</h2>
+        <p class="lead">All numbers are from one event, PNW District Sammamish 2026 (58 qualification matches), checked against hand labels and The Blue Alliance. They are what we measured, including the parts that are not good yet.</p>
+      </div>
+      <div class="split">
+        <table class="facts">
+          <thead><tr><th scope="col">What</th><th scope="col">Measured</th><th scope="col">What it means</th></tr></thead>
+          <tbody>
+            <tr><th scope="row">Which robot is which team</th><td class="v"><b>87.6%</b><span>of samples right, 19 hand-labelled matches</span></td>
+              <td class="c">95.3% of the frames it answers (it abstains on about 8%), 98.9% when its confidence is 0.8 or more. Frames under 0.5 are quarantined: their shots are credited to no team.</td></tr>
+            <tr><th scope="row">With station-camera reads</th><td class="v"><b>98.5%</b><span>of answered frames, up from 95.6%</span></td>
+              <td class="c">Optional pass that also reads bumpers from the driver-station insets; measured on the 10-match dev set.</td></tr>
+            <tr><th scope="row">Made FUEL vs the official count</th><td class="v"><b>0.91–1.00</b><span>traced / TBA per alliance, held out</span></td>
+              <td class="c">Reconstructed made shots, compared per alliance and period with TBA's hub counts.</td></tr>
+            <tr><th scope="row">Shot calls</th><td class="v"><b>~96%</b><span>shooter attributed correctly</span></td>
+              <td class="c">Made calls ~90%. Missed calls only ~60% (missed vs pass 0.83): misses are the weak spot.</td></tr>
+            <tr><th scope="row">Floor intakes</th><td class="v"><b>~0.88</b><span>precision; recall ~0.45</span></td>
+              <td class="c">When it reports a pickup it is usually right, but it sees fewer than half, so intake counts are a floor.</td></tr>
+            <tr><th scope="row">District points</th><td class="v"><b>309 / 309</b><span>2026 PNW team-events exact</span></td>
+              <td class="c">Implements the FRC district-points rules; matches TBA on every team-event of the 2026 PNW season.</td></tr>
+          </tbody>
+        </table>
+        <div>
+          <figure class="chart" aria-labelledby="brier-h">
+            <h3 id="brier-h">Win predictions, scored after the fact</h3>
+            <p>Brier score over 58 quals, each predicted only from matches posted before it. Lower is better.</p>
+            <table class="bars">
+              <caption class="vh">Brier score by model</caption>
+              <tbody>
+                <tr class="us"><th scope="row">Cyber-Scout blend</th><td><span class="b"><i style="width:47.4%"></i><span>.1185</span></span></td></tr>
+                <tr><th scope="row">Same model, no video</th><td><span class="b"><i style="width:53.3%"></i><span>.1333</span></span></td></tr>
+                <tr><th scope="row">EPA alone</th><td><span class="b"><i style="width:59%"></i><span>.1474</span></span></td></tr>
+                <tr><th scope="row">Coin flip</th><td><span class="b"><i style="width:100%"></i><span>.25</span></span></td></tr>
+              </tbody>
+            </table>
+            <p class="ci">Blend minus EPA: −.029, 90% interval [−.051, −.009]. What the video adds on its own: −.015, 90% interval [−.036, +.004], which is <b>not significant yet</b> at one event.</p>
+          </figure>
+          <div class="caveat">
+            <h3>What it doesn't know</h3>
+            <ul>
+              <li>Climbs come from TBA's per-robot results, never from video.</li>
+              <li>Defense: defended scorers kept 71% of their expected scoring event-wide [56–88%], but none of 39 per-team tests is significant, so every defense effect on the queue card is labelled an assumption.</li>
+              <li>Robots whose numbers the OCR never reads get their identity from path linking only, at lower confidence.</li>
+              <li>Team numbers use verified matches only; fewer than 3 are shown as anecdotes with the match list.</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+      <p class="src">Sources: the measured-numbers tables in <a href="docs.html#numbers">the guide</a> (pipeline and strategy chapters). The dashboard shows a live version of the backtest in its footer, recomputed as results come in.</p>
+    </div>
+  </section>
+
+  <section class="sec" id="offline" aria-labelledby="offline-h">
+    <div class="wrap">
+      <div class="sec-h">
+        <h2 id="offline-h" class="display">Made for venue Wi-Fi.</h2>
+        <p class="lead">The tracking runs on your server; every laptop and phone keeps its own copy of the event's data. Reading never waits on the network, and changes made offline are sent once, in order, when the connection comes back.</p>
+      </div>
+      <div class="links">
+        <div><h3>Laptops: Cyber-Scout Client</h3><p>A small program that serves the same web app from a full local mirror. Syncs only what changed, resumes broken downloads, and keeps an outbox of your notes, picklist edits and fixes.</p></div>
+        <div><h3>Phones and tablets</h3><p>The web app works offline for pages you've opened, and "Save this event for offline" fetches the whole event in one go. A small pill always says whether you're online and what's waiting.</p></div>
+        <div><h3>No double edits</h3><p>Every change carries a unique key, so a change resent after a dropped answer is applied once. Picklist conflicts ask you: keep mine, or take theirs.</p></div>
+      </div>
+      <p class="sync-h" id="sync-h">Measured with the Client on a deliberately bad link: 600 ms latency, 1 MB/s, first download cut at 3 MB</p>
+      <div class="scroll-x">
+        <table class="sync" aria-labelledby="sync-h">
+          <thead><tr><th scope="col">First sync of a whole event</th><th scope="col">Next sync, 5 files changed</th><th scope="col">Nothing changed</th><th scope="col">5 offline notes sent</th></tr></thead>
+          <tbody><tr>
+            <td data-l="First sync"><b>27 s</b><br>19.8 MB on the wire, resumed without re-downloading</td>
+            <td data-l="Next sync"><b>2.5 s</b><br>13 KB</td>
+            <td data-l="Nothing changed"><b>1.9 s</b><br>350 bytes</td>
+            <td data-l="Offline notes"><b>4.9 s</b><br>one answer lost on the way: replayed, not duplicated</td>
+          </tr></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <section class="sec" id="server" aria-labelledby="server-h">
+    <div class="wrap">
+      <div class="sec-h">
+        <h2 id="server-h" class="display">Your server, your team's accounts.</h2>
+        <p class="lead">Cyber-Scout runs on a computer your team owns, as four Docker containers. Your data, your Blue Alliance key and your videos stay there. One installer sets it up; a setup wizard does the rest in the browser.</p>
+      </div>
+      <div class="cols">
+        <div>
+          <h3 style="margin-bottom:12px">Roles</h3>
+          <table class="roles">
+            <tbody>
+              <tr><th scope="row"><span class="tag">viewer</span></th><td>Reads everything: dashboard, teams, matches, picklist.</td></tr>
+              <tr><th scope="row"><span class="tag">scout</span></th><td>Plus notes on teams and matches, and "wrong team?" fixes, which go to a queue for approval.</td></tr>
+              <tr><th scope="row"><span class="tag">strategist</span></th><td>Plus the shared picklist, and applies identity fixes directly.</td></tr>
+              <tr><th scope="row"><span class="tag us">admin</span></th><td>Everything: teammates, events, video setup, updates, the activity log with one-click revert.</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <ul class="ticks">
+          <li><b>Signed-in only.</b> The data and videos need a session; passwords are argon2id hashes, every change carries a CSRF token, sign-ins are rate-limited.</li>
+          <li><b>Docker and a GPU.</b> An NVIDIA GPU is recommended; CPU-only works, about 4 times slower per match.</li>
+          <li><b>One-click updates.</b> An optional updater backs up, rebuilds, checks health and rolls back by itself if anything fails.</li>
+          <li><b>Every device its own look.</b> Each person picks a theme, light or dark, and a layout on their own device. Try it in the demo's Settings.</li>
+          <li><b>Private by default.</b> Nothing phones home. It reaches out only for match data and video: The Blue Alliance, YouTube, and Statbotics ratings when available.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section class="sec" id="get" aria-labelledby="get-h">
+    <div class="wrap">
+      <div class="sec-h">
+        <h2 id="get-h" class="display">Get it running.</h2>
+        <p class="lead">Start with the demo, then install the server on a team computer and give the Client to your laptops.</p>
+      </div>
+      <div class="get">
+        <div><h3>Try the demo</h3><p>The real app with frozen data from PNW District Sammamish, opened at the Sunday 09:00 replay. No sign-in.</p><a class="btn primary" href="demo/">Open the live demo</a></div>
+        <div><h3>Install the server</h3><p>Linux, macOS or Windows with Docker. One script, then a setup wizard: admin account, TBA key, team number, events.</p><a class="btn" href="download.html#server">Server install</a></div>
+        <div><h3>Install the clients</h3><p>Cyber-Scout Client for Windows, macOS and Linux laptops, and the Android app. No setup beyond your server's address.</p><a class="btn" href="download.html#client">Client downloads</a></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="wrap" aria-labelledby="credit-h" style="margin-top:clamp(64px,8vw,104px)">
+    <div class="credit">
+      <h2 id="credit-h">Built by FRC 4911, the CyberKnights.</h2>
+      <div>
+        <p>We built Cyber-Scout for our own drive team and first ran it at PNW District Sammamish in 2026. Robot tracking builds on <a href="https://github.com/samdev-7/autoscout">autoscout</a> by Sam Liu (MIT): its field-space tracklets, identity solver and smoother are used here.</p>
+        <p>Field geometry and AprilTag layouts come from <a href="https://github.com/wpilibsuite/allwpilib">WPILib</a>, match data from <a href="https://www.thebluealliance.com">The Blue Alliance</a>, and the bumper OCR models are PP-OCRv3 (Apache-2.0, via rapidocr_onnxruntime). Much of the code was written with Claude Code. Cyber-Scout is MIT-licensed.</p>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer class="foot">
+  <div class="wrap">
+    <nav aria-label="Footer"><a href="demo/">Live demo</a><a href="download.html">Download</a><a href="docs.html">Docs</a><a href="https://github.com/Grindlewalt/Cyber-Scout">Source</a></nav>
+    <span>No cookies, no analytics.</span>
+    <div class="mode" role="group" aria-label="Appearance"><button type="button" value="auto" aria-pressed="false">Auto</button><button type="button" value="light" aria-pressed="false">Light</button><button type="button" value="dark" aria-pressed="false">Dark</button></div>
+  </div>
+</footer>
+<script src="assets/site.js" defer></script>
+</body>
+</html>

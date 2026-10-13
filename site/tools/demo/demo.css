@@ -1,0 +1,7 @@
+/* Cyber-Scout demo: the few things the demo adds to the real app (all colours come from the active theme). */
+.demo-foot { margin: 0 0 var(--sp-2); color: var(--ink-2); }
+.demo-foot b { color: var(--ink); font-weight: 600; }
+#userbox .demo-who { color: var(--ink-2); text-decoration: none; cursor: default; }
+.empty.demo-gap { max-width: 640px; margin: var(--sp-6) auto; }
+.empty.demo-gap .acts { flex-wrap: wrap; }
+html[data-shot] #userbox, html[data-shot] .demo-foot { display: none; }
