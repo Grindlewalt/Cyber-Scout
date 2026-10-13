@@ -22,7 +22,7 @@
 .sc .fchip.on{color:var(--text);border-color:var(--accent)}
 .sc table.sct td{padding:5px 8px;vertical-align:middle}
 .sc tr.mrow{cursor:default} .sc tr.mrow.exp{cursor:pointer}
-.sc tr.mrow.next td{background:rgba(62,139,255,.09)}
+.sc tr.mrow.next td{background:var(--sel)}
 .sc .t{display:inline-block;padding:0 4px;border-radius:3px;font-variant-numeric:tabular-nums;margin-right:2px}
 .sc .t.r{background:var(--red-soft)} .sc .t.b{background:var(--blue-soft)} .sc .t.us{outline:1px solid #ffd43b;font-weight:700}
 .sc .pbar{display:flex;height:7px;width:80px;border-radius:3px;overflow:hidden;background:var(--panel2)}
@@ -46,7 +46,6 @@
 `;
     document.head.appendChild(st);
   }
-  const nav = ev => `<div class="evtabs"><a class="tablink" href="#/${ev}/dash">Dashboard</a><a class="tablink" href="#/${ev}/rankings">Rankings</a><a class="tablink" href="#/${ev}/selection">Selection</a><a class="tablink on" href="#/${ev}/schedule">Schedule</a><a class="tablink" href="#/${ev}/teams">Teams</a><a class="tablink" href="#/${ev}/matches">Matches</a></div>`;
 
   function teams(ts, c, us) { return ts.map(k => `<a class="t ${c} ${k === us ? "us" : ""}" href="#/${S.ev}/t/${k}">${tn(k)}</a>`).join(""); }
 
@@ -132,8 +131,8 @@
     S = { ev, filter: S && S.ev === ev ? S.filter : (d.matches.some(m => m.us) ? "ours" : "all"), open: new Set(S && S.ev === ev ? S.open : []), nextKey: nextOurs?.key };
     if (nextOurs && !S.open.size) S.open.add(nextOurs.key);
     crumbs([[ev, `#/${ev}`], ["Schedule"]]); $updated.textContent = d.asof ? "replay" : ago(d.generated);
-    $app.innerHTML = `<div class="dash sc"><div class="dtop"><div><h1>Schedule</h1><div class="sub">${H(ev)} · predictions for <b>${tn(d.team)}</b>'s matches break down where each alliance scores. Click a row to expand.</div></div>${nav(ev)}</div>
-      ${d.asof ? "" : `<div class="sc-banner"><b>End-of-event data</b>, not replay time: predictions for unplayed matches use everything posted so far. For a replay view use the Dashboard's time picker or <span class="muted">goals --asof</span>.</div>`}
+    $app.innerHTML = `<div class="dash sc"><div class="dtop"><div><h1>Schedule</h1><div class="sub">${H(ev)} · predictions for <b>${tn(d.team)}</b>'s matches break down where each alliance scores. Click a row to expand.</div></div></div>
+      ${d.asof ? "" : `<div class="sc-banner"><b>End-of-event data</b>, not replay time: predictions for unplayed matches use everything posted so far. For a replay view, pick a time on the Dashboard.</div>`}
       <section class="card" id="sc-body"></section></div>`;
     draw(d);
     const target = key;                              // deep link #/<ev>/schedule/<matchkey>
@@ -141,5 +140,5 @@
     const iv = setInterval(async () => { try { const n = await api(`${ev}/schedule.json`); if (n.generated !== d.generated) route(false); } catch (e) { } }, 90000);
     cleanup.push(() => clearInterval(iv));
   });
-  CS.nav({ label: "Schedule", href: ev => `#/${ev}/schedule`, order: 35 });
+  CS.nav({ label: "Schedule", key: "schedule", href: ev => `#/${ev}/schedule`, order: 20, group: "day", icon: "schedule", tab: true });
 })();

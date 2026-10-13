@@ -19,7 +19,7 @@
   @media (max-width:1000px){.sx-grid3{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}}
   @media (max-width:820px){.sx-grid,.sx-grid3{grid-template-columns:minmax(0,1fr)}}
   .sx-card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px 14px;min-width:0}
-  .sx-card h2{font-size:14px;margin:0 0 8px;display:flex;justify-content:space-between;gap:8px;align-items:baseline;text-transform:uppercase;letter-spacing:.04em;color:#c9d4e2}
+  .sx-card h2{font-size:14px;margin:0 0 8px;display:flex;justify-content:space-between;gap:8px;align-items:baseline;text-transform:uppercase;letter-spacing:.04em;color:var(--ink)}
   .sx-card h2 small{font-weight:500;text-transform:none;letter-spacing:0;color:var(--muted);font-size:12px}
   .sx-kv{display:grid;grid-template-columns:auto 1fr;gap:3px 12px;font-size:13px}
   .sx-kv dt{color:var(--muted)}.sx-kv dd{margin:0;font-variant-numeric:tabular-nums;text-align:right}
@@ -29,7 +29,7 @@
   .sx-stat b{display:block;font-size:18px;font-variant-numeric:tabular-nums}.sx-stat b small{font-size:11px;color:var(--muted);font-weight:500}
   .sx-stat span{display:block;font-size:11.5px;color:var(--muted)}
   .sx-tbl td,.sx-tbl th{padding:4px 6px;font-size:12.5px}
-  .sx-tbl tr.sel td{background:rgba(62,139,255,.12)}
+  .sx-tbl tr.sel td{background:var(--sel)}
   .sx-tbl tr.clk{cursor:pointer}
   .sx-leg{display:flex;flex-wrap:wrap;gap:10px;font-size:12px;color:var(--muted);margin-top:6px}
   .sx-leg i{display:inline-block;width:12px;height:4px;border-radius:2px;margin-right:4px;vertical-align:middle}
@@ -215,7 +215,7 @@
       <div class="sx-card"><h2>Auto &amp; climb</h2><div class="sx-stat">
         ${autoBad ? st("n/t", "Auto made", "", (TR.flags.find(f => f.k === "auto_not_tracked") || {}).text) + st("n/t", "Auto shots") : st(f1(A.made_avg), "Auto made") + st(f1(A.att_avg), "Auto shots")}${st(pc(A.climb_rate), "Auto L1 (TBA)")}
         ${st(pc(CL.rate), "Endgame climb (TBA)", "", `${CL.n ?? nL} quals · levels: ${Object.entries(lvls).map(([k, v]) => `L${k}×${v}`).join(", ")}`)}</div>
-        ${autoBad ? `<div class="sx-mini" style="margin-top:6px;color:#f0c36b">${H((TR.flags.find(f => f.k === "auto_not_tracked") || {}).text)}</div>` : ""}
+        ${autoBad ? `<div class="sx-mini" style="margin-top:6px;color:var(--caution)">${H((TR.flags.find(f => f.k === "auto_not_tracked") || {}).text)}</div>` : ""}
         ${autoBad ? "" : `<div class="sx-mini" style="margin-top:6px">${(A.rows || []).map(r => `${r.m}: ${r.made}/${r.att}${r.climb ? " + climb" : ""}`).join(" · ")}</div>`}
         ${(A.routines || []).length ? `<div class="sx-mini" style="margin-top:4px">Routines: ${A.routines.map(r => `${H(r.name)} ${r.n}/${r.of}`).join(", ")} — <a href="#/${ev}/t/${team}">paths on team page</a></div>` : ""}</div>
     </div>
@@ -300,5 +300,5 @@
   }
 
   CS.route("specs", (ev, team) => team ? specPage(ev, team) : listPage(ev));
-  CS.nav({ label: "Specs", href: ev => `#/${ev}/specs`, order: 40 });
+  CS.nav({ label: "Specs", key: "specs", href: ev => `#/${ev}/specs`, order: 65, group: "scout", icon: "specs" });
 })();

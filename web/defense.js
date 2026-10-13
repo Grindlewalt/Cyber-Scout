@@ -19,7 +19,7 @@
   .dx-sum span{font-size:11.5px;color:var(--muted)}
   .dx-flt{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:0 0 10px;font-size:12px}
   .dx-flt select,.dx-flt button{background:var(--panel2);color:var(--text);border:1px solid var(--line);border-radius:6px;padding:4px 6px;font-size:12px;max-width:170px}
-  .dx-flt button.on{border-color:var(--accent);color:#cfe1ff}
+  .dx-flt button.on{border-color:var(--ink);color:var(--ink);background:var(--sel)}
   .dx-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(310px,1fr));gap:10px}
   .dx-clip{background:var(--panel);border:1px solid var(--line);border-radius:9px;overflow:hidden;min-width:0}
   .dx-clip.success{border-color:rgba(63,185,80,.55)}.dx-clip.focus{box-shadow:0 0 0 2px var(--accent)}
@@ -34,7 +34,7 @@
   .dx-v.good{color:var(--good);border-color:rgba(63,185,80,.45)}.dx-v.warn{color:var(--warn);border-color:rgba(210,153,34,.45)}.dx-v.bad{color:var(--bad);border-color:rgba(248,81,73,.45)}
   .dx-v.sig{background:rgba(63,185,80,.15)}
   .dx-panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px 14px;margin-bottom:12px}
-  .dx-panel h2{font-size:14px;margin:0 0 8px;text-transform:uppercase;letter-spacing:.04em;color:#c9d4e2;display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap}
+  .dx-panel h2{font-size:14px;margin:0 0 8px;text-transform:uppercase;letter-spacing:.04em;color:var(--ink);display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap}
   .dx-panel h2 small{text-transform:none;letter-spacing:0;font-weight:500;color:var(--muted);font-size:12px}
   .dx-2{display:grid;grid-template-columns:minmax(0,1.1fr) minmax(0,1fr);gap:14px}@media (max-width:860px){.dx-2{grid-template-columns:minmax(0,1fr)}}
   .dx-tbl td,.dx-tbl th{padding:4px 6px;font-size:12.5px}
@@ -316,5 +316,5 @@
   }
 
   CS.route("defense", (ev, target) => page(ev, target));
-  CS.nav({ label: "Defense", href: ev => `#/${ev}/defense`, order: 45 });
+  CS.nav({ label: "Defense", key: "defense", href: ev => `#/${ev}/defense`, order: 70, group: "scout", icon: "defense" });
 })();

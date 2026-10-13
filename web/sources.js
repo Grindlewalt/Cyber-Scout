@@ -3,7 +3,7 @@
 // camera calibration wizard.  Route #/<ev>/sources[/sources|layout|calib][/<source id | target>] (admin).
 // Talks only to the API (server/routers/sources.py, /app/v1/events/<ev>/...); heavy steps are jobs it polls.
 (function () {
-  CS.nav({ label: "Video", href: ev => `#/${ev}/sources`, order: 80, roles: ["admin"] });
+  CS.nav({ label: "Video", key: "sources", href: ev => `#/${ev}/sources`, order: 80, group: "manage", icon: "video", roles: ["admin"] });
 
   const KCOL = { field: "#2dd4ee", overhead: "#a78bfa", station_red: "#ff5a5f", station_blue: "#3e8bff", clock: "#51cf66",
                  scoreboard: "#ffd43b", mask: "#ff922b", inset: "#cc5de8" };
@@ -527,7 +527,7 @@
     .vs-row { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
     .vs-form { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
     .vs-form input { background:var(--panel2); color:var(--text); border:1px solid var(--line); border-radius:6px; padding:6px 8px; font:inherit; font-size:13px; }
-    .vs-src td { vertical-align:top; } .vs-src code, .card code { font-size:11.5px; color:#a9cbff; word-break:break-all; }
+    .vs-src td { vertical-align:top; } .vs-src code, .card code { font-size:11.5px; color:var(--ink-2); word-break:break-all; }
     .vs-src td:first-child { max-width:520px; } .vs-tw { overflow-x:auto; }
     .vs-edit { display:grid; grid-template-columns: minmax(0, 1fr) 300px; gap:14px; margin-top:10px; }
     @media (max-width: 900px) { .vs-edit { grid-template-columns: 1fr; } }
@@ -542,8 +542,8 @@
     .vs-ri select { padding:3px; font-size:12px; }
     .vs-sug { border:1px dashed var(--line); border-radius:8px; padding:6px; margin:8px 0; }
     .vs-pg { margin-top:8px; } .vs-pt { padding:3px 6px; border-radius:5px; cursor:pointer; font-size:12.5px; }
-    .vs-pt:hover { background:var(--panel2); } .vs-pt.on { background:var(--panel2); outline:1px solid var(--accent); } .vs-pt.set { color:#ffb86b; }
-    .chip.set { color:#ffb86b; }
+    .vs-pt:hover { background:var(--panel2); } .vs-pt.on { background:var(--panel2); outline:1px solid var(--accent); } .vs-pt.set { color:var(--caution); }
+    .chip.set { color:var(--caution); }
     .vs-kv { margin-top:8px; line-height:1.55; } .vs-warn { color:var(--warn); }
     button.small { padding:2px 8px; font-size:12px; }`;
 })();

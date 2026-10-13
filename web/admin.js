@@ -2,7 +2,7 @@
 // admin.js: platform plugin -- accounts + roles, team settings, TBA key, worker options, followed events.
 // Route #/admin[/users|settings|events] (admin only). Uses CS.app / CS.form / CS.eventPicker from setup.js.
 (function () {
-  CS.nav({ label: "Admin", href: () => "#/admin", order: 95, global: true, roles: ["admin"] });
+  CS.nav({ label: "Admin", key: "admin", href: () => "#/admin", order: 95, global: true, group: "manage", icon: "admin", roles: ["admin"] });
 
   const when = ts => ts ? new Date(ts * 1000).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : "never";
   const TABS = [["users", "Teammates"], ["settings", "Settings"], ["events", "Events"]];

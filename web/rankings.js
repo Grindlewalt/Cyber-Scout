@@ -39,10 +39,10 @@
 .rk .evrow:last-child{border:0}
 .rk .evrow .nm{min-width:130px}
 .rk .tag{font-size:11px;padding:0 6px;border-radius:99px;border:1px solid var(--line);color:var(--muted)}
-.rk .tag.live{color:var(--good);border-color:rgba(63,185,80,.5)} .rk .tag.future{color:#a9cbff;border-color:rgba(62,139,255,.5)} .rk .tag.off{opacity:.55}
+.rk .tag.live{color:var(--good);border-color:currentColor} .rk .tag.future{color:var(--ink);border-style:dashed} .rk .tag.off{opacity:.55}
 .rk .prb{position:relative;height:8px;width:90px;background:var(--panel2);border-radius:4px;display:inline-block;vertical-align:middle;margin-right:6px}
-.rk .prb .rg{position:absolute;top:1px;bottom:1px;background:rgba(62,139,255,.55);border-radius:3px}
-.rk .prb .mn{position:absolute;top:-1px;bottom:-1px;width:2px;background:#ffd43b}
+.rk .prb .rg{position:absolute;top:1px;bottom:1px;background:var(--line-strong);border-radius:3px}
+.rk .prb .mn{position:absolute;top:-1px;bottom:-1px;width:2px;background:var(--ink)}
 .rk .pcell{display:inline-block;min-width:34px}
 .rk .dp{position:relative;display:inline-block;width:70px;height:8px;background:var(--panel2);border-radius:4px;vertical-align:middle;margin-right:5px}
 .rk .dp i{position:absolute;top:1px;bottom:1px;background:rgba(63,185,80,.5);border-radius:3px} .rk .dp b{position:absolute;top:-1px;bottom:-1px;width:2px;background:#ffd43b}
@@ -53,7 +53,6 @@
     document.head.appendChild(st);
   }
 
-  const nav = ev => `<div class="evtabs"><a class="tablink" href="#/${ev}/dash">Dashboard</a><a class="tablink on" href="#/${ev}/rankings">Rankings</a><a class="tablink" href="#/${ev}/selection">Selection</a><a class="tablink" href="#/${ev}/schedule">Schedule</a><a class="tablink" href="#/${ev}/teams">Teams</a><a class="tablink" href="#/${ev}/matches">Matches</a></div>`;
 
   function goalPanel(d) {
     const g = d.goal; if (!g) return "";
@@ -148,14 +147,14 @@
     S = { ev, sort: S && S.ev === ev ? S.sort : { k: "rank", dir: 1 } };
     const d = await api(`${ev}/rankings.json`);
     crumbs([[ev, `#/${ev}`], ["Rankings"]]); $updated.textContent = d.asof ? "replay" : ago(d.generated);
-    $app.innerHTML = `<div class="dash rk"><div class="dtop"><div><h1>Rankings &amp; season goal</h1><div class="sub">${H(ev)} · ${tn(d.team)}${d.district ? " · district " + H(d.district) : ""}</div></div>${nav(ev)}</div>
-      ${d.asof ? "" : `<div class="sc-banner"><b>End-of-event data</b>, not replay time${d.quals_played ? ` · ${d.quals_played}/${d.quals_total} quals played` : ""}. Replay views: <a href="#/${ev}/selection">Selection</a> time picker, Dashboard time picker.</div>`}
+    $app.innerHTML = `<div class="dash rk"><div class="dtop"><div><h1>Rankings &amp; season goal</h1><div class="sub">${H(ev)} · ${tn(d.team)}${d.district ? " · district " + H(d.district) : ""}</div></div></div>
+      ${d.asof ? "" : `<div class="sc-banner"><b>End-of-event data</b>, not replay time${d.quals_played ? ` · ${d.quals_played}/${d.quals_total} quals played` : ""}. Replay: pick a time on <a href="#/${ev}/selection">Selection</a> or the <a href="#/${ev}/dash">Dashboard</a>.</div>`}
       ${goalPanel(d)}<div style="height:16px"></div><div id="rk-table">${table(d)}</div></div>`;
     wire(d);
     const iv = setInterval(async () => { try { const n = await api(`${ev}/rankings.json`); if (n.generated !== d.generated) route(false); } catch (e) { } }, 90000);
     cleanup.push(() => clearInterval(iv));
   });
-  CS.nav({ label: "Rankings", href: ev => `#/${ev}/rankings`, order: 30 });
+  CS.nav({ label: "Rankings", key: "rankings", href: ev => `#/${ev}/rankings`, order: 30, group: "day", icon: "rankings", tab: true });
 
   // ================================================================== Selection tab (#/<ev>/selection[/<ts>])
   // Data: api/<ev>/selection.json (live) or selection/<ts>.json (replay snapshot, goals --asof <ts>), index in
@@ -163,20 +162,17 @@
   const ROLE_SHORT = { captain: "captain", "first pick": "R1 pick", "second pick": "R2 pick", "not selected": "not picked" };
   const fmtDT = ts => { if (!ts) return "end of data"; const d = new Date(ts * 1000); return DAYS[d.getDay()] + " " + d.toTimeString().slice(0, 5); };
   const P5 = v => v == null ? "–" : v >= 0.995 ? ">99%" : v < 0.005 ? "<1%" : Math.round(v * 100) + "%";
-  const selNav = ev => nav(ev).replace('tablink on" href="#/' + ev + '/rankings"', 'tablink" href="#/' + ev + '/rankings"').replace('tablink" href="#/' + ev + '/selection"', 'tablink on" href="#/' + ev + '/selection"');
 
   function selPage(ev, d, times, ts) {
     const u = d.us, tm = tn(d.team);
-    const opts = [`<option value="">live (${fmtDT(null)})</option>`, ...times.map(t => `<option value="${t}" ${String(t) === String(ts) ? "selected" : ""}>${fmtDT(t)}</option>`)].join("");
-    const head = `<div class="dtop"><div><h1>Alliance selection</h1><div class="sub">${H(ev)} · us = ${tm} · projection ${d.asof ? "as of " + fmtDT(d.asof) : "on all data"} · ${d.quals_played ?? "?"}/${d.quals_total ?? "?"} quals played</div></div>${selNav(ev)}</div>
-      <div class="scn small" style="margin:0 0 10px">As of <select id="selts">${opts}</select><span class="muted">replay snapshots use only data posted before that time (goals --asof)</span></div>`;
+    const head = `<div class="dtop"><div><h1>Alliance selection</h1><div class="sub">${H(ev)} · us = ${tm} · projection ${d.asof ? "as of " + fmtDT(d.asof) : "on all data"} · ${d.quals_played ?? "?"}/${d.quals_total ?? "?"} quals played${d.asof ? " · replay snapshot: only data posted before that time" : ""}</div></div></div>`;
     if (d.status !== "projected" && d.status !== "fixed" || !u) {
       if (d.actual) return head + `<section class="card"><h3 style="margin-top:0">Actual alliances (event finished)</h3>
         ${d.actual_us ? `<div class="need">${tm}: ${d.actual_us.seed ? `A${d.actual_us.seed} ${ROLE_SHORT[d.actual_us.role] || d.actual_us.role}` : "not selected"} · ${n0(d.actual_us.event_points)} event pts · DCMP ${P5(d.actual_us.p_dcmp)}</div>` : ""}
         <div class="tablewrap"><table class="mini"><thead><tr><th>Seed</th><th>Captain</th><th>R1</th><th>R2</th><th>Backup</th><th>Result</th></tr></thead><tbody>
         ${d.actual.map(a => `<tr><td>A${a.seed}</td>${[0, 1, 2, 3].map(i => { const t = a.picks[i]; return `<td class="${t === d.team ? "pos" : ""}">${t ? `<b>${tn(t)}</b> <span class="muted small">${n0(a.points[t])} pts</span>` : "–"}</td>`; }).join("")}<td>${H(a.status || "")}</td></tr>`).join("")}</tbody></table></div>
-        <div class="small muted">Pick an earlier time above to see the projection as it stood before selection.</div></section>`;
-      return head + `<section class="card"><div class="empty">${d.status === "done" ? "This event is finished: district points are final, so there is no draft left to project. Pick an earlier time above to see the projection as it stood." : "No selection projection for this event (not a district event, or the simulation was unavailable)."}</div></section>`;
+        <div class="small muted">Pick an earlier time in the toolbar to see the projection as it stood before selection.</div></section>`;
+      return head + `<section class="card"><div class="empty">${d.status === "done" ? "This event is finished: district points are final, so there is no draft left to project. Pick an earlier time in the toolbar to see the projection as it stood." : "No selection projection for this event (not a district event, or the simulation was unavailable)."}</div></section>`;
     }
     const nd = u.need;
     const who = (u.picked_by || []).map(x => `<tr><td><a href="#/${S.ev}/t/${x.captain}"><b>${tn(x.captain)}</b></a> <span class="muted small">${H((d.teams.find(t => t.team === x.captain) || {}).nickname || "").slice(0, 22)}</span></td><td colspan="2" class="small">${(x.slots || [x]).map(z => `A${z.seed} ${ROLE_SHORT[z.role]}`).join(", ")}</td><td class="num"><span class="hbar" style="width:${Math.round(x.p * 300)}px"></span>${P5(x.p)}</td></tr>`).join("");
@@ -232,7 +228,6 @@
     const [d, idx] = await Promise.all([api(ts ? `${ev}/selection/${ts}.json` : `${ev}/selection.json`), api(`${ev}/selection/index.json`).catch(() => ({ times: [] }))]);
     crumbs([[ev, `#/${ev}`], ["Selection"]]); $updated.textContent = d.asof ? "replay " + fmtDT(d.asof) : ago(d.generated);
     $app.innerHTML = `<div class="dash rk">${selPage(ev, d, idx.times || [], ts)}</div>`;
-    const sel = document.getElementById("selts"); if (sel) sel.onchange = () => { location.hash = `#/${ev}/selection${sel.value ? "/" + sel.value : ""}`; };
   });
-  CS.nav({ label: "Selection", href: ev => `#/${ev}/selection`, order: 31 });
+  CS.nav({ label: "Selection", key: "selection", href: (ev, ts) => `#/${ev}/selection` + (ts ? "/" + ts : ""), order: 40, group: "picks", icon: "selection", replay: true });
 })();

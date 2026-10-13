@@ -35,8 +35,6 @@
   .steps { display: flex; gap: 6px; flex-wrap: wrap; margin: 4px 0 18px; }
   .steps a, .steps span { font-size: 12.5px; padding: 3px 10px; border-radius: 99px; border: 1px solid var(--line); color: var(--muted); }
   .steps .cur { border-color: var(--accent); color: var(--text); } .steps .done { color: var(--good); }
-  #userbox { display: flex; gap: 10px; align-items: center; font-size: 13px; white-space: nowrap; }
-  #userbox a { color: var(--muted); } #userbox a:hover { color: var(--text); }
   .evpick { display: grid; gap: 4px; max-height: 420px; overflow-y: auto; margin-top: 8px; }
   .evrow { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; align-items: center; padding: 8px 10px;
     background: var(--panel2); border-radius: 8px; font-size: 13.5px; }
@@ -140,12 +138,7 @@
   };
 
   function renderUserBox() {
-    let el = document.getElementById("userbox");
-    if (!el) {
-      el = document.createElement("span"); el.id = "userbox";
-      const top = document.querySelector("header.top"); if (!top) return;
-      top.appendChild(el);
-    }
+    const el = document.getElementById("userbox"); if (!el) return;
     if (!CS.platform || !CS.user) { el.innerHTML = ""; return; }
     const u = CS.user;
     el.innerHTML = `<a href="#/account" class="who" title="${esc(ROLE_TIP[u.role])}">${esc(u.display_name || u.username)} · ${esc(u.role)}</a>

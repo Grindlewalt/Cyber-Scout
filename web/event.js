@@ -162,12 +162,10 @@ const PL_KEYS = [["blend", "Blend", r => r.s?.rating?.blend, 1], ["made", "Video
   ["defs", "Defense", r => VID(r, "def_matches"), 1]];
 async function picklistPane(el, d, ev) {
   el.innerHTML = `<div class="loading">Loading team stats…</div>`;
-  const idx = await api(`${ev}/scout/index.json`).catch(() => ({ times: [] }));
   const hm = location.hash.match(/\/picklist\/(\d{9,})/);          // deep link #/<ev>/picklist/<ts>
-  const ts = hm ? hm[1] : (sessionStorageGet("plts:" + ev) || "");
+  const ts = hm ? hm[1] : "";                                      // as-of time lives in the toolbar (URL)
   const { sd, rows } = await scoutRows(d, ev, ts);
   const fmtTs = t => { const x = new Date(t * 1000); return ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][x.getDay()] + " " + x.toTimeString().slice(0, 5); };
-  const asofSel = `<span class="scn small">As of <select id="plts"><option value="">end of data</option>${(idx.times || []).map(t => `<option value="${t}" ${String(t) === ts ? "selected" : ""}>${fmtTs(t)}</option>`).join("")}</select></span>`;
   const st = Object.assign({ stars: [], dnp: [], weights: { ...PL_DEFAULT } }, await plLoad(ev));
   st.weights = { ...PL_DEFAULT, ...(st.weights && "blend" in st.weights ? st.weights : {}) };
   const climbOn = !!(sd && sd.event_stats && sd.event_stats.climb_matters);
@@ -191,7 +189,7 @@ async function picklistPane(el, d, ev) {
     const list = rows.map(r => ({ r, s: kf(r) })).sort((a, b) => (b.s ?? -1e9) - (a.s ?? -1e9));
     const shown = list.filter(x => only === "all" || (only === "star" && st.stars.includes(x.r.t.key)) || (only === "avail" && !st.dnp.includes(x.r.t.key)));
     const dis = x => x && x.r.s ? flagChips(x.r.s, ["video_higher", "video_lower", "auto_not_tracked"]) : "";
-    el.innerHTML = `${ts ? `<div class="sc-banner"><b>Replay as of ${fmtTs(+ts)}</b>: ratings, ranks, OPR and video only from data posted before then.</div>` : dataBanner(sd, "ratings: end-of-event dashboard")}<div class="controls">${asofSel}</div><div class="plwrap"><div class="plw card"><h2>Order by</h2><div class="chips" id="plm"></div>
+    el.innerHTML = `${ts ? `<div class="sc-banner"><b>Replay as of ${fmtTs(+ts)}</b>: ratings, ranks, OPR and video only from data posted before then.</div>` : dataBanner(sd, "ratings: end-of-event dashboard")}<div class="plwrap"><div class="plw card"><h2>Order by</h2><div class="chips" id="plm"></div>
       <div class="note" style="margin:6px 0 8px">Default: blend rating ± sd (expected points/match; best predictor here: rank-order agreement with the day-2 result .92 vs .65 for video-only stats).
       Custom = weighted z-scores; video metrics are shrunk and missing values count as event average.</div>
       ${mode === "custom" ? PL_KEYS.map(([k, l]) => `<label class="wrow ${k === "climb" && !climbOn ? "sc-dis" : ""}" title="${k === "climb" && !climbOn ? `off: the best robot here averages ${fx(sd?.event_stats?.tower_pts_max)} tower pts/match (≤ 10)` : ""}"><span>${l}</span><input type="range" min="0" max="5" step="0.5" value="${st.weights[k] || 0}" data-k="${k}" ${k === "climb" && !climbOn ? "disabled" : ""}><b>${W(k)}</b></label>`).join("") : ""}
@@ -206,7 +204,6 @@ async function picklistPane(el, d, ev) {
         <td>${dis(x)}</td></tr>`; }).join("")}</tbody></table></div>
         <div class="note">Video columns: verified matches only, shrunk (hover for raw and n); grey italic = n &lt; 3. "video higher" = reconciled video FUEL ≥ 1.15× EPA FUEL + 8.
         Video FUEL numbers use only alliance results that reconcile with TBA within 20% (hover for n). "video lower?" appears only with ≥ 3 reconciled matches: under-attribution made every "video says worse" call wrong. ${climbOn ? "" : `Climb column hidden: no robot here averages more than 10 tower pts/match (max ${fx(sd?.event_stats?.tower_pts_max)}).`}</div></div></div>`;
-    el.querySelector("#plts").onchange = e => { sessionStorageSet("plts:" + ev, e.target.value); picklistPane(el, d, ev); };
     chipRow(el.querySelector("#plm"), [["blend", "Blend"], ["epa", "EPA"], ["opr", "OPR"], ["custom", "Custom"]], mode, k => { mode = k; lsSet("cyberscout:plmode", k); render(); });
     chipRow(el.querySelector("#plf"), [["all", "All"], ["star", "Starred"], ["avail", "Hide ⊘"]], only, k => { only = k; render(); });
     el.querySelectorAll(".wrow input").forEach(i => i.oninput = () => { st.weights[i.dataset.k] = +i.value; save(); i.nextElementSibling.textContent = i.value; clearTimeout(render.t); render.t = setTimeout(render, 120); });

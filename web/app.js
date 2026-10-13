@@ -111,11 +111,16 @@ function flagChips(row, only) {
 }
 /** banner for pages that show end-of-event data (not the replay time the dashboard may be set to) */
 function dataBanner(sd, what = "") {
-  const lv = sd && sd.last_verified ? shortKey(sd.last_verified) : null;
-  return `<div class="sc-banner"><b>End-of-event data</b>, not replay time${what ? " · " + esc(what) : ""}${sd ? ` · robot video: ${(sd.verified_matches || []).length} verified matches (${esc((sd.verified_matches || []).map(shortKey).join(", "))})${lv ? `, last ${lv}` : ""} · ${sd.quals_played} quals played` : ""}</div>`;
+  const lv = sd && sd.last_verified ? shortKey(sd.last_verified) : null, vm = sd ? (sd.verified_matches || []) : [];
+  return `<div class="sc-banner"><b>End-of-event data</b>, not replay time${what ? " · " + esc(what) : ""}${sd ? ` · robot video: ${vm.length} verified matches${lv ? `, last ${lv}` : ""} · ${sd.quals_played} quals played <details><summary>Which matches</summary>${esc(vm.map(shortKey).join(", "))}</details>` : ""}</div>`;
 }
+/** toolbar title: the last crumb is the page title, earlier ones are a back path. The event itself lives in the sidebar. */
 function crumbs(parts) {
-  $crumbs.innerHTML = parts.map(([t, h]) => h ? `<a href="${h}">${esc(t)}</a>` : `<span>${esc(t)}</span>`).join(" / ");
+  const ev = (location.hash.replace(/^#\/?/, "").split("/")[0]) || "";
+  const ps = parts.filter(([, h], i) => !(i === 0 && h && (h === `#/${ev}` || h === "#/")) || parts.length === 1);
+  const last = ps[ps.length - 1];
+  $crumbs.innerHTML = ps.map(([t, h], i) => i < ps.length - 1 && h ? `<a href="${h}">${esc(t)}</a><span class="sep" aria-hidden="true">/</span>` : `<span>${esc(t)}</span>`).join("");
+  document.title = last ? `${last[0]} · Cyber-Scout` : "Cyber-Scout";
 }
 function ago(ts) {
   if (!ts) return "";
@@ -149,7 +154,7 @@ function fieldCanvas(el, opts = {}) {
 
 // ------------------------------------------------------------------ pages
 async function home() {
-  crumbs([]); $updated.textContent = "";
+  crumbs([["Events"]]); $updated.textContent = "";
   let evs = [];
   try { evs = await api("events.json"); } catch (e) { }
   if (evs.length === 1) { location.replace("#/" + evs[0].key); return; }
@@ -160,24 +165,18 @@ async function home() {
       || `<div class="empty">No events yet. The worker publishes here as soon as it has synced one.</div>`}</div>`;
 }
 
+// Teams / Compare / Picklist / Matches: each is its own sidebar section (#/<ev>/<tab>); no second tab row.
+const EV_TABS = { teams: "Teams", compare: "Compare", picklist: "Picklist", matches: "Matches" };
 async function eventPage(ev, tab, arg) {
   const d = await api(`${ev}/event.json`);
-  crumbs([[d.name, `#/${ev}`]]); $updated.textContent = ago(d.updated);
-  tab = tab || sessionStorageGet("tab:" + ev) || "teams";
-  $app.innerHTML = `<h1>${esc(d.name)}</h1>
-    <div class="sub">${esc([d.city, d.state_prov].filter(Boolean).join(", "))} · ${esc(d.start || "")}${d.end && d.end !== d.start ? " – " + esc(d.end) : ""}
-      · ${d.n_done}/${d.n_total} matches tracked${d.calibrated ? "" : ' · <span class="pill failed">camera not calibrated</span>'}
-      <div class="progress"><div style="width:${d.n_total ? 100 * d.n_done / d.n_total : 0}%"></div></div></div>
-    <div class="tabs"><a class="tablink" href="#/${ev}/dash">Dashboard</a><div class="tab" data-t="teams">Teams</div><div class="tab" data-t="compare">Compare</div><div class="tab" data-t="picklist">Picklist</div><div class="tab" data-t="matches">Matches</div></div>
+  if (!EV_TABS[tab]) tab = "teams";
+  CS.markActive(tab);
+  crumbs([[d.name, `#/${ev}`], [EV_TABS[tab]]]); $updated.textContent = ago(d.updated);
+  $app.innerHTML = `<div class="sub evsub">${esc([d.city, d.state_prov].filter(Boolean).join(", "))} · ${esc(d.start || "")}${d.end && d.end !== d.start ? " – " + esc(d.end) : ""}
+      · ${d.n_done}/${d.n_total} matches tracked${d.calibrated ? "" : ' · <span class="pill failed">camera not calibrated</span>'}</div>
     <div id="tabbody" class="card"></div>`;
   const body = document.getElementById("tabbody");
-  const show = t => {
-    sessionStorageSet("tab:" + ev, t);
-    document.querySelectorAll(".tab").forEach(x => x.classList.toggle("on", x.dataset.t === t));
-    if (t === "teams") teamsTable(body, d, ev); else if (t === "compare") comparePane(body, d, ev, arg); else if (t === "picklist") picklistPane(body, d, ev); else matchesTable(body, d, ev);
-  };
-  document.querySelectorAll(".tab").forEach(x => x.onclick = () => show(x.dataset.t));
-  show(tab);
+  if (tab === "teams") teamsTable(body, d, ev); else if (tab === "compare") comparePane(body, d, ev, arg); else if (tab === "picklist") picklistPane(body, d, ev); else matchesTable(body, d, ev);
   const iv = setInterval(async () => {
     try { const n = await api(`${ev}/event.json`); if (n.updated !== d.updated) route(false); } catch (e) { }
   }, 60000);
@@ -438,14 +437,142 @@ async function matchPage(ev, key) {
   }
 }
 
-// ------------------------------------------------------------------ router
+// ------------------------------------------------------------------ shell: one navigation that never moves
+// Sidebar (desktop) / bottom tab bar + "More" sheet (phone) built from CS.nav items. Every section is always listed in
+// the same place; the current one is marked (aria-current). Items: {label, key, href(ev, ts), order, group, icon,
+// tab (phone tab bar), replay (href takes the shared as-of time), global, roles|minRole}.
+const NAV_GROUPS = [["day", "Match day"], ["picks", "Picks"], ["scout", "Scouting"], ["manage", "Manage"]];
+const ICON = {
+  dash: '<rect x="5" y="4" width="14" height="17" rx="2"/><path d="M9 3.5h6v3H9zM8.5 11.5h7M8.5 15.5h5"/>',
+  schedule: '<rect x="3.5" y="5" width="17" height="15" rx="2"/><path d="M3.5 10h17M8 3v4M16 3v4"/>',
+  rankings: '<path d="M5 20v-8M12 20V5M19 20v-5"/>',
+  selection: '<circle cx="12" cy="7.5" r="2.6"/><circle cx="5.5" cy="10" r="2.1"/><circle cx="18.5" cy="10" r="2.1"/><path d="M7.5 19.5c.6-3.3 2.3-5 4.5-5s3.9 1.7 4.5 5M2.5 18.5c.4-2.2 1.5-3.4 3-3.6M21.5 18.5c-.4-2.2-1.5-3.4-3-3.6"/>',
+  picklist: '<path d="M11 6.5h9M11 12h9M11 17.5h9"/><path d="M5.5 4l1.1 2.2 2.4.35-1.75 1.7.4 2.4-2.15-1.13-2.15 1.13.4-2.4L2 6.55l2.4-.35z"/>',
+  teams: '<circle cx="9" cy="8.5" r="3"/><path d="M3.5 19.5c.7-3.5 2.8-5.5 5.5-5.5s4.8 2 5.5 5.5M15.5 5.8a3 3 0 0 1 0 5.4M17.5 14c1.6.6 2.6 2.4 3 5.2"/>',
+  compare: '<rect x="3.5" y="4.5" width="7" height="15" rx="1.5"/><rect x="13.5" y="4.5" width="7" height="15" rx="1.5"/>',
+  matches: '<rect x="3" y="5" width="18" height="14" rx="2.5"/><path d="M10 9.2v5.6l4.6-2.8z"/>',
+  specs: '<path d="M7 3.5h7l4 4v13H7z"/><path d="M14 3.5v4h4M9.5 12h6M9.5 15.5h6"/>',
+  defense: '<path d="M12 3.5l7 2.5v5.5c0 4.3-2.9 7.7-7 9-4.1-1.3-7-4.7-7-9V6z"/>',
+  video: '<rect x="3" y="6.5" width="13" height="11" rx="2"/><path d="M16 10.5l5-3v9l-5-3z"/>',
+  admin: '<path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/>',
+  account: '<circle cx="12" cy="8.5" r="3.5"/><path d="M5 20c.8-4 3.5-6 7-6s6.2 2 7 6"/>',
+  more: '<circle cx="6" cy="12" r="1.3" fill="currentColor"/><circle cx="12" cy="12" r="1.3" fill="currentColor"/><circle cx="18" cy="12" r="1.3" fill="currentColor"/>',
+};
+CS.icon = k => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICON[k] || ICON.more}</svg>`;
+const withTs = (base, ts) => base + (ts ? "/" + ts : "");
+CS.nav({ label: "Dashboard", key: "dash", href: (ev, ts) => withTs(`#/${ev}/dash`, ts), order: 10, group: "day", icon: "dash", tab: true, replay: true });
+CS.nav({ label: "Teams", key: "teams", href: ev => `#/${ev}/teams`, order: 50, group: "scout", icon: "teams", tab: true });
+CS.nav({ label: "Compare", key: "compare", href: ev => `#/${ev}/compare`, order: 55, group: "scout", icon: "compare" });
+CS.nav({ label: "Picklist", key: "picklist", href: (ev, ts) => withTs(`#/${ev}/picklist`, ts), order: 42, group: "picks", icon: "picklist", replay: true });
+CS.nav({ label: "Matches", key: "matches", href: ev => `#/${ev}/matches`, order: 60, group: "scout", icon: "matches" });
+
+const lsGet2 = (s, k) => { try { return s.getItem(k); } catch (e) { return null; } };
+const lsSet2 = (s, k, v) => { try { v == null ? s.removeItem(k) : s.setItem(k, v); } catch (e) { } };
+CS.asofGet = ev => lsGet2(sessionStorage, "cs:asof:" + ev) || null;
+CS.asofSet = (ev, ts) => lsSet2(sessionStorage, "cs:asof:" + ev, ts || null);
+const EVNAME = {};
+let evList = null;
+async function eventName(ev) {
+  if (EVNAME[ev]) return EVNAME[ev];
+  try { evList = evList || await api("events.json"); } catch (e) { evList = []; }
+  const e = (evList || []).find(x => x.key === ev);
+  return (EVNAME[ev] = e ? e.name : ev);
+}
+/** which nav key a hash belongs to (team page -> Teams, match/analyze -> Matches, ...) */
+function activeKey(p) {
+  if (!p.length) return null;
+  if (CS.globalRoutes[p[0]]) return p[0];
+  const s = p[1];
+  if (!s || s === "dash") return "dash";
+  if (s === "t") return "teams";
+  if (s === "m" || s === "a") return "matches";
+  return s;
+}
+/** the as-of time in the current URL for pages that can replay, else undefined (page can't replay) */
+function urlTs(p) {
+  const k = activeKey(p);
+  if (k === "dash") return p[2] && p[2] !== "live" ? p[2] : null;
+  if (k === "selection") return p[2] || null;
+  if (k === "picklist") return /^\d{9,}$/.test(p[2] || "") ? p[2] : null;
+  return undefined;
+}
+let shellEv = null, shellKey = null;
+CS.markActive = k => { shellKey = k; document.querySelectorAll("[data-navkey]").forEach(a => { if (a.dataset.navkey === k) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current"); }); };
+
 function renderTopNav(p) {
   const el = document.getElementById("topnav"); if (!el) return;
-  const ev = p.length && !CS.globalRoutes[p[0]] ? p[0] : null;
+  const bare = CS.platform && !CS.user;
+  document.body.classList.toggle("bare", !!bare);
+  const ev = p.length && !CS.globalRoutes[p[0]] ? p[0] : (lsGet2(localStorage, "cs:lastev") || (evList && evList.length ? evList[0].key : null));
+  if (!ev && !evList) { eventName("").then(() => { if (evList && evList.length && location.hash.replace(/^#\/?/, "").split("/").filter(Boolean).join("/") === p.join("/")) renderTopNav(p); }); }
+  if (p.length && !CS.globalRoutes[p[0]]) lsSet2(localStorage, "cs:lastev", p[0]);
+  shellEv = ev; shellKey = activeKey(p);
+  const ts = ev ? CS.asofGet(ev) : null;
   const items = CS.navItems.filter(i => ev || i.global).sort((a, b) => (a.order || 50) - (b.order || 50));
-  el.innerHTML = items.map(i => `<a href="${i.href(ev)}">${esc(i.label)}</a>`).join("");
+  const key = i => i.key || (i.global ? i.href(ev).replace(/^#\//, "").split("/")[0] : i.href(ev).split("/")[2]);
+  const link = (i, cls) => { const k = key(i); return `<a class="${cls}" data-navkey="${esc(k)}" href="${i.href(ev, i.replay ? ts : null)}"${k === shellKey ? ' aria-current="page"' : ""}>${CS.icon(i.icon)}<span>${esc(i.label)}</span></a>`; };
+  const groups = NAV_GROUPS.map(([g, t]) => { const its = items.filter(i => (i.group || (i.global ? "manage" : "scout")) === g); return its.length ? `<div class="sb-group" role="group" aria-label="${t}"><div class="sb-h">${t}</div>${its.map(i => link(i, "sb-item")).join("")}</div>` : ""; }).join("");
+  const acct = CS.platform && CS.user ? `<div class="sb-group" role="group" aria-label="Account"><div class="sb-h">Account</div><a class="sb-item" data-navkey="account" href="#/account">${CS.icon("account")}<span>${esc(CS.user.display_name || CS.user.username)}</span></a></div>` : "";
+  el.innerHTML = groups;
+  const sbe = document.getElementById("sbevent");
+  if (sbe) { if (ev) { sbe.innerHTML = `<b>${esc(EVNAME[ev] || ev)}</b>`; eventName(ev).then(n => { if (shellEv === ev) sbe.innerHTML = `<b>${esc(n)}</b>`; }); } else sbe.innerHTML = ""; }
+  // phone: four tabs + More
+  const tb = document.getElementById("tabbar");
+  if (tb) {
+    const tabs = items.filter(i => i.tab), inTabs = tabs.some(i => key(i) === shellKey);
+    tb.innerHTML = tabs.map(i => link(i, "")).join("") + `<button id="moretab" type="button"${!inTabs && shellKey ? ' aria-current="page"' : ""} aria-haspopup="dialog">${CS.icon("more")}<span>More</span></button>`;
+    const ms = document.getElementById("moresheet"), body = document.getElementById("msbody");
+    body.innerHTML = groups + acct;
+    document.getElementById("moretab").onclick = () => { try { ms.showModal(); } catch (e) { ms.setAttribute("open", ""); } };
+    document.getElementById("msclose").onclick = () => ms.close();
+    ms.onclick = e => { if (e.target === ms || e.target.closest("a")) ms.close(); };
+  }
+  renderTimebar(p, ev);
 }
 
+// ---- the time control: one place, in the toolbar, on every event page
+const TIMES = {};
+function eventTimes(ev) {
+  return TIMES[ev] || (TIMES[ev] = api(`${ev}/dash/index.json`).then(x => (x || []).map(t => ({ ts: String(t.ts), label: t.label, q: t.quals_played })))
+    .catch(() => api(`${ev}/selection/index.json`).then(x => (x.times || []).map(t => ({ ts: String(t), label: fmtDay(t) }))).catch(() => [])));
+}
+const fmtDay = ts => { const d = new Date(ts * 1000); return ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][d.getDay()] + " " + d.toTimeString().slice(0, 5); };
+let tbSeq = 0;
+async function renderTimebar(p, ev) {
+  const el = document.getElementById("timebar"); if (!el) return;
+  const seq = ++tbSeq;
+  if (!ev || !p.length || CS.globalRoutes[p[0]]) { el.innerHTML = ""; return; }
+  const ts = urlTs(p), k = activeKey(p);
+  if (ts === undefined) {
+    el.innerHTML = `<div class="timectl static" title="This page uses everything posted so far (end-of-event data, not replay time). Replay a moment of the event on Dashboard, Selection or Picklist."><span class="tc-tag">Latest data</span></div>`;
+    return;
+  }
+  CS.asofSet(ev, ts);
+  const times = await eventTimes(ev); if (seq !== tbSeq) return;
+  const item = CS.navItems.find(i => (i.key || "") === k) || CS.navItems.find(i => i.key === "dash");
+  const go = t => { CS.asofSet(ev, t); location.hash = item.href(ev, t || null); };
+  const i = ts ? times.findIndex(t => t.ts === ts) : times.length;
+  const narrow = matchMedia("(max-width: 760px)").matches;
+  const opt = t => `<option value="${t.ts}"${t.ts === ts ? " selected" : ""}>${esc(t.label)}${t.q != null && !narrow ? ` · ${t.q} quals` : ""}</option>`;
+  el.innerHTML = `<div class="timectl ${ts ? "replay" : "live"}" role="group" aria-label="Data time">
+    <span class="tc-tag"><i aria-hidden="true"></i>${ts ? "Replay" : "Live"}</span>
+    <button class="tc-step" id="tcprev" type="button" aria-label="Earlier snapshot" title="Earlier snapshot"${i <= 0 ? " disabled" : ""}>‹</button>
+    <select id="tcsel" aria-label="Show data as of"><option value="">${ts ? "Live (latest data)" : "Now"}</option>${times.map(opt).join("")}</select>
+    <button class="tc-step" id="tcnext" type="button" aria-label="Later snapshot" title="Later snapshot"${!ts ? " disabled" : ""}>›</button>
+    ${ts ? `<button class="tc-live" id="tclive" type="button">Go live</button>` : ""}</div>`;
+  document.getElementById("tcsel").onchange = e => go(e.target.value || null);
+  document.getElementById("tcprev").onclick = () => { const j = (i < 0 ? times.length : i) - 1; if (j >= 0) go(times[j].ts); };
+  document.getElementById("tcnext").onclick = () => { const j = i + 1; go(j >= times.length ? null : times[j].ts); };
+  const gl = document.getElementById("tclive"); if (gl) gl.onclick = () => go(null);
+}
+(function wireShell() {
+  const b = document.getElementById("sbtoggle"); if (!b) return;
+  const set = off => { document.body.classList.toggle("sb-off", off); b.setAttribute("aria-label", off ? "Show sidebar" : "Hide sidebar"); b.title = b.getAttribute("aria-label"); };
+  set(lsGet2(localStorage, "cs:sboff") === "1");
+  b.onclick = () => { const off = !document.body.classList.contains("sb-off"); lsSet2(localStorage, "cs:sboff", off ? "1" : null); set(off); };
+})();
+
+// ------------------------------------------------------------------ router
 async function route(scroll = true) {
   cleanup.forEach(f => f()); cleanup = [];
   const p = location.hash.replace(/^#\/?/, "").split("/").filter(Boolean);

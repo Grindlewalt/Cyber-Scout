@@ -2,24 +2,39 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#f3f4f6" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0d0f12" media="(prefers-color-scheme: dark)">
 <title>Cyber-Scout</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%2311151c'/%3E%3Cpath d='M6 22 C11 8, 17 26, 26 10' stroke='%233e8bff' stroke-width='3' fill='none' stroke-linecap='round'/%3E%3Ccircle cx='26' cy='10' r='3' fill='%23e5484d'/%3E%3C/svg%3E">
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
-<header class="top">
-  <a href="#/" class="brand"><span class="logo"></span>Cyber-Scout</a>
-  <nav id="crumbs"></nav>
-  <nav id="topnav" class="topnav"></nav>
-  <span id="updated" class="muted small"></span>
-</header>
-<main id="app"><div class="loading">Loading…</div></main>
-<footer class="foot muted small">
-  Robots and fuel are tracked automatically from the broadcast video (robot tracking builds on
-  <a href="https://github.com/samdev-7/autoscout">autoscout</a>), match data from
-  <a href="https://www.thebluealliance.com">The Blue Alliance</a>. Team labels are inferred, check the confidence.
-</footer>
+<a class="skip" href="#app">Skip to content</a>
+<div class="shell">
+  <aside class="sidebar" id="sidebar" aria-label="Sections">
+    <a href="#/" class="sb-brand"><span class="logo" aria-hidden="true"></span>Cyber-Scout</a>
+    <div class="sb-event" id="sbevent"></div>
+    <nav id="topnav" aria-label="Sections"></nav>
+  </aside>
+  <div class="main-col">
+    <header class="toolbar top" id="toolbar">
+      <button class="tb-btn" id="sbtoggle" aria-label="Hide sidebar" title="Hide sidebar"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4.5" width="18" height="15" rx="2.5"/><path d="M9 4.5v15"/></svg></button>
+      <div class="tb-title"><div class="t" id="crumbs"></div><div class="s" id="tbsub"><span id="updated"></span></div></div>
+      <div id="timebar"></div>
+      <span id="userbox"></span>
+    </header>
+    <main id="app" tabindex="-1"><div class="loading">Loading…</div></main>
+    <footer class="foot">
+      Robots and fuel are tracked automatically from the broadcast video (robot tracking builds on
+      <a href="https://github.com/samdev-7/autoscout">autoscout</a>), match data from
+      <a href="https://www.thebluealliance.com">The Blue Alliance</a>. Team labels are inferred, check the confidence.
+    </footer>
+  </div>
+</div>
+<nav class="tabbar" id="tabbar" aria-label="Sections"></nav>
+<dialog class="moresheet" id="moresheet" aria-label="All sections"><div class="ms-head">All sections<button class="tb-btn" id="msclose" aria-label="Close"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div><div class="ms-body" id="msbody"></div></dialog>
 <script src="quant.js"></script>
 <script src="event.js"></script>
 <script src="player.js"></script>
