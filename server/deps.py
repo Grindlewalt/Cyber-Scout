@@ -88,8 +88,9 @@ PASSWORDLESS = ("never", "lan", "everywhere")
 
 
 def passwordless_policy(db) -> str:
-    v = DB.get_setting(db, "passwordless_login", "lan")
-    return v if v in PASSWORDLESS else "lan"
+    # default off: no-password accounts are for testing; "lan" stays accepted for older settings but isn't offered
+    v = DB.get_setting(db, "passwordless_login", "never")
+    return v if v in PASSWORDLESS else "never"
 
 
 def lockdown_state(db) -> dict | None:

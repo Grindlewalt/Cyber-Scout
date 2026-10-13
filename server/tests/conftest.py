@@ -93,6 +93,9 @@ def admin(client, data):
     r = client.post("/setup", {"setup_code": code, "username": "coach", "password": "correct horse 1",
                                "display_name": "Coach"})
     assert r.status_code == 200, r.text
+    # production default is "never" (no-password accounts are for testing); most tests exercise no-password
+    # teammates on the team network, so turn that on here -- test_passwordless_policy_setting checks the default
+    assert client.patch("/admin/security", {"passwordless_login": "lan"}).status_code == 200
     return client
 
 

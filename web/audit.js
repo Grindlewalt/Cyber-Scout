@@ -8,7 +8,7 @@
 
   const when = ts => ts ? new Date(ts * 1000).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit", second: "2-digit" }) : "";
   const short = v => { if (v == null) return "—"; const s = JSON.stringify(v); return s.length > 140 ? s.slice(0, 140) + "…" : s; };
-  const POLICY = [["lan", "Only on the team network (LAN / Tailscale)"], ["never", "Never: every account needs a password"], ["everywhere", "Everywhere, also through the internet link"]];
+  const POLICY = [["never", "Off: every account needs a password"], ["everywhere", "On (testing only): anyone who knows a no-password username can sign in"]];
   const FAMILIES = [["", "everything"], ["picklist", "picklists"], ["note", "notes"], ["override", "identity fixes"], ["settings", "settings"],
     ["events", "events"], ["users", "accounts"], ["auth", "sign-ins"], ["sessions", "sign-outs"], ["http", "other"]];
 

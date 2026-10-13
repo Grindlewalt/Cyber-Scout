@@ -341,7 +341,10 @@ def test_spoofed_private_forwarded_for_from_lan_is_still_lan(admin, app):
 
 def test_passwordless_policy_setting(admin, app):
     admin.post("/users", {"username": "viewer", "display_name": "Team viewer"})
-    assert admin.get("/admin/security").json()["passwordless_login"] == "lan"           # default
+    from server import deps
+    db = DB.connect(); DB.set_setting(db, "passwordless_login", None)
+    assert deps.passwordless_policy(db) == "never"                                       # default: off
+    assert admin.patch("/admin/security", {"passwordless_login": "lan"}).status_code == 200
     lan = new_client(app)
     assert lan.login("viewer", "").status_code == 200
     assert admin.patch("/admin/security", {"passwordless_login": "never"}).status_code == 200
