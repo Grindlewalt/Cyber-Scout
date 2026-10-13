@@ -1487,7 +1487,8 @@ def build_truth(api_ev, ev, matches, specs, teams_meta, data_root=None, log=prin
         tms = [m for m in tms if (m.get("actual_time") or m.get("time") or 0) <= asof]
     played = {t: len(v) for t, v in rows_tba.items()}
     mds = [M.d for M in matches]
-    cov = COV.team_coverage(mds, played)
+    # coverage counts quals only, like `played` (TBA quals) and the dashboard -- playoffs made it read "15/12"
+    cov = COV.team_coverage([d for d in mds if "_qm" in str(d.get("key") or "")], played)
     dash = jload(os.path.join(api_ev, "dashboard.json")) or {}
     if asof is not None:                    # ratings as they stood: the latest dashboard snapshot <= asof
         ts_ = sorted(int(f.split(".")[0]) for f in os.listdir(os.path.join(api_ev, "dash")) if f.split(".")[0].isdigit()) \
