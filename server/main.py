@@ -9,7 +9,7 @@ from fastapi.responses import JSONResponse
 from . import audit, db as DB, workerconf
 from .config import cfg, PREFIX, CSRF_COOKIE, CSRF_HEADER
 from .deps import EVENT_RE, User, load_session, require_role
-from .routers import admin, auth, events, scouting, settings, sources, users
+from .routers import admin, auth, events, scouting, settings, sources, update, users
 from .security import consteq
 
 log = logging.getLogger("cyberscout.api")
@@ -103,7 +103,8 @@ def create_app() -> FastAPI:
     def health():
         return {"ok": True, "version": VERSION}
 
-    for r in (auth.router, users.router, settings.router, events.router, scouting.router, sources.router, admin.router):
+    for r in (auth.router, users.router, settings.router, events.router, scouting.router, sources.router, admin.router,
+              update.router):
         app.include_router(r, prefix=PREFIX)
     return app
 

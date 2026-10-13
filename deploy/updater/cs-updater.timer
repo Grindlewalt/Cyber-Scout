@@ -1,0 +1,13 @@
+# Runs @NAME@.service every minute: heartbeat for the Admin page ("updater installed"), picks up a request the
+# path unit missed, and looks for updates once a day (AUTO_CHECK_HOURS in updater.conf).
+[Unit]
+Description=Cyber-Scout updater heartbeat (@STACK@)
+
+[Timer]
+OnBootSec=90s
+OnUnitInactiveSec=60s
+AccuracySec=5s
+Unit=@NAME@.service
+
+[Install]
+WantedBy=timers.target

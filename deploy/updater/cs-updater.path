@@ -1,0 +1,10 @@
+# Starts @NAME@.service as soon as the web app writes an update request (Admin -> Updates).
+[Unit]
+Description=Cyber-Scout updater: watch for requests from Admin -> Updates (@STACK@)
+
+[Path]
+PathModified=@STACK@/data/config/update-request.json
+Unit=@NAME@.service
+
+[Install]
+WantedBy=paths.target

@@ -14,7 +14,8 @@ curl -fsSL https://raw.githubusercontent.com/Grindlewalt/Cyber-Scout/main/deploy
 The installer checks Docker + Compose (and the NVIDIA Container Toolkit; without it it warns and runs CPU-only,
 ~4x slower per match), clones the code into `/opt/cyber-scout/app` (asks; or `CS_DIR=...`), writes `.env` with
 infrastructure settings only (port, file owner, time zone, media dir), runs `docker compose up -d --build`, and
-prints the URL and a **one-time setup code**. Re-run it any time to update. Options: see the top of `install.sh`
+prints the URL and a **one-time setup code**. At the end it offers to install the **updater** (one-click
+updates in Admin -> Updates, see below). Re-run it any time to update. Options: see the top of `install.sh`
 (`CS_PORT`, `CS_MODEL_URL` for the robot detector, `CS_CPU=1`, `CS_YES=1`, ...).
 
 ## First run
@@ -49,6 +50,17 @@ picks changes up on its next poll without a restart.
     training/ tba/ cache/   disposable / re-downloadable
 ```
 
+## Updates (Admin -> Updates)
+
+With the updater installed (`install.sh` offers it; or later, in the stack folder:
+`sudo ./app/deploy/updater/install-updater.sh`), an admin clicks **Check for updates**, reads the changelog and
+clicks **Update now**. A small systemd service on the server (not a container: no container gets the docker
+socket) fetches the code, backs up `data/app.db`, rebuilds, restarts, waits until everything is healthy, and
+rolls back by itself if anything fails. **Roll back** returns to the previous version. It refuses when the disk is
+too full for the rebuild, never edits `.env` (PAUSE_PROCESSING stays as it is), and can also re-pin yt-dlp.
+Private repository: a read-only deploy key. Details, the security model and removal:
+[`updater/README.md`](updater/README.md).
+
 ## Backup and restore
 
 **Backup = the install folder** (`/opt/cyber-scout`, really just `data/` + `.env`). `data/app.db` holds the TBA
@@ -76,6 +88,7 @@ Restore on a fresh machine: install Docker (+ NVIDIA container toolkit), copy th
 docker compose logs -f worker          # what it's doing
 docker compose logs -f api             # sign-ins / settings problems
 docker compose up -d --build           # after changing .env or pulling code (or just re-run install.sh)
+python3 updater/cs-updater.py --stack $PWD check | apply | rollback    # the updater from a shell (if installed)
 ```
 
 * **Follow a different / live event:** Admin -> Events. The event needs a camera calibration / video setup first.
@@ -173,3 +186,9 @@ cams over the field), set `reject` in the event's `event.json` so those videos a
 
 The detector was trained on public FRC robot datasets plus auto-labelled footage from this
 venue (`live/make_labels.py`). A very different camera angle may need the same fine-tune.
+
+## Hardening options (.env)
+- `GPU_IDS` (default `0`; e.g. `1` or `0,1` — numbering from `nvidia-smi -L`; inside the container the cards count from 0, so leave `GPU_DEVICE=0`).
+- `WEB_BIND` (default `0.0.0.0`): set a LAN or Tailscale IP to publish the site only there (an explicit address means no IPv6 listener).
+- `WORKER_MEM_LIMIT`, `RECORDER_MEM_LIMIT`, `API_MEM_LIMIT`, `WEB_MEM_LIMIT`: per-container memory caps.
+- `CS_URL_ALLOW`: comma-separated hosts/CIDRs the worker may fetch even though they're private (e.g. a LAN OBS HLS server). Otherwise video sources must be public http(s) URLs or absolute paths under the media/data directories.

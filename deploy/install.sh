@@ -13,6 +13,8 @@
 #   CS_CPU=1                     force CPU-only even if a GPU is present
 #   CS_PREFIX=cyber-scout        compose project / container / image name prefix (run a 2nd copy side by side)
 #   CS_YES=1                     don't ask questions (use the defaults above)
+#   CS_UPDATER=y|n               install the host updater for one-click updates in Admin -> Updates (systemd units;
+#                                default: asks, y; with CS_YES=1: n unless CS_UPDATER=y). See deploy/updater/README.md
 set -euo pipefail
 
 CS_DIR="${CS_DIR:-/opt/cyber-scout}"
@@ -170,6 +172,28 @@ if [ -n "$CODE" ]; then
   bold "First-time setup code: $CODE"
   info "Open the site, enter this code and create the admin account. (Later: cat $CS_DIR/data/setup-code.txt)"
 fi
+
+# ---------------------------------------------------------------- one-click updates (optional host updater)
+# A small systemd service on this machine (NOT in a container: no container gets the docker socket) that does
+# check / update / roll back when an admin asks in Admin -> Updates. Runs as the folder's owner (docker group).
+UPD="$CS_DIR/app/deploy/updater/install-updater.sh"
+UPDATER_OK=0
+if [ -f "$UPD" ] && command -v systemctl >/dev/null && [ -d /run/systemd/system ]; then
+  if [ "$CS_YES" = "1" ]; then def="${CS_UPDATER:-n}"; else def="${CS_UPDATER:-y}"; fi
+  echo
+  a="$(ask "Install the updater for one-click updates in Admin -> Updates (systemd units, runs as $(stat -c %U "$CS_DIR"))? y/n" "$def")"
+  case "$a" in
+    y|Y|yes|YES)
+      if [ "$(id -u)" -eq 0 ]; then bash "$UPD" --stack "$CS_DIR" --yes && UPDATER_OK=1
+      elif [ -n "$SUDO" ]; then $SUDO bash "$UPD" --stack "$CS_DIR" --yes && UPDATER_OK=1
+      else bash "$UPD" --stack "$CS_DIR" --user --yes && UPDATER_OK=1; fi
+      [ "$UPDATER_OK" = "1" ] || warn "the updater wasn't installed; updates work by re-running this installer (or later: sudo $UPD)";;
+    *) info "Skipped. Later: sudo $UPD   (remove: sudo $UPD --uninstall)";;
+  esac
+fi
+
 echo
 info "Logs:    cd $CS_DIR && docker compose logs -f worker"
-info "Update:  re-run this installer.   Backup: the whole $CS_DIR folder (data/ holds everything)."
+if [ "$UPDATER_OK" = "1" ]; then info "Update:  Admin -> Updates in the web app (or re-run this installer)."
+else info "Update:  re-run this installer."; fi
+info "Backup:  the whole $CS_DIR folder (data/ holds everything)."

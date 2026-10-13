@@ -1,0 +1,26 @@
+# Cyber-Scout host updater: one run = heartbeat + the pending Admin -> Updates request (if any).
+# Installed by install-updater.sh as @NAME@.service (placeholders filled in); started by @NAME@.path / .timer.
+[Unit]
+Description=Cyber-Scout updater (@STACK@)
+Documentation=file://@STACK@/app/deploy/updater/README.md
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=@USER@
+Group=@GROUP@
+WorkingDirectory=@STACK@
+ExecStart=@PYTHON@ @STACK@/updater/cs-updater.py --stack @STACK@ run
+TimeoutStartSec=2h
+Nice=5
+UMask=0022
+# defence in depth (system install only; the user is in the docker group, which is root-equivalent anyway)
+NoNewPrivileges=yes
+ProtectSystem=full
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
