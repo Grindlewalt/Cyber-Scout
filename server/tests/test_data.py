@@ -42,7 +42,8 @@ def test_picklist_versioning(team):
     r = s.put("/events/2026wasam/picklists/main", {"data": {"stars": ["frc4911"], "dnp": [], "weights": {"made": 3}}})
     assert r.status_code == 200 and r.json()["version"] == 1
     r = s.put("/events/2026wasam/picklists/main", {"data": {"stars": []}, "base_version": 1})
-    assert r.json()["version"] == 2 and r.json()["updated_by"]["username"] == "strategist1"
+    # other users see the display name only, never the username (audit: _who() exposed usernames)
+    assert r.json()["version"] == 2 and r.json()["updated_by"]["display_name"] and "username" not in r.json()["updated_by"]
     r = team["admin"].put("/events/2026wasam/picklists/main", {"data": {"stars": ["frc1"]}, "base_version": 1})
     assert r.status_code == 409 and r.json()["detail"]["current"]["version"] == 2
     assert v.get("/events/2026wasam/picklists/main").json()["data"] == {"stars": []}
@@ -51,7 +52,7 @@ def test_picklist_versioning(team):
 
 
 def test_overrides_file(team, data):
-    sc = team["scout"]
+    sc = team["strategist"]           # strategists apply directly; scouts' fixes wait for approval (test_hardening)
     p = data / "events" / "2026wasam" / "overrides.json"
     p.parent.mkdir(parents=True)
     p.write_text(json.dumps({"2026wasam_qm1": {"blue": {"2": "frc9442"}}}))     # hand-edited entry survives
@@ -65,7 +66,8 @@ def test_overrides_file(team, data):
     assert sc.delete("/events/2026wasam/overrides/2026wasam_qm12").status_code == 204
     assert json.loads(p.read_text()) == {"2026wasam_qm1": {"blue": {"2": "frc9442"}}}
     log = team["viewer"].get("/events/2026wasam/overrides").json()["log"]
-    assert [x["by"]["username"] for x in log] == ["scout1", "scout1"]
+    me = sc.get("/session").json()["user"]["id"]
+    assert [x["by"]["id"] for x in log] == [me, me] and all("username" not in x["by"] for x in log)
 
 
 def test_notes_validation(team):
@@ -74,12 +76,14 @@ def test_notes_validation(team):
     assert sc.post("/events/2026wasam/notes", {"text": ""}).status_code == 422
     assert sc.post("/events/2026wasam/notes", {"text": "x" * 4001}).status_code == 422
     assert sc.post("/events/BAD/notes", {"text": "x"}).status_code == 422
-    assert sc.post("/events/2026wasam/notes", {"team": "frc4911", "text": "<script>"}).status_code == 201
+    assert sc.post("/events/2026wasam/notes", {"team": "frc4911", "text": "<script>"}).status_code == 422   # plain text only
+    assert sc.post("/events/2026wasam/notes", {"team": "frc4911", "text": "fast <3, a < b"}).status_code == 201
     assert len(team["viewer"].get("/events/2026wasam/notes?team=frc4911").json()) == 1
 
 
-def test_openapi(client):
-    spec = client.get("/openapi.json").json()
+def test_openapi(client, admin):
+    assert client.get("/docs").status_code == 404                 # no Swagger UI
+    spec = admin.get("/openapi.json").json()                      # schema: admins only
     paths = spec["paths"]
     for p in ("/app/v1/session", "/app/v1/auth/login", "/app/v1/users", "/app/v1/settings/tba-key",
               "/app/v1/events/{ev}/picklists/{name}", "/app/v1/events/{ev}/overrides/{match}"):

@@ -3,10 +3,10 @@
 The TBA key is validated against TBA, stored server-side, and never returned (only `tba_key_set` + last 4 chars)."""
 import datetime
 
-from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel, Field
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from .. import db as DB, tba, workerconf
+from .. import audit, db as DB, tba, textrules, workerconf
 from ..deps import User, require_role
 
 router = APIRouter(tags=["settings"])
@@ -14,6 +14,7 @@ router = APIRouter(tags=["settings"])
 
 class Options(BaseModel):
     """Worker options; null = use the worker's default / its .env value."""
+    model_config = ConfigDict(extra="forbid")
     poll_seconds: int | None = Field(None, ge=30, le=3600, description="seconds between TBA polls")
     gpu_device: int | None = Field(None, ge=0, le=15, description="CUDA device index inside the worker container")
     cpu_only: bool | None = Field(None, description="force CPU inference (no GPU)")
@@ -31,14 +32,40 @@ class SettingsOut(BaseModel):
 
 
 class SettingsPatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     team_number: int | None = Field(None, ge=1, le=99999)
-    season_goal: str | None = Field(None, max_length=40, description='e.g. "DCMP", "Worlds", "Win event"')
+    season_goal: str | None = Field(None, max_length=40, description='e.g. "DCMP", "Worlds", "Win event" (plain text)')
     options: Options | None = None
     setup_complete: bool | None = None
 
+    @field_validator("season_goal")
+    @classmethod
+    def check_goal(cls, v):
+        return None if v is None else (textrules.label(v, 40, "season goal") or None)
+
 
 class KeyIn(BaseModel):
-    key: str = Field(min_length=20, max_length=128)
+    model_config = ConfigDict(extra="forbid")
+    key: str = Field(min_length=20, max_length=128, pattern=r"^\s*[A-Za-z0-9]+\s*$")
+
+
+# settings an admin can revert from the audit log (settings.* entries); never the TBA key
+REVERTIBLE_KEYS = ("team_number", "team_name", "season_goal", "setup_complete", "options",
+                   "lockdown", "passwordless_login", "scout_overrides")
+
+
+def settings_snap(db, keys):
+    return {k: DB.get_setting(db, k) for k in keys}
+
+
+def apply_settings_state(db, request, user, state: dict, action, ref=None):
+    """Set settings back to an audit snapshot and record it. Call inside a transaction."""
+    keys = [k for k in state if k in REVERTIBLE_KEYS]
+    before = settings_snap(db, keys)
+    for k in keys:
+        DB.set_setting(db, k, state[k])
+    workerconf.write(db)
+    return audit.record(db, request, user, action, ",".join(keys), None, before, settings_snap(db, keys), ref)
 
 
 def settings_out(db, user: User) -> SettingsOut:
@@ -75,7 +102,8 @@ def get_settings(user: User = Depends(require_role("viewer")), db=Depends(DB.get
 
 
 @router.patch("/settings", response_model=SettingsOut, summary="Update team number / season goal / options (admin)")
-def patch_settings(body: SettingsPatch, user: User = Depends(require_role("admin")), db=Depends(DB.get_db)):
+def patch_settings(body: SettingsPatch, request: Request, user: User = Depends(require_role("admin")),
+                   db=Depends(DB.get_db)):
     fs = body.model_fields_set
     team_name = None
     if "team_number" in fs and body.team_number:
@@ -83,7 +111,10 @@ def patch_settings(body: SettingsPatch, user: User = Depends(require_role("admin
         if key:     # look the team up so the UI can show its name (and catch typos)
             t = tba_call(key, f"/team/frc{body.team_number}/simple", ttl=86400)
             team_name = t.get("nickname")
+    keys = [k for k in ("team_number", "team_name", "season_goal", "setup_complete", "options")
+            if k in fs or (k == "team_name" and "team_number" in fs)]
     with DB.tx(db):
+        before = settings_snap(db, keys)
         if "team_number" in fs:
             DB.set_setting(db, "team_number", body.team_number)
             DB.set_setting(db, "team_name", team_name)
@@ -96,11 +127,13 @@ def patch_settings(body: SettingsPatch, user: User = Depends(require_role("admin
             cur.update(body.options.model_dump(exclude_unset=True) if body.options else {})
             DB.set_setting(db, "options", cur)
         workerconf.write(db)
+        if keys:
+            audit.record(db, request, user, "settings.update", ",".join(keys), None, before, settings_snap(db, keys))
     return settings_out(db, user)
 
 
 @router.put("/settings/tba-key", response_model=SettingsOut, summary="Validate against TBA and store the key (admin)")
-def put_tba_key(body: KeyIn, user: User = Depends(require_role("admin")), db=Depends(DB.get_db)):
+def put_tba_key(body: KeyIn, request: Request, user: User = Depends(require_role("admin")), db=Depends(DB.get_db)):
     key = body.key.strip()
     try:
         tba.validate_key(key)
@@ -109,16 +142,22 @@ def put_tba_key(body: KeyIn, user: User = Depends(require_role("admin")), db=Dep
             raise HTTPException(422, "The Blue Alliance rejected this key (thebluealliance.com/account -> Read API Keys)")
         raise HTTPException(502, "couldn't reach The Blue Alliance to check the key; not saved")
     with DB.tx(db):
+        old = DB.get_setting(db, "tba_key")
         DB.set_setting(db, "tba_key", key)
         workerconf.write(db)
+        audit.record(db, request, user, "settings.tba_key", "tba_key", None,
+                     {"set": bool(old), "hint": ("••••" + old[-4:]) if old else None}, {"set": True, "hint": "••••" + key[-4:]})
     return settings_out(db, user)
 
 
 @router.delete("/settings/tba-key", response_model=SettingsOut, summary="Remove the stored TBA key (admin)")
-def delete_tba_key(user: User = Depends(require_role("admin")), db=Depends(DB.get_db)):
+def delete_tba_key(request: Request, user: User = Depends(require_role("admin")), db=Depends(DB.get_db)):
     with DB.tx(db):
+        old = DB.get_setting(db, "tba_key")
         DB.set_setting(db, "tba_key", None)
         workerconf.write(db)
+        audit.record(db, request, user, "settings.tba_key", "tba_key", None,
+                     {"set": bool(old), "hint": ("••••" + old[-4:]) if old else None}, {"set": False, "hint": None})
     return settings_out(db, user)
 
 

@@ -176,6 +176,47 @@
     }
    }
   },
+  "/app/v1/auth/profile": {
+   "patch": {
+    "tags": [
+     "auth"
+    ],
+    "summary": "Change your own display name (scout+; no staff words, not another teammate's name)",
+    "operationId": "change_profile_app_v1_auth_profile_patch",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/ProfileIn"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/SessionOut"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
   "/app/v1/auth/check": {
    "get": {
     "tags": [
@@ -747,7 +788,7 @@
     "tags": [
      "scouting"
     ],
-    "summary": "Create/replace a picklist (strategist+)",
+    "summary": "Create/replace a picklist (strategist+; every version is kept)",
     "operationId": "put_picklist_app_v1_events__ev__picklists__name__put",
     "parameters": [
      {
@@ -806,7 +847,7 @@
     "tags": [
      "scouting"
     ],
-    "summary": "Delete a picklist (strategist+)",
+    "summary": "Delete a picklist (strategist+; its history stays restorable)",
     "operationId": "delete_picklist_app_v1_events__ev__picklists__name__delete",
     "parameters": [
      {
@@ -845,12 +886,199 @@
     }
    }
   },
+  "/app/v1/events/{ev}/picklists/{name}/versions": {
+   "get": {
+    "tags": [
+     "scouting"
+    ],
+    "summary": "Version history of a picklist, newest first (viewer+; also for deleted ones)",
+    "operationId": "picklist_versions_app_v1_events__ev__picklists__name__versions_get",
+    "parameters": [
+     {
+      "name": "name",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Name"
+      }
+     },
+     {
+      "name": "ev",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Ev"
+      }
+     },
+     {
+      "name": "limit",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer",
+       "maximum": 1000,
+       "minimum": 1,
+       "default": 200,
+       "title": "Limit"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "array",
+         "items": {
+          "$ref": "#/components/schemas/PicklistVersionOut"
+         },
+         "title": "Response Picklist Versions App V1 Events  Ev  Picklists  Name  Versions Get"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/app/v1/events/{ev}/picklists/{name}/versions/{v}": {
+   "get": {
+    "tags": [
+     "scouting"
+    ],
+    "summary": "One old version of a picklist, with its data (viewer+)",
+    "operationId": "picklist_version_app_v1_events__ev__picklists__name__versions__v__get",
+    "parameters": [
+     {
+      "name": "name",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Name"
+      }
+     },
+     {
+      "name": "v",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "integer",
+       "title": "V"
+      }
+     },
+     {
+      "name": "ev",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Ev"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/PicklistVersionOut"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/app/v1/events/{ev}/picklists/{name}/versions/{v}/restore": {
+   "post": {
+    "tags": [
+     "scouting"
+    ],
+    "summary": "Restore an old version (saved as a new version; strategist+)",
+    "operationId": "restore_picklist_version_app_v1_events__ev__picklists__name__versions__v__restore_post",
+    "parameters": [
+     {
+      "name": "name",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Name"
+      }
+     },
+     {
+      "name": "v",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "integer",
+       "title": "V"
+      }
+     },
+     {
+      "name": "ev",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Ev"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/PicklistOut"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
   "/app/v1/events/{ev}/notes": {
    "get": {
     "tags": [
      "scouting"
     ],
-    "summary": "Notes, optionally for one team / match (viewer+)",
+    "summary": "Notes, optionally for one team / match (viewer+; include_removed: strategist+)",
     "operationId": "list_notes_app_v1_events__ev__notes_get",
     "parameters": [
      {
@@ -893,6 +1121,18 @@
        ],
        "title": "Match"
       }
+     },
+     {
+      "name": "include_removed",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "boolean",
+       "description": "also deleted / hidden notes (strategist+)",
+       "default": false,
+       "title": "Include Removed"
+      },
+      "description": "also deleted / hidden notes (strategist+)"
      }
     ],
     "responses": {
@@ -926,7 +1166,7 @@
     "tags": [
      "scouting"
     ],
-    "summary": "Add a note (scout+)",
+    "summary": "Add a note (scout+; plain text)",
     "operationId": "add_note_app_v1_events__ev__notes_post",
     "parameters": [
      {
@@ -978,7 +1218,7 @@
     "tags": [
      "scouting"
     ],
-    "summary": "Edit a note (author, or strategist+)",
+    "summary": "Edit a note (author, or strategist+; shown as edited)",
     "operationId": "edit_note_app_v1_notes__nid__patch",
     "parameters": [
      {
@@ -1028,7 +1268,7 @@
     "tags": [
      "scouting"
     ],
-    "summary": "Delete a note (author, or strategist+)",
+    "summary": "Delete your note, or hide someone else's (strategist+). Soft: restorable",
     "operationId": "delete_note_app_v1_notes__nid__delete",
     "parameters": [
      {
@@ -1058,12 +1298,54 @@
     }
    }
   },
+  "/app/v1/notes/{nid}/restore": {
+   "post": {
+    "tags": [
+     "scouting"
+    ],
+    "summary": "Bring back a deleted / hidden note (strategist+, or the author for their own deletion)",
+    "operationId": "restore_note_app_v1_notes__nid__restore_post",
+    "parameters": [
+     {
+      "name": "nid",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "integer",
+       "title": "Nid"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/NoteOut"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
   "/app/v1/events/{ev}/overrides": {
    "get": {
     "tags": [
      "scouting"
     ],
-    "summary": "Identity overrides for an event + recent change log (viewer+)",
+    "summary": "Identity overrides for an event + recent change log + fixes waiting for approval (viewer+)",
     "operationId": "get_overrides_app_v1_events__ev__overrides_get",
     "parameters": [
      {
@@ -1103,7 +1385,7 @@
     "tags": [
      "scouting"
     ],
-    "summary": "Set the robot->team fixes for one match (scout+)",
+    "summary": "Set the robot->team fixes for one match (strategist+: applied; scout: 202, waits for approval)",
     "operationId": "put_override_app_v1_events__ev__overrides__match__put",
     "parameters": [
      {
@@ -1160,7 +1442,7 @@
     "tags": [
      "scouting"
     ],
-    "summary": "Clear one match's fixes (scout+)",
+    "summary": "Clear one match's fixes (strategist+: applied; scout: 202, waits for approval)",
     "operationId": "delete_override_app_v1_events__ev__overrides__match__delete",
     "parameters": [
      {
@@ -1185,6 +1467,104 @@
     "responses": {
      "204": {
       "description": "Successful Response"
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/app/v1/events/{ev}/override-requests/{rid}/approve": {
+   "post": {
+    "tags": [
+     "scouting"
+    ],
+    "summary": "Apply a scout's identity fix (strategist+)",
+    "operationId": "approve_override_app_v1_events__ev__override_requests__rid__approve_post",
+    "parameters": [
+     {
+      "name": "rid",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "integer",
+       "title": "Rid"
+      }
+     },
+     {
+      "name": "ev",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Ev"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/app/v1/events/{ev}/override-requests/{rid}/reject": {
+   "post": {
+    "tags": [
+     "scouting"
+    ],
+    "summary": "Reject a pending identity fix (strategist+), or withdraw your own (scout)",
+    "operationId": "reject_override_app_v1_events__ev__override_requests__rid__reject_post",
+    "parameters": [
+     {
+      "name": "rid",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "integer",
+       "title": "Rid"
+      }
+     },
+     {
+      "name": "ev",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Ev"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
      },
      "422": {
       "description": "Validation Error",
@@ -2185,6 +2565,333 @@
      }
     }
    }
+  },
+  "/app/v1/admin/security": {
+   "get": {
+    "tags": [
+     "admin"
+    ],
+    "summary": "Lockdown / sign-in policy / review mode (admin)",
+    "operationId": "get_security_app_v1_admin_security_get",
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/SecurityOut"
+        }
+       }
+      }
+     }
+    }
+   },
+   "patch": {
+    "tags": [
+     "admin"
+    ],
+    "summary": "Change lockdown / sign-in policy / review mode (admin)",
+    "operationId": "patch_security_app_v1_admin_security_patch",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/SecurityPatch"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/SecurityOut"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/app/v1/admin/sessions/revoke": {
+   "post": {
+    "tags": [
+     "admin"
+    ],
+    "summary": "Sign everyone out (admin; your own session stays)",
+    "operationId": "revoke_sessions_app_v1_admin_sessions_revoke_post",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/RevokeIn"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/app/v1/audit": {
+   "get": {
+    "tags": [
+     "admin"
+    ],
+    "summary": "Audit log, newest first (admin). Filter by account, action prefix, event, time",
+    "operationId": "list_audit_app_v1_audit_get",
+    "parameters": [
+     {
+      "name": "user_id",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "integer"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "User Id"
+      }
+     },
+     {
+      "name": "action",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string",
+         "maxLength": 40
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "description": "prefix, e.g. 'picklist' or 'note.hide'",
+       "title": "Action"
+      },
+      "description": "prefix, e.g. 'picklist' or 'note.hide'"
+     },
+     {
+      "name": "event",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string",
+         "maxLength": 24
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Event"
+      }
+     },
+     {
+      "name": "since",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "number"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "description": "unix seconds",
+       "title": "Since"
+      },
+      "description": "unix seconds"
+     },
+     {
+      "name": "before_id",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "integer"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Before Id"
+      }
+     },
+     {
+      "name": "via",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "enum": [
+          "lan",
+          "public"
+         ],
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Via"
+      }
+     },
+     {
+      "name": "limit",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer",
+       "maximum": 500,
+       "minimum": 1,
+       "default": 100,
+       "title": "Limit"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/app/v1/audit/{aid}/revert": {
+   "post": {
+    "tags": [
+     "admin"
+    ],
+    "summary": "Undo one logged change (admin): restores its 'before' state",
+    "operationId": "revert_entry_app_v1_audit__aid__revert_post",
+    "parameters": [
+     {
+      "name": "aid",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "integer",
+       "title": "Aid"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/app/v1/audit/revert-user": {
+   "post": {
+    "tags": [
+     "admin"
+    ],
+    "summary": "Undo everything one account changed since a time (admin), newest first",
+    "operationId": "revert_user_app_v1_audit_revert_user_post",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/RevertUserIn"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
   }
  },
  "components": {
@@ -2199,6 +2906,7 @@
       "description": "TBA event key, e.g. 2026wasam"
      }
     },
+    "additionalProperties": false,
     "type": "object",
     "required": [
      "key"
@@ -2345,9 +3053,11 @@
       "type": "string",
       "maxLength": 128,
       "minLength": 20,
+      "pattern": "^\\s*[A-Za-z0-9]+\\s*$",
       "title": "Key"
      }
     },
+    "additionalProperties": false,
     "type": "object",
     "required": [
      "key"
@@ -2447,9 +3157,11 @@
       "type": "string",
       "maxLength": 4000,
       "minLength": 1,
-      "title": "Text"
+      "title": "Text",
+      "description": "plain text (no HTML tags / entities)"
      }
     },
+    "additionalProperties": false,
     "type": "object",
     "required": [
      "text"
@@ -2490,7 +3202,8 @@
      },
      "text": {
       "type": "string",
-      "title": "Text"
+      "title": "Text",
+      "description": "plain text: render with textContent / escaped, never as HTML"
      },
      "author": {
       "anyOf": [
@@ -2502,7 +3215,8 @@
         "type": "null"
        }
       ],
-      "title": "Author"
+      "title": "Author",
+      "description": "{id, display_name}"
      },
      "created_at": {
       "type": "number",
@@ -2511,6 +3225,54 @@
      "updated_at": {
       "type": "number",
       "title": "Updated At"
+     },
+     "edited_by": {
+      "anyOf": [
+       {
+        "additionalProperties": true,
+        "type": "object"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Edited By",
+      "description": "set when someone other than the author last edited it"
+     },
+     "removed": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Removed",
+      "description": "deleted | hidden | reverted (only with include_removed)"
+     },
+     "removed_by": {
+      "anyOf": [
+       {
+        "additionalProperties": true,
+        "type": "object"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Removed By"
+     },
+     "removed_at": {
+      "anyOf": [
+       {
+        "type": "number"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Removed At"
      }
     },
     "type": "object",
@@ -2535,6 +3297,7 @@
       "title": "Text"
      }
     },
+    "additionalProperties": false,
     "type": "object",
     "required": [
      "text"
@@ -2596,6 +3359,7 @@
       "description": "optional driver-station camera pass (~1-2 min/match extra)"
      }
     },
+    "additionalProperties": false,
     "type": "object",
     "title": "Options",
     "description": "Worker options; null = use the worker's default / its .env value."
@@ -2618,6 +3382,7 @@
       "title": "Blue"
      }
     },
+    "additionalProperties": false,
     "type": "object",
     "title": "OverrideIn"
    },
@@ -2634,6 +3399,7 @@
       "title": "New Password"
      }
     },
+    "additionalProperties": false,
     "type": "object",
     "required": [
      "current_password",
@@ -2713,6 +3479,7 @@
       "description": "optimistic concurrency: 409 if the stored version differs"
      }
     },
+    "additionalProperties": false,
     "type": "object",
     "required": [
      "data"
@@ -2752,7 +3519,8 @@
         "type": "null"
        }
       ],
-      "title": "Updated By"
+      "title": "Updated By",
+      "description": "{id, display_name}"
      }
     },
     "type": "object",
@@ -2765,6 +3533,83 @@
      "updated_by"
     ],
     "title": "PicklistOut"
+   },
+   "PicklistVersionOut": {
+    "properties": {
+     "version": {
+      "type": "integer",
+      "title": "Version"
+     },
+     "updated_at": {
+      "type": "number",
+      "title": "Updated At"
+     },
+     "updated_by": {
+      "anyOf": [
+       {
+        "additionalProperties": true,
+        "type": "object"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Updated By"
+     },
+     "note": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Note",
+      "description": "e.g. \"restored v3\""
+     },
+     "current": {
+      "type": "boolean",
+      "title": "Current"
+     },
+     "data": {
+      "anyOf": [
+       {
+        "additionalProperties": true,
+        "type": "object"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Data",
+      "description": "only on GET .../versions/{v}"
+     }
+    },
+    "type": "object",
+    "required": [
+     "version",
+     "updated_at",
+     "updated_by",
+     "current"
+    ],
+    "title": "PicklistVersionOut"
+   },
+   "ProfileIn": {
+    "properties": {
+     "display_name": {
+      "type": "string",
+      "maxLength": 64,
+      "minLength": 2,
+      "title": "Display Name"
+     }
+    },
+    "additionalProperties": false,
+    "type": "object",
+    "required": [
+     "display_name"
+    ],
+    "title": "ProfileIn"
    },
    "Region": {
     "properties": {
@@ -2824,6 +3669,131 @@
     ],
     "title": "Region"
    },
+   "RevertUserIn": {
+    "properties": {
+     "user_id": {
+      "type": "integer",
+      "title": "User Id"
+     },
+     "since": {
+      "type": "number",
+      "title": "Since",
+      "description": "unix seconds: undo this account's changes made at or after this time"
+     }
+    },
+    "additionalProperties": false,
+    "type": "object",
+    "required": [
+     "user_id",
+     "since"
+    ],
+    "title": "RevertUserIn"
+   },
+   "RevokeIn": {
+    "properties": {
+     "include_admins": {
+      "type": "boolean",
+      "title": "Include Admins",
+      "description": "also sign out the other admins (your own session always stays)",
+      "default": false
+     }
+    },
+    "additionalProperties": false,
+    "type": "object",
+    "title": "RevokeIn"
+   },
+   "SecurityOut": {
+    "properties": {
+     "lockdown": {
+      "anyOf": [
+       {
+        "additionalProperties": true,
+        "type": "object"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Lockdown",
+      "description": "null, or {on, at, by:{id,display_name}}: non-admin writes are refused (423)"
+     },
+     "passwordless_login": {
+      "type": "string",
+      "enum": [
+       "never",
+       "lan",
+       "everywhere"
+      ],
+      "title": "Passwordless Login",
+      "description": "where accounts without a password may sign in: never | lan (direct from a private/Tailscale address, not through the tunnel; default) | everywhere"
+     },
+     "scout_overrides": {
+      "type": "string",
+      "enum": [
+       "review",
+       "direct"
+      ],
+      "title": "Scout Overrides",
+      "description": "review (default): scouts' identity fixes wait for a strategist/admin; direct: applied at once"
+     }
+    },
+    "type": "object",
+    "required": [
+     "lockdown",
+     "passwordless_login",
+     "scout_overrides"
+    ],
+    "title": "SecurityOut"
+   },
+   "SecurityPatch": {
+    "properties": {
+     "lockdown": {
+      "anyOf": [
+       {
+        "type": "boolean"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Lockdown"
+     },
+     "passwordless_login": {
+      "anyOf": [
+       {
+        "type": "string",
+        "enum": [
+         "never",
+         "lan",
+         "everywhere"
+        ]
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Passwordless Login"
+     },
+     "scout_overrides": {
+      "anyOf": [
+       {
+        "type": "string",
+        "enum": [
+         "review",
+         "direct"
+        ]
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Scout Overrides"
+     }
+    },
+    "additionalProperties": false,
+    "type": "object",
+    "title": "SecurityPatch"
+   },
    "SessionOut": {
     "properties": {
      "setup_required": {
@@ -2858,6 +3828,24 @@
       "type": "boolean",
       "title": "Configured",
       "description": "TBA key set, at least one followed event, and the setup wizard finished"
+     },
+     "lockdown": {
+      "type": "boolean",
+      "title": "Lockdown",
+      "description": "read-only mode: only admins can change anything right now",
+      "default": false
+     },
+     "network": {
+      "type": "string",
+      "title": "Network",
+      "description": "'lan' (direct from the team network / Tailscale) or 'public' (tunnel)",
+      "default": "lan"
+     },
+     "passwordless_ok": {
+      "type": "boolean",
+      "title": "Passwordless Ok",
+      "description": "accounts without a password can sign in from here",
+      "default": true
      }
     },
     "type": "object",
@@ -2974,7 +3962,7 @@
        }
       ],
       "title": "Season Goal",
-      "description": "e.g. \"DCMP\", \"Worlds\", \"Win event\""
+      "description": "e.g. \"DCMP\", \"Worlds\", \"Win event\" (plain text)"
      },
      "options": {
       "anyOf": [
@@ -2998,6 +3986,7 @@
       "title": "Setup Complete"
      }
     },
+    "additionalProperties": false,
     "type": "object",
     "title": "SettingsPatch"
    },
@@ -3033,6 +4022,7 @@
       "default": ""
      }
     },
+    "additionalProperties": false,
     "type": "object",
     "required": [
      "username",
@@ -3207,9 +4197,11 @@
        "admin"
       ],
       "title": "Role",
+      "description": "least privilege: new accounts are viewers unless you pick a role",
       "default": "viewer"
      }
     },
+    "additionalProperties": false,
     "type": "object",
     "required": [
      "username"
@@ -3338,6 +4330,7 @@
       "description": "admin password reset ('' = no password, non-admins only); signs the user out"
      }
     },
+    "additionalProperties": false,
     "type": "object",
     "title": "UserPatch"
    },

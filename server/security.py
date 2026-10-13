@@ -82,6 +82,52 @@ class RateLimiter:
 login_limiter = RateLimiter()
 
 
+class WriteLimiter:
+    """Per-account write budget (in memory, one process): bucket -> [(window seconds, max writes)].
+
+    Generous for real use (a scout writes a note a minute, the picklist page autosaves every ~0.5 s while dragging)
+    but stops a teammate -- or a leaked login -- from flooding notes, picklist versions or identity-fix requests."""
+    LIMITS = {
+        "write": [(60, 120)],                       # every mutating call by a non-admin
+        "note": [(60, 10), (3600, 150)],            # new notes
+        "note_edit": [(60, 20), (3600, 300)],       # edits / deletes / hides
+        "picklist": [(60, 60), (3600, 1200)],       # picklist saves / deletes / restores
+        "override": [(60, 20), (3600, 200)],        # identity fixes + requests
+        "profile": [(3600, 10)],                    # display-name changes
+    }
+
+    def __init__(self):
+        self._h: dict[tuple, list[float]] = {}
+        self._lock = threading.Lock()
+
+    def hit(self, uid, bucket) -> int:
+        """Record one write; returns 0, or the seconds to wait if over budget (then nothing is recorded)."""
+        now = time.time()
+        lims = self.LIMITS[bucket]
+        horizon = max(w for w, _ in lims)
+        with self._lock:
+            k = (uid, bucket)
+            v = [t for t in self._h.get(k, ()) if now - t < horizon]
+            for w, n in lims:
+                inw = [t for t in v if now - t < w]
+                if len(inw) >= n:
+                    self._h[k] = v
+                    return int(w - (now - inw[0])) + 1
+            v.append(now)
+            self._h[k] = v
+            if len(self._h) > 20000:
+                for kk in list(self._h)[:10000]:
+                    self._h.pop(kk, None)
+        return 0
+
+    def reset(self):
+        with self._lock:
+            self._h.clear()
+
+
+write_limiter = WriteLimiter()
+
+
 def atomic_write_json(path, obj, mode=0o644):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     tmp = f"{path}.tmp{os.getpid()}"

@@ -11,6 +11,7 @@ services:
     image: ${CS_PREFIX:-cyber-scout}-worker:latest
     container_name: ${CS_PREFIX:-cyber-scout}-worker
     restart: unless-stopped
+    security_opt: ["no-new-privileges:true"]   # no setuid escalation inside the container
     env_file: .env
     environment:
       DATA: /data
@@ -36,6 +37,7 @@ services:
     image: ${CS_PREFIX:-cyber-scout}-worker:latest
     container_name: ${CS_PREFIX:-cyber-scout}-recorder
     restart: unless-stopped
+    security_opt: ["no-new-privileges:true"]   # no setuid escalation inside the container
     command: ["--recorder"]
     stop_grace_period: 30s
     env_file: .env
@@ -60,15 +62,13 @@ services:
     image: ${CS_PREFIX:-cyber-scout}-api:latest
     container_name: ${CS_PREFIX:-cyber-scout}-api
     restart: unless-stopped
+    security_opt: ["no-new-privileges:true"]   # no setuid escalation inside the container
     environment:
       DATA: /data
       PUID: ${PUID:-1000}
       PGID: ${PGID:-1000}
       TZ: ${TZ:-UTC}
       COOKIE_SECURE: ${COOKIE_SECURE:-auto}
-      # legacy: if set, imported ONCE into the app on first start (then manage them in the app)
-      TBA_KEY: ${TBA_KEY:-}
-      EVENTS: ${EVENTS:-}
     volumes:
       - ./data:/data
     # not published: only reachable through the web container (nginx) at /app/v1/
@@ -80,6 +80,7 @@ services:
     image: ${CS_PREFIX:-cyber-scout}-web:latest
     container_name: ${CS_PREFIX:-cyber-scout}-web
     restart: unless-stopped
+    security_opt: ["no-new-privileges:true"]   # no setuid escalation inside the container
     depends_on: [api]
     ports:
       - "${WEB_PORT:-7560}:80"

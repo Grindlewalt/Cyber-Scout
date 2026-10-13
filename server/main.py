@@ -1,15 +1,15 @@
 """Cyber-Scout platform API.  Run: `uvicorn server.main:app --host 0.0.0.0 --port 8000` (ONE worker process:
-the login rate limiter is in memory).  OpenAPI: /app/v1/openapi.json, docs: /app/v1/docs."""
+the login and write rate limiters are in memory).  OpenAPI: /app/v1/openapi.json (admins only; no Swagger UI)."""
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from . import db as DB, workerconf
+from . import audit, db as DB, workerconf
 from .config import cfg, PREFIX, CSRF_COOKIE, CSRF_HEADER
-from .deps import EVENT_RE
-from .routers import auth, events, scouting, settings, sources, users
+from .deps import EVENT_RE, User, load_session, require_role
+from .routers import admin, auth, events, scouting, settings, sources, users
 from .security import consteq
 
 log = logging.getLogger("cyberscout.api")
@@ -55,8 +55,9 @@ async def lifespan(app):
 
 
 def create_app() -> FastAPI:
+    # no public Swagger UI / schema (security audit): the schema is served to admins only, below
     app = FastAPI(title="Cyber-Scout API", version=VERSION, lifespan=lifespan,
-                  openapi_url=PREFIX + "/openapi.json", docs_url=PREFIX + "/docs", redoc_url=None,
+                  openapi_url=None, docs_url=None, redoc_url=None,
                   description="Accounts, roles, settings and shared scouting data. Cookie session auth; "
                               "send X-CSRF-Token (= cs_csrf cookie) on mutating requests. Roles: viewer < scout < "
                               "strategist < admin. Site JSON (/api/*) and media (/media/*) are served by nginx, "
@@ -73,13 +74,36 @@ def create_app() -> FastAPI:
         resp = await call_next(request)
         resp.headers.setdefault("Cache-Control", "no-store")
         resp.headers.setdefault("X-Content-Type-Options", "nosniff")
+        resp.headers.setdefault("X-Frame-Options", "DENY")
+        resp.headers.setdefault("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'")
+        resp.headers.setdefault("Referrer-Policy", "same-origin")
+        if (request.method not in ("GET", "HEAD", "OPTIONS") and request.url.path.startswith(PREFIX)
+                and resp.status_code < 400 and not getattr(request.state, "audited", False)):
+            _fallback_audit(request, resp.status_code)
         return resp
+
+    def _fallback_audit(request: Request, status: int):
+        """Routers without explicit audit records (e.g. routers/sources.py) still leave a trace: who, what path."""
+        c = DB.connect()
+        try:
+            u = getattr(request.state, "user", None) or load_session(c, request)
+            if u:
+                audit.record(c, request, u, "http." + request.method.lower(), request.url.path[:300], None, None,
+                             {"status": status})
+        except Exception:                        # never fail a request because of the fallback log
+            log.exception("fallback audit failed")
+        finally:
+            c.close()
+
+    @app.get(PREFIX + "/openapi.json", tags=["meta"], include_in_schema=False)
+    def openapi_admin(user: User = Depends(require_role("admin"))):
+        return app.openapi()
 
     @app.get(PREFIX + "/health", tags=["meta"], summary="Liveness (no auth)")
     def health():
         return {"ok": True, "version": VERSION}
 
-    for r in (auth.router, users.router, settings.router, events.router, scouting.router, sources.router):
+    for r in (auth.router, users.router, settings.router, events.router, scouting.router, sources.router, admin.router):
         app.include_router(r, prefix=PREFIX)
     return app
 

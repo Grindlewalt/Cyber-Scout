@@ -2,14 +2,14 @@
 import time
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field
+from fastapi import APIRouter, Depends, HTTPException, Request
+from pydantic import BaseModel, ConfigDict, Field
 
-from .. import db as DB
+from .. import audit, db as DB, textrules
 from ..config import cfg
 from ..deps import User, require_role
 from ..security import hash_password
-from .auth import check_password_policy, check_username
+from .auth import check_display_name, check_password_policy, check_username
 
 router = APIRouter(prefix="/users", tags=["users"])
 Role = Literal["viewer", "scout", "strategist", "admin"]
@@ -28,13 +28,15 @@ class UserOut(BaseModel):
 
 
 class UserCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     username: str = Field(min_length=2, max_length=32)
     display_name: str = Field("", max_length=64)
     password: str = Field("", max_length=256, description="optional for non-admins")
-    role: Role = "viewer"
+    role: Role = Field("viewer", description="least privilege: new accounts are viewers unless you pick a role")
 
 
 class UserPatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     display_name: str | None = Field(None, max_length=64)
     role: Role | None = None
     disabled: bool | None = None
@@ -50,6 +52,19 @@ def _out(db, uid=None):
                     active_sessions=r["n"], has_password=r["pw_strength"] > 0) for r in rows]
 
 
+def _snap(r):
+    """Audit snapshot of an account (never the password hash)."""
+    return {"username": r["username"], "display_name": r["display_name"], "role": r["role"],
+            "disabled": bool(r["disabled"]), "has_password": r["pw_strength"] > 0}
+
+
+def _name_vs_username(name, username, strength):
+    # for an account without a password the username is the whole credential, and display names are shown to everyone
+    if name and strength == 0 and textrules.skeleton(name) == textrules.skeleton(username):
+        raise HTTPException(422, "an account without a password needs a display name that differs from its username "
+                                 "(everyone sees display names; the username is what signs in)")
+
+
 def _active_admins(db, excluding=None):
     return db.execute("SELECT COUNT(*) FROM users WHERE role='admin' AND disabled=0 AND id<>?",
                       (excluding or -1,)).fetchone()[0]
@@ -61,22 +76,27 @@ def list_users(user: User = Depends(require_role("admin")), db=Depends(DB.get_db
 
 
 @router.post("", response_model=UserOut, status_code=201, summary="Create a teammate account (admin)")
-def create_user(body: UserCreate, user: User = Depends(require_role("admin")), db=Depends(DB.get_db)):
+def create_user(body: UserCreate, request: Request, user: User = Depends(require_role("admin")), db=Depends(DB.get_db)):
     check_username(body.username)
     strength = check_password_policy(body.password, body.username, body.role)
+    name = check_display_name(db, body.display_name, allow_reserved=True)
+    _name_vs_username(name, body.username, strength)
     now = time.time()
     with DB.tx(db):
         if db.execute("SELECT 1 FROM users WHERE username=?", (body.username,)).fetchone():
             raise HTTPException(409, "username already taken")
         uid = db.execute("INSERT INTO users(username,display_name,pw_hash,role,created_at,updated_at,pw_strength) "
                          "VALUES(?,?,?,?,?,?,?)",
-                         (body.username, body.display_name.strip(), hash_password(body.password), body.role, now, now,
+                         (body.username, name, hash_password(body.password), body.role, now, now,
                           strength)).lastrowid
+        audit.record(db, request, user, "users.create", f"user:{uid}", after=_snap(
+            db.execute("SELECT * FROM users WHERE id=?", (uid,)).fetchone()))
     return _out(db, uid)[0]
 
 
 @router.patch("/{uid}", response_model=UserOut, summary="Change role / name / disable / reset password (admin)")
-def patch_user(uid: int, body: UserPatch, user: User = Depends(require_role("admin")), db=Depends(DB.get_db)):
+def patch_user(uid: int, body: UserPatch, request: Request, user: User = Depends(require_role("admin")),
+               db=Depends(DB.get_db)):
     with DB.tx(db):
         r = db.execute("SELECT * FROM users WHERE id=?", (uid,)).fetchone()
         if not r:
@@ -85,7 +105,11 @@ def patch_user(uid: int, body: UserPatch, user: User = Depends(require_role("adm
         if r["role"] == "admin" and not r["disabled"] and demote and _active_admins(db, excluding=uid) == 0:
             raise HTTPException(409, "that would leave no active admin")
         sets, args = [], []
-        if body.display_name is not None: sets.append("display_name=?"); args.append(body.display_name.strip())
+        if body.display_name is not None:
+            name = check_display_name(db, body.display_name, uid=uid, allow_reserved=True)
+            strength = r["pw_strength"] if body.password is None else (2 if body.password else 0)
+            _name_vs_username(name, r["username"], 0 if strength == 0 else 1)
+            sets.append("display_name=?"); args.append(name)
         if body.role is not None: sets.append("role=?"); args.append(body.role)
         if body.disabled is not None: sets.append("disabled=?"); args.append(int(body.disabled))
         role = body.role or r["role"]
@@ -99,18 +123,23 @@ def patch_user(uid: int, body: UserPatch, user: User = Depends(require_role("adm
             db.execute(f"UPDATE users SET {', '.join(sets)}, updated_at=? WHERE id=?", (*args, time.time(), uid))
         if body.disabled or body.password is not None:
             db.execute("DELETE FROM sessions WHERE user_id=?", (uid,))
+        after = _snap(db.execute("SELECT * FROM users WHERE id=?", (uid,)).fetchone())
+        if body.password is not None:
+            after["password_reset"] = True
+        audit.record(db, request, user, "users.update", f"user:{uid}", before=_snap(r), after=after)
     return _out(db, uid)[0]
 
 
 @router.delete("/{uid}", status_code=204, summary="Delete an account (admin; not yourself, not the last admin)")
-def delete_user(uid: int, user: User = Depends(require_role("admin")), db=Depends(DB.get_db)):
+def delete_user(uid: int, request: Request, user: User = Depends(require_role("admin")), db=Depends(DB.get_db)):
     if uid == user.id:
         raise HTTPException(409, "you can't delete your own account")
     with DB.tx(db):
-        r = db.execute("SELECT role, disabled FROM users WHERE id=?", (uid,)).fetchone()
+        r = db.execute("SELECT * FROM users WHERE id=?", (uid,)).fetchone()
         if not r:
             raise HTTPException(404, "no such user")
         if r["role"] == "admin" and not r["disabled"] and _active_admins(db, excluding=uid) == 0:
             raise HTTPException(409, "that would leave no active admin")
         db.execute("DELETE FROM users WHERE id=?", (uid,))
+        audit.record(db, request, user, "users.delete", f"user:{uid}", before=_snap(r))
     return None

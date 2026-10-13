@@ -128,7 +128,7 @@ def add_source(body: SourceIn, ev: str = Depends(valid_event), user: User = Depe
     S, _ = _mods()
     doc = _doc(ev)
     try:
-        s = S.add(doc, body.url, body.role, body.label, body.coverage, user.username, body.primary)
+        s = S.add(doc, body.url, body.role, body.label, body.coverage, user.display_name or f"Teammate #{user.id}", body.primary)
     except ValueError as e:
         raise HTTPException(422, str(e))
     _save(ev, doc)
@@ -148,7 +148,7 @@ def patch_source(sid: str, body: SourcePatch, ev: str = Depends(valid_event), us
     S, _ = _mods()
     doc = _doc(ev)
     try:
-        s = S.update(doc, sid, body.model_dump(exclude_none=True), user.username)
+        s = S.update(doc, sid, body.model_dump(exclude_none=True), user.display_name or f"Teammate #{user.id}")
     except KeyError:
         raise HTTPException(404, "no such source")
     except ValueError as e:
@@ -245,7 +245,7 @@ def put_layout(sid: str, body: LayoutIn, ev: str = Depends(valid_event), user: U
             raise HTTPException(422, f"only one {k} box per source")
     lay = _layout_doc(ev) or {"version": 1, "sources": {}}
     lay.setdefault("sources", {})[sid] = dict(W=body.W, H=body.H, role=s.get("role"), regions=regs, frame=body.frame,
-                                              updated_at=time.time(), updated_by=user.username)
+                                              updated_at=time.time(), updated_by=user.display_name or f"Teammate #{user.id}")
     if s.get("primary"):
         lay["processing_source"] = sid
     if any(r["kind"].startswith("station_") for r in regs):
@@ -382,7 +382,7 @@ def calib_accept(target: str, ev: str = Depends(valid_event), user: User = Depen
     dst = os.path.join(_evd(ev), name)
     if os.path.exists(dst):
         shutil.copy2(dst, f"{dst}.bak-{int(time.time())}")
-    cam = dict(cam); cam.setdefault("calib", {})["accepted_by"] = user.username
+    cam = dict(cam); cam.setdefault("calib", {})["accepted_by"] = user.display_name or f"Teammate #{user.id}"   # never the username (it can be a credential)
     cam["calib"]["accepted_at"] = time.time()
     atomic_write_json(dst, cam)
     if target == "overhead":

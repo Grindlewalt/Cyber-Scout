@@ -2,12 +2,12 @@
 import os, secrets, time
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
-from .. import db as DB, workerconf
+from .. import audit, db as DB, textrules, workerconf
 from ..config import cfg, CSRF_COOKIE, SESSION_COOKIE
-from ..deps import (User, client_ip, csrf_anonymous, load_session, require_role, set_csrf_cookie,
-                    set_session_cookies, USERNAME_RE)
+from ..deps import (User, client_ip, csrf_anonymous, load_session, lockdown_state, passwordless_policy, rate_limit,
+                    require_role, set_csrf_cookie, set_session_cookies, via_public, USERNAME_RE)
 from ..security import consteq, hash_password, login_limiter, new_token, token_hash, verify_password
 
 router = APIRouter(tags=["auth"])
@@ -19,9 +19,13 @@ class SessionOut(BaseModel):
     user: dict | None = Field(description="{id, username, display_name, role} or null when signed out")
     csrf: str = Field(description="send as X-CSRF-Token on POST/PUT/PATCH/DELETE (also in the cs_csrf cookie)")
     configured: bool = Field(description="TBA key set, at least one followed event, and the setup wizard finished")
+    lockdown: bool = Field(False, description="read-only mode: only admins can change anything right now")
+    network: str = Field("lan", description="'lan' (direct from the team network / Tailscale) or 'public' (tunnel)")
+    passwordless_ok: bool = Field(True, description="accounts without a password can sign in from here")
 
 
 class SetupIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     setup_code: str | None = Field(None, max_length=64)
     username: str = Field(min_length=2, max_length=32)
     password: str = Field(max_length=256)
@@ -34,8 +38,42 @@ class LoginIn(BaseModel):
 
 
 class PasswordIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     current_password: str = Field(max_length=256)
     new_password: str = Field(max_length=256)
+
+
+class ProfileIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    display_name: str = Field(min_length=2, max_length=64)
+
+
+PASSWORD_NEEDED = {
+    "lan": "A password is required to sign in from outside the team network (shop Wi-Fi or Tailscale). "
+           "Sign in from there, or ask an admin to give your account a password.",
+    "never": "Every account needs a password to sign in. Ask an admin to give your account one.",
+}
+
+
+def passwordless_allowed(db, request: Request) -> bool:
+    pol = passwordless_policy(db)
+    return pol == "everywhere" or (pol == "lan" and not via_public(request))
+
+
+def check_display_name(db, name: str, uid: int | None = None, allow_reserved: bool = False) -> str:
+    """Validated display name (textrules.display_name) that can't be mistaken for another account's display name or
+    username (look-alike-insensitive)."""
+    try:
+        name = textrules.display_name(name, allow_reserved=allow_reserved)
+    except textrules.TextError as e:
+        raise HTTPException(422, str(e))
+    if not name:
+        return name
+    sk = textrules.skeleton(name)
+    for r in db.execute("SELECT id, username, display_name FROM users WHERE id<>?", (uid or -1,)):
+        if sk in (textrules.skeleton(r["display_name"]), textrules.skeleton(r["username"])):
+            raise HTTPException(409, "that display name is too close to another teammate's name")
+    return name
 
 
 def password_strength(pw: str, username: str = "") -> int:
@@ -63,12 +101,13 @@ def check_username(u: str):
         raise HTTPException(422, "username: 2-32 letters, digits, '.', '_' or '-'")
 
 
-def start_session(db, request: Request, resp: Response, user_id: int) -> str:
+def start_session(db, request: Request, resp: Response, user_id: int, net_locked: bool = False) -> str:
     tok, csrf, now = new_token(), secrets.token_urlsafe(24), time.time()
     db.execute("DELETE FROM sessions WHERE expires_at < ? OR last_seen < ?",
                (now, now - cfg.SESSION_IDLE_DAYS * 86400))
-    db.execute("INSERT INTO sessions(token_hash,user_id,csrf,created_at,last_seen,expires_at) VALUES(?,?,?,?,?,?)",
-               (token_hash(tok), user_id, csrf, now, now, now + cfg.SESSION_MAX_DAYS * 86400))
+    db.execute("INSERT INTO sessions(token_hash,user_id,csrf,created_at,last_seen,expires_at,net_locked) "
+               "VALUES(?,?,?,?,?,?,?)",
+               (token_hash(tok), user_id, csrf, now, now, now + cfg.SESSION_MAX_DAYS * 86400, int(net_locked)))
     db.execute("UPDATE users SET last_login=? WHERE id=?", (now, user_id))
     set_session_cookies(request, resp, tok, csrf)
     return csrf
@@ -115,8 +154,15 @@ def session(request: Request, response: Response, db=Depends(DB.get_db)):
         if len(csrf) < 16:
             csrf = secrets.token_urlsafe(24)
             set_csrf_cookie(request, response, csrf)
+    return _session_out(db, request, u, csrf, n)
+
+
+def _session_out(db, request, u: User | None, csrf: str, n: int | None = None) -> SessionOut:
+    n = DB.user_count(db) if n is None else n
     return SessionOut(setup_required=n == 0, setup_code_required=n == 0 and cfg.SETUP_CODE_REQUIRED,
-                      user=u.public() if u else None, csrf=csrf, configured=configured(db))
+                      user=u.public() if u else None, csrf=csrf, configured=configured(db),
+                      lockdown=bool(lockdown_state(db)), network="public" if via_public(request) else "lan",
+                      passwordless_ok=passwordless_allowed(db, request))
 
 
 @router.post("/setup", response_model=SessionOut, dependencies=[Depends(csrf_anonymous)],
@@ -127,6 +173,7 @@ def setup(body: SetupIn, request: Request, response: Response, db=Depends(DB.get
         raise HTTPException(429, "too many attempts, try again later")
     check_username(body.username)
     check_password_policy(body.password, body.username)
+    dname = check_display_name(db, body.display_name, allow_reserved=True)
     with DB.tx(db):
         if DB.user_count(db):
             raise HTTPException(409, "setup already done; sign in instead")
@@ -138,11 +185,12 @@ def setup(body: SetupIn, request: Request, response: Response, db=Depends(DB.get
         now = time.time()
         uid = db.execute("INSERT INTO users(username,display_name,pw_hash,role,created_at,updated_at,pw_strength) "
                          "VALUES(?,?,?,?,?,?,2)",
-                         (body.username, body.display_name.strip(), hash_password(body.password), "admin", now, now)).lastrowid
+                         (body.username, dname, hash_password(body.password), "admin", now, now)).lastrowid
         csrf = start_session(db, request, response, uid)
+        u = User(uid, body.username, dname, "admin", csrf)
+        audit.record(db, request, u, "auth.setup", f"user:{uid}", after={"username": body.username, "role": "admin"})
     ensure_setup_code(db)
-    u = User(uid, body.username, body.display_name.strip(), "admin", csrf)
-    return SessionOut(setup_required=False, setup_code_required=False, user=u.public(), csrf=csrf, configured=configured(db))
+    return _session_out(db, request, u, csrf)
 
 
 @router.post("/auth/login", response_model=SessionOut, dependencies=[Depends(csrf_anonymous)],
@@ -152,26 +200,37 @@ def login(body: LoginIn, request: Request, response: Response, db=Depends(DB.get
     wait = login_limiter.blocked(ip, body.username)
     if wait:
         raise HTTPException(429, "too many failed sign-ins, try again later", headers={"Retry-After": str(wait)})
-    r = db.execute("SELECT id, username, display_name, role, pw_hash, disabled FROM users WHERE username=?",
+    if not body.password and not passwordless_allowed(db, request):
+        # decided before looking the account up: the answer is the same for real and made-up usernames
+        raise HTTPException(401, PASSWORD_NEEDED[passwordless_policy(db)])
+    r = db.execute("SELECT id, username, display_name, role, pw_hash, pw_strength, disabled FROM users WHERE username=?",
                    (body.username,)).fetchone()
     ok, rehash = verify_password(r["pw_hash"] if r else None, body.password)
     if not ok or r["disabled"]:
         login_limiter.fail(ip, body.username)
+        actor = {"id": r["id"], "username": r["username"], "display_name": r["display_name"], "role": r["role"]} if r else {}
+        audit.record(db, request, None, "auth.login_failed", f"user:{r['id']}" if r else None, actor=actor,
+                     after={"reason": "disabled" if r and ok else "bad credentials", "known_user": bool(r)})
         raise HTTPException(401, "invalid username or password")
     login_limiter.success(ip, body.username)
+    u = User(r["id"], r["username"], r["display_name"], r["role"], "")
     with DB.tx(db):
         if rehash:
             db.execute("UPDATE users SET pw_hash=? WHERE id=?", (rehash, r["id"]))
-        csrf = start_session(db, request, response, r["id"])
-    u = User(r["id"], r["username"], r["display_name"], r["role"], csrf)
-    return SessionOut(setup_required=False, setup_code_required=False, user=u.public(), csrf=csrf, configured=configured(db))
+        # no password -> this session only works where passwordless sign-in is allowed (re-checked every request)
+        u.csrf = start_session(db, request, response, r["id"], net_locked=not body.password)
+        audit.record(db, request, u, "auth.login", f"user:{r['id']}", after={"password": bool(body.password)})
+    return _session_out(db, request, u, u.csrf)
 
 
 @router.post("/auth/logout", status_code=204, summary="Sign out (ends this session)")
 def logout(request: Request, response: Response, db=Depends(DB.get_db), _csrf=Depends(csrf_anonymous)):
     tok = request.cookies.get(SESSION_COOKIE)
     if tok:
+        u = load_session(db, request)
         db.execute("DELETE FROM sessions WHERE token_hash=?", (token_hash(tok),))
+        if u:
+            audit.record(db, request, u, "auth.logout", f"user:{u.id}")
     set_session_cookies(request, response, None, None)
     return None
 
@@ -190,7 +249,23 @@ def change_password(body: PasswordIn, request: Request, response: Response,
         db.execute("UPDATE users SET pw_hash=?, pw_strength=?, updated_at=? WHERE id=?",
                    (hash_password(body.new_password), strength, time.time(), user.id))
         db.execute("DELETE FROM sessions WHERE user_id=? AND token_hash<>?", (user.id, keep))
+        db.execute("UPDATE sessions SET net_locked=? WHERE token_hash=?", (int(not body.new_password), keep))
+        audit.record(db, request, user, "auth.password", f"user:{user.id}", after={"has_password": bool(body.new_password)})
     return None
+
+
+@router.patch("/auth/profile", response_model=SessionOut,
+              summary="Change your own display name (scout+; no staff words, not another teammate's name)")
+def change_profile(body: ProfileIn, request: Request, user: User = Depends(require_role("scout")),
+                   db=Depends(DB.get_db)):
+    name = check_display_name(db, body.display_name, uid=user.id, allow_reserved=False)
+    rate_limit(user, "profile")
+    with DB.tx(db):
+        db.execute("UPDATE users SET display_name=?, updated_at=? WHERE id=?", (name, time.time(), user.id))
+        audit.record(db, request, user, "users.profile", f"user:{user.id}", before={"display_name": user.display_name},
+                     after={"display_name": name})
+    user.display_name = name
+    return _session_out(db, request, user, user.csrf)
 
 
 @router.get("/auth/check", status_code=204, summary="nginx auth_request: 204 if signed in (viewer+), else 401")

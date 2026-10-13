@@ -35,7 +35,7 @@
       <div class="card"><h2>Add a teammate ${CS.help(`Passwords are optional for everyone except admins (${MIN_ADMIN}+ characters). Share the username (+ password) with them in person; they can set or change it under their name (top right).`, "About passwords")}</h2>
         <form class="csform"><label>Username<input name="username" required minlength="2" maxlength="32" pattern="[A-Za-z0-9][A-Za-z0-9._-]+" autocapitalize="none" spellcheck="false" autocomplete="off"></label>
           <label>Name<input name="display_name" maxlength="64" autocomplete="off"></label>
-          <label>Role<select name="role">${CS.ROLES.map(r => `<option value="${r}" ${r === "scout" ? "selected" : ""}>${r}: ${esc(CS.ROLE_TIP[r])}</option>`).join("")}</select></label>
+          <label>Role<select name="role">${CS.ROLES.map(r => `<option value="${r}" ${r === "viewer" ? "selected" : ""}>${r}: ${esc(CS.ROLE_TIP[r])}</option>`).join("")}</select></label>
           <label><span id="pwlabel"></span><div class="row"><input name="password" autocomplete="new-password" spellcheck="false"><button type="button" id="gen" style="flex:none">Generate</button></div></label>
           <button type="submit" class="primary">Create account</button><div class="cserr" aria-live="polite"></div><div class="csok" role="status" aria-live="polite"></div></form>
 </div></div>`;

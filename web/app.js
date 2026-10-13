@@ -383,14 +383,17 @@ function renderTopNav(p) {
   const el = document.getElementById("topnav"); if (!el) return;
   const bare = CS.platform && !CS.user;
   document.body.classList.toggle("bare", !!bare);
-  const ev = p.length && !CS.globalRoutes[p[0]] ? p[0] : (lsGet2(localStorage, "cs:lastev") || (evList && evList.length ? evList[0].key : null));
+  // only well-formed event keys from the URL or storage reach the nav hrefs (security audit: fragment XSS)
+  const EVK = /^\d{4}[a-z0-9]{1,16}$/, sv = lsGet2(localStorage, "cs:lastev");
+  const hev = p.length && !CS.globalRoutes[p[0]] && EVK.test(p[0]) ? p[0] : null;
+  const ev = hev || (EVK.test(sv || "") ? sv : null) || (evList && evList.length ? evList[0].key : null);
   if (!ev && !evList) { eventName("").then(() => { if (evList && evList.length && location.hash.replace(/^#\/?/, "").split("/").filter(Boolean).join("/") === p.join("/")) renderTopNav(p); }); }
-  if (p.length && !CS.globalRoutes[p[0]]) lsSet2(localStorage, "cs:lastev", p[0]);
+  if (hev) lsSet2(localStorage, "cs:lastev", hev);
   shellEv = ev; shellKey = activeKey(p);
   const ts = ev ? CS.asofGet(ev) : null;
   const items = CS.navItems.filter(i => ev || i.global).sort((a, b) => (a.order || 50) - (b.order || 50));
   const key = i => i.key || (i.global ? i.href(ev).replace(/^#\//, "").split("/")[0] : i.href(ev).split("/")[2]);
-  const link = (i, cls) => { const k = key(i); return `<a class="${cls}" data-navkey="${esc(k)}" href="${i.href(ev, i.replay ? ts : null)}"${k === shellKey ? ' aria-current="page"' : ""}>${CS.icon(i.icon)}<span>${esc(i.label)}</span></a>`; };
+  const link = (i, cls) => { const k = key(i); return `<a class="${cls}" data-navkey="${esc(k)}" href="${esc(i.href(ev, i.replay ? ts : null))}"${k === shellKey ? ' aria-current="page"' : ""}>${CS.icon(i.icon)}<span>${esc(i.label)}</span></a>`; };
   const groups = NAV_GROUPS.map(([g, t]) => { const its = items.filter(i => (i.group || (i.global ? "manage" : "scout")) === g); return its.length ? `<div class="sb-group" role="group" aria-label="${t}"><div class="sb-h">${t}</div>${its.map(i => link(i, "sb-item")).join("")}</div>` : ""; }).join("");
   const acct = CS.platform && CS.user ? `<div class="sb-group" role="group" aria-label="Account"><div class="sb-h">Account</div><a class="sb-item" data-navkey="account" href="#/account">${CS.icon("account")}<span>${esc(CS.user.display_name || CS.user.username)}</span></a></div>` : "";
   el.innerHTML = groups;

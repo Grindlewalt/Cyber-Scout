@@ -6,7 +6,7 @@ scouting data (picklists, notes, identity overrides). nginx (`web/nginx.conf`) s
 
 Full machine-readable contract: `server/openapi.json` (regenerate after adding routes:
 `DATA=$(mktemp -d) python -c "import json,server.main as m; json.dump(m.app.openapi(), open('server/openapi.json','w'), indent=1)"`),
-or live at `/app/v1/docs` and `/app/v1/openapi.json`.
+or live at `/app/v1/openapi.json` (admins only; there is no Swagger UI).
 
 ## Auth model
 
@@ -20,7 +20,20 @@ or live at `/app/v1/docs` and `/app/v1/openapi.json`.
 * **Passwords**: argon2id. Admins: min 10 chars (`PASSWORD_MIN`), not equal to the username. Everyone else:
   optional (blank = sign in with the username), min 4 chars if set (`MEMBER_PASSWORD_MIN`); promoting someone to
   admin needs an admin-grade password first (`users.pw_strength`). Login: generic error for bad
-  user/password; rate limit 10 failures per (IP, username) and 30 per IP per 15 min -> 429 + `Retry-After`.
+  user/password; rate limit 10 failures per (IP, username) and 30 per IP per 15 min -> 429 + `Retry-After`
+  (IP = the real client: nginx's realip trusts X-Forwarded-For only from the docker gateway / loopback).
+* **Passwordless sign-in** (admin setting `passwordless_login`): `lan` (default) = accounts without a password sign in
+  only when the request comes straight from a private / Tailscale address; anything through the Cloudflare tunnel
+  (Cf-* headers, or any public address in X-Real-IP / X-Forwarded-For: fails closed) gets 401 "A password is
+  required ..." -- the same answer for real and made-up usernames. `never` / `everywhere` as named. Sessions made
+  without a password are `net_locked` and stop working from the internet (and everywhere under `never`).
+* **Troll-proofing**: every change is in the append-only `audit_log` (who, role, IP, lan/public, browser, before /
+  after); admins list it and undo one change or everything an account did since a time. Picklists keep every
+  version; notes are soft-deleted / hidden; scouts' identity fixes wait for approval (`scout_overrides=review`,
+  default). Per-account write budgets (security.py `WriteLimiter`, 429). Lockdown: non-admin writes -> 423.
+  Notes are plain text (no tags / entities / `javascript:`, no control / zero-width / bidi characters); display names
+  1-40 chars, no staff words for self-chosen names, not look-alike to another account's name. Other users only
+  ever see `{id, display_name}` of an account, never its username.
 * **First run**: no users -> `GET /session` says `setup_required`; `POST /setup` creates the admin once, with the
   one-time code in `DATA/setup-code.txt` (0600; printed by `deploy/install.sh`; `SETUP_CODE_REQUIRED=0` disables).
 * **Secrets**: the TBA key is validated against TBA, stored in the DB and in `DATA/config/worker.json` (0600) for the
@@ -35,10 +48,13 @@ or live at `/app/v1/docs` and `/app/v1/openapi.json`.
 | `GET /settings` (team, goal; no secrets), `GET /events` | ✓ | ✓ | ✓ | ✓ |
 | read picklists, notes, overrides | ✓ | ✓ | ✓ | ✓ |
 | change own password | ✓ | ✓ | ✓ | ✓ |
-| add notes; edit/delete **own** notes | | ✓ | ✓ | ✓ |
-| identity overrides (writes `events/<ev>/overrides.json`) | | ✓ | ✓ | ✓ |
-| write/delete picklists; edit/delete **anyone's** notes | | | ✓ | ✓ |
+| add notes; edit/delete (soft) **own** notes; own display name | | ✓ | ✓ | ✓ |
+| propose identity fixes (queued; applied directly when `scout_overrides=direct`) | | ✓ | ✓ | ✓ |
+| identity fixes applied directly; approve / reject proposed ones | | | ✓ | ✓ |
+| write/delete/restore picklists; edit / hide / restore **anyone's** notes | | | ✓ | ✓ |
 | users + roles, TBA key, team/goal/options, followed events, `/tba/*` | | | | ✓ |
+| audit log + undo, lockdown, sign-in policy, sign everyone out, OpenAPI schema | | | | ✓ |
+| writes while lockdown is on | | | | ✓ |
 | video sources / layout / calibration (agent B, `routers/sources.py`) | | | | ✓ (reads: per B) |
 
 Guards: the last active admin can't be demoted, disabled or deleted; you can't delete yourself; disabling a user or
@@ -49,11 +65,12 @@ resetting their password ends their sessions; role changes apply on their next r
 | method | path | who | body / notes |
 |---|---|---|---|
 | GET | `/health` | anyone | `{ok, version}` |
-| GET | `/session` | anyone | `{setup_required, setup_code_required, user: {id,username,display_name,role}\|null, csrf, configured}` |
+| GET | `/session` | anyone | `{setup_required, setup_code_required, user: {id,username,display_name,role}\|null, csrf, configured, lockdown, network: lan\|public, passwordless_ok}` |
 | POST | `/setup` | first run | `{setup_code, username, password, display_name}` -> session (signed in) |
 | POST | `/auth/login` | anyone | `{username, password}` -> session; 401 / 429 |
 | POST | `/auth/logout` | anyone | 204 |
 | POST | `/auth/password` | viewer+ | `{current_password, new_password}` -> 204 (other sessions signed out) |
+| PATCH | `/auth/profile` | scout+ | `{display_name}` (validated; 409 if too close to another account's name) |
 | GET | `/auth/check` | (nginx) | 204 + `X-CS-Role` / 401 |
 | GET/POST | `/users` | admin | create: `{username, display_name, password, role}` |
 | PATCH/DELETE | `/users/{id}` | admin | `{display_name?, role?, disabled?, password?}` |
@@ -63,14 +80,25 @@ resetting their password ends their sessions; role changes apply on their next r
 | GET | `/tba/events?year=` | admin | `{year, team_number, team_events[], events[]}` (`key,name,start_date,end_date,city,state_prov,country,district,event_type`) |
 | GET/POST | `/events` | viewer+ / admin | followed events `[{key,name,year,start_date,added_at}]`; POST `{key}` (checked on TBA) |
 | DELETE | `/events/{ev}` | admin | stop following (data kept) |
-| GET | `/events/{ev}/picklists[/{name}]` | viewer+ | `{event,name,data,version,updated_at,updated_by}` |
+| GET | `/events/{ev}/picklists[/{name}]` | viewer+ | `{event,name,data,version,updated_at,updated_by:{id,display_name}}` |
+| GET | `/events/{ev}/picklists/{name}/versions[/{v}]` | viewer+ | history, newest first (also of deleted picklists); `/{v}` includes `data` |
+| POST | `/events/{ev}/picklists/{name}/versions/{v}/restore` | strategist+ | saves version v as a new version |
 | PUT/DELETE | `/events/{ev}/picklists/{name}` | strategist+ | `{data: {...}, base_version?}` -> 409 `{detail:{message,current}}` on a stale base_version. `web/event.js` uses `main` = `{stars:[teamkey], dnp:[teamkey], weights:{metric:w}}` |
-| GET/POST | `/events/{ev}/notes[?team=frc4911&match=2026wasam_qm12]` | viewer+ / scout+ | `{team?, match?, text<=4000}` -> `{id,event,team,match,text,author,created_at,updated_at}` |
-| PATCH/DELETE | `/notes/{id}` | author or strategist+ | `{text}` |
-| GET | `/events/{ev}/overrides` | viewer+ | `{event, overrides: <overrides.json>, log: [{match,data,by,at}]}` |
-| PUT/DELETE | `/events/{ev}/overrides/{match}` | scout+ | `{red: {"<track idx>": "frc1983"}, blue: {...}}`; replaces that match's entry in `DATA/events/<ev>/overrides.json` (other entries kept); the worker re-solves identities on its next poll |
+| GET/POST | `/events/{ev}/notes[?team=frc4911&match=2026wasam_qm12&include_removed=1]` | viewer+ / scout+ | `{team?, match?, text<=4000 plain}` -> `{id,event,team,match,text,author,created_at,updated_at,edited_by}`; `include_removed`: strategist+ |
+| PATCH/DELETE | `/notes/{id}` | author or strategist+ | `{text}`; DELETE = soft delete (author) or hide (strategist on someone else's) |
+| POST | `/notes/{id}/restore` | strategist+, or author for own delete | |
+| GET | `/events/{ev}/overrides` | viewer+ | `{event, overrides: <overrides.json>, log: [{match,data,by,requested_by,at}], pending: [{id,match,data,base,current,stale,by,at}], mode}` |
+| PUT/DELETE | `/events/{ev}/overrides/{match}` | scout+ | `{red: {"<track idx>": "frc1983"}, blue: {...}}`; strategist+ (or `mode=direct`): 200, replaces that match's entry in `DATA/events/<ev>/overrides.json` (other entries kept; the worker re-solves identities on its next poll); scout in `review` mode: 202 `{status:"pending", request}` |
+| POST | `/events/{ev}/override-requests/{id}/approve` | strategist+ | applies the requested entry |
+| POST | `/events/{ev}/override-requests/{id}/reject` | strategist+ (or the requester: withdraw) | |
+| GET/PATCH | `/admin/security` | admin | `{lockdown: bool, passwordless_login: never\|lan\|everywhere, scout_overrides: review\|direct}` |
+| POST | `/admin/sessions/revoke` | admin | `{include_admins?}` -> `{signed_out}`; your session stays |
+| GET | `/audit?user_id=&action=<prefix>&event=&since=&via=lan\|public&before_id=&limit=` | admin | `{entries:[{id,at,action,event,target,user,ip,via,ua,before,after,ref,revertible,reverted_by}], next_before_id}` |
+| POST | `/audit/{id}/revert` | admin | puts the `before` state back (logged as `<family>.revert`, itself revertible); 409 if already undone / not undoable |
+| POST | `/audit/revert-user` | admin | `{user_id, since}`: undo every undoable change of that account since `since`, newest first |
 
-Errors are FastAPI-style `{"detail": "..."}` (422 validation errors: `detail` is a list).
+Errors are FastAPI-style `{"detail": "..."}` (422 validation errors: `detail` is a list). 423 = lockdown,
+429 = rate limit (`Retry-After`). Every request body rejects unknown fields (422).
 
 ## Files the API writes for the worker
 
@@ -86,6 +114,10 @@ Errors are FastAPI-style `{"detail": "..."}` (422 validation errors: `detail` is
 `routers/sources.py` is already mounted under `/app/v1` with `router = APIRouter(tags=["sources"])`. Use
 `require_role("admin")` (also enforces CSRF), `valid_event`, `get_db` / `tx`, `add_schema("CREATE TABLE IF NOT EXISTS ...")`
 for your tables, and `security.atomic_write_json()` for files under `cfg.DATA` (see `server/deps.py` docstring).
+Record changes with `audit.record(db, request, user, "<family>.<verb>", target, event, before, after)` inside your
+transaction (mutating routes without one still get a generic `http.<method>` entry from the middleware); show other
+users as `deps.public_name(db, uid)` (display name only, never `user.username`); validate free text with
+`textrules.plain_text()` / `textrules.label()`; use `deps.rate_limit(user, bucket)` for write-heavy routes.
 The web helper is `CS.app(method, path, body)` (throws `Error` with `.status` / `.data`); role checks in the UI:
 `CS.can("admin")`, nav entries `CS.nav({label, href, roles: ["admin"]})` or `{minRole: "strategist"}`.
 
@@ -93,7 +125,7 @@ The web helper is `CS.app(method, path, body)` (throws `Error` with `.status` / 
 
 ```bash
 pip install -r server/requirements-dev.txt
-python -m pytest server/tests            # 42 tests: auth, sessions, CSRF, rate limit, roles matrix, data
+python -m pytest server/tests            # auth, sessions, CSRF, rate limits, roles matrix, data, troll-proofing
 DATA=/tmp/cs uvicorn server.main:app --port 8000   # one process (rate limiter is in memory)
 ```
 Env: `DATA`, `PUID/PGID` (container), `SETUP_CODE_REQUIRED`, `SESSION_IDLE_DAYS`, `SESSION_MAX_DAYS`,

@@ -70,7 +70,71 @@ CREATE TABLE IF NOT EXISTS override_log (
   user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
   at REAL NOT NULL
 );
+-- every saved picklist version (picklists holds only the current one); restoring = saving an old one again
+CREATE TABLE IF NOT EXISTS picklist_versions (
+  event TEXT NOT NULL,
+  name TEXT NOT NULL,
+  version INTEGER NOT NULL,
+  data TEXT NOT NULL,
+  updated_at REAL NOT NULL,
+  updated_by INTEGER,                    -- no FK: history outlives deleted accounts
+  note TEXT,                             -- e.g. "restored v3", "deleted"
+  PRIMARY KEY (event, name, version)
+);
+-- identity fixes proposed by scouts, applied when a strategist/admin approves (setting scout_overrides=review)
+CREATE TABLE IF NOT EXISTS override_requests (
+  id INTEGER PRIMARY KEY,
+  event TEXT NOT NULL,
+  match TEXT NOT NULL,
+  data TEXT NOT NULL,                    -- the requested entry for this match ({} = clear it)
+  base TEXT NOT NULL,                    -- the entry when it was requested
+  status TEXT NOT NULL CHECK (status IN ('pending','approved','rejected','withdrawn','superseded')),
+  user_id INTEGER,
+  created_at REAL NOT NULL,
+  decided_by INTEGER,
+  decided_at REAL
+);
+CREATE INDEX IF NOT EXISTS override_requests_ev ON override_requests(event, status);
+-- append-only record of every change (triggers below refuse UPDATE/DELETE); admins list it and revert from it
+CREATE TABLE IF NOT EXISTS audit_log (
+  id INTEGER PRIMARY KEY,
+  at REAL NOT NULL,
+  user_id INTEGER,                       -- no FK: the record outlives the account
+  username TEXT,
+  display_name TEXT,
+  role TEXT,
+  ip TEXT,
+  via TEXT,                              -- 'lan' (direct, private/Tailscale address) | 'public' (tunnel / internet)
+  ua TEXT,
+  action TEXT NOT NULL,                  -- family.verb, e.g. picklist.save, note.hide, override.set, settings.update
+  event TEXT,
+  target TEXT,
+  before TEXT,                           -- JSON state before (null = did not exist)
+  after TEXT,                            -- JSON state after
+  ref INTEGER                            -- for *.revert: the entry that was reverted
+);
+CREATE INDEX IF NOT EXISTS audit_at ON audit_log(at);
+CREATE INDEX IF NOT EXISTS audit_user ON audit_log(user_id, id);
+CREATE INDEX IF NOT EXISTS audit_ref ON audit_log(ref);
+CREATE TRIGGER IF NOT EXISTS audit_no_update BEFORE UPDATE ON audit_log
+  BEGIN SELECT RAISE(ABORT, 'audit_log is append-only'); END;
+CREATE TRIGGER IF NOT EXISTS audit_no_delete BEFORE DELETE ON audit_log
+  BEGIN SELECT RAISE(ABORT, 'audit_log is append-only'); END;
 """
+
+# columns added after the first release: (table, column, DDL); added in place on startup (idempotent)
+MIGRATIONS = [
+    # older DBs: every existing password was set under the admin-grade rule
+    ("users", "pw_strength", "ALTER TABLE users ADD COLUMN pw_strength INTEGER NOT NULL DEFAULT 2"),
+    # 1 = signed in without a password: only valid from the trusted network (setting passwordless_login)
+    ("sessions", "net_locked", "ALTER TABLE sessions ADD COLUMN net_locked INTEGER NOT NULL DEFAULT 0"),
+    # soft delete / hide: removed notes stay in the DB (restorable), hidden from lists
+    ("notes", "removed_at", "ALTER TABLE notes ADD COLUMN removed_at REAL"),
+    ("notes", "removed_by", "ALTER TABLE notes ADD COLUMN removed_by INTEGER"),
+    ("notes", "removed_kind", "ALTER TABLE notes ADD COLUMN removed_kind TEXT"),     # deleted | hidden | reverted
+    ("notes", "edited_by", "ALTER TABLE notes ADD COLUMN edited_by INTEGER"),
+    ("override_log", "requested_by", "ALTER TABLE override_log ADD COLUMN requested_by INTEGER"),
+]
 
 _extra = []
 
@@ -94,9 +158,12 @@ def init():
     try:
         c.execute("PRAGMA journal_mode=WAL")
         c.executescript(CORE_SCHEMA)
-        if "pw_strength" not in {r[1] for r in c.execute("PRAGMA table_info(users)")}:
-            # older DBs: every existing password was set under the admin-grade rule
-            c.execute("ALTER TABLE users ADD COLUMN pw_strength INTEGER NOT NULL DEFAULT 2")
+        for table, col, ddl in MIGRATIONS:
+            if col not in {r[1] for r in c.execute(f"PRAGMA table_info({table})")}:
+                c.execute(ddl)
+        # picklists saved before version history existed: keep their current version as history
+        c.execute("INSERT OR IGNORE INTO picklist_versions(event,name,version,data,updated_at,updated_by) "
+                  "SELECT event,name,version,data,updated_at,updated_by FROM picklists")
         for sql in _extra:
             c.executescript(sql)
     finally:

@@ -9,7 +9,9 @@ from fastapi.testclient import TestClient  # noqa: E402
 from server import tba  # noqa: E402
 from server.config import cfg  # noqa: E402
 from server.main import create_app  # noqa: E402
-from server.security import login_limiter  # noqa: E402
+from server.security import login_limiter, write_limiter  # noqa: E402
+
+LAN = ("10.0.0.23", 50000)          # test clients connect like a phone on the shop Wi-Fi (direct, private address)
 
 GOOD_KEY = "k" * 60
 FAKE_TBA = {
@@ -61,6 +63,7 @@ def data(tmp_path, monkeypatch):
         monkeypatch.delenv(k, raising=False)
     cfg.configure(data=str(tmp_path))
     login_limiter.reset()
+    write_limiter.reset()
     tba.clear_cache()
     monkeypatch.setattr(tba, "get", fake_get)
     yield tmp_path
@@ -72,13 +75,13 @@ def app(data):
     return create_app()
 
 
-def new_client(app):
-    return C(TestClient(app, base_url="http://testserver"))
+def new_client(app, client=LAN, headers=None):
+    return C(TestClient(app, base_url="http://testserver", client=client, headers=headers))
 
 
 @pytest.fixture
 def client(app):
-    with TestClient(app, base_url="http://testserver") as tc:
+    with TestClient(app, base_url="http://testserver", client=LAN) as tc:
         yield C(tc)
 
 
@@ -100,7 +103,7 @@ def team(admin, app):
     for role in ("strategist", "scout", "viewer"):
         r = admin.post("/users", {"username": role + "1", "password": "password-" + role, "role": role})
         assert r.status_code == 201, r.text
-        c = C(TestClient(app, base_url="http://testserver"))
+        c = C(TestClient(app, base_url="http://testserver", client=LAN))
         assert c.login(role + "1", "password-" + role).status_code == 200
         out[role] = c
     return out
