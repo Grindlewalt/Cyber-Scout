@@ -29,15 +29,15 @@
         <td><select data-role ${u.id === me ? "disabled" : ""}>${CS.ROLES.map(r => `<option value="${r}" ${r === u.role ? "selected" : ""}>${r}</option>`).join("")}</select></td>
         <td class="small">${u.disabled ? '<span class="pill failed">disabled</span>' : when(u.last_login)}${u.active_sessions ? `<div class="muted small">${u.active_sessions} session${u.active_sessions > 1 ? "s" : ""}</div>` : ""}</td>
         <td style="white-space:nowrap">${u.id === me ? `<a href="#/account" class="small">change password</a>` : `<button data-act="reset" title="set a new password (signs them out)">Reset password</button>
-          <button data-act="toggle">${u.disabled ? "Enable" : "Disable"}</button> <button data-act="delete" class="danger" title="delete account (their notes stay)">✕</button>`}</td></tr>`).join("")}
-      </tbody></table></div><div class="cserr" id="uerr"></div><div class="csok" id="uok"></div>
+          <button data-act="toggle">${u.disabled ? "Enable" : "Disable"}</button> <button data-act="delete" class="danger icon" title="Delete account (their notes stay)" aria-label="Delete ${esc(u.username)}">${CS.icon("close")}</button>`}</td></tr>`).join("")}
+      </tbody></table></div><div class="cserr" aria-live="polite" id="uerr"></div><div class="csok" role="status" aria-live="polite" id="uok"></div>
 </div>
       <div class="card"><h2>Add a teammate ${CS.help(`Passwords are optional for everyone except admins (${MIN_ADMIN}+ characters). Share the username (+ password) with them in person; they can set or change it under their name (top right).`, "About passwords")}</h2>
         <form class="csform"><label>Username<input name="username" required minlength="2" maxlength="32" pattern="[A-Za-z0-9][A-Za-z0-9._-]+" autocapitalize="none" spellcheck="false" autocomplete="off"></label>
           <label>Name<input name="display_name" maxlength="64" autocomplete="off"></label>
           <label>Role<select name="role">${CS.ROLES.map(r => `<option value="${r}" ${r === "scout" ? "selected" : ""}>${r}: ${esc(CS.ROLE_TIP[r])}</option>`).join("")}</select></label>
           <label><span id="pwlabel"></span><div class="row"><input name="password" autocomplete="new-password" spellcheck="false"><button type="button" id="gen" style="flex:none">Generate</button></div></label>
-          <button type="submit" class="primary">Create account</button><div class="cserr"></div><div class="csok"></div></form>
+          <button type="submit" class="primary">Create account</button><div class="cserr" aria-live="polite"></div><div class="csok" role="status" aria-live="polite"></div></form>
 </div></div>`;
     const f = el.querySelectorAll(".card")[1];
     const roleSel = f.querySelector("[name=role]"), pwIn = f.querySelector("[name=password]");
@@ -91,19 +91,19 @@
         ${s.team_name ? `<div class="muted small">${esc(s.team_name)}</div>` : ""}
         <label>Season goal<input name="season_goal" maxlength="40" list="goals" value="${esc(s.season_goal || "")}"></label>
         <datalist id="goals">${CS.GOALS.map(g => `<option value="${esc(g[0])}">${esc(g[1])}</option>`).join("")}</datalist>
-        <button type="submit" class="primary">Save</button><div class="cserr"></div><div class="csok"></div></form></div>
+        <button type="submit" class="primary">Save</button><div class="cserr" aria-live="polite"></div><div class="csok" role="status" aria-live="polite"></div></form></div>
       <div class="card"><h2>The Blue Alliance key</h2>
         <div class="note" style="margin:0 0 10px">${s.tba_key_set ? `Saved: <span class="code">${esc(s.tba_key_hint)}</span>. ` : "<b>Not set: nothing gets processed.</b> "}
           Keys are made at <a href="https://www.thebluealliance.com/account" target="_blank" rel="noopener">thebluealliance.com/account</a> (Read API Keys). Stored on the server only.</div>
         <form class="csform" id="fkey"><label>${s.tba_key_set ? "Replace with" : "Key"}<input name="key" autocomplete="off" spellcheck="false" required minlength="20"></label>
-          <button type="submit" class="primary">Check and save</button><div class="cserr"></div><div class="csok"></div></form></div></div>
+          <button type="submit" class="primary">Check and save</button><div class="cserr" aria-live="polite"></div><div class="csok" role="status" aria-live="polite"></div></form></div></div>
       <div class="card"><h2>Processing ${CS.help("Applied by the worker on its next check for matches, no restart needed. A GPU device change applies from the next match.", "When changes apply")}</h2><form class="csform" id="fopt">
         <label>Check TBA for new matches every (seconds)<input name="poll_seconds" type="number" min="30" max="3600" placeholder="default (120)" value="${o.poll_seconds ?? ""}"></label>
         <label>GPU<select name="gpu_mode"><option value="" ${o.cpu_only == null ? "selected" : ""}>default (from .env)</option>
           <option value="gpu" ${o.cpu_only === false ? "selected" : ""}>use the GPU</option><option value="cpu" ${o.cpu_only === true ? "selected" : ""}>CPU only (~4x slower)</option></select></label>
         <label>GPU device number (if there are several)<input name="gpu_device" type="number" min="0" max="15" placeholder="default (0)" value="${o.gpu_device ?? ""}"></label>
         <label>Driver-station cameras ("hub cams": camera switcher + shot checks, ~1-2 min extra per match)${tri("hubcam", o.hubcam, "on", "off")}</label>
-        <button type="submit" class="primary">Save</button><div class="cserr"></div><div class="csok"></div></form>
+        <button type="submit" class="primary">Save</button><div class="cserr" aria-live="polite"></div><div class="csok" role="status" aria-live="polite"></div></form>
 </div></div>`;
     const ok = (f, t) => { f.querySelector(".csok").textContent = t; setTimeout(() => { f.querySelector(".csok").textContent = ""; }, 4000); };
     const ft = el.querySelector("#fteam").parentElement, fk = el.querySelector("#fkey").parentElement, fo = el.querySelector("#fopt").parentElement;
@@ -130,7 +130,7 @@
         <div style="display:flex;gap:6px"><a href="#/${esc(e.key)}">open</a> · <a href="#/${esc(e.key)}/sources">video setup</a>
         <button data-k="${esc(e.key)}" class="danger" title="stop following (processed data is kept)">Stop following</button></div></div>`).join("")}</div>`
         : `<div class="muted">Not following any event: the worker is idle.</div>`}
-      <div class="cserr"></div></div>
+      <div class="cserr" aria-live="polite"></div></div>
       <div class="card" style="margin-top:16px"><h2>Follow another event</h2><div id="picker"></div></div>`;
     el.querySelectorAll("button[data-k]").forEach(b => b.onclick = async () => {
       if (!confirm(`Stop following ${b.dataset.k}? Already processed matches are kept.`)) return;

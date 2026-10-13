@@ -18,31 +18,31 @@
     st.textContent = `
 .sc,.sc>*,.sc .card{min-width:0;max-width:100%}.sc .card{overflow:hidden}.sc .tablewrap{max-width:100%;overflow-x:auto}.sc .vrow>*,.sc .detbox>*{min-width:0}
 .sc .filters{display:flex;gap:6px;flex-wrap:wrap;margin:0 0 12px}
-.sc .fchip{padding:4px 11px;min-height:30px;border-radius:99px;border:1px solid var(--line);background:var(--panel2);color:var(--muted);font-size:12.5px;cursor:pointer}
+.sc .fchip{padding:4px 12px;min-height:32px;border-radius:99px;border:1px solid var(--line-strong);background:var(--surface);color:var(--ink-2);font-size:var(--fs-foot);cursor:pointer}.sc .fchip:hover{color:var(--ink);background:var(--surface-2)}
 .sc td.tms{white-space:normal;min-width:64px} .sc td.tms .t{margin:1px 2px 1px 0} .sc .mt{display:block;font-size:var(--fs-cap);color:var(--ink-2);font-weight:400}
-.sc .fchip.on{color:var(--text);border-color:var(--accent)}
+.sc .fchip.on{color:var(--ink);border-color:var(--accent);background:var(--accent-tint);font-weight:600}
 .sc table.sct td{padding:5px 8px;vertical-align:middle}
 .sc tr.mrow{cursor:default} .sc tr.mrow.exp{cursor:pointer}
 .sc tr.mrow.next td{background:var(--sel)}
 .sc .t{display:inline-block;padding:0 4px;border-radius:3px;font-variant-numeric:tabular-nums;margin-right:2px}
-.sc .t.r{background:var(--red-soft)} .sc .t.b{background:var(--blue-soft)} .sc .t.us{outline:1px solid #ffd43b;font-weight:700}
-.sc .pbar{display:flex;height:7px;width:80px;border-radius:3px;overflow:hidden;background:var(--panel2)}
-.sc .pbar i.r{background:var(--red)} .sc .pbar i.b{background:var(--blue)}
+.sc .t.r{background:var(--red-soft)} .sc .t.b{background:var(--blue-soft)} .sc .t.us{outline:2px solid var(--accent);outline-offset:-1px;font-weight:700}
+.sc .pbar{display:flex;height:8px;width:80px;border-radius:4px;overflow:hidden;background:var(--surface-3);gap:1px}
+.sc .pbar i.r{background:var(--red-fill)} .sc .pbar i.b{background:var(--blue-fill)}
 .sc .sc2{font-variant-numeric:tabular-nums}
 .sc .win{font-weight:700}
 .sc tr.det td{padding:0;background:var(--panel2);white-space:normal}
 .sc .detbox{padding:12px 14px;display:grid;grid-template-columns:minmax(0,1.1fr) minmax(0,1fr);gap:16px}
 .sc .sum{font-size:14px;line-height:1.5;margin-bottom:8px}
 .sc .per{display:grid;grid-template-columns:62px 1fr 56px 56px 56px;gap:8px;align-items:center;font-size:12.5px;padding:3px 0;font-variant-numeric:tabular-nums}
-.sc .per.hd{color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.4px}
-.sc .dvb{position:relative;height:14px;background:var(--panel);border-radius:3px}
+.sc .per.hd{color:var(--ink-2);font-size:var(--fs-cap);font-weight:600}
+.sc .dvb{position:relative;height:14px;background:var(--surface);border-radius:3px}
 .sc .dvb .mid{position:absolute;left:50%;top:0;bottom:0;width:1px;background:var(--line)}
 .sc .dvb i{position:absolute;top:2px;bottom:2px;border-radius:2px} .sc .dvb i.up{background:var(--good)} .sc .dvb i.dn{background:var(--bad)}
 .sc .act{display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:4px;vertical-align:middle;background:var(--muted);opacity:.5}
 .sc .act.on{background:#ffd43b;opacity:1}
 .sc .kvs{display:flex;gap:16px;flex-wrap:wrap;font-size:12.5px;color:var(--muted);margin-top:8px}
 .sc .kvs b{color:var(--text)}
-.sc .chev{display:inline-block;width:12px;color:var(--muted);transition:transform .12s} .sc tr.open .chev{transform:rotate(90deg)}
+.sc .chev{display:inline-block;width:16px;color:var(--ink-2);transition:transform .15s var(--ease);vertical-align:-3px}.sc .chev svg{width:14px;height:14px} .sc tr.open .chev{transform:rotate(90deg)}
 @media (max-width:900px){.sc .detbox{grid-template-columns:1fr}.sc .hide-s{display:none}.sc .per{grid-template-columns:54px 1fr 46px 46px 46px}}
 `;
     document.head.appendChild(st);
@@ -92,7 +92,7 @@
     const ours = m.us ? ` <span class="small ${m.us === "red" ? "" : ""}" title="${tn(team)} is on ${m.us}"><span class="adot ${m.us}"></span></span>` : "";
     const wp = !m.played && hasB ? `<b class="${m.breakdown.win_prob >= .5 ? "pos" : "neg"}">${P(m.breakdown.win_prob)}</b>` : (m.played && m.us ? `<span class="res ${m.result.winner === m.us ? "w" : m.result.winner === "tie" ? "" : "l"}">${m.result.winner === m.us ? "W" : m.result.winner === "tie" ? "T" : "L"}</span>` : "");
     return `<tr class="mrow ${hasB ? "exp" : ""} ${S.nextKey === m.key ? "next" : ""}" id="r-${m.key}" data-k="${m.key}">
-      <td><span class="chev">${hasB ? "▸" : ""}</span>${m.played && m.analyze_url ? `<a href="${m.analyze_url}" title="open the match video and replay"><b>${H(m.short)}</b></a>` : `<b>${H(m.short)}</b>`}${ours}<span class="mt">${fmtT(m.time)}</span></td>
+      <td><span class="chev">${hasB ? CS.icon("chevR") : ""}</span>${m.played && m.analyze_url ? `<a href="${m.analyze_url}" title="open the match video and replay"><b>${H(m.short)}</b></a>` : `<b>${H(m.short)}</b>`}${ours}<span class="mt">${fmtT(m.time)}</span></td>
       <td class="tms">${teams(m.red, "r", us)}</td><td class="tms">${teams(m.blue, "b", us)}</td>${mid}<td class="num">${wp}</td></tr>
       ${hasB ? `<tr class="det" id="d-${m.key}" style="display:none"><td colspan="6">${breakdown(m, team)}</td></tr>` : ""}`;
   }

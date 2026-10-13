@@ -13,20 +13,20 @@
   const CSS = `
   .sx-head{display:flex;justify-content:space-between;gap:12px;align-items:flex-start;flex-wrap:wrap}
   .sx-head h1 small{font-weight:500;color:var(--muted);font-size:16px}
-  .sx-links{display:flex;gap:6px;flex-wrap:wrap}.sx-links a{border:1px solid var(--line);border-radius:7px;padding:4px 10px;font-size:12.5px}
-  .sx-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:14px}
-  .sx-grid3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}
+  .sx-links{display:flex;gap:6px;flex-wrap:wrap}.sx-links a{border:1px solid var(--line-strong);border-radius:var(--r-s);padding:4px 10px;font-size:var(--fs-foot);text-decoration:none;background:var(--surface)}.sx-links a:hover{background:var(--surface-2)}
+  .sx-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:var(--sp-4)}
+  .sx-grid3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:var(--sp-4)}
   @media (max-width:1000px){.sx-grid3{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}}
   @media (max-width:820px){.sx-grid,.sx-grid3{grid-template-columns:minmax(0,1fr)}}
-  .sx-card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px 14px;min-width:0}
-  .sx-card h2{font-size:14px;margin:0 0 8px;display:flex;justify-content:space-between;gap:8px;align-items:baseline;text-transform:uppercase;letter-spacing:.04em;color:var(--ink)}
+  .sx-card{background:var(--surface);border:1px solid var(--line);border-radius:var(--r-m);padding:var(--sp-4);min-width:0}
+  .sx-card h2{font-size:var(--fs-callout);font-weight:600;margin:0 0 var(--sp-3);display:flex;justify-content:space-between;gap:8px;align-items:baseline;color:var(--ink)}
   .sx-card h2 small{font-weight:500;text-transform:none;letter-spacing:0;color:var(--muted);font-size:12px}
   .sx-kv{display:grid;grid-template-columns:auto 1fr;gap:3px 12px;font-size:13px}
   .sx-kv dt{color:var(--muted)}.sx-kv dd{margin:0;font-variant-numeric:tabular-nums;text-align:right}
   .sx-kv dd small{color:var(--muted)}
-  .sx-stat{display:grid;grid-template-columns:repeat(auto-fill,minmax(104px,1fr));gap:6px}
-  .sx-stat div{background:var(--panel2);border-radius:7px;padding:6px 8px}
-  .sx-stat b{display:block;font-size:18px;font-variant-numeric:tabular-nums}.sx-stat b small{font-size:11px;color:var(--muted);font-weight:500}
+  .sx-stat{display:grid;grid-template-columns:repeat(auto-fill,minmax(104px,1fr));gap:var(--sp-3) var(--sp-4)}
+  .sx-stat div{border-top:1px solid var(--line);padding:var(--sp-2) 0 0;min-width:0}
+  .sx-stat b{display:block;font-family:var(--font-num);font-stretch:var(--num-stretch);font-size:20px;font-weight:600;line-height:1.15;font-variant-numeric:tabular-nums}.sx-stat b small{font-size:11px;color:var(--muted);font-weight:500}
   .sx-stat span{display:block;font-size:11.5px;color:var(--muted)}
   .sx-tbl td,.sx-tbl th{padding:4px 6px;font-size:12.5px}
   .sx-tbl tr.sel td{background:var(--sel)}
@@ -35,12 +35,12 @@
   .sx-leg i{display:inline-block;width:12px;height:4px;border-radius:2px;margin-right:4px;vertical-align:middle}
   .sx-leg i.dot{width:9px;height:9px;border-radius:50%}
   .sx-ctl{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:6px;font-size:12px}
-  .sx-ctl select,.sx-ctl button{background:var(--panel2);color:var(--text);border:1px solid var(--line);border-radius:6px;padding:3px 6px;font-size:12px}
+  .sx-ctl select,.sx-ctl button{background:var(--surface);color:var(--ink);border:1px solid var(--line-strong);border-radius:var(--r-s);padding:3px 8px;font-size:12px;min-height:28px}
   .sx-adv{margin:0;padding-left:18px;font-size:13px;line-height:1.5}
   .sx-mini{font-size:11.5px;color:var(--muted)}
-  .sx-bar{height:6px;background:var(--panel2);border-radius:3px;overflow:hidden;min-width:40px}.sx-bar i{display:block;height:100%}
+  .sx-bar{height:6px;background:var(--surface-3);border-radius:3px;overflow:hidden;min-width:40px}.sx-bar i{display:block;height:100%}
   .sx-list th{cursor:pointer}
-  .sx-pill{display:inline-block;padding:0 6px;border-radius:99px;font-size:11px;border:1px solid var(--line);color:var(--muted)}
+  .sx-pill{display:inline-block;padding:0 6px;border-radius:var(--r-tag);font-size:11px;border:1px solid var(--line);color:var(--muted)}
   `;
   function css() { if (!document.getElementById("sx-css")) { const s = document.createElement("style"); s.id = "sx-css"; s.textContent = CSS; document.head.appendChild(s); } }
   const f1 = (v, d = 1) => v == null ? "–" : Number(v).toFixed(d);

@@ -31,12 +31,12 @@ function spark(vals, opts = {}) {
   const lo = Math.min(...ok), hi = Math.max(...ok), rg = hi - lo || 1;
   const pts = vals.map((v, i) => has(v) ? [2 + i * (w - 4) / (vals.length - 1), h - 3 - (v - lo) / rg * (h - 6)] : null).filter(Boolean);
   const last = pts[pts.length - 1];
-  return `<svg class="spark" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}"><polyline fill="none" stroke="${opts.color || "#7cb4ff"}" stroke-width="1.6" points="${pts.map(p => p.map(x => x.toFixed(1)).join(",")).join(" ")}"/>
-    <circle cx="${last[0]}" cy="${last[1]}" r="2.4" fill="${opts.color || "#7cb4ff"}"/></svg>`;
+  return `<svg class="spark" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}"><polyline fill="none" stroke="${opts.color || "currentColor"}" stroke-width="1.6" points="${pts.map(p => p.map(x => x.toFixed(1)).join(",")).join(" ")}"/>
+    <circle cx="${last[0]}" cy="${last[1]}" r="2.4" fill="${opts.color || "currentColor"}"/></svg>`;
 }
 function bars(rows, opts = {}) {      // rows: [[label, value, max, text, color]]
   return `<div class="bars">${rows.map(([l, v, mx, t, col]) => `<div class="barrow"><span class="bl">${l}</span>
-    <span class="bt"><i style="width:${mx ? Math.max(0, Math.min(100, 100 * v / mx)) : 0}%;background:${col || "var(--accent)"}"></i></span><span class="bv">${t ?? fmtV(v)}</span></div>`).join("")}</div>`;
+    <span class="bt"><i style="width:${mx ? Math.max(0, Math.min(100, 100 * v / mx)) : 0}%;background:${col || "var(--ink-3)"}"></i></span><span class="bv">${t ?? fmtV(v)}</span></div>`).join("")}</div>`;
 }
 function periodBars(byp, n = 1) {     // {period:{a,m}} -> attempts bar with made overlay
   const mx = Math.max(1, ...PERIODS.map(p => (byp[p] || {}).a || 0));
@@ -151,7 +151,7 @@ async function teamPage(ev, tk) {
     <div class="sub">${d.rank ? `Rank ${d.rank} · ` : ""}${d.opr != null ? `OPR ${fx(d.opr)} · ` : ""}${CV.n} verified match${CV.n === 1 ? "" : "es"}${CV.of ? ` of ${CV.of} played` : ""}${d.tracked > CV.n ? ` <span class="muted small">(${d.tracked - CV.n} replay-only)</span>` : ""}
       ${role ? ` · <span class="pill role">${ROLE_TXT[val(role)] || val(role)}</span>` : ""}
       · ${covPill(CV)} ${flagChips(SR)} · <a href="https://www.thebluealliance.com/team/${d.number}/${(e && e.year) || ""}" target="_blank" rel="noopener">TBA</a></div></div>
-    <button id="star" class="${starred ? "on" : ""}" aria-pressed="${starred}">${starred ? "★ Starred" : "☆ Star"}</button></div>
+    <button id="star" type="button" class="${starred ? "on" : ""}" aria-pressed="${starred}">${CS.icon(starred ? "starOn" : "star")}<span>${starred ? "Starred" : "Star"}</span></button></div>
     <nav class="jump">${navs.map(([k, l]) => `<a href="#" data-j="${k}">${l}</a>`).join("")}</nav>
     ${ag ? "" : `<div class="card empty">No quantitative analytics for this team yet.</div>`}
     ${dataBanner(scd)}
@@ -164,13 +164,13 @@ async function teamPage(ev, tk) {
         <div><b>${svHtml(SV.cycle_s)}</b><span>Cycle s (video)</span></div>
         <div><b>${SR.climb ? pct(SR.climb.rate) : "–"}</b><span>Climb, TBA (${SR.climb ? SR.climb.n : 0} quals)</span></div>
         <div><b>${!(SR.trend && SR.trend.tba) ? "–" : SR.trend.tba.verdict === "flat" ? `<span class="muted">no clear trend</span>` : `${SR.trend.tba.diff > 0 ? "+" : ""}${SR.trend.tba.diff}<span class="sc-sd">${SR.trend.tba.ci[0]}…${SR.trend.tba.ci[1]}</span>`}</b><span title="alliance score minus fouls drawn minus partners' blend, last 4 quals vs earlier; shown only when the 90% interval excludes 0${SR.trend && SR.trend.tba ? ` (now ${SR.trend.tba.diff}, ${SR.trend.tba.ci[0]}…${SR.trend.tba.ci[1]})` : ""}">TBA trend, last 4</span></div>
-        <div><b>${SR.trend && SR.trend.blend ? spark(SR.trend.blend.map(x => x[1]), { color: "#7cb4ff" }) : "–"}</b><span>Blend over the event${SR.trend && SR.trend.blend ? ` (${fx(SR.trend.blend[0][1], 0)} → ${fx(SR.trend.blend.slice(-1)[0][1], 0)})` : ""}</span></div>
+        <div><b>${SR.trend && SR.trend.blend ? spark(SR.trend.blend.map(x => x[1])) : "–"}</b><span>Blend over the event${SR.trend && SR.trend.blend ? ` (${fx(SR.trend.blend[0][1], 0)} → ${fx(SR.trend.blend.slice(-1)[0][1], 0)})` : ""}</span></div>
       </div>
       ${d.matches.some(m => !m.verified) ? `<div class="note">Verified matches only (${CV.n}) · ${esc(d.matches.filter(m => !m.verified).map(m => m.short).join(", "))} replay-only ${CS.help(tainted
         ? "Matches tracked without verified identity are replay-only: excluded from the shot chart, autos and trends; the intake map, heatmap and routine clusters are hidden because they mix them in."
         : "Every section below uses verified matches only. The listed matches were tracked without verified identity (v1 tracks or confidence under 60%) and are replay-only.", "Why some matches are replay-only")}</div>` : ""}</section>
-    <div class="trends" style="${ms.filter(m => m.verified).length < 3 ? "display:none" : ""}">${trend("Accuracy", tr(a => a.scoring.accuracy), "p", C_MADE)}${trend("Made", tr(a => a.scoring.made), "0", "#7cb4ff")}${trend("Attempts", tr(a => a.scoring.attempts), "0", "#7cb4ff")}
-      ${trend("Cycle s", tr(a => a.scoring.cycle_s), "1", "#fbbf24")}${trend("Dist m", tr(a => a.movement.distance_m), "0", "#a78bfa")}${trend("Defense s", tr(a => a.defense.time_s), "1", "#fb7185")}</div>
+    <div class="trends" style="${ms.filter(m => m.verified).length < 3 ? "display:none" : ""}">${trend("Accuracy", tr(a => a.scoring.accuracy), "p")}${trend("Made", tr(a => a.scoring.made), "0")}${trend("Attempts", tr(a => a.scoring.attempts), "0")}
+      ${trend("Cycle s", tr(a => a.scoring.cycle_s), "1")}${trend("Dist m", tr(a => a.movement.distance_m), "0")}${trend("Defense s", tr(a => a.defense.time_s), "1")}</div>
     <div class="stackv">
     ${tainted ? section("scoring", "Scoring", `<div class="muted small">Per-team aggregates from the tracker file mix in unverified matches, so they are not shown; the canonical values are in Scouting truth above and the per-match rows (verified only) are in Matches below.</div>`) : ""}
     ${tainted ? "" : section("scoring", "Scoring", `<div class="tiles">
@@ -219,12 +219,12 @@ async function teamPage(ev, tk) {
         || `<tr><td colspan="16" class="empty">No tracked matches yet</td></tr>`}</tbody></table></div>`)}
     </div>`;
 
-  document.querySelectorAll(".jump a").forEach(a => a.onclick = ev_ => { ev_.preventDefault(); const s = document.getElementById("s-" + a.dataset.j); s && s.scrollIntoView({ behavior: "smooth", block: "start" }); });
+  document.querySelectorAll(".jump a").forEach(a => a.onclick = ev_ => { ev_.preventDefault(); const s = document.getElementById("s-" + a.dataset.j); s && s.scrollIntoView({ behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "start" }); });
   document.getElementById("star").onclick = async e_ => {     // shared picklist (event.js) when signed in
     const p = typeof plLoad === "function" ? await plLoad(ev) : lsGet("cyberscout:picks:" + ev, {}); p.stars = p.stars || [];
     const i = p.stars.indexOf(tk); i >= 0 ? p.stars.splice(i, 1) : p.stars.push(tk);
     typeof plSave === "function" ? plSave(ev, p) : lsSet("cyberscout:picks:" + ev, p);
-    e_.target.classList.toggle("on", i < 0); e_.target.setAttribute("aria-pressed", i < 0); e_.target.textContent = i < 0 ? "★ Starred" : "☆ Star";
+    const b = e_.currentTarget; b.classList.toggle("on", i < 0); b.setAttribute("aria-pressed", i < 0); b.innerHTML = `${CS.icon(i < 0 ? "starOn" : "star")}<span>${i < 0 ? "Starred" : "Star"}</span>`;
   };
 
   // shot chart

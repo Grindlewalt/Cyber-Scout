@@ -24,8 +24,8 @@
   .dx-ah{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px}.dx-ah h2{margin:0}
   .dx-nick{font-weight:400;font-size:var(--fs-body)}.dx-small{margin-left:auto;font-size:var(--fs-foot);color:var(--ink-2)}
   .dx-ret{display:grid;grid-template-columns:auto minmax(0,1fr);gap:20px;align-items:center;margin:4px 0 12px}
-  .dx-retn b{display:block;font-size:44px;font-weight:800;line-height:1;letter-spacing:-.02em;font-variant-numeric:tabular-nums}
-  .dx-retn span{font-size:var(--fs-cap);color:var(--ink-2);text-transform:uppercase;letter-spacing:.05em;font-weight:600}
+  .dx-retn b{display:block;font-family:var(--font-num);font-stretch:var(--num-stretch);font-size:52px;font-weight:700;line-height:1;letter-spacing:-.01em;font-variant-numeric:tabular-nums}
+  .dx-retn span{display:block;margin-top:var(--sp-1);font-size:var(--fs-foot);color:var(--ink-2);font-weight:500}
   .dx-retb{max-width:420px}
   .dx-rb{position:relative;height:10px;background:var(--surface-2);border-radius:5px}
   .dx-rb .rg{position:absolute;top:0;bottom:0;background:var(--line-strong);border-radius:5px}
@@ -34,15 +34,15 @@
   .dx-rb.sm{height:6px;width:120px;flex:none}.dx-rb.sm .mn{width:10px;height:10px;margin-left:-5px;top:-2px;border-width:1px}.dx-rb.sm .one{top:-3px;bottom:-3px}
   .dx-rbl{position:relative;height:16px;font-size:11px;color:var(--ink-3);margin-top:4px}.dx-rbl span{position:absolute}.dx-rbl span:first-child{left:0}.dx-rbl span:last-child{right:0}.dx-rbl span:nth-child(2){transform:translateX(-50%)}
   .dx-rett{font-size:var(--fs-foot);color:var(--ink-2);margin-top:4px;display:flex;align-items:center;gap:6px;flex-wrap:wrap}
-  .dx-tag{font-size:11px;padding:0 6px;border-radius:4px;border:1px dashed var(--ink-2);white-space:nowrap;color:var(--ink-2)}.dx-tag.measured{border-style:solid;color:var(--ink)}
+  .dx-tag{font-size:11px;padding:0 6px;border-radius:var(--r-tag);border:1px dashed var(--ink-2);white-space:nowrap;color:var(--ink-2)}.dx-tag.measured{border-style:solid;color:var(--ink)}
   .dx-adv{margin:0 0 10px;padding-left:18px;font-size:var(--fs-body);line-height:1.6}
   .dx-defs{font-size:var(--fs-foot);margin-bottom:8px}
   .dx-more2 summary{cursor:pointer;font-size:var(--fs-foot);font-weight:600;padding:6px 0;color:var(--ink)}
   .dx-3{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;margin-top:6px}
   .dx-rank{list-style:none;margin:0;padding:0;display:grid;grid-template-columns:repeat(auto-fill,minmax(min(300px,100%),1fr));gap:2px 16px}.dx-rank li{min-width:0}
   .dx-rank button{display:flex;align-items:center;gap:10px;width:100%;min-height:40px;background:none;border:0;border-bottom:1px solid var(--line);border-radius:0;padding:6px 4px;text-align:left;color:var(--ink);font-size:var(--fs-body)}
-  .dx-rank button:hover{background:var(--surface-2)}
-  .dx-rk{font-weight:700;min-width:44px}.dx-rank .dx-nick{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:var(--fs-foot)}
+  .dx-rank button:hover{background:var(--hover)}
+  .dx-rk{font-family:var(--font-num);font-stretch:var(--num-stretch);font-size:var(--fs-callout);font-weight:700;min-width:44px;font-variant-numeric:tabular-nums}.dx-rank .dx-nick{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:var(--fs-foot)}
   .dx-rv{min-width:96px;text-align:right;font-size:var(--fs-foot)}
   .dx-clips{display:flex;flex-direction:column;gap:10px}
   .dx-ch{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.dx-ch h2{margin:0}.dx-sp{flex:1}
@@ -51,16 +51,16 @@
   .dx-fp{width:min(300px,calc(100vw - 16px))}
   .dx-fr{display:grid;grid-template-columns:80px minmax(0,1fr);align-items:center;gap:8px;margin-bottom:6px}.dx-fr span{color:var(--ink-2)}.dx-fr select{width:100%}
   .dx-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:10px}
-  .dx-clip{background:var(--panel);border:1px solid var(--line);border-radius:9px;overflow:hidden;min-width:0}
-  .dx-clip.success{border-color:color-mix(in srgb,var(--good) 55%,transparent)}.dx-clip.focus{box-shadow:0 0 0 2px var(--ink-2)}
+  .dx-clip{background:var(--surface);border:1px solid var(--line);border-radius:var(--r-m);overflow:hidden;min-width:0}
+  .dx-clip.success{border-color:color-mix(in srgb,var(--good) 55%,transparent)}.dx-clip.focus{box-shadow:0 0 0 2px var(--accent)}
   .dx-clip canvas{display:block;width:100%;aspect-ratio:16/10;background:#2b3038;cursor:pointer}
-  .dx-cb{padding:8px 10px 10px;font-size:12.5px;display:flex;flex-direction:column;gap:4px}
+  .dx-cb{padding:var(--sp-2) var(--sp-3) var(--sp-3);font-size:12.5px;display:flex;flex-direction:column;gap:4px}
   .dx-ct{display:flex;justify-content:space-between;gap:6px;align-items:center}
   .dx-ct b{font-variant-numeric:tabular-nums}
   .dx-cs{color:var(--muted);font-size:12px}
   .dx-ce{display:flex;gap:8px;align-items:center;font-variant-numeric:tabular-nums;font-size:12px;flex-wrap:wrap}
   .dx-cl{display:flex;gap:8px;align-items:center;font-size:12.5px}
-  .dx-v{display:inline-block;padding:0 7px;border-radius:99px;font-size:11px;border:1px solid var(--line);color:var(--muted);white-space:nowrap}
+  .dx-v{display:inline-block;padding:0 6px;border-radius:var(--r-tag);font-size:11px;border:1px solid var(--line);color:var(--muted);white-space:nowrap}
   .dx-v.good{color:var(--good);border-color:currentColor}.dx-v.warn{color:var(--warn);border-color:var(--caution-line)}.dx-v.bad{color:var(--bad);border-color:currentColor}
   .dx-v.sig{background:color-mix(in srgb,var(--good) 15%,transparent)}
   .dx-tbl td,.dx-tbl th{padding:5px 6px;font-size:12.5px}
@@ -329,7 +329,7 @@
     function wireDefenders() {
       const da = document.getElementById("dxDefAll"); if (da) da.onclick = () => { defAll = !defAll; answer(); };
       document.querySelectorAll("a[data-def]").forEach(a => a.onclick = ev_ => { ev_.preventDefault(); F.defender = F.defender === a.dataset.def ? "" : a.dataset.def; shown = 6; answer(); body();
-        document.getElementById("dxClips").scrollIntoView({ block: "start", behavior: "smooth" }); });
+        document.getElementById("dxClips").scrollIntoView({ block: "start", behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" }); });
     }
 
     // ---- clips: a few best ones up front; everything else behind "All episodes" with one Filter popover

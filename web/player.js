@@ -123,7 +123,7 @@ async function analyzePage(ev, key) {
       ${d.start_detected === false ? `<span class="pill no_video" title="match start not detected from motion; using a default offset">start estimated</span>` : ""}
       ${d.feed_ok != null && d.feed_ok < 0.98 ? `<span class="pill no_video" title="the field camera was missing from the broadcast for part of this match; stats use only the filmed part">camera footage ${Math.round(d.feed_ok * 100)}%</span>` : ""}
       <span class="pill no_video" id="mvNote" hidden>match video unavailable here · showing the field replay</span>
-      ${d.video && d.video.id ? `<a class="mv-yt" href="https://youtu.be/${esc(d.video.id)}?t=${Math.floor(v0)}" target="_blank" rel="noopener">YouTube<span class="vh"> (opens a new tab)</span> ↗</a>` : ""}
+      ${d.video && d.video.id ? `<a class="mv-yt" href="https://youtu.be/${esc(d.video.id)}?t=${Math.floor(v0)}" target="_blank" rel="noopener">YouTube<span class="vh"> (opens a new tab)</span>${CS.icon("external")}</a>` : ""}
     </div>
     <div class="mv-grid">
       <div class="mv-main">
@@ -638,7 +638,7 @@ async function analyzePage(ev, key) {
       <span class="muted small">${esc(PLABEL[s.period] || s.period || "")}${s.conf != null ? " · " + Math.round(s.conf * 100) + "%" : ""}</span></button>`).join("") || '<div class="muted small">No shots for these teams.</div>';
   }
   $("mvShots").addEventListener("toggle", refreshList);
-  $("anList").onclick = e => { const r = e.target.closest(".an-row"); if (!r) return; const s = shots.find(x => x.i === +r.dataset.i); seek(s.t - 1 + S.offset); stageEl.scrollIntoView({ block: "nearest", behavior: "smooth" }); };
+  $("anList").onclick = e => { const r = e.target.closest(".an-row"); if (!r) return; const s = shots.find(x => x.i === +r.dataset.i); seek(s.t - 1 + S.offset); stageEl.scrollIntoView({ block: "nearest", behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" }); };
   $("fOut").onchange = e => { S.outcome = e.target.value; refreshList(); };
 
   // ---- driver-station cameras (second video = full broadcast inset; each station is a crop of it)
@@ -691,8 +691,8 @@ async function analyzePage(ev, key) {
         <ol class="mv-vl">${cfg.panes.map((p, i) => `<li class="${openRow === i ? "open" : ""}"><div class="mv-vr">
           <span class="mv-vn">${i + 1}</span><span class="mv-vt">${PL.SRC[p.src]}</span>
           <button type="button" class="mv-sm" data-act="lay" data-i="${i}" aria-expanded="${openRow === i}">Layers</button>
-          ${i ? `<button type="button" class="mv-sm" data-act="up" data-i="${i}" title="Make this the large view" aria-label="Make ${PL.SRC[p.src]} the large view">↑</button>` : ""}
-          ${cfg.panes.length > 1 ? `<button type="button" class="mv-sm" data-act="rm" data-i="${i}" aria-label="Remove ${PL.SRC[p.src]}">✕</button>` : ""}</div>
+          ${i ? `<button type="button" class="mv-sm" data-act="up" data-i="${i}" title="Make this the large view" aria-label="Make ${PL.SRC[p.src]} the large view">${CS.icon("up")}</button>` : ""}
+          ${cfg.panes.length > 1 ? `<button type="button" class="mv-sm" data-act="rm" data-i="${i}" aria-label="Remove ${PL.SRC[p.src]}">${CS.icon("close")}</button>` : ""}</div>
           ${openRow === i ? `<div class="mv-cks">${layerChecks(p.src, p.L, "p" + i)}</div>` : ""}</li>`).join("")}</ol>
         ${cfg.panes.length < 3 && free.length ? `<div class="mv-add"><span class="muted">Add</span>${free.map(s => `<button type="button" class="mv-sm" data-act="add" data-src="${s}">+ ${PL.SRC[s]}</button>`).join("")}</div>` : ""}`;
     }

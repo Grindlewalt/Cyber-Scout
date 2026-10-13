@@ -259,7 +259,7 @@ async function home() {
     <div class="evcards">${evs.map(e => `<a class="card" href="#/${e.key}"><h2>${esc(e.name)}</h2>
       <div class="muted small">${esc(e.start || "")} · ${e.n_done}/${e.n_total} matches tracked</div>
       <div class="progress"><div style="width:${e.n_total ? 100 * e.n_done / e.n_total : 0}%"></div></div></a>`).join("")
-      || `<div class="empty">No events yet. The worker publishes here as soon as it has synced one.</div>`}</div>`;
+      || `<div class="empty"><b>No events yet</b>An event appears here as soon as the worker has synced it.</div>`}</div>`;
 }
 
 // Teams / Compare / Picklist / Matches: each is its own sidebar section (#/<ev>/<tab>); no second tab row.
@@ -326,8 +326,19 @@ const ICON = {
   admin: '<path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/>',
   account: '<circle cx="12" cy="8.5" r="3.5"/><path d="M5 20c.8-4 3.5-6 7-6s6.2 2 7 6"/>',
   more: '<circle cx="6" cy="12" r="1.3" fill="currentColor"/><circle cx="12" cy="12" r="1.3" fill="currentColor"/><circle cx="18" cy="12" r="1.3" fill="currentColor"/>',
+  // inline UI glyphs (same 24-grid, 1.8 stroke): used instead of unicode stars/arrows/crosses
+  star: '<path d="M12 3.8l2.5 5.1 5.6.8-4 3.9.9 5.6-5-2.6-5 2.6.9-5.6-4-3.9 5.6-.8z"/>',
+  starOn: '<path d="M12 3.8l2.5 5.1 5.6.8-4 3.9.9 5.6-5-2.6-5 2.6.9-5.6-4-3.9 5.6-.8z" fill="currentColor"/>',
+  external: '<path d="M14 4.5h5.5V10M19.5 4.5l-8 8M17 14v4.5a1 1 0 0 1-1 1H5.5a1 1 0 0 1-1-1V8a1 1 0 0 1 1-1H10"/>',
+  chevL: '<path d="M14.5 6l-6 6 6 6"/>',
+  chevR: '<path d="M9.5 6l6 6-6 6"/>',
+  close: '<path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/>',
+  up: '<path d="M12 19V5.5M6.5 11L12 5.5l5.5 5.5"/>',
+  warn: '<path d="M12 4l9 16H3z"/><path d="M12 10v4.5M12 17.2v.1"/>',
+  check: '<path d="M5 12.5l4.5 4.5L19 7.5"/>',
+  ban: '<circle cx="12" cy="12" r="8"/><path d="M6.5 6.5l11 11"/>',
 };
-CS.icon = k => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICON[k] || ICON.more}</svg>`;
+CS.icon = (k, cls) => `<svg${cls ? ` class="${cls}"` : ""} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICON[k] || ICON.more}</svg>`;
 const withTs = (base, ts) => base + (ts ? "/" + ts : "");
 CS.nav({ label: "Dashboard", key: "dash", href: (ev, ts) => withTs(`#/${ev}/dash`, ts), order: 10, group: "day", icon: "dash", tab: true, replay: true });
 CS.nav({ label: "Teams", key: "teams", href: ev => `#/${ev}/teams`, order: 50, group: "scout", icon: "teams", tab: true });
@@ -425,9 +436,9 @@ async function renderTimebar(p, ev) {
   const opt = t => `<option value="${t.ts}"${t.ts === ts ? " selected" : ""}>${esc(t.label)}${t.q != null && !narrow ? ` · ${t.q} quals` : ""}</option>`;
   el.innerHTML = `<div class="timectl ${ts ? "replay" : "live"}" role="group" aria-label="Data time">
     <span class="tc-tag"><i aria-hidden="true"></i>${ts ? "Replay" : "Live"}</span>
-    <button class="tc-step" id="tcprev" type="button" aria-label="Earlier snapshot" title="Earlier snapshot"${i <= 0 ? " disabled" : ""}>‹</button>
+    <button class="tc-step" id="tcprev" type="button" aria-label="Earlier snapshot" title="Earlier snapshot"${i <= 0 ? " disabled" : ""}>${CS.icon("chevL")}</button>
     <select id="tcsel" aria-label="Show data as of"><option value="">${ts ? "Live (latest data)" : "Now"}</option>${times.map(opt).join("")}</select>
-    <button class="tc-step" id="tcnext" type="button" aria-label="Later snapshot" title="Later snapshot"${!ts ? " disabled" : ""}>›</button>
+    <button class="tc-step" id="tcnext" type="button" aria-label="Later snapshot" title="Later snapshot"${!ts ? " disabled" : ""}>${CS.icon("chevR")}</button>
     ${ts ? `<button class="tc-live" id="tclive" type="button">Go live</button>` : ""}</div>`;
   document.getElementById("tcsel").onchange = e => go(e.target.value || null);
   document.getElementById("tcprev").onclick = () => { const j = (i < 0 ? times.length : i) - 1; if (j >= 0) go(times[j].ts); };
@@ -458,7 +469,9 @@ async function route(scroll = true) {
     else await eventPage(p[0], p[1], p[2]);
   } catch (e) {
     console.error(e);
-    $app.innerHTML = `<div class="empty">Couldn't load this page (${esc(e.message)}). It may not be processed yet.</div>`;
+    $app.innerHTML = `<div class="empty err" role="alert"><b>Couldn't load this page</b>${esc(e.message)}. It may not be processed yet, or the connection dropped.
+      <div class="acts"><button type="button" id="routeretry">Try again</button></div></div>`;
+    const rb = document.getElementById("routeretry"); if (rb) rb.onclick = () => route(false);
   }
   if (scroll) window.scrollTo(0, 0);
 }

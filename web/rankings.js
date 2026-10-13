@@ -19,34 +19,34 @@
 .rk,.rk>*,.rk .card{min-width:0;max-width:100%}.rk .card{overflow:hidden}.rk .tablewrap{max-width:100%;overflow-x:auto}.rk .vrow>*,.rk .detbox>*{min-width:0}
 .rk .dtop{margin-bottom:12px}
 .rk .goalcard{display:grid;grid-template-columns:minmax(190px,240px) 1fr;gap:18px;align-items:start}
-.rk .bigp{font-size:44px;font-weight:700;line-height:1;font-variant-numeric:tabular-nums}
-.rk .bigp small{display:block;font-size:12px;font-weight:500;color:var(--muted);margin-top:6px;letter-spacing:.2px}
-.rk .gbar{position:relative;height:10px;background:var(--panel2);border-radius:5px;margin:12px 0 4px;overflow:hidden}
+.rk .bigp{font-family:var(--font-num);font-stretch:var(--num-stretch);font-size:52px;font-weight:700;line-height:1;font-variant-numeric:tabular-nums}
+.rk .bigp small{display:block;font-family:var(--font);font-stretch:100%;font-size:var(--fs-foot);font-weight:500;color:var(--ink-2);margin-top:var(--sp-2)}
+.rk .gbar{position:relative;height:10px;background:var(--surface-3);border-radius:5px;margin:12px 0 4px;overflow:hidden}
 .rk .gbar i{position:absolute;top:0;bottom:0;background:var(--good);opacity:.85}
-.rk .gbar b{position:absolute;top:-2px;bottom:-2px;width:2px;background:#ffd43b}
-.rk .tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px}
-.rk .tile{background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:9px 11px}
-.rk .tile .k{font-size:11.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.4px}
-.rk .tile .v{font-size:21px;font-weight:650;font-variant-numeric:tabular-nums;margin-top:2px}
+.rk .gbar b{position:absolute;top:-2px;bottom:-2px;width:2px;background:var(--ink)}
+.rk .tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:var(--sp-4) var(--sp-5)}
+.rk .tile{background:none;border:0;border-top:1px solid var(--line);border-radius:0;padding:var(--sp-2) 0 0}
+.rk .tile .k{font-size:var(--fs-cap);color:var(--ink-2)}
+.rk .tile .v{font-family:var(--font-num);font-stretch:var(--num-stretch);font-size:var(--fs-t2);font-weight:600;font-variant-numeric:tabular-nums;margin-top:2px}
 .rk .tile .v small{font-size:12px;font-weight:400;color:var(--muted);margin-left:4px}
-.rk h3{font-size:12.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin:16px 0 8px;font-weight:600}
+.rk h3{font-size:var(--fs-foot);color:var(--ink-2);margin:var(--sp-4) 0 var(--sp-2);font-weight:600}
 .rk .vrow{display:grid;grid-template-columns:92px 1fr 230px;gap:10px;align-items:center;padding:4px 0;font-size:13px}
-.rk .vbar{position:relative;height:14px;background:var(--panel2);border-radius:3px}
+.rk .vbar{position:relative;height:14px;background:var(--surface-2);border-radius:3px}
 .rk .vbar .mid{position:absolute;left:50%;top:0;bottom:0;width:1px;background:var(--line)}
 .rk .vbar i{position:absolute;top:2px;bottom:2px;border-radius:2px}
 .rk .vbar i.up{background:var(--good)} .rk .vbar i.dn{background:var(--bad)}
 .rk .evrow{display:flex;gap:10px;align-items:baseline;flex-wrap:wrap;padding:5px 0;border-bottom:1px solid var(--line);font-size:13px}
 .rk .evrow:last-child{border:0}
 .rk .evrow .nm{min-width:130px}
-.rk .tag{font-size:11px;padding:0 6px;border-radius:99px;border:1px solid var(--line);color:var(--muted)}
+.rk .tag{font-size:11px;padding:0 6px;border-radius:var(--r-tag);border:1px solid var(--line);color:var(--muted)}
 .rk .tag.live{color:var(--good);border-color:currentColor} .rk .tag.future{color:var(--ink);border-style:dashed} .rk .tag.off{opacity:.55}
-.rk .prb{position:relative;height:8px;width:90px;background:var(--panel2);border-radius:4px;display:inline-block;vertical-align:middle;margin-right:6px}
+.rk .prb{position:relative;height:8px;width:90px;background:var(--surface-3);border-radius:4px;display:inline-block;vertical-align:middle;margin-right:6px}
 .rk .prb .rg{position:absolute;top:1px;bottom:1px;background:var(--line-strong);border-radius:3px}
 .rk .prb .mn{position:absolute;top:-1px;bottom:-1px;width:2px;background:var(--ink)}
 .rk .pcell{display:inline-block;min-width:34px}
-.rk .dp{position:relative;display:inline-block;width:70px;height:8px;background:var(--panel2);border-radius:4px;vertical-align:middle;margin-right:5px}
-.rk .dp i{position:absolute;top:1px;bottom:1px;background:rgba(63,185,80,.5);border-radius:3px} .rk .dp b{position:absolute;top:-1px;bottom:-1px;width:2px;background:#ffd43b}
-.rk .note{font-size:12px;color:var(--muted);margin-top:10px;line-height:1.5}
+.rk .dp{position:relative;display:inline-block;width:70px;height:8px;background:var(--surface-3);border-radius:4px;vertical-align:middle;margin-right:5px}
+.rk .dp i{position:absolute;top:1px;bottom:1px;background:color-mix(in srgb,var(--good) 55%,transparent);border-radius:3px} .rk .dp b{position:absolute;top:-1px;bottom:-1px;width:2px;background:var(--ink)}
+.rk .note{font-size:var(--fs-foot);color:var(--ink-2);margin-top:var(--sp-3);line-height:1.5}
 .rk th.sorted{color:var(--text)}
 @media (max-width:900px){.rk .goalcard{grid-template-columns:1fr}.rk .nick{display:none}.rk .vrow{grid-template-columns:62px 1fr 150px}.rk .prb{width:60px}.rk .dp{width:50px}}
 `;
@@ -84,7 +84,7 @@
         <table class="mini"><thead><tr><th>Outcome</th><th class="num">Chance</th><th class="num">P(goal)</th></tr></thead><tbody>${rows}${rows2}</tbody></table></div>`;
     }).join("");
     return `<section class="card goalcard">
-      <div><div class="muted small">SEASON GOAL · ${H(goalName)} · ${tn(g.team)} ${CS.help(`${g.dcmp ? `<span class="hl">DCMP capacity ${g.dcmp.capacity} (about ${n0(g.dcmp.points_slots_mean)} places left for points after award pre-qualifiers).</span>` : ""}<span class="hl">Model: ${H(g.model?.theta || "")}; ${g.model?.sims} simulated seasons, alliance score sd ${n0(g.model?.sigma_alliance)}. District points follow the game manual (first two events + DCMP).</span><span class="hl">Bar: green = your projected points (10–90%), yellow = projected cutoff.</span>`, "How the season goal is projected")}</div>
+      <div><div class="muted small">Season goal: ${H(goalName)} · ${tn(g.team)} ${CS.help(`${g.dcmp ? `<span class="hl">DCMP capacity ${g.dcmp.capacity} (about ${n0(g.dcmp.points_slots_mean)} places left for points after award pre-qualifiers).</span>` : ""}<span class="hl">Model: ${H(g.model?.theta || "")}; ${g.model?.sims} simulated seasons, alliance score sd ${n0(g.model?.sigma_alliance)}. District points follow the game manual (first two events + DCMP).</span><span class="hl">Bar: green = your projected points (10–90%), yellow = projected cutoff.</span>`, "How the season goal is projected")}</div>
         <div class="bigp ${col}">${P(p)}<small>${g.awards ? H(g.awards.headline) + " · " : ""}90% range ${P(ci[0])}–${P(ci[1])}${g.p_dcmp != null ? ` · DCMP ${P(g.p_dcmp)}` : ""}${g.dcmp?.is_prequalified ? " · pre-qualified by award" : ""}</small></div>
         ${g.awards ? `<div class="small" style="margin-top:6px" title="${H(g.awards.note)}">${g.awards.contender ? `without awards ${P(g.awards.p_no_awards)}` : `+ random awards: <b>${P(g.awards.p_with_awards)}</b>`} · if we win Impact/EI: ${P(g.awards.p_if_impact_or_ei)}</div>` : ""}${bar}</div>
       <div>
@@ -194,7 +194,7 @@
       <td class="num">${P5(t.p_captain)}</td><td class="num">${P5(t.p_r1)}</td><td class="num">${P5(t.p_r2)}</td><td>${t.likely_captain ? `${tn(t.likely_captain.team)} <span class="muted small">${P5(t.likely_captain.p)}</span>` : "–"}</td><td class="num">${P5(t.p_dcmp)}</td></tr>`).join("");
     return head + `<div class="sc-sel">
       <section class="card"><div class="grid"><div>
-        <div class="muted small">${tm} AT SELECTION · ${d.sims} simulated events</div>
+        <div class="muted small">${tm} at selection · ${d.sims} simulated events</div>
         <div class="kpis" style="margin-top:6px"><div class="kpi"><div class="k">Captain</div><div class="v">${P5(u.p_captain)}</div></div><div class="kpi"><div class="k">R1 pick</div><div class="v">${P5(u.p_r1)}</div></div>
           <div class="kpi"><div class="k">R2 pick</div><div class="v">${P5(u.p_r2)}</div></div><div class="kpi"><div class="k">Not picked</div><div class="v">${P5(u.p_unpicked)}</div></div>
           <div class="kpi" title="headline: no award for us at the remaining events; + awards = with random awards"><div class="k">DCMP (no awards)</div><div class="v">${P5(u.p_dcmp)}</div><div class="small muted">+awards ${P5(u.p_dcmp_with_awards)}</div></div><div class="kpi"><div class="k">Proj. rank</div><div class="v">${n0(u.rank_mean, 1)}</div></div></div>

@@ -98,9 +98,9 @@
       <div class="card" style="margin-top:12px">
         <h3 style="margin:0 0 8px">Add a source</h3>
         <form id="add" class="vs-form">
-          <input name="url" required placeholder="YouTube / Twitch URL (livestream, video, playlist, channel), .m3u8/.mp4 URL, or /media/... file" style="flex:3 1 380px">
+          <input name="url" required placeholder="YouTube / Twitch URL (livestream, video, playlist, channel), .m3u8/.mp4 URL, or /media/… file" style="flex:3 1 380px">
           <select name="role">${d.roles.map(r => `<option title="${h(ROLE_TIP[r])}">${r}</option>`).join("")}</select>
-          <input name="label" placeholder="label (optional)" style="flex:1 1 160px">
+          <input name="label" placeholder="Label (optional)…" style="flex:1 1 160px">
           <label class="small"><input type="checkbox" name="primary"> tracked video</label>
           <button>Add</button>${CS.help("Alternate angles (e.g. a team's own overhead recording) can be added the same way; mark the one the tracker should use as <i>tracked</i>.", "About alternate angles")}<span id="ast" class="muted small"></span>
         </form>
@@ -267,10 +267,10 @@
       document.getElementById("rlist").innerHTML = regions.map((r, i) => `<div class="vs-ri ${i === sel ? "on" : ""}" data-i="${i}">
         <i class="vs-sw" style="background:${KCOL[r.kind]}"></i>
         <select data-k="${i}">${Object.keys(L.kinds).map(k => `<option value="${k}" ${k === r.kind ? "selected" : ""}>${KSHORT[k] || k}</option>`).join("")}</select>
-        <input data-l="${i}" value="${h(r.label || "")}" placeholder="label" style="width:110px">
+        <input data-l="${i}" value="${h(r.label || "")}" placeholder="Label…" aria-label="Box label" style="width:110px">
         <span class="muted small">${r.box.map(v => Math.round(v)).join(",")}</span>
         ${r.kind === "clock" ? `<label class="small" title="digits lighter than their box"><input type="checkbox" data-ld="${i}" ${r.light_on_dark ? "checked" : ""}>light</label>` : ""}
-        <button class="small" data-x="${i}">✕</button></div>`).join("") || `<div class="muted small" style="margin-top:8px">No boxes yet.</div>`;
+        <button class="small icon" data-x="${i}" aria-label="Remove box">${CS.icon("close")}</button></div>`).join("") || `<div class="muted small" style="margin-top:8px">No boxes yet.</div>`;
       const acc = i => { const s = sugg[i]; regions.push({ id: "r" + Date.now().toString(36) + i, kind: s.kind, label: s.label, box: s.box.slice() }); dirty = true; };
       document.querySelectorAll("[data-acc]").forEach(b => b.onclick = () => { acc(+b.dataset.acc); sugg.splice(+b.dataset.acc, 1); paint(); });
       const aa = document.getElementById("accall"); if (aa) aa.onclick = () => { sugg.forEach((_, i) => acc(i)); sugg = []; paint(); };
@@ -428,7 +428,7 @@
       const tl = Object.entries(tags).map(([id, t]) => `<label class="chip ${drop.has(+id) ? "" : "on"}" title="${t.predicted ? "found from the fit" : "detected"}${t.n ? `, ${t.n} frames` : ""}"><input type="checkbox" data-t="${id}" ${drop.has(+id) ? "" : "checked"} style="display:none">${id}${t.predicted ? "*" : ""}</label>`).join("");
       document.getElementById("rep").innerHTML = `<div class="small"><b>Tags</b> (click to ignore one): <div class="chips">${tl || `<span class="muted">none found — click field points</span>`}</div></div>` +
         (r ? `<div class="vs-kv small"><b>Fit</b>: ${h(fmt(r)) || "–"}<br>focal ${r.f} px · k1 ${r.k1} · camera at (${r.C.map(v => v.toFixed(1)).join(", ")}) m
-          ${(r.warnings || []).map(w => `<div class="vs-warn">⚠ ${h(w)}</div>`).join("")}
+          ${(r.warnings || []).map(w => `<div class="vs-warn">${CS.icon("warn", "ico")} ${h(w)}</div>`).join("")}
           ${Object.entries(r.lines || {}).map(([k, v]) => `<div>${h((NL[k.replace(" (auto)", "")] || {}).label || k)}${/auto/.test(k) ? " (found automatically)" : ""}: <b style="color:${v > 3 ? "var(--warn)" : "var(--good)"}">${v} px</b></div>`).join("")}
           ${(r.items || []).filter(i => i.kind === "point").map(i => `<div>${h((NP[i.id] || {}).label || i.id)}: <b style="color:${i.err_px > 6 ? "var(--bad)" : i.err_px > 3 ? "var(--warn)" : "var(--good)"}">${i.err_px} px</b></div>`).join("")}
           <div class="muted">Does the yellow outline / grid sit on the carpet everywhere, and the hub boxes on the hubs? Then accept.</div></div>` : "");

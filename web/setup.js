@@ -22,24 +22,24 @@
   // ---------------------------------------------------------------- styles (forms; keeps style.css untouched)
   const css = document.createElement("style");
   css.textContent = `
-  .csform { display: grid; gap: 12px; max-width: 420px; }
-  .csform label { display: grid; gap: 4px; font-size: 13px; color: var(--muted); }
-  .csform input, .csform select, .csin { background: var(--panel2); color: var(--text); border: 1px solid var(--line); border-radius: 6px;
-    padding: 8px 10px; font: inherit; font-size: 14px; width: 100%; }
-  .csform input:focus, .csin:focus { outline: none; border-color: var(--accent); }
-  .csform .row { display: flex; gap: 8px; align-items: center; } .csform .row > * { flex: 1; }
-  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
-  button.danger { color: var(--bad); } button:disabled { opacity: .5; cursor: default; }
-  .cserr { color: var(--bad); font-size: 13px; min-height: 1em; } .csok { color: var(--good); font-size: 13px; }
-  .authcard { max-width: 460px; margin: 40px auto; }
-  .steps { display: flex; gap: 6px; flex-wrap: wrap; margin: 4px 0 18px; }
-  .steps a, .steps span { font-size: 12.5px; padding: 3px 10px; border-radius: 99px; border: 1px solid var(--line); color: var(--muted); }
-  .steps .cur { border-color: var(--accent); color: var(--text); } .steps .done { color: var(--good); }
-  .evpick { display: grid; gap: 4px; max-height: 420px; overflow-y: auto; margin-top: 8px; }
-  .evrow { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; align-items: center; padding: 8px 10px;
-    background: var(--panel2); border-radius: 8px; font-size: 13.5px; }
-  .evrow b { font-weight: 600; } .evrow .muted { font-size: 12px; }
-  .code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; background: var(--panel2); padding: 1px 6px; border-radius: 4px; }
+  .csform { display: grid; gap: var(--sp-3); max-width: 420px; }
+  .csform label { display: grid; gap: var(--sp-1); font-size: var(--fs-foot); font-weight: 500; color: var(--ink-2); }
+  .csform input, .csform select, .csin { background: var(--surface); color: var(--ink); border: 1px solid var(--line-strong); border-radius: var(--r-s);
+    padding: var(--sp-2) 10px; font: inherit; font-size: 16px; width: 100%; min-height: 40px; }
+  .csform input:focus-visible, .csform select:focus-visible, .csin:focus-visible { outline: 2px solid var(--accent); outline-offset: 0; border-color: var(--accent); }
+  .csform .row { display: flex; gap: var(--sp-2); align-items: center; } .csform .row > * { flex: 1; }
+  .csform button.primary { min-height: 40px; font-size: var(--fs-body); }
+  .cserr { color: var(--bad); font-size: var(--fs-foot); min-height: 1em; } .csok { color: var(--good); font-size: var(--fs-foot); }
+  .authcard { max-width: 440px; margin: var(--sp-7) auto; padding: var(--sp-5); }
+  .authcard h1 { margin-bottom: var(--sp-4); }
+  .steps { display: flex; gap: var(--sp-1); flex-wrap: wrap; margin: var(--sp-1) 0 var(--sp-5); counter-reset: st; }
+  .steps a, .steps span { font-size: var(--fs-foot); padding: var(--sp-1) 10px; border-radius: var(--r-s); border: 1px solid var(--line); color: var(--ink-2); text-decoration: none; }
+  .steps .cur { border-color: var(--accent); background: var(--accent-tint); color: var(--ink); font-weight: 600; } .steps .done { color: var(--good); }
+  .evpick { display: grid; gap: var(--sp-1); max-height: 420px; overflow-y: auto; margin-top: var(--sp-2); overscroll-behavior: contain; }
+  .evrow { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; align-items: center; padding: var(--sp-2) var(--sp-3);
+    border-bottom: 1px solid var(--line); font-size: 13.5px; }
+  .evrow b { font-weight: 600; } .evrow .muted { font-size: var(--fs-cap); }
+  .code { font-family: var(--mono); background: var(--surface-2); padding: 1px 6px; border-radius: var(--r-tag); }
   @media (max-width: 640px) { #userbox .who { display: none; } }`;
   document.head.appendChild(css);
 
@@ -107,7 +107,7 @@
     const p = hashParts();
     if (apiDown) {
       renderUserBox();
-      $app.innerHTML = `<div class="empty">Can't reach the Cyber-Scout server right now. <button id="retry">Retry</button></div>`;
+      $app.innerHTML = `<div class="empty err" role="alert"><b>Can't reach the Cyber-Scout server</b>Check that the server is running and this device is on its network.<div class="acts"><button type="button" id="retry">Try again</button></div></div>`;
       document.getElementById("retry").onclick = () => { loaded = false; route(); };
       return;
     }
@@ -173,8 +173,8 @@
     $app.innerHTML = `<div class="card authcard"><h1>Sign in</h1><div class="sub">Cyber-Scout. Ask your team's admin for an account.</div>
       <form class="csform" autocomplete="on">
         <label>Username<input name="username" autocomplete="username" required maxlength="32" autocapitalize="none" spellcheck="false"></label>
-        <label>Password<input name="password" type="password" autocomplete="current-password" placeholder="blank if you don't have one"></label>
-        <button type="submit" class="primary">Sign in</button><div class="cserr"></div></form></div>`;
+        <label>Password<input name="password" type="password" autocomplete="current-password" placeholder="Leave blank if you don't have one"></label>
+        <button type="submit" class="primary">Sign in</button><div class="cserr" aria-live="polite"></div></form></div>`;
     form($app, async d => {
       CS.session = await CS.app("POST", "auth/login", { username: d.username.trim(), password: d.password || "" });
       CS.user = CS.session.user;
@@ -189,10 +189,10 @@
     const u = CS.user;
     $app.innerHTML = `<h1>${esc(u.display_name || u.username)}</h1><div class="sub">Signed in as <b>${esc(u.username)}</b> · role <b>${esc(u.role)}</b> (${esc(ROLE_TIP[u.role])})</div>
       <div class="card" style="max-width:480px"><h2>Change password</h2>
-      <form class="csform"><label>Current password<input name="current_password" type="password" autocomplete="current-password" placeholder="blank if you don't have one"></label>
+      <form class="csform"><label>Current password<input name="current_password" type="password" autocomplete="current-password" placeholder="Leave blank if you don't have one"></label>
         <label>New password${u.role === "admin" ? " (10+ characters)" : " (optional: 4+ characters, blank = none)"}<input name="new_password" type="password" autocomplete="new-password" ${u.role === "admin" ? 'minlength="10" required' : 'minlength="4"'}></label>
         <label>Repeat new password<input name="again" type="password" autocomplete="new-password" required></label>
-        <button type="submit" class="primary">Change password</button><div class="cserr"></div><div class="csok"></div></form>
+        <button type="submit" class="primary">Change password</button><div class="cserr" aria-live="polite"></div><div class="csok" role="status" aria-live="polite"></div></form>
       <div class="note">Changing your password signs you out everywhere else.</div></div>`;
     form($app, async (d, f) => {
       if (d.new_password !== d.again) throw new Error("the new passwords don't match");
@@ -210,7 +210,7 @@
       try {
         [data, followed] = await Promise.all([CS.app("GET", "tba/events?year=" + year),
           CS.app("GET", "events").then(l => new Set(l.map(e => e.key)))]);
-      } catch (e) { el.innerHTML = `<div class="cserr">${esc(e.message)}</div>`; return; }
+      } catch (e) { el.innerHTML = `<div class="cserr" aria-live="polite">${esc(e.message)}</div>`; return; }
       draw();
     }
     const row = e => `<div class="evrow"><div><b>${esc(e.name || e.key)}</b><div class="muted">${esc(e.key)} · ${esc(e.start_date || "")}
@@ -226,8 +226,8 @@
         ${data.team_number ? `<h3>Team ${esc(data.team_number)}'s events</h3>${mine.length ? `<div class="evpick">${mine.map(row).join("")}</div>` : `<div class="muted small">None registered for ${year}${needle ? " matching the search" : ""}.</div>`}` : ""}
         <h3>All ${year} events</h3><div class="evpick">${all.slice(0, 80).map(row).join("") || `<div class="muted small">No events.</div>`}</div>
         ${all.length > 80 ? `<div class="note">Showing 80 of ${all.length}; search to narrow down.</div>` : ""}
-        <div class="controls"><input class="csin" id="evkey" placeholder="or type an event key, e.g. 2026wasam" style="max-width:260px"><button id="evadd">Follow</button></div>
-        <div class="cserr"></div>`;
+        <div class="controls"><input class="csin" id="evkey" placeholder="Or an event key, e.g. 2026wasam…" style="max-width:260px"><button id="evadd">Follow</button></div>
+        <div class="cserr" aria-live="polite"></div>`;
       el.querySelector("#evyear").onchange = e => { year = +e.target.value; load(); };
       const qi = el.querySelector("#evq");
       qi.oninput = () => { q = qi.value; clearTimeout(draw.t); draw.t = setTimeout(() => { draw(); const n = el.querySelector("#evq"); n.focus(); n.setSelectionRange(q.length, q.length); }, 200); };
@@ -284,17 +284,17 @@
         <div class="note" style="margin:0 0 12px">Cyber-Scout gets schedules, results and match videos from The Blue Alliance. Sign in at
         <a href="https://www.thebluealliance.com/account" target="_blank" rel="noopener">thebluealliance.com/account</a>, add a <b>Read API Key</b>
         (any description) and paste it here. It is checked with TBA and stored only on this server; browsers never see it again.</div>
-        ${st.s.tba_key_set ? `<div class="csok" style="margin-bottom:10px">A key is saved (${esc(st.s.tba_key_hint || "")}). Paste a new one to replace it.</div>` : ""}
+        ${st.s.tba_key_set ? `<div class="csok" role="status" aria-live="polite" style="margin-bottom:10px">A key is saved (${esc(st.s.tba_key_hint || "")}). Paste a new one to replace it.</div>` : ""}
         <form class="csform"><label>Read API key<input name="key" autocomplete="off" spellcheck="false" required minlength="20"></label>
         <div class="row"><button type="submit" class="primary">Check and save</button>${st.s.tba_key_set ? `<button type="button" id="skip">Keep current key</button>` : ""}</div>
-        <div class="cserr"></div></form></div>`;
+        <div class="cserr" aria-live="polite"></div></form></div>`;
       form($app, async d => { await CS.app("PUT", "settings/tba-key", { key: d.key.trim() }); next(); });
       const sk = $app.querySelector("#skip"); if (sk) sk.onclick = next;
     } else if (step === "team") {
       $app.innerHTML = head + `<div class="card" style="max-width:620px"><h2>Your team</h2>
         <div class="note" style="margin:0 0 12px">Used to put your matches, your events and your season goal first.</div>
         <form class="csform"><label>FRC team number<input name="team" type="number" min="1" max="99999" required value="${esc(st.s.team_number || "")}" inputmode="numeric"></label>
-        <button type="submit" class="primary">Save</button><div class="cserr"></div></form>
+        <button type="submit" class="primary">Save</button><div class="cserr" aria-live="polite"></div></form>
         ${st.s.team_name ? `<div class="note">Saved: team ${esc(st.s.team_number)} <b>${esc(st.s.team_name)}</b>.</div>` : ""}</div>`;
       form($app, async d => { await CS.app("PATCH", "settings", { team_number: +d.team }); next(); });
     } else if (step === "goal") {
@@ -303,7 +303,7 @@
         <form class="csform">${GOALS.map(([v, t]) => `<label style="display:flex;gap:8px;align-items:center;color:var(--text)"><input type="radio" name="goal" value="${esc(v)}" style="width:auto" ${cur === v ? "checked" : ""}> ${esc(t)}</label>`).join("")}
           <label style="display:flex;gap:8px;align-items:center;color:var(--text)"><input type="radio" name="goal" value="__other" style="width:auto" ${cur && !known ? "checked" : ""}> Other:
             <input name="other" maxlength="40" value="${known ? "" : esc(cur)}" style="flex:1"></label>
-          <button type="submit" class="primary">Save</button><div class="cserr"></div></form></div>`;
+          <button type="submit" class="primary">Save</button><div class="cserr" aria-live="polite"></div></form></div>`;
       form($app, async d => {
         const g = d.goal === "__other" ? (d.other || "").trim() : d.goal;
         if (!g) throw new Error("pick a goal");
@@ -356,7 +356,7 @@
         <label>Your name<input name="display_name" maxlength="64" autocomplete="name"></label>
         <label>Password (10+ characters)<input name="password" type="password" minlength="10" required autocomplete="new-password"></label>
         <label>Repeat password<input name="again" type="password" required autocomplete="new-password"></label>
-        <button type="submit" class="primary">Create admin account</button><div class="cserr"></div></form></div>`;
+        <button type="submit" class="primary">Create admin account</button><div class="cserr" aria-live="polite"></div></form></div>`;
     form($app, async d => {
       if (d.password !== d.again) throw new Error("the passwords don't match");
       CS.session = await CS.app("POST", "setup", { setup_code: d.setup_code || null, username: d.username.trim(), display_name: d.display_name || "", password: d.password });
