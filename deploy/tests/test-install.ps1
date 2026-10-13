@@ -74,4 +74,5 @@ try {
 }
 
 Write-Host ''
-if ($script:Fails -eq 0) { Write-Host 'all installer checks passed' } else { Write-Host "$($script:Fails) check(s) failed"; exit 1 }
+# explicit exit codes: the last native call (a deliberate failure test) would otherwise leak $LASTEXITCODE = 1
+if ($script:Fails -eq 0) { Write-Host 'all installer checks passed'; exit 0 } else { Write-Host "$($script:Fails) check(s) failed"; exit 1 }
