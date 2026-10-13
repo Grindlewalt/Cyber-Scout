@@ -1,0 +1,102 @@
+/* Design lab extension slot "b": layout CSS for layouts registered in ext/b.js. */
+
+/* ------------------------------------------------------------------ layout: COMMAND
+ * A command centre for a 13-16" laptop in the stands: everything a strategist glances at between matches is on one screen.
+ *   rail (our matches)  ................................................
+ *   queue card (scrolls with the page)  | our event, as a 6-stat strip
+ *                                       | schedule   (pane, own scroll)
+ *   levers (disclosure)                 | ratings    (pane, own scroll)
+ * Sidebar collapses to an icon rail; schedule + ratings are pinned open as panes (CSS-only: ::details-content).
+ * Below 1200px it degrades to the stacked dashboard with the denser type scale; phones get the stock layout. */
+@media (min-width: 761px) {
+  html[data-theme][data-layout="command"] { --sb-w: 60px; --tb-h: 48px; --gut: 18px;
+    --fs-cap: 11.5px; --fs-foot: 12.5px; --fs-body: 13.5px; --fs-callout: 15px; --fs-t3: 16px; --fs-t2: 19px; --fs-t1: 24px;
+    --sp-4: 12px; --sp-5: 18px; --sp-6: 24px; --sp-7: 32px; }
+  /* icon rail */
+  html[data-theme][data-layout="command"] .sidebar { padding: 10px 8px; align-items: center; gap: 6px; }
+  html[data-theme][data-layout="command"] .sb-brand { font-size: 0; gap: 0; padding: 4px; min-height: 40px; justify-content: center; }
+  html[data-theme][data-layout="command"] .sb-brand .logo { width: 28px; height: 28px; }
+  html[data-theme][data-layout="command"] .sb-event { display: none; }
+  html[data-theme][data-layout="command"] #topnav { display: flex; flex-direction: column; gap: 4px; }
+  html[data-theme][data-layout="command"] .sb-group { align-items: center; gap: 2px; }
+  html[data-theme][data-layout="command"] .sb-h { font-size: 0; padding: 0; height: 1px; width: 24px; margin: 4px 0; background: color-mix(in srgb, var(--plate-ink) 16%, transparent); }
+  html[data-theme][data-layout="command"] .sb-group:first-child .sb-h { display: none; }
+  html[data-theme][data-layout="command"] .sb-item { width: 44px; height: 38px; min-height: 38px; padding: 0; justify-content: center; }
+  html[data-theme][data-layout="command"] .sb-item span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  html[data-theme][data-layout="command"] .sb-item svg { width: 19px; height: 19px; }
+  html[data-theme][data-layout="command"] .tb-title .t { font-size: 16px; }
+  html[data-theme][data-layout="command"] .timectl { height: 32px; }
+  html[data-theme][data-layout="command"] .timectl select, html[data-theme][data-layout="command"] .timectl .tc-step, html[data-theme][data-layout="command"] .timectl .tc-live { height: 30px; }
+  html[data-theme][data-layout="command"] .timectl select { background-position: calc(100% - 11px) 13px, calc(100% - 7px) 13px; }
+  html[data-theme][data-layout="command"] main { max-width: none; padding-top: 14px; }
+  html[data-theme][data-layout="command"] .foot { max-width: none; margin: 0 var(--gut); }
+  /* denser queue card */
+  html[data-theme][data-layout="command"] .db { gap: 12px; }
+  html[data-theme][data-layout="command"] .rl-m { min-height: 44px; padding: 4px 9px 6px; min-width: 58px; gap: 2px; }
+  html[data-theme][data-layout="command"] .rl-m.upc { min-width: 84px; }
+  html[data-theme][data-layout="command"] .rl-p { min-height: 32px; padding: 2px 7px; }
+  html[data-theme][data-layout="command"] .rl-r b { font-size: 16px; }
+  html[data-theme][data-layout="command"] .qcard { padding: 16px 18px 12px; }
+  html[data-theme][data-layout="command"] .qhead { margin-bottom: 12px; }
+  html[data-theme][data-layout="command"] .qid h2 { font-size: 28px; }
+  html[data-theme][data-layout="command"] .cd > span { font-size: 36px; }
+  html[data-theme][data-layout="command"] .qb-n { font-size: 60px; }
+  html[data-theme][data-layout="command"] .qwin { margin: 14px 0 4px; gap: 18px; }
+  html[data-theme][data-layout="command"] .aline { padding: 6px; gap: 5px; }
+  html[data-theme][data-layout="command"] .dchip { min-height: 30px; padding: 3px 7px; }
+  html[data-theme][data-layout="command"] .ql { grid-template-columns: 64px minmax(0, 1fr); gap: 10px; padding: 9px 0; }
+  html[data-theme][data-layout="command"] .mfield { width: 68px; }
+  html[data-theme][data-layout="command"] .dsecs { gap: 12px; }
+  html[data-theme][data-layout="command"] .dsec > summary { padding: 10px 14px; min-height: 42px; }
+  html[data-theme][data-layout="command"] .ds-b { padding: 0 14px 12px; }
+  html[data-theme][data-layout="command"] .dmodel { padding: 8px 12px; }
+  html[data-theme][data-layout="command"] table.sched td, html[data-theme][data-layout="command"] table.sched th { padding: 4px 7px; }
+}
+
+/* the command grid itself */
+@media (min-width: 1200px) {
+  html[data-theme][data-layout="command"] .dash.db { display: grid; align-items: start; gap: 12px 14px;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.06fr);
+    grid-template-areas: "rail rail" "main side" "main sched" "main ratings" "levers ratings" "model model"; }
+  html[data-theme][data-layout="command"] .db-grid, html[data-theme][data-layout="command"] .dsecs { display: contents; }
+  html[data-theme][data-layout="command"] .rail { grid-area: rail; }
+  html[data-theme][data-layout="command"] .db-main { grid-area: main; min-width: 0; }
+  html[data-theme][data-layout="command"] .db-side { grid-area: side; position: static; min-width: 0; }
+  html[data-theme][data-layout="command"] #sec-sched { grid-area: sched; min-width: 0; }
+  html[data-theme][data-layout="command"] #sec-levers { grid-area: levers; min-width: 0; }
+  html[data-theme][data-layout="command"] #sec-ratings { grid-area: ratings; min-width: 0; }
+  html[data-theme][data-layout="command"] .dmodel { grid-area: model; }
+  html[data-theme][data-layout="command"] .qcard { position: relative; }
+
+  /* our event: one horizontal strip of six readouts, then the model row + sparkline side by side */
+  html[data-theme][data-layout="command"] .side { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); column-gap: 20px; padding: 12px 16px 10px; }
+  html[data-theme][data-layout="command"] .side > h2 { grid-column: 1 / -1; margin-bottom: 8px; }
+  html[data-theme][data-layout="command"] .side > .oe { grid-column: 1 / -1; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 4px 12px; margin-bottom: 8px; }
+  html[data-theme][data-layout="command"] .oe dd { font-size: 22px; }
+  html[data-theme][data-layout="command"] .side > div:nth-of-type(1) { grid-column: 1; grid-row: 3; }
+  html[data-theme][data-layout="command"] .side > div:nth-of-type(2) { grid-column: 2; grid-row: 3 / span 3; padding-top: 8px; border-top: 1px solid var(--line); }
+  html[data-theme][data-layout="command"] .side > div:nth-of-type(3) { grid-column: 1; grid-row: 4; }
+  html[data-theme][data-layout="command"] .side > div:nth-of-type(4) { grid-column: 1; grid-row: 5; }
+  html[data-theme][data-layout="command"] .oe-spark .spark { height: 34px; }
+
+  /* schedule + ratings are panes: always open, header-only summary, body scrolls inside with a sticky table head */
+  html[data-theme][data-layout="command"] #sec-sched::details-content, html[data-theme][data-layout="command"] #sec-ratings::details-content { content-visibility: visible; display: block; }
+  html[data-theme][data-layout="command"] #sec-sched > summary, html[data-theme][data-layout="command"] #sec-ratings > summary { cursor: default; pointer-events: none; }
+  html[data-theme][data-layout="command"] #sec-sched > summary .hlp, html[data-theme][data-layout="command"] #sec-ratings > summary .hlp { pointer-events: auto; }
+  html[data-theme][data-layout="command"] #sec-sched .ds-c, html[data-theme][data-layout="command"] #sec-ratings .ds-c { display: none; }
+  html[data-theme][data-layout="command"] #sec-sched > summary, html[data-theme][data-layout="command"] #sec-ratings > summary { border-bottom: 1px solid var(--line); margin-bottom: 0; }
+  html[data-theme][data-layout="command"] #sec-sched .ds-b, html[data-theme][data-layout="command"] #sec-ratings .ds-b { padding: 0 6px 6px; }
+  html[data-theme][data-layout="command"] #sec-sched .tablewrap { max-height: clamp(240px, 40vh, 420px); overflow: auto; overscroll-behavior: contain; }
+  html[data-theme][data-layout="command"] #sec-ratings .tablewrap { max-height: clamp(260px, 44vh, 560px); overflow: auto; overscroll-behavior: contain; }
+  html[data-theme][data-layout="command"] #sec-ratings .rlegend { padding: 8px 8px 0; margin-bottom: 6px; }
+  html[data-theme][data-layout="command"] #sec-sched .tablewrap:focus-visible, html[data-theme][data-layout="command"] #sec-ratings .tablewrap:focus-visible { outline: 2px solid var(--focus, var(--accent)); outline-offset: -2px; }
+}
+
+/* very wide screens: three columns, the event strip gets its own column next to the schedule */
+@media (min-width: 1720px) {
+  html[data-theme][data-layout="command"] .dash.db { grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr) minmax(320px, .62fr);
+    grid-template-areas: "rail rail rail" "main sched side" "main ratings side" "levers ratings side" "model model model"; }
+  html[data-theme][data-layout="command"] .side { display: block; }
+  html[data-theme][data-layout="command"] .side > .oe { grid-template-columns: 1fr 1fr; }
+  html[data-theme][data-layout="command"] .db-side { position: sticky; top: calc(var(--tb-h) + 14px); }
+}

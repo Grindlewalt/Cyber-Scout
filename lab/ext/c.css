@@ -1,0 +1,77 @@
+/* Design lab extension slot "c": layout CSS for layouts registered in ext/c.js. */
+
+/* =============================================================================================
+ * layout: MOBILE-FIRST  (html[data-layout="mobile"])
+ * One column of stacked cards at every width. The match rail becomes a match switcher pinned to the
+ * bottom of the screen, above the tab bar: only "now" and the upcoming plans, so changing match never
+ * needs a scroll back to the top. Played results stay in "Schedule and results" and the side card.
+ * Colours come only from theme tokens; this file decides size and placement.
+ * ============================================================================================= */
+html[data-theme][data-layout="mobile"] {
+  --mf-col: 680px;                                                  /* the reading column */
+  --mf-dock: calc(64px + env(safe-area-inset-bottom));              /* space the tab bar takes at the bottom */
+  scroll-padding-bottom: calc(var(--mf-dock) + 84px);
+}
+
+/* ---- the switcher (all widths): the rail moves to the end of the dashboard and sticks to the bottom */
+html[data-theme][data-layout="mobile"] .dash > .rail { order: 99; position: sticky; bottom: calc(var(--mf-dock) + 8px); z-index: 26;
+  display: flex; align-items: stretch; gap: 0; padding: 6px; margin-top: 4px;
+  background: color-mix(in srgb, var(--surface) 94%, transparent); -webkit-backdrop-filter: saturate(1.4) blur(14px); backdrop-filter: saturate(1.4) blur(14px);
+  border: 1px solid var(--line-strong); border-radius: calc(var(--r-m) + 2px); box-shadow: var(--shadow-pop); }
+html[data-theme][data-layout="mobile"] .dash > .model, html[data-theme][data-layout="mobile"] .dash > .dmodel { order: 98; }
+html[data-theme][data-layout="mobile"] .rail .rl-h { display: none; }
+html[data-theme][data-layout="mobile"] .rail .rl { flex: 1; min-width: 0; flex-wrap: nowrap; gap: 6px; overflow-x: auto; overscroll-behavior-x: contain;
+  scroll-snap-type: x proximity; scrollbar-width: none; -webkit-overflow-scrolling: touch; }
+html[data-theme][data-layout="mobile"] .rail .rl::-webkit-scrollbar { display: none; }
+html[data-theme][data-layout="mobile"] .rail .rl > li { flex: none; scroll-snap-align: start; }
+/* played results and the "+N earlier" toggle leave the switcher (record + rating trend live in the side card) */
+html[data-theme][data-layout="mobile"] .rail .rl > li:has(> .rl-p), html[data-theme][data-layout="mobile"] .rail .rl > li.rl-more { display: none; }
+html[data-theme][data-layout="mobile"] .rail .rl-now { padding: 0 6px 0 4px; }
+html[data-theme][data-layout="mobile"] .rail .rl-now span { padding-left: 8px; }
+html[data-theme][data-layout="mobile"] .rail .rl-m { min-height: 52px; }
+html[data-theme][data-layout="mobile"] .rail .rl-m.upc { min-width: 88px; }
+html[data-theme][data-layout="mobile"] .rail .rl-m.later { min-width: 64px; }
+
+/* the stacked column: no side-by-side grid at any width */
+html[data-theme][data-layout="mobile"] .db-grid { grid-template-columns: minmax(0, 1fr); gap: var(--sp-3); }
+html[data-theme][data-layout="mobile"] .db-side { position: static; }
+html[data-theme][data-layout="mobile"] .dash { gap: 12px; }
+html[data-theme][data-layout="mobile"] .qteams { grid-template-columns: minmax(0, 1fr); }
+html[data-theme][data-layout="mobile"] .side .oe { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+html[data-theme][data-layout="mobile"] .plan { grid-template-columns: minmax(0, 1fr); }
+
+/* ---- laptop / tablet: a centred column with the tab bar as a floating dock (same model as the phone) */
+@media (min-width: 761px) {
+  html[data-theme][data-layout="mobile"] { --mf-dock: 76px; }
+  html[data-theme][data-layout="mobile"] .shell, html[data-theme][data-layout="mobile"] body.sb-off .shell { grid-template-columns: minmax(0, 1fr); }
+  html[data-theme][data-layout="mobile"] .sidebar, html[data-theme][data-layout="mobile"] #sbtoggle { display: none; }
+  html[data-theme][data-layout="mobile"] .toolbar { padding: 0 max(var(--gut), calc((100% - var(--mf-col)) / 2 + var(--gut))); }
+  html[data-theme][data-layout="mobile"] main { max-width: var(--mf-col); margin: 0 auto; padding-top: var(--sp-4); }
+  html[data-theme][data-layout="mobile"] .foot { max-width: calc(var(--mf-col) - 2 * var(--gut)); margin: 0 auto; padding-bottom: calc(var(--mf-dock) + 24px); }
+  html[data-theme][data-layout="mobile"] .tabbar { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; position: fixed; z-index: 30;
+    left: 50%; bottom: 12px; transform: translateX(-50%); width: min(calc(var(--mf-col) - 2 * var(--gut)), calc(100% - 2 * var(--gut))); padding: 4px;
+    background: color-mix(in srgb, var(--surface) 92%, transparent); -webkit-backdrop-filter: saturate(1.4) blur(14px); backdrop-filter: saturate(1.4) blur(14px);
+    border: 1px solid var(--line); border-radius: calc(var(--r-m) + 4px); box-shadow: var(--shadow-pop); }
+  html[data-theme][data-layout="mobile"] .tabbar a, html[data-theme][data-layout="mobile"] .tabbar button { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
+    min-height: 48px; padding: 0; color: var(--ink-3); text-decoration: none; font: inherit; font-size: 11.5px; font-weight: 600; background: none; border: 0; border-radius: var(--r-p); cursor: pointer; }
+  html[data-theme][data-layout="mobile"] .tabbar a:hover, html[data-theme][data-layout="mobile"] .tabbar button:hover { background: var(--hover); color: var(--ink); }
+  html[data-theme][data-layout="mobile"] .tabbar svg { width: 22px; height: 22px; }
+  html[data-theme][data-layout="mobile"] .tabbar [aria-current="page"] { color: var(--accent); }
+  html[data-theme][data-layout="mobile"] .tabbar [aria-current="page"] svg { stroke-width: 2.2; }
+  /* the phone-sized card at desktop: keep the phone's stacked header, one number per line */
+  html[data-theme][data-layout="mobile"] .qid { flex-basis: 100%; }
+  html[data-theme][data-layout="mobile"] .cd { text-align: left; }
+  html[data-theme][data-layout="mobile"] .ql.hasfield .ql-body { grid-template-columns: minmax(0, 1fr) 76px; }
+  html[data-theme][data-layout="mobile"] .lab-fab { bottom: calc(var(--mf-dock) + 12px); }
+}
+
+/* ---- phone: the tab bar is already fixed at the bottom; lift the lab button above the switcher */
+@media (max-width: 760px) {
+  html[data-theme][data-layout="mobile"] .foot { padding-bottom: calc(var(--mf-dock) + 24px); }
+  html[data-theme][data-layout="mobile"] .side .oe { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  html[data-theme][data-layout="mobile"] .lab-fab { bottom: calc(var(--mf-dock) + 80px); }
+  html[data-theme][data-layout="mobile"] .lab-panel { bottom: calc(var(--mf-dock) + 132px); max-height: calc(100vh - var(--mf-dock) - 150px); }
+}
+@media (min-width: 390px) and (max-width: 760px) {
+  html[data-theme][data-layout="mobile"] .side .oe { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}

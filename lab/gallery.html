@@ -52,6 +52,10 @@
   <div id="themes"></div>
 </main>
 <script src="themes.js"></script>
+<script src="ext/a.js"></script>
+<script src="ext/b.js"></script>
+<script src="ext/c.js"></script>
+<script src="ext/d.js"></script>
 <script>
   const L = window.LAB, esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
   const modes = t => [t.light && "light", t.dark && "dark"].filter(Boolean);
