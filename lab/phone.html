@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Phone frame</title>
+<!-- Headless Chrome cannot make a window narrower than 500px, so phone screenshots load the lab in a 390px frame.
+     phone.html?w=390&h=844&src=<url-encoded lab url> ; copies the frame's ?probe=1 metrics onto this page for checks. -->
+<style>
+  :root { color-scheme: light dark; }
+  html, body { margin: 0; background: #888; }
+  iframe { display: block; border: 0; }
+</style>
+</head>
+<body>
+<iframe id="f" title="Lab at phone width"></iframe>
+<script>
+  const q = new URLSearchParams(location.search), f = document.getElementById("f");
+  f.width = q.get("w") || 390; f.height = q.get("h") || 844;
+  f.src = q.get("src") || "index.html";
+  setInterval(() => { try { const p = f.contentDocument.documentElement.getAttribute("data-probe"); if (p) document.documentElement.setAttribute("data-probe", p); } catch (e) { } }, 500);
+</script>
+</body>
+</html>

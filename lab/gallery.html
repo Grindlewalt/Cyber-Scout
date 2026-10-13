@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Cyber-Scout theme gallery</title>
+<style>
+  :root { --bg: #f2f2f0; --surface: #ffffff; --ink: #18181a; --ink-2: #505056; --line: #dcdcd8; --chip: #ebebe8; --link: #18181a;
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; color-scheme: light dark; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #141416; --surface: #1d1d20; --ink: #f0f0ee; --ink-2: #b0b0b6; --line: #333338; --chip: #2a2a2e; --link: #f0f0ee; } }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font-size: 14px; line-height: 1.5; }
+  a { color: var(--link); text-underline-offset: 3px; }
+  header.top { padding: 28px 24px 8px; max-width: 1480px; margin: 0 auto; }
+  h1 { font-size: 26px; margin: 0 0 4px; letter-spacing: -.01em; }
+  .lede { color: var(--ink-2); margin: 0; max-width: 72ch; }
+  main { max-width: 1480px; margin: 0 auto; padding: 8px 24px 64px; }
+  .glance { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 16px; margin: 20px 0 40px; }
+  .glance a { display: block; text-decoration: none; color: inherit; }
+  .glance img { width: 100%; aspect-ratio: 1440 / 1000; object-fit: cover; object-position: top left; display: block; border-radius: 8px; border: 1px solid var(--line); background: var(--chip); }
+  .glance b { display: block; margin-top: 6px; font-weight: 600; } .glance span { color: var(--ink-2); font-size: 13px; }
+  section.th { border-top: 1px solid var(--line); padding: 28px 0 8px; }
+  .th h2 { font-size: 22px; margin: 0; letter-spacing: -.01em; }
+  .meta { color: var(--ink-2); margin: 2px 0 10px; max-width: 90ch; } .meta b { color: var(--ink); font-weight: 600; }
+  .sw { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0 14px; }
+  .sw span { display: inline-flex; align-items: center; gap: 6px; padding: 3px 8px 3px 3px; border-radius: 6px; background: var(--chip); font: 12px/1.2 ui-monospace, "SF Mono", Menlo, monospace; }
+  .sw i { width: 18px; height: 18px; border-radius: 4px; box-shadow: inset 0 0 0 1px rgba(127,127,127,.35); }
+  .mode { margin: 6px 0 22px; }
+  .mode h3 { font-size: 14px; margin: 0 0 8px; font-weight: 600; }
+  .row { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)) minmax(0, .42fr); gap: 12px; align-items: start; }
+  figure { margin: 0; }
+  figure a.img { display: block; }
+  figure img { width: 100%; display: block; border-radius: 6px; border: 1px solid var(--line); background: var(--chip); }
+  figcaption { display: flex; justify-content: space-between; gap: 8px; font-size: 12.5px; color: var(--ink-2); margin-top: 4px; }
+  details.ct { margin: 4px 0 8px; }
+  details.ct summary { cursor: pointer; font-weight: 600; padding: 4px 0; }
+  table { border-collapse: collapse; font-size: 12.5px; font-variant-numeric: tabular-nums; margin-top: 6px; }
+  th, td { text-align: left; padding: 3px 10px 3px 0; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  td.r { text-align: right; } td.bad { color: #d33; font-weight: 700; }
+  .pair { display: inline-flex; align-items: center; justify-content: center; min-width: 54px; padding: 0 6px; border-radius: 4px; font-weight: 600; }
+  @media (max-width: 900px) { .row { grid-template-columns: 1fr 1fr; } }
+</style>
+</head>
+<body>
+<header class="top">
+  <h1>Cyber-Scout theme gallery</h1>
+  <p class="lede">Every theme on the real Dashboard (Sunday 09:00 replay), 1440×1000 for each layout plus a 390×844 phone. Click a picture for full size, or "live" to open it in the lab with that theme, layout and appearance. Contrast ratios are computed from the token values in <code>themes.js</code>.</p>
+</header>
+<main>
+  <div class="glance" id="glance"></div>
+  <div id="themes"></div>
+</main>
+<script src="themes.js"></script>
+<script>
+  const L = window.LAB, esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+  const modes = t => [t.light && "light", t.dark && "dark"].filter(Boolean);
+  const KEY = ["bg", "surface", "plate", "ink", "accent-fill", "red-fill", "blue-fill", "caution"];
+  const live = (t, l, m) => `index.html?theme=${t}&layout=${l}&mode=${m}`;
+  const shot = n => `shots/${n}.webp`;
+  document.getElementById("glance").innerHTML = L.THEMES.flatMap(t => modes(t).map(m =>
+    `<a href="#th-${t.id}"><img loading="lazy" src="${shot(`desk-${t.id}-${m}-sidebar`)}" alt="${esc(t.name)}, ${m}, sidebar layout"><b>${esc(t.name)}</b><span>${m === "light" ? "Light" : "Dark"}</span></a>`)).join("");
+  const fontsOf = t => [...new Set((t.fonts || []).flatMap(k => L.FONTS[k]).map(f => f.family))].join(" + ") || "Archivo (current)";
+  document.getElementById("themes").innerHTML = L.THEMES.map(t => {
+    const ms = modes(t);
+    const sw = m => KEY.map(k => `<span><i style="background:${t[m][k]}"></i>${k} ${t[m][k]}</span>`).join("");
+    const rows = ms.map(m => `<div class="mode"><h3>${m === "light" ? "Light" : "Dark"}</h3><div class="sw">${sw(m)}</div><div class="row">
+      ${L.LAYOUTS.map(l => `<figure><a class="img" href="${shot(`desk-${t.id}-${m}-${l.id}`)}"><img loading="lazy" src="${shot(`desk-${t.id}-${m}-${l.id}`)}" alt="${esc(t.name)} ${m}, ${esc(l.name)} layout, desktop"></a>
+        <figcaption><span>${esc(l.name)}</span><a href="${live(t.id, l.id, m)}">live</a></figcaption></figure>`).join("")}
+      <figure><a class="img" href="${shot(`phone-${t.id}-${m}-sidebar`)}"><img loading="lazy" src="${shot(`phone-${t.id}-${m}-sidebar`)}" alt="${esc(t.name)} ${m} on a phone"></a><figcaption><span>Phone</span><a href="${live(t.id, "sidebar", m)}">live</a></figcaption></figure>
+      </div></div>`).join("");
+    const ct = ms.map(m => { const r = L.contrast(t[m]); const lo = r.filter(x => x.min === 4.5).reduce((a, x) => x.ratio < a.ratio ? x : a);
+      return `<details class="ct" id="ct-${t.id}-${m}"><summary>Contrast, ${m}: lowest text pair ${lo.ratio.toFixed(2)}:1 (${esc(lo.what)}), ${r.filter(x => !x.ok).length ? r.filter(x => !x.ok).length + " below target" : "all pass"}</summary>
+        <table><thead><tr><th>Where</th><th>Foreground</th><th>Background</th><th>Sample</th><th class="r">Ratio</th><th class="r">Target</th></tr></thead><tbody>
+        ${r.map(x => { const fg = x.fg.startsWith("#") ? x.fg : t[m][x.fg], bg = t[m][x.bg];
+          return `<tr><td>${esc(x.what)}</td><td>${esc(x.fg)} ${fg}</td><td>${esc(x.bg)} ${bg}</td><td><span class="pair" style="color:${fg};background:${bg}">Q47 80%</span></td><td class="r ${x.ok ? "" : "bad"}">${x.ratio.toFixed(2)}</td><td class="r">${x.min}</td></tr>`; }).join("")}
+        </tbody></table></details>`; }).join("");
+    return `<section class="th" id="th-${t.id}"><span id="ct-${t.id}"></span><h2>${esc(t.name)}</h2>
+      <p class="meta">${esc(t.blurb)} <b>${esc(t.why)}</b><br>Type: ${esc(fontsOf(t))} · Appearance: ${ms.join(" + ")}</p>${ct}${rows}</section>`;
+  }).join("");
+  if (location.hash) { const el = document.getElementById(location.hash.slice(1)); if (el) { el.scrollIntoView(); const d = document.querySelector(`#th-${location.hash.slice(4)} details`); if (d) d.open = true; } }
+</script>
+</body>
+</html>
