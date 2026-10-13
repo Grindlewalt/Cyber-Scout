@@ -1,46 +1,17 @@
 /* =============================================================================================
- * Cyber-Scout tokens. "Broadcast scoreboard, harbor teal".
+ * Cyber-Scout base tokens: type, spacing, shape, layout. Colours (and each theme's fonts / radii) live in themes.css,
+ * generated from the design lab (lab/tools/site-themes.mjs); theme.js picks the theme before first paint.
  * Colour has jobs, not moods:  red / blue = the alliances (content only, never chrome);
- * teal (--accent) = us / you are here / selected / focus;  amber (--caution) = replay, read with care;
- * green (--good) = healthy / live.  Neutrals are tinted slate-teal, never graphite or near-black.
- * WCAG contrast in comments, against --surface (cards) unless noted. Light first, dark below.
+ * --accent = us / you are here / selected / focus;  --caution (amber) = replay, read with care;  --good = healthy / live.
  * ============================================================================================= */
-/* The Archivo @font-face lives in fonts.css (inlined woff2, loaded before this file). */
+/* Archivo (fonts.css, inlined) is the fallback face; themes.css sets each theme's own. */
 :root {
-  color-scheme: light dark;
   --font: "Archivo", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   --font-num: "Archivo", ui-sans-serif, system-ui, sans-serif;   /* scoreboard numerals + titles: used with --num-stretch */
   --num-stretch: 80%;
   --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, monospace;
-  /* surfaces: cool slate-teal paper */
-  --bg: #eef4f4; --surface: #ffffff; --surface-2: #ebf2f2; --surface-3: #dee8e9;
-  --line: #d6e0e1; --line-strong: #afbebe;
-  /* content */
-  --ink: #122229;     /* 16.3:1 (14.5 on surface-2) */
-  --ink-2: #435359;   /*  8.0:1 ( 7.1 on surface-2) */
-  --ink-3: #57666b;   /*  6.0:1 ( 5.3 on surface-2) */
-  /* us / selection / focus */
-  --accent: #007471;  /*  5.6:1 text (5.0 on bg); white on fill 5.6; 4.8 on --accent-tint */
-  --accent-fill: #007471; --on-accent: #ffffff;
-  --accent-tint: #dcf2f0; --accent-line: #7cc4bf;
-  /* the brand plate (sidebar) */
-  --plate: #0f3b3e; --plate-2: #16494c; --plate-ink: #ffffff; --plate-ink-2: #c2dedd; --plate-ink-3: #9ac0bf;   /* 12.2 / 8.6 / 6.2 */
-  --plate-accent: #6ee0d5;                        /* current-section icon: 6.4 on --plate-2 */
-  /* alliances (content only, never chrome) */
-  --red: #c42b31;     /*  5.6:1 text (5.0 on surface-2) */
-  --blue: #1f5fd1;    /*  5.8:1 text (5.2 on surface-2) */
-  --red-fill: #d6343a; --blue-fill: #2f6fe4;        /* white bold text 4.8 / 4.7 */
-  --red-tint: #fbe7e7; --blue-tint: #e4ecfb;        /* ink 13.8, alliance text 4.7 / 4.9 */
-  /* signals */
-  --caution: #8a5800; /*  6.0:1, 5.3 on its tint */
-  --caution-tint: #f8eedb; --caution-line: #d9b56d;
-  --good: #1d7a3a;    /*  5.4:1 */
-  --bad: #c42b31;
-  --sel: color-mix(in srgb, var(--accent) 9%, transparent);       /* selected row / hover on chosen things */
-  --hover: color-mix(in srgb, var(--ink) 5%, transparent);
   --shadow: none;                                                   /* cards are drawn with a border, not a shadow */
-  --shadow-pop: 0 2px 6px rgba(9, 30, 33, .08), 0 12px 32px rgba(9, 30, 33, .16);
-  --field-bg: #3b4a3f;
+  --shadow-pop: 0 2px 6px rgba(20, 16, 12, .08), 0 12px 32px rgba(20, 16, 12, .16);
   /* type scale (~1.2) */
   --fs-cap: 12px; --fs-foot: 13px; --fs-body: 14px; --fs-callout: 16px; --fs-t3: 18px; --fs-t2: 22px; --fs-t1: 28px; --fs-disp: 56px;
   /* 4-pt spacing */
@@ -56,33 +27,6 @@
   --warn: var(--caution);
   --red-soft: var(--red-tint); --blue-soft: var(--blue-tint);
   font-family: var(--font);
-}
-@media (prefers-color-scheme: dark) {
-  :root {
-    /* "deep harbor": lifted slate-teal, not graphite */
-    --bg: #122126; --surface: #1a2a2f; --surface-2: #233339; --surface-3: #2c3e44;
-    --line: #314045; --line-strong: #4c5e65;
-    --ink: #edf3f5;   /* 13.2:1 (11.7 on surface-2) */
-    --ink-2: #bdcacf; /*  8.8:1 ( 7.8 on surface-2) */
-    --ink-3: #a5b4b9; /*  6.9:1 ( 6.1 on surface-2) */
-    --accent: #61dbd1; --accent-fill: #4acfc5; --on-accent: #0b2023;  /* 8.9:1 text; on-accent 8.9 on fill; 6.4 on tint */
-    --accent-tint: #164545; --accent-line: #2f8a85;
-    --plate: #0b282b; --plate-2: #133639; --plate-ink: #edf3f5; --plate-ink-2: #bdd3d3; --plate-ink-3: #94b1b1;   /* 13.9 / 9.9 / 6.8 */
-    --plate-accent: var(--accent);                  /* 7.8 on --plate-2 */
-    --red: #fb817f;   /*  6.0:1 (5.3 on surface-2) */
-    --blue: #7daff9;  /*  6.6:1 (5.8 on surface-2) */
-    --red-tint: #4a2a2c; --blue-tint: #213654;      /* ink 11.3 / 10.9, alliance text 5.2 / 5.5 */
-    --caution: #f2b84b; /* 8.3:1, 7.1 on its tint */
-    --caution-tint: #3a3220; --caution-line: #7a5c22;
-    --good: #6bd68a;  /*  8.2:1 */
-    --bad: #fb817f;
-    --sel: color-mix(in srgb, var(--accent) 12%, transparent);
-    --hover: color-mix(in srgb, var(--ink) 6%, transparent);
-    --shadow-pop: 0 2px 6px rgba(0, 0, 0, .25), 0 16px 40px rgba(0, 0, 0, .4);
-  }
-}
-@media (prefers-contrast: more) {
-  :root { --ink-2: var(--ink); --ink-3: var(--ink); --line: var(--line-strong); --plate-ink-2: var(--plate-ink); --plate-ink-3: var(--plate-ink); }
 }
 
 * { box-sizing: border-box; }
@@ -602,3 +546,74 @@ td.wrapc { white-space: normal; }
 .mv-yt.mv-yt2 { margin-left: 0; }
 .mv-clip video { display: block; width: 100%; aspect-ratio: 16 / 9; background: #000; border-radius: var(--r-p); }
 .mv-lt { display: flex; gap: 8px; flex-wrap: wrap; padding: 2px 2px 4px; font-weight: 600; font-variant-numeric: tabular-nums; }
+
+
+/* ============================================================================================= settings (#/settings, settings.js) */
+.st { max-width: 1120px; }
+.st-note { max-width: 640px; margin: 0 0 var(--sp-6); padding: var(--sp-4) var(--sp-5); background: var(--accent-tint); border-radius: var(--r-m); }
+.st-note blockquote { margin: 0; font-size: var(--fs-callout); line-height: 1.5; color: var(--ink); text-wrap: pretty; }
+.st-note figcaption { display: flex; align-items: center; gap: var(--sp-2); margin-top: var(--sp-3); font-weight: 600; color: var(--ink-2); }
+.st-av { display: inline-grid; place-items: center; width: 26px; height: 26px; border-radius: 50%; background: var(--accent-fill); color: var(--on-accent); font-size: 13px; font-weight: 700; }
+.st-sec { border: 0; margin: 0 0 var(--sp-6); padding: 0; min-width: 0; }
+.st-sec legend { padding: 0; margin-bottom: var(--sp-3); }
+.st-sec legend h2 { margin: 0; font-size: var(--fs-t3); }
+.st-why { margin: var(--sp-3) 0 0; color: var(--ink-2); font-size: var(--fs-foot); max-width: 72ch; }
+.st-why b { color: var(--ink); }
+/* radio cards: the input stays focusable but invisible; the card shows checked + focus */
+.st-theme input, .st-layout input, .st-seg input { position: absolute; opacity: 0; width: 1px; height: 1px; margin: 0; pointer-events: none; }
+.st-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(164px, 1fr)); gap: 10px; }
+.st-layouts { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px; max-width: 780px; }
+.st-theme, .st-layout { position: relative; display: flex; flex-direction: column; gap: var(--sp-2); padding: var(--sp-2); border: 1px solid var(--line); border-radius: var(--r-p);
+  background: var(--surface); color: var(--ink); cursor: pointer; transition: border-color .15s var(--ease), box-shadow .15s var(--ease); }
+.st-layout { padding-bottom: var(--sp-3); }
+.st-theme:hover, .st-layout:hover { border-color: var(--line-strong); }
+.st-theme:has(input:checked), .st-layout:has(input:checked) { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); background: color-mix(in srgb, var(--accent) 7%, var(--surface)); }
+.st-theme:has(input:checked) .st-name b, .st-layout:has(input:checked) .st-name b { font-weight: 700; }
+.st-theme:has(input:focus-visible), .st-layout:has(input:focus-visible) { outline: 2px solid var(--focus, var(--accent)); outline-offset: 2px; }
+.st-name { display: flex; align-items: center; justify-content: space-between; gap: 4px 6px; flex-wrap: wrap; padding: 0 2px; }
+.st-name b { font-weight: 600; }
+.st-layout small { padding: 0 2px; color: var(--ink-2); font-size: var(--fs-foot); line-height: 1.35; }
+.st-badges { display: inline-flex; gap: 4px; flex-wrap: wrap; }
+.st-b { font-size: 11px; font-weight: 600; line-height: 16px; padding: 0 6px; border-radius: var(--r-tag); border: 1px solid var(--line-strong); color: var(--ink-2); }
+.st-b.def { background: var(--accent-fill); border-color: var(--accent-fill); color: var(--on-accent); }
+/* theme preview: a fixed miniature of that theme's own colours (sidebar plate, page, card, 'us', red / blue) */
+.st-prevs { display: flex; gap: 4px; }
+.st-mini { position: relative; flex: 1; min-width: 0; height: 58px; border-radius: var(--r-s); background: var(--b); overflow: hidden; box-shadow: inset 0 0 0 1px rgba(127, 127, 127, .3); }
+.st-mini > span { position: absolute; display: block; }
+.st-mini .pl { left: 0; top: 0; bottom: 0; width: 22%; background: var(--p); box-shadow: 1px 0 0 rgba(127, 127, 127, .25); }
+.st-mini .cd { left: 31%; right: 9%; top: 10px; bottom: 10px; background: var(--s); border-radius: 4px; }
+.st-mini .cd > span { position: absolute; display: block; border-radius: 2px; }
+.st-mini .ln { left: 6px; top: 7px; width: 55%; height: 4px; background: var(--i); }
+.st-mini .ac { left: 6px; top: 16px; width: 32%; height: 9px; background: var(--a); border-radius: 3px; }
+.st-mini .al { left: 6px; right: 6px; bottom: 5px; height: 4px; display: flex; gap: 0; overflow: hidden; }
+.st-mini .al span { flex: 1; background: var(--r); } .st-mini .al span + span { background: var(--u); }
+/* appearance: segmented radios */
+.st-seg { display: inline-grid; grid-auto-flow: column; gap: 2px; padding: 2px; border: 1px solid var(--line-strong); border-radius: var(--r-s); background: var(--surface); }
+.st-seg label { position: relative; }
+.st-seg span { display: block; min-width: 84px; padding: 7px 14px; border-radius: calc(var(--r-s) - 2px); text-align: center; color: var(--ink-2); font-weight: 500; cursor: pointer; }
+.st-seg span:hover { background: var(--hover); color: var(--ink); }
+.st-seg input:checked + span { background: var(--accent-fill); color: var(--on-accent); font-weight: 600; }
+.st-seg input:focus-visible + span { outline: 2px solid var(--focus, var(--accent)); outline-offset: 1px; }
+.st-seg label.dis span { opacity: .45; cursor: not-allowed; background: none; }
+/* layout schematics */
+.st-lo { position: relative; display: block; height: 64px; border-radius: var(--r-s); background: var(--surface-2); border: 1px solid var(--line); overflow: hidden; }
+.st-lo > span { position: absolute; display: block; }
+.st-lo .lo-side { left: 0; top: 0; bottom: 0; width: 22%; background: var(--plate); }
+.st-lo .lo-rail { left: 0; top: 0; bottom: 0; width: 9%; background: var(--plate); }
+.st-lo .lo-bar { left: 0; right: 0; top: 0; height: 13px; background: var(--plate); }
+.st-lo .lo-top { left: 22%; right: 0; top: 0; height: 11px; border-bottom: 1px solid var(--line); background: var(--surface); }
+.st-lo.lo-command .lo-top { left: 9%; }
+.st-lo .lo-body { left: 30%; right: 8%; top: 19px; bottom: 7px; border-radius: 3px; background: var(--surface); border: 1px solid var(--line); }
+.st-lo .lo-body.wide { left: 8%; top: 21px; }
+.st-lo .lo-grid { left: 14%; right: 4%; top: 16px; bottom: 5px; display: grid; grid-template-columns: 1.2fr 1fr; grid-template-rows: 1fr 1fr; gap: 3px; }
+.st-lo .lo-grid span { border-radius: 2px; background: var(--surface); border: 1px solid var(--line); }
+.st-lo .lo-grid span:first-child { grid-row: span 2; }
+.st-acts { display: flex; align-items: center; gap: var(--sp-3); flex-wrap: wrap; padding-top: var(--sp-2); border-top: 1px solid var(--line); max-width: 1120px; }
+.st-ok { color: var(--ink-2); font-size: var(--fs-foot); }
+@media (max-width: 760px) {
+  .st-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+  .st-layouts { grid-template-columns: minmax(0, 1fr); }
+  .st-seg { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .st-seg span { min-width: 0; }
+  .st-mini { height: 50px; }
+}

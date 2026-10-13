@@ -466,7 +466,7 @@ async function analyzePage(ev, key) {
     const g = ctx, r = p.r, sc = r.w / PL.LEN, FP = (x, y) => [r.x + (PL.LEN - x) * sc, r.y + y * sc];
     g.fillStyle = "#14181d"; g.fillRect(0, 0, p.w, p.h);
     if (FIELD.complete && FIELD.naturalWidth) { g.globalAlpha = .92; g.drawImage(FIELD, r.x, r.y, r.w, r.h); g.globalAlpha = 1; }
-    else { g.fillStyle = "#3b4a3f"; g.fillRect(r.x, r.y, r.w, r.h); }
+    else { g.fillStyle = getComputedStyle(document.documentElement).getPropertyValue("--field-bg").trim() || "#3a352c"; g.fillRect(r.x, r.y, r.w, r.h); }
     const L = curL, per = periodAt(T);
     for (const al of ["red", "blue"]) {     // hub rings: solid = live this period
       const [hx, hy] = FP(HUBS[al][0], HUBS[al][1]), act = per ? per.active[al] : null;
