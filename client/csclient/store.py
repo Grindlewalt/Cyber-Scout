@@ -88,6 +88,7 @@ class SessionStore:
         self.lock = threading.RLock()
         self.d = read_json(self.path, {}) or {}
         self.d.setdefault("cookies", {})
+        self.gen = 0            # bumped by every sign-in / sign-out / server change (see absorb_session_json)
 
     def save(self):
         with self.lock:
@@ -115,10 +116,14 @@ class SessionStore:
         with self.lock:
             return "; ".join(f"{k}={v}" for k, v in sorted(self.d["cookies"].items()) if v)
 
-    def absorb_set_cookies(self, values):
-        """Apply Set-Cookie header values from the server to the jar (only the Cyber-Scout cookies)."""
+    def absorb_set_cookies(self, values, gen=None):
+        """Apply Set-Cookie header values from the server to the jar (only the Cyber-Scout cookies). `gen`: as in
+        absorb_session_json (an answer to a request sent before a sign-in/out must not change the new session's
+        cookies, e.g. an anonymous GET /session handing out a fresh cs_csrf)."""
         changed = False
         with self.lock:
+            if gen is not None and gen != self.gen:
+                return False
             for sc in values or ():
                 first, _, attrs = sc.partition(";")
                 name, _, val = first.strip().partition("=")
@@ -139,11 +144,16 @@ class SessionStore:
                 self.save()
         return changed
 
-    def absorb_session_json(self, body: dict):
-        """A SessionOut answer (session/login/setup/profile): remember user + csrf."""
+    def absorb_session_json(self, body: dict, gen=None):
+        """A SessionOut answer (session/login/setup/profile): remember user + csrf. `gen` = self.gen when the request
+        was sent: a GET /session that started before a sign-in (e.g. a background sync's 401 check) and answers after
+        it must not replace the new session with its older, signed-out view."""
         if not isinstance(body, dict) or "csrf" not in body:
             return
         with self.lock:
+            if gen is not None and gen != self.gen:
+                return
+            self.gen += 1
             self.d["session"] = body
             if body.get("csrf"):
                 self.d["csrf"] = body["csrf"]
@@ -152,11 +162,13 @@ class SessionStore:
     def set_server(self, server):
         with self.lock:
             if self.d.get("server") != server:
+                self.gen += 1
                 self.d = {"server": server, "cookies": {}}
                 self.save()
 
     def clear(self):
         with self.lock:
+            self.gen += 1
             self.d = {"server": self.d.get("server"), "cookies": {}}
             self.save()
 

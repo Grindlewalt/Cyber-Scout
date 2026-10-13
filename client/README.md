@@ -18,13 +18,30 @@ Pure Python standard library (Python 3.9+), no dependencies. Standalone executab
 
 ## Install and run
 
-**Standalone executable** (no Python needed): download `cyberscout-client-<os>-<arch>` from whoever builds them
-(see [Building](#building)) and run it.
+**Standalone executable** (no Python needed): download the file for your computer from the GitHub release (or the
+`client` workflow's artifacts; see [Building](#building)) and run it. A terminal window opens with the address and
+the log, and the browser opens `http://127.0.0.1:7600/`.
 
-* macOS: `chmod +x cyberscout-client-darwin-arm64 && ./cyberscout-client-darwin-arm64`. The binary is not signed:
-  the first time, right-click → Open in Finder, or `xattr -d com.apple.quarantine cyberscout-client-darwin-arm64`.
-* Windows: double-click `cyberscout-client-windows-x64.exe` (SmartScreen: "More info" → "Run anyway").
-* Linux: `chmod +x cyberscout-client-linux-x86_64 && ./cyberscout-client-linux-x86_64`.
+| computer | file |
+|---|---|
+| Windows 10/11, 64-bit | `cyberscout-client-windows-x64.exe` |
+| Mac with Apple silicon (M1 and later) | `cyberscout-client-macos-arm64` |
+| Intel Mac | `cyberscout-client-macos-x64` (also runs on Apple silicon through Rosetta) |
+| Linux x86_64 (glibc 2.17+: Ubuntu 18.04+, Debian 10+, Fedora, …) | `cyberscout-client-linux-x64` |
+
+Each file has a `.sha256` next to it (`shasum -a 256 -c <file>.sha256` / `sha256sum -c`; Windows:
+`Get-FileHash <file>`). The builds are **not code-signed**, so the first start needs one extra step:
+
+* **Windows**: double-click the `.exe`. SmartScreen says "Windows protected your PC" → **More info** →
+  **Run anyway**. Allow the firewall prompt only if you started it with `--host 0.0.0.0` (the default listens on this
+  computer only, so no prompt appears).
+* **macOS**: the file downloads without the "executable" bit and Gatekeeper blocks unsigned programs. In Terminal:
+  `chmod +x ~/Downloads/cyberscout-client-macos-arm64`, then in Finder **right-click (Control-click) the file → Open →
+  Open** (once; afterwards a double-click works). Or, in Terminal:
+  `xattr -d com.apple.quarantine cyberscout-client-macos-arm64 && ./cyberscout-client-macos-arm64`.
+  On macOS 15+, if there is no "Open" button: System Settings → Privacy & Security → "… was blocked" → **Open Anyway**.
+* **Linux**: `chmod +x cyberscout-client-linux-x64 && ./cyberscout-client-linux-x64` (add `--no-browser` on a
+  machine without a desktop).
 
 **From source** (any OS with Python 3.9+):
 
@@ -175,14 +192,36 @@ per-event state), `util.py`.
 
 ## Building
 
+PyInstaller can't cross-compile: each OS builds its own executable. The scripts make a throwaway venv per Python in
+`.work/client-build/` with PyInstaller, run `build/make_bundle.py` (copies the repo's `web/` into
+`client/web_bundle/`, git-ignored) and build `build/cyberscout.spec` (one file, console) into `client/dist/`:
+
 ```bash
-client/build/build.sh                    # macOS / Linux → client/dist/cyberscout-client-<os>-<arch> (+ .sha256)
-CS_TARGET_ARCH=universal2 PYTHON=/Library/Frameworks/Python.framework/Versions/3.12/bin/python3 client/build/build.sh
-powershell -ExecutionPolicy Bypass -File client\build\build.ps1    # Windows → client\dist\cyberscout-client-windows-x64.exe
+client/build/build.sh                                   # macOS / Linux, this machine's arch
+CS_TARGET_ARCH=x86_64 client/build/build.sh             # macOS: Intel build on an Apple-silicon Mac
+CS_TARGET_ARCH=universal2 client/build/build.sh         # macOS: one file for both
+CS_SMOKE=1 client/build/build.sh                        # + run the smoke test on the result
+powershell -ExecutionPolicy Bypass -File client\build\build.ps1    # Windows (PYTHON=… or the py launcher)
+python3 client/build/smoke_test.py client/dist/<file> [--server mock | --server https://scout.example.dev]
 ```
 
-The scripts make a throwaway venv in `.work/client-build/` with PyInstaller, run `build/make_bundle.py` (copies the
-repo's `web/` into `client/web_bundle/`, git-ignored) and build `build/cyberscout.spec` (one file, console). Build
-each OS on that OS. macOS: Homebrew Python is single-arch (arm64 on Apple silicon); a universal2 binary needs the
-python.org installer's Python; or build arm64 and x86_64 separately (an Intel Mac or `arch -x86_64` with an x86_64
-Python). Signing: set `CS_CODESIGN_ID` (macOS) / sign the .exe with `signtool`.
+| output | where to build it |
+|---|---|
+| `cyberscout-client-macos-arm64` / `-macos-x64` / `-macos-universal2` | a Mac. `build.sh` uses the python.org Python (universal2, runs on macOS 10.13+/11+) when installed; Homebrew's Python is single-arch and its binaries need the macOS version they were built on |
+| `cyberscout-client-linux-x64` | Linux x86_64 with an **old-glibc Python** so the binary runs on older distros: `uv python install 3.12` then `PYTHON=$(uv python find 3.12) client/build/build.sh` (python-build-standalone, glibc 2.17). A distro Python ties the binary to that distro's glibc |
+| `cyberscout-client-windows-x64.exe` | Windows with Python 3.9+ from python.org; the exe gets the brand icon (`build/icon.ico`) |
+
+`smoke_test.py` starts the executable with `--no-browser` on a free port with a throwaway data folder, checks
+`GET /` (web app + `cs_client` cookie), `GET /client/v1/status`, optionally `POST /client/v1/test` (`--server mock`
+starts a stand-in `/app/v1/info` on the machine; a real address only calls its public `/app/v1/info`), and stops it.
+
+**CI** (`.github/workflows/client.yml`): on push / PR touching `client/` or `web/`, a matrix of ubuntu-latest,
+macos-14 (arm64), macos-15-intel (x64) and windows-latest runs the unit tests, builds with these scripts, smoke-tests
+the binary and uploads the artifacts `cyberscout-client-linux-x64`, `cyberscout-client-macos-arm64`,
+`cyberscout-client-macos-x64`, `cyberscout-client-windows-x64.exe` (each with its `.sha256`). A `v*` tag also creates
+a **draft** GitHub Release with the four files and `SHA256SUMS`.
+
+Signing (not done; that is why the Gatekeeper / SmartScreen steps above exist): macOS: set `CS_CODESIGN_ID` to a
+Developer ID Application identity, then notarize (`xcrun notarytool submit … --wait`; a bare executable can't be
+stapled, Gatekeeper checks online). Windows: `signtool sign /fd sha256 /tr <timestamp url> /td sha256 …` with an
+OV/EV certificate (SmartScreen reputation builds up per certificate).

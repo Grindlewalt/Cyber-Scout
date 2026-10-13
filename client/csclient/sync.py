@@ -164,6 +164,13 @@ class SyncEngine:
         with self.lock:                       # (a probe that finds the server back adds its own request)
             reqs, self.requests = self.requests, []
         if not self.online:
+            if reqs and not asked:
+                # "Sync now" arrived while this tick was already past its probe: probe again for it right away
+                # instead of dropping it until the next (offline back-off) probe
+                with self.lock:
+                    self.requests = reqs + self.requests
+                self.next_probe = time.time()
+                return
             if reqs:
                 self.note_error("network", f"can't reach the server ({self.offline_reason}); will sync when back")
             self.next_probe = time.time() + jitter(self.cfg["probe_interval"] or 15, min(self.failures, 2), 60)

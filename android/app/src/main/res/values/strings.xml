@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Cyber-Scout</string>
+    <string name="setup_title">Connect to your server</string>
+    <string name="address_label">Server address</string>
+    <string name="address_hint">scout.example.org</string>
+    <string name="address_help">The address you use for Cyber-Scout in a browser, like scout.example.org, https://scout.example.org or 10.0.0.58:7560. Ask your team\'s admin if you don\'t know it.</string>
+    <string name="test_connection">Test connection</string>
+    <string name="open">Open</string>
+    <string name="testing">Testing…</string>
+    <string name="test_ok">Connected: %1$s · version %2$s · %3$d ms</string>
+    <string name="test_failed">Can\'t connect: %1$s</string>
+    <string name="not_an_address">that is not a server address (e.g. scout.example.org or 10.0.0.58:7560)</string>
+    <string name="note_http">This is a plain http:// address (team network). The app works while you are connected, but offline copies of an event (Save for offline) need the https:// address.</string>
+    <string name="load_failed">The app could not load: %1$s</string>
+    <string name="retry">Retry</string>
+    <string name="change_server">Change server</string>
+</resources>

@@ -2,6 +2,8 @@ FROM nginx:1.29-alpine
 COPY web/nginx.conf /etc/nginx/conf.d/default.conf
 COPY web/*.html web/*.js web/*.css web/field.jpg /usr/share/nginx/html/
 COPY web/fonts/ /usr/share/nginx/html/fonts/
+COPY web/manifest.webmanifest /usr/share/nginx/html/
+COPY web/icons/ /usr/share/nginx/html/icons/
 # Cache-bust: every JS/CSS URL in index.html gets ?v=<hash of the shipped files>, so after a deploy no browser or
 # CDN edge (e.g. a Cloudflare tunnel) can mix an old cached script with new ones. nginx.conf serves these versioned
 # URLs as immutable (1 year) and index.html as no-cache, so a deploy is picked up on the next page load.

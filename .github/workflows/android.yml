@@ -1,0 +1,113 @@
+# Cyber-Scout for Android (android/): WebView shell around the server's web app.
+#   build:     JVM unit tests, lint, a debug-signed APK (installable) and an unsigned release APK
+#   emulator:  instrumented smoke test on x86_64 emulators (API 30 and 34): first-run screen -> Test connection
+#              against android/tools/mock_server.py (on the runner, 10.0.2.2 from the emulator) -> Open -> the web
+#              app loads in the WebView
+name: android
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+    paths: ["android/**", ".github/workflows/android.yml"]
+  pull_request:
+    paths: ["android/**", ".github/workflows/android.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    working-directory: android
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Unit tests, lint, APKs
+        run: ./gradlew --stacktrace testDebugUnitTest lintDebug assembleDebug assembleRelease
+      - name: Name the APKs
+        run: |
+          mkdir -p out
+          cp app/build/outputs/apk/debug/app-debug.apk out/cyberscout-android.apk
+          cp app/build/outputs/apk/release/app-release-unsigned.apk out/cyberscout-android-release-unsigned.apk
+          cd out && sha256sum ./*.apk > SHA256SUMS && cat SHA256SUMS && ls -l
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cyberscout-android.apk
+          path: |
+            android/out/cyberscout-android.apk
+            android/out/SHA256SUMS
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cyberscout-android-release-unsigned.apk
+          path: android/out/cyberscout-android-release-unsigned.apk
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: android-build-reports
+          path: android/app/build/reports/
+
+  emulator:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        api-level: [30, 34]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Enable KVM
+        working-directory: .
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Build the app and the test APK
+        run: ./gradlew --stacktrace assembleDebug assembleDebugAndroidTest
+      - name: Start the mock Cyber-Scout server
+        run: |
+          nohup python3 tools/mock_server.py 8765 > "$RUNNER_TEMP/mock.log" 2>&1 &
+          for i in $(seq 1 20); do curl -fsS http://127.0.0.1:8765/app/v1/info && break; sleep 0.5; done
+      - name: Instrumented smoke test (API ${{ matrix.api-level }})
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: ${{ matrix.api-level }}
+          arch: x86_64
+          target: default
+          profile: pixel_6
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-snapshot
+          working-directory: android
+          script: ./gradlew --stacktrace connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.mockServer=10.0.2.2:8765
+      - name: Mock server log
+        if: always()
+        working-directory: .
+        run: cat "$RUNNER_TEMP/mock.log" || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: android-test-reports-api${{ matrix.api-level }}
+          path: |
+            android/app/build/reports/androidTests/
+            android/app/build/outputs/androidTest-results/
+          if-no-files-found: ignore

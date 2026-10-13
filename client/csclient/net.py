@@ -228,7 +228,7 @@ class Server:
             self.conn = Conn(base, ca_file=self.config.get("ca_file")) if base else None
 
     def call(self, method, path, body=None, headers=None, timeout=30.0, stream=False, auth=True,
-             ctype=None, max_body=256 * 1024 * 1024) -> Response:
+             ctype=None, max_body=256 * 1024 * 1024, gen=None) -> Response:
         conn = self.conn
         if conn is None:
             raise NetError("no server configured")
@@ -247,7 +247,7 @@ class Server:
                 h["X-CSRF-Token"] = self.session.csrf
         r = conn.request(method, path, body=body, headers=h, timeout=timeout, stream=stream, max_body=max_body)
         if auth:
-            self.session.absorb_set_cookies(r.headers.get_all("Set-Cookie") or [])
+            self.session.absorb_set_cookies(r.headers.get_all("Set-Cookie") or [], gen=gen)
         return r
 
     # ---- session
@@ -260,11 +260,12 @@ class Server:
         return d
 
     def refresh_session(self, timeout=15.0):
-        r = self.call("GET", "/app/v1/session", timeout=timeout)
+        gen = self.session.gen
+        r = self.call("GET", "/app/v1/session", timeout=timeout, gen=gen)
         d = r.json()
         if r.status != 200 or not isinstance(d, dict):
             raise HTTPError(r.status, r.body)
-        self.session.absorb_session_json(d)
+        self.session.absorb_session_json(d, gen=gen)
         return d
 
     def login(self, username, password) -> dict:

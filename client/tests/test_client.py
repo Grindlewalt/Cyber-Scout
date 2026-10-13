@@ -291,7 +291,9 @@ class TestSync(Base):
         self.wait(lambda: self.app.mirror.version == "v2", "web mirror v2")
         code, _, body = self.c.req("GET", "/app.js", raw=True)
         self.assertEqual(body, b"const v2=1;")
-        self.assertEqual(len([d for d in os.listdir(self.app.mirror.web_dir) if d.startswith("v-")]), 1)
+        # the old copy is removed right after the switch (the switch itself is what `version` shows)
+        self.wait(lambda: len([d for d in os.listdir(self.app.mirror.web_dir) if d.startswith("v-")]) == 1,
+                  "old web copy removed", timeout=10)
 
 
 class TestOutbox(Base):

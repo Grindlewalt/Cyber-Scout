@@ -449,9 +449,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
         h.update(extra_headers or {})
         if method in MUTATING and "Idempotency-Key" not in h:
             h["Idempotency-Key"] = str(uuid.uuid4())
+        gen = app.session.gen if method == "GET" else None     # a read must not undo a sign-in made meanwhile
         try:
             r = app.server.call(method, full, body=body or None, headers=h, timeout=120,
-                                ctype=self.headers.get("Content-Type"))
+                                ctype=self.headers.get("Content-Type"), gen=gen)
             if r.status == 403 and method in MUTATING and "csrf" in detail_text(r.body).lower():
                 app.server.refresh_session()
                 r = app.server.call(method, full, body=body or None, headers=h, timeout=120,
@@ -467,7 +468,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if "json" in ctype and b'"csrf"' in data:
             d = r.json()
             if isinstance(d, dict) and "csrf" in d and "user" in d:
-                app.session.absorb_session_json(d)
+                app.session.absorb_session_json(d, gen=gen)
         if method == "GET" and r.status == 200 and "json" in ctype and len(data) <= 4 * 1024 * 1024 \
                 and not sub.startswith(("/auth/", "/sync/")):
             app.db.cache_put(full, r.status, ctype, data)

@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <shortcut
+        android:shortcutId="change_server"
+        android:enabled="true"
+        android:icon="@drawable/ic_shortcut_server"
+        android:shortcutShortLabel="@string/change_server"
+        android:shortcutLongLabel="@string/change_server">
+        <intent
+            android:action="dev.grantrindal.cyberscout.CHANGE_SERVER"
+            android:targetClass="dev.grantrindal.cyberscout.MainActivity"
+            android:targetPackage="dev.grantrindal.cyberscout" />
+    </shortcut>
+</shortcuts>

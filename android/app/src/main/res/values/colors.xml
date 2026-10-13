@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- web/themes.css (default theme) and the brand mark in web/index.html -->
+    <color name="brand">#4A6A40</color>
+    <color name="on_brand">#FBF7F0</color>
+    <color name="bg">#EEE5D6</color>
+    <color name="ink">#2A251F</color>
+    <color name="ink_2">#5E554A</color>
+    <color name="ok">#3E6B35</color>
+    <color name="bad">#A3362B</color>
+</resources>

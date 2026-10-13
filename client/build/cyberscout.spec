@@ -1,8 +1,10 @@
 # -*- mode: python ; coding: utf-8 -*-
 # PyInstaller spec: one self-contained executable `cyberscout-client` (.exe on Windows) with the bundled web app.
 # Run through build/build.sh or build/build.ps1 (they create the venv and the web bundle first).
-#   CS_TARGET_ARCH = arm64 | x86_64 | universal2   (macOS only; universal2 needs a universal2 Python, e.g. python.org)
+#   CS_TARGET_ARCH = arm64 | x86_64 | universal2   (macOS only; x86_64 / universal2 from arm64 need a universal2 Python,
+#                    e.g. python.org's)
 import os
+import sys
 
 CLIENT = os.path.dirname(os.path.dirname(os.path.abspath(SPEC)))
 WEB = os.path.join(CLIENT, "web_bundle")
@@ -32,4 +34,6 @@ exe = EXE(
     runtime_tmpdir=None,
     target_arch=os.environ.get("CS_TARGET_ARCH") or None,
     codesign_identity=os.environ.get("CS_CODESIGN_ID") or None,
+    # Windows: the brand mark as the .exe icon (macOS/Linux one-file console binaries have no icon)
+    icon=os.path.join(CLIENT, "build", "icon.ico") if sys.platform == "win32" else None,
 )

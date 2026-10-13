@@ -137,8 +137,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.wfile.write(body)
 
     def body(self):
-        n = int(self.headers.get("Content-Length") or 0)
-        return self.rfile.read(n) if n else b""
+        # read once and keep it: every request's body is consumed (see route), so an early 401/403 answer can't
+        # leave body bytes on a keep-alive connection to be parsed as the next request line
+        if getattr(self, "_body", None) is None:
+            n = int(self.headers.get("Content-Length") or 0)
+            self._body = self.rfile.read(n) if n else b""
+        return self._body
 
     def session_out(self, s, csrf):
         return {"setup_required": False, "setup_code_required": False,
@@ -167,6 +171,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     # ---- routing
     def route(self):
+        self._body = None
+        self.body()
         st = self.st
         u = urlsplit(self.path)
         path, q = unquote(u.path), parse_qs(u.query)

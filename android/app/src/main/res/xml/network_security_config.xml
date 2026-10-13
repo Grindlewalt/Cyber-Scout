@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  https:// everywhere, with the system's certificate authorities only (no user-added CAs, no pinning).
+
+  Plain http:// is meant ONLY for the team network: 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10
+  (Tailscale) and *.local. A network security config can name hosts but not address ranges, so cleartext is
+  permitted here and the range rule is enforced in code, for every request the app makes:
+    - Test connection / Open: ConnectionTest.cleartextRefusal (ServerAddress.cleartextAllowed)
+    - the page and its service worker: CleartextPolicy.block in MainActivity.shouldInterceptRequest and the
+      ServiceWorkerClient, which answer 403 for http:// to any other host.
+  Service workers (offline copies of an event) only run on https:// origins.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="true">local</domain>
+        <domain includeSubdomains="false">localhost</domain>
+    </domain-config>
+</network-security-config>

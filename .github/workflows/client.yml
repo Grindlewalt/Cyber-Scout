@@ -1,0 +1,138 @@
+# Cyber-Scout Client: unit tests + standalone executables for Linux, macOS (arm64 + x64) and Windows.
+# PyInstaller can't cross-compile, so each target builds on its own runner, then smoke-tests the binary
+# (client/build/smoke_test.py: start with --no-browser, GET /, GET /client/v1/status, POST /client/v1/test against a
+# local stand-in server, stop). A v* tag also creates a draft GitHub Release with the four executables + .sha256.
+name: client
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+    paths: ["client/**", "web/**", ".github/workflows/client.yml"]
+  pull_request:
+    paths: ["client/**", "web/**", ".github/workflows/client.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: client-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: ${{ matrix.artifact }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            artifact: cyberscout-client-linux-x64
+            file: cyberscout-client-linux-x64
+          - os: macos-14            # Apple silicon
+            artifact: cyberscout-client-macos-arm64
+            file: cyberscout-client-macos-arm64
+          # Intel Mac. GitHub retired the macos-13 image (Dec 2025); macos-15-intel is the x86_64 image that replaced
+          # it. If that one is gone too: build on macos-14 with CS_TARGET_ARCH=x86_64 (setup-python's macOS Python is
+          # universal2) and smoke-test under Rosetta (`softwareupdate --install-rosetta --agree-to-license`).
+          - os: macos-15-intel
+            artifact: cyberscout-client-macos-x64
+            file: cyberscout-client-macos-x64
+          - os: windows-latest
+            artifact: cyberscout-client-windows-x64.exe
+            file: cyberscout-client-windows-x64.exe
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        id: py
+        with:
+          python-version: "3.12"
+
+      # Linux: build with python-build-standalone (glibc 2.17 baseline) instead of the runner's Python, whose
+      # libpython needs the runner's new glibc: the binary then runs on older distros too (Ubuntu 20.04+, Debian 11+).
+      - name: Portable Python for the Linux build
+        if: runner.os == 'Linux'
+        uses: astral-sh/setup-uv@v6
+      - name: Select build Python
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = Linux ]; then
+            uv python install 3.12
+            echo "PYTHON=$(uv python find 3.12)" >> "$GITHUB_ENV"
+          else
+            echo "PYTHON=${{ steps.py.outputs.python-path }}" >> "$GITHUB_ENV"
+          fi
+
+      - name: Unit tests
+        shell: bash
+        run: python -m unittest discover -s client/tests -v
+
+      - name: Build (macOS / Linux)
+        if: runner.os != 'Windows'
+        run: bash client/build/build.sh
+
+      - name: Build (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./client/build/build.ps1
+
+      - name: Inspect
+        shell: bash
+        run: |
+          ls -l client/dist
+          cat "client/dist/${{ matrix.file }}.sha256"
+          if [ "$RUNNER_OS" != Windows ]; then file "client/dist/${{ matrix.file }}"; fi
+          if [ "$RUNNER_OS" = Linux ]; then
+            echo "glibc needed by the bootloader: $(objdump -T client/dist/${{ matrix.file }} | grep -o 'GLIBC_[0-9.]*' | sort -Vu | tail -1)"
+          fi
+
+      - name: Smoke test
+        shell: bash
+        run: python client/build/smoke_test.py "client/dist/${{ matrix.file }}" --server mock --timeout 120
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: |
+            client/dist/${{ matrix.file }}
+            client/dist/${{ matrix.file }}.sha256
+          if-no-files-found: error
+
+  release:
+    name: Draft release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: cyberscout-client-*
+          merge-multiple: true
+      - name: Checksums
+        run: |
+          cd dist
+          chmod +x cyberscout-client-linux-x64 cyberscout-client-macos-arm64 cyberscout-client-macos-x64
+          sha256sum -c ./*.sha256
+          cat ./*.sha256 > SHA256SUMS
+          ls -l
+      - uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          name: Cyber-Scout Client ${{ github.ref_name }}
+          generate_release_notes: true
+          body: |
+            Standalone Cyber-Scout Client builds (no Python needed). Install notes: client/README.md.
+            * Windows: `cyberscout-client-windows-x64.exe` (SmartScreen: More info → Run anyway)
+            * macOS: `cyberscout-client-macos-arm64` (Apple silicon) / `cyberscout-client-macos-x64` (Intel); unsigned:
+              right-click → Open the first time, or `xattr -d com.apple.quarantine <file>`
+            * Linux: `cyberscout-client-linux-x64` (`chmod +x` it)
+          files: |
+            dist/cyberscout-client-*
+            dist/SHA256SUMS
