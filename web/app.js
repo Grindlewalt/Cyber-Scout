@@ -709,6 +709,26 @@ async function renderTimebar(p, ev) {
   b.onclick = () => { const off = !document.body.classList.contains("sb-off"); lsSet2(localStorage, "cs:sboff", off ? "1" : null); set(off); };
 })();
 
+// app-wide full screen (pit TVs / projectors): a toolbar button, Fullscreen API on the whole page. Hidden where the browser can't
+// (iPhone Safari has no element full screen; the match viewer has its own fallback).
+(function wireFullscreen() {
+  const de = document.documentElement, tb = document.getElementById("toolbar"), ub = document.getElementById("userbox");
+  if (!tb || !(de.requestFullscreen || de.webkitRequestFullscreen) || !(document.fullscreenEnabled || document.webkitFullscreenEnabled)) return;
+  const ON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5"/></svg>';
+  const OFF = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 4v5H4M20 9h-5V4M15 20v-5h5M4 15h5v5"/></svg>';
+  const b = document.createElement("button");
+  b.type = "button"; b.className = "tb-btn tb-fs"; b.id = "tbfs";
+  const cur = () => document.fullscreenElement || document.webkitFullscreenElement;
+  const sync = () => { const on = cur() === de; b.innerHTML = on ? OFF : ON; b.setAttribute("aria-pressed", on ? "true" : "false");
+    b.setAttribute("aria-label", on ? "Leave full screen" : "Full screen"); b.title = on ? "Leave full screen (Esc)" : "Full screen (pit TV / projector)"; };
+  b.onclick = () => {
+    if (cur()) (document.exitFullscreen || document.webkitExitFullscreen).call(document);
+    else { try { const r = de.requestFullscreen ? de.requestFullscreen({ navigationUI: "hide" }) : de.webkitRequestFullscreen(); if (r && r.catch) r.catch(() => { }); } catch (e) { } }
+  };
+  sync(); tb.insertBefore(b, ub || null);
+  document.addEventListener("fullscreenchange", sync); document.addEventListener("webkitfullscreenchange", sync);
+})();
+
 // ------------------------------------------------------------------ router
 // Every hash segment is checked once here before any page sees it (security audit: fragment XSS into hrefs / innerHTML):
 // a plain character set everywhere, a well-formed event key, and the exact shape of match / team keys and snapshot

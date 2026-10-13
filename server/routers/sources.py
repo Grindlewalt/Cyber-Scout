@@ -38,6 +38,10 @@ try:
 except Exception as _e:            # pragma: no cover - only when the image lacks live/
     SRC = LY = None
     _IMPORT_ERR = repr(_e)
+try:
+    import videoplan as VP         # live/videoplan.py (stdlib at import): the per-match video plan
+except Exception:                  # pragma: no cover
+    VP = None
 
 TARGETS = ("overhead", "station_red", "station_blue")
 
@@ -118,6 +122,7 @@ def discover(ev: str = Depends(valid_event), user: User = Depends(require_role("
     matches = tba_call(key, f"/event/{ev}/matches", ttl=300)
     slim = [dict(key=m["key"], comp_level=m.get("comp_level"), set_number=m.get("set_number"),
                  match_number=m.get("match_number"), videos=m.get("videos") or []) for m in matches or []]
+    # TBA webcasts become livestream sources (the recorder picks today's); the plan is rebuilt from cached checks
     return _job(ev, "discover", {"_event": {"webcasts": event.get("webcasts") or [], "name": event.get("name")},
                                  "_matches": slim, "full": True}, user)
 
@@ -173,7 +178,7 @@ def delete_source(sid: str, ev: str = Depends(valid_event), user: User = Depends
 @router.post("/events/{ev}/sources/{sid}/frame", summary="Grab a sample frame (admin; job)")
 def grab_frame(sid: str, body: dict = Body(default={}), ev: str = Depends(valid_event),
                user: User = Depends(require_role("admin"))):
-    if SRC and not SRC.get(_doc(ev), sid):
+    if SRC and not SRC.find_source(_evd(ev), sid):
         raise HTTPException(404, "no such source")
     p = {"source": sid}
     if isinstance(body, dict):
@@ -225,7 +230,7 @@ def get_layout(ev: str = Depends(valid_event), user: User = Depends(require_role
 def put_layout(sid: str, body: LayoutIn, ev: str = Depends(valid_event), user: User = Depends(require_role("admin"))):
     S, L = _mods()
     doc = _doc(ev)
-    s = S.get(doc, sid)
+    s = S.find_source(_evd(ev), sid, doc)            # a source, or a detected video type group of the plan
     if s is None:
         raise HTTPException(404, "no such source")
     regs = []
@@ -246,7 +251,7 @@ def put_layout(sid: str, body: LayoutIn, ev: str = Depends(valid_event), user: U
     lay = _layout_doc(ev) or {"version": 1, "sources": {}}
     lay.setdefault("sources", {})[sid] = dict(W=body.W, H=body.H, role=s.get("role"), regions=regs, frame=body.frame,
                                               updated_at=time.time(), updated_by=user.display_name or f"Teammate #{user.id}")
-    if s.get("primary"):
+    if s.get("primary") or (s.get("origin") == "auto" and s.get("type") == "wide" and not lay.get("processing_source")):
         lay["processing_source"] = sid
     if any(r["kind"].startswith("station_") for r in regs):
         lay["station_source"] = sid
@@ -426,6 +431,110 @@ def livestream_status(ev: str = Depends(valid_event), user: User = Depends(requi
     if st["stale"] and st.get("state") in ("recording", "waiting", "starting"):
         st["message"] = f"recorder service not reporting for {age:.0f}s (is the `recorder` container running?)"
     return st
+
+
+# ------------------------------------------------------------------ per-match video plan (live/videoplan.py)
+def _vp():
+    if VP is None:
+        raise HTTPException(503, "the video plan is not installed in this API image (needs live/videoplan.py)")
+    return VP
+
+
+def _slim_matches(ev, db):
+    key = tba_key_or_409(db)
+    matches = tba_call(key, f"/event/{ev}/matches", ttl=300) or []
+    return [dict(key=m["key"], comp_level=m.get("comp_level"), set_number=m.get("set_number"),
+                 match_number=m.get("match_number"), videos=m.get("videos") or [],
+                 alliances={a: {"score": ((m.get("alliances") or {}).get(a) or {}).get("score")} for a in ("red", "blue")})
+            for m in matches]
+
+
+def _plan_matches(plan):
+    """The match list a plan was built from (TBA-linked videos only), to rebuild it offline after an override."""
+    out = []
+    for k, e in ((plan or {}).get("matches") or {}).items():
+        out.append(dict(key=k, played=bool(e.get("played")),
+                        videos=[dict(type="youtube", key=c["id"]) for c in e.get("candidates") or []
+                                if "tba" in (c.get("via") or [])]))
+    return out
+
+
+@router.get("/events/{ev}/video-plan", summary="Per-match video plan: candidates, detected types, choices (viewer+)")
+def video_plan(ev: str = Depends(valid_event), user: User = Depends(require_role("viewer"))):
+    """Which upload the tracker uses for every match (live/videoplan.py): candidates with their detected type
+    (wide / broadcast / stations), duplicates, the choice and why, plus the admin overrides.  Built by the worker
+    every poll and by POST .../video-plan/check; null until the first build."""
+    V = _vp()
+    plan = V.load_plan(_evd(ev))
+    doc = _doc(ev)
+    lay = _layout_doc(ev) or {}
+    fam = [dict(id=s["id"], label=s.get("label"), kind=s.get("kind"), provider=s.get("provider"), url=s.get("url"),
+                channel=s.get("channel"), title_pattern=s.get("title_pattern"), example_title=s.get("example_title"),
+                enabled=s.get("enabled", True), origin=s.get("origin"), n_videos=len(s.get("videos") or {}),
+                role=s.get("role"), webcast=s.get("webcast")) for s in doc.get("sources", [])]
+    groups = []
+    for g in ((plan or {}).get("groups") or {}).values():
+        groups.append(dict(g, videos=None, has_layout=g["id"] in (lay.get("sources") or {})))
+    return dict(event=ev, plan=plan, overrides=doc.get("match_overrides") or {}, sources=fam, groups=groups,
+                discovered_at=doc.get("discovered_at"), jobs_inline=bool(SRC and SRC.vision_available()))
+
+
+class PlanOverride(BaseModel):
+    pin: str | None = Field(None, max_length=200, description="video id / URL the tracker must use for this match")
+    pin_stations: str | None = Field(None, max_length=200, description="video id / URL for the station cameras")
+    exclude: list[str] = Field(default_factory=list, max_length=40, description="video ids never used for this match")
+    add: list[str] = Field(default_factory=list, max_length=10, description="extra video ids / URLs for this match")
+
+
+def _vid(v):
+    """A YouTube id or URL -> the 11-char id, else 422."""
+    if v is None or v == "":
+        return None
+    v = str(v).strip()
+    if SRC and SRC._YT_ID.match(v):
+        return v
+    try:
+        c = SRC.classify_url(v) if SRC else {}
+    except ValueError as e:
+        raise HTTPException(422, f"not a YouTube video: {e}")
+    if c.get("provider") != "youtube" or not c.get("video"):
+        raise HTTPException(422, "only YouTube videos can be pinned")
+    return c["video"]
+
+
+@router.put("/events/{ev}/video-plan/matches/{mk}", summary="Pin / exclude videos for one match (admin)")
+def plan_override(mk: str, body: PlanOverride, ev: str = Depends(valid_event), user: User = Depends(require_role("admin"))):
+    V = _vp()
+    if not mk.startswith(ev + "_") or not SRC._MATCH_KEY.match(mk):
+        raise HTTPException(404, "no such match")
+    ov = dict(pin=_vid(body.pin), pin_stations=_vid(body.pin_stations),
+              exclude=sorted({_vid(x) for x in body.exclude if x}), add=sorted({_vid(x) for x in body.add if x}))
+    ov = {k: v for k, v in ov.items() if v}
+    doc = _doc(ev)
+    mo = doc.setdefault("match_overrides", {})
+    if ov:
+        ov.update(by=user.display_name or f"Teammate #{user.id}", at=time.time())
+        mo[mk] = ov
+    else:
+        mo.pop(mk, None)
+    _save(ev, doc)
+    plan = V.load_plan(_evd(ev))
+    if plan:                                          # rebuild from the cached checks (no video work here)
+        ms = _plan_matches(plan)
+        if mk not in {m["key"] for m in ms}: ms.append(dict(key=mk, videos=[]))
+        plan = V.save_plan(_evd(ev), V.build_plan(ev, _evd(ev), ms, doc, V.load_cache(cfg.DATA),
+                                                  live=V.live_clips(ev)))
+    return dict(match=mk, override=mo.get(mk), entry=((plan or {}).get("matches") or {}).get(mk))
+
+
+@router.post("/events/{ev}/video-plan/check", summary="Check the event's videos and rebuild the plan (admin; job)")
+def plan_check(body: dict = Body(default={}), ev: str = Depends(valid_event), user: User = Depends(require_role("admin")),
+               db=Depends(DB.get_db)):
+    _vp()
+    p = {"_matches": _slim_matches(ev, db)}
+    if isinstance(body, dict) and isinstance(body.get("only"), list):
+        p["only"] = [_vid(x) for x in body["only"][:40] if x]
+    return _job(ev, "plan", p, user)
 
 
 # ------------------------------------------------------------------ jobs

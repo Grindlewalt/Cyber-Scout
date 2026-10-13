@@ -45,6 +45,8 @@ KEEP_VIDEO = os.environ.get("KEEP_VIDEO", "1") == "1"
 ID_CONF_MIN = float(os.environ.get("ID_CONF_MIN", "0.5"))   # below: shots/frames are not credited to a team
 HUBCAM = os.environ.get("HUBCAM", "0") == "1"   # optional station-camera pass (~1-2 min/match extra)
 MAX_ATTEMPTS = 3
+VPLAN_S = float(os.environ.get("VPLAN_SECONDS", "60"))   # per poll: time for checking new candidate uploads (video plan)
+VPLAN_N = int(os.environ.get("VPLAN_MAX", "12"))         # ... and at most this many uploads
 
 
 def log(*a):
@@ -108,19 +110,24 @@ def process_match(ev, m, cfg, status, meta_cache, live=None):
                     kw = dict(start_hint=live["start"], start_trusted=True, teams=live["teams"], layout=live["layout"],
                               event=None if m.get("livestream") else event_ctx(ev, m))
                 else:
-                    log(f"{m['key']}: downloading {v['id']} ({v['title']})")
+                    log(f"{m['key']}: downloading {v['id']} ({v['title']}"
+                        f"{', ' + v['type'] + (' -- limited tracking' if v.get('limited') else '') if v.get('type') else ''})")
                     videos.download(v["id"], vpath)
                     cam_p, pose_p = ev_file(ev, "camera.json"), os.path.join(ev_dir(ev), "pose_latest.json")
                     kw = dict(start_hint=start_hint(ev, v), teams=match_teams(m), event=event_ctx(ev, m))
+                    lay = upload_layout(ev, v)
+                    if lay: kw["layout"] = lay
                 log(f"{m['key']}: processing")
                 t0 = time.time()
-                extra = station_reads(ev, m, vpath, meta_cache) if HUBCAM and kind != "live" else None
+                extra = station_reads(ev, m, vpath, meta_cache, (cfg.get("video_plan") or {}).get(m["key"])) \
+                    if HUBCAM and kind != "live" else None
                 res = process.process(vpath, cam_p, MODEL, TAG_CSV, log=lambda *a: log(m["key"], *a),
                                       pose_guess=jload(pose_p), extra_reads=extra, **kw)
                 pc = res.get("pose", {})
                 if pc.get("tags", 0) >= 3 and (pc.get("applied") or (pc.get("moved_px") or 99) < 2.0):
                     jsave(pose_p, res["camera_pose"])          # verified pose: next match starts here
-                res.update(key=m["key"], video=dict(id=v["id"], title=v["title"], channel=v["channel"]),
+                res.update(key=m["key"], video=dict(id=v["id"], title=v["title"], channel=v["channel"],
+                                                    **{k_: v[k_] for k_ in ("type", "limited") if v.get(k_)}),
                            processed_at=time.time(), seconds=round(time.time() - t0))
                 if kind == "live":
                     res.update(source="livestream", camera_file=os.path.basename(cam_p), live=dict(live["info"]))
@@ -191,7 +198,7 @@ def process_match(ev, m, cfg, status, meta_cache, live=None):
         jsave(os.path.join(ev_dir(ev), "status.json"), status)
 
 
-def station_reads(ev, m, wide_path, meta_cache):
+def station_reads(ev, m, wide_path, meta_cache, plan=None):
     """HUBCAM: fetch the "Match N" inset upload (kept in MEDIA/<ev>/insets) and return the station-camera
     bumper-OCR callable for the tracker -- ~3x more reads, 95.6% -> 98.5% answered identity on the dev set.
     Never fails the match: no inset -> no extra reads."""
@@ -199,7 +206,7 @@ def station_reads(ev, m, wide_path, meta_cache):
         import stationcam, station_ocr
         inset = os.path.join(MEDIA, ev, "insets", f"{m['key']}.mp4")
         if not os.path.exists(inset):
-            v = stationcam.find_inset_video(m, meta_cache)
+            v = stationcam.find_inset_video(m, meta_cache, plan=plan)
             if not v:
                 return None
             os.makedirs(os.path.dirname(inset), exist_ok=True)
@@ -572,8 +579,39 @@ def live_reconcile(ev, m, status):
 
 
 # ------------------------------------------------------------------ loop
+def video_plan(ev, tba, tba_ms, cfg):
+    """TBA discovery on its own (webcasts -> livestream sources, upload families; throttled) + the per-match
+    video plan (live/videoplan.py: a few new candidate uploads checked per poll, time-boxed) -> cfg["video_plan"]
+    for videos.candidates.  Never fails the sync: without a plan the title rules apply."""
+    try:
+        import sources, videoplan
+        try:
+            sources.auto_discover(DATA, ev, tba.event(ev), tba_ms, log=log)
+        except Exception:
+            traceback.print_exc()
+        md = os.path.join(ev_dir(ev), "matches")
+        done = {f[:-5] for f in os.listdir(md) if f.endswith(".json")} if os.path.isdir(md) else set()
+        plan = videoplan.refresh(DATA, ev, tba_ms, budget_s=VPLAN_S, max_n=VPLAN_N, log=log, done_keys=done)
+        cfg["video_plan"] = plan.get("matches") or {}
+    except Exception:
+        traceback.print_exc()
+    return cfg
+
+
+def upload_layout(ev, v):
+    """process(layout=...) for a plan-chosen upload (videoplan.layout_for: its type's drawn layout, or detected
+    station insets masked); None = the event's default layout lookup."""
+    if not (isinstance(v, dict) and v.get("plan")): return None
+    try:
+        import videoplan
+        return videoplan.layout_for(ev_dir(ev), v)
+    except Exception:
+        traceback.print_exc(); return None
+
+
 def sync(ev, tba, max_new=None):
-    ms = sorted(tba.matches(ev), key=lambda m: (m.get("actual_time") or m.get("time") or 0, sort_key(m)))
+    tba_ms = tba.matches(ev)
+    ms = sorted(tba_ms, key=lambda m: (m.get("actual_time") or m.get("time") or 0, sort_key(m)))
     lv = live_view(ev)                                 # livestream records (live/liveingest.py)
     if lv:
         ms = sorted(ms + lv.extra_matches({m["key"] for m in ms}),
@@ -585,6 +623,7 @@ def sync(ev, tba, max_new=None):
         cfg = sources.video_config(sources.load(ev_dir(ev)), cfg, jload(os.path.join(ev_dir(ev), "layout.json"), None))
     except Exception:
         traceback.print_exc()
+    cfg = video_plan(ev, tba, tba_ms, cfg)
     meta_cache = jload(os.path.join(DATA, "cache", "ytmeta.json"), {}) or {}
     has_cam = os.path.exists(ev_file(ev, "camera.json"))
     if not has_cam and ev not in _NEEDS_SETUP_LOGGED:            # once per event: not an error, just not set up yet

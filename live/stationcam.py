@@ -73,10 +73,40 @@ def layout_regions(event_dir=None):
 
 
 # ---------------------------------------------------------------- 1. which upload
-def find_inset_video(match_tba, meta_cache, meta_fn=None):
-    """The "Match N" upload (two station-camera insets) among a TBA match's videos, or None.
+_PLANS = {}
+
+
+def _plan_entry(match_tba):
+    """The match's entry in data/events/<ev>/video_plan.json (live/videoplan.py), cached by mtime, or None."""
+    key = match_tba.get("key") or ""
+    ev = key.split("_", 1)[0]
+    if not ev: return None
+    p = os.path.join(os.environ.get("DATA", "/data"), "events", ev, "video_plan.json")
+    try:
+        mt = os.path.getmtime(p)
+        if _PLANS.get(p, (None,))[0] != mt:
+            with open(p) as f:
+                _PLANS[p] = (mt, json.load(f))
+        return (_PLANS[p][1].get("matches") or {}).get(key)
+    except (OSError, ValueError):
+        return None
+
+
+def find_inset_video(match_tba, meta_cache, meta_fn=None, plan=None):
+    """The upload with the two station-camera insets for a TBA match, or None.
+    The event's video plan decides when it has checked the match's videos (`plan`: the match's plan entry;
+    default: read from DATA/events/<ev>/video_plan.json): its `stations` video, or None when none of the
+    checked videos shows the insets.  Without a plan: the "Match N" title rule (FIRST Washington).
     `meta_cache` {yt id: {id, channel, title, duration, height}} as worker.py keeps it
     (data/cache/ytmeta.json); missing ids are fetched with videos.meta (or `meta_fn`)."""
+    pe = plan if plan is not None else _plan_entry(match_tba)
+    if pe and pe.get("stations"):
+        c = next((c for c in pe.get("candidates") or [] if c.get("id") == pe["stations"]), None)
+        if c:
+            return dict(id=c["id"], channel=c.get("channel") or "", title=c.get("title") or "",
+                        duration=c.get("duration") or 0, height=c.get("height") or 0)
+    if pe and pe.get("candidates") and not pe.get("pending"):
+        return None                                  # every linked video checked: none has the insets
     if meta_fn is None:
         import videos
         meta_fn = videos.meta

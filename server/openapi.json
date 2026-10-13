@@ -2517,6 +2517,158 @@
     }
    }
   },
+  "/app/v1/events/{ev}/video-plan": {
+   "get": {
+    "tags": [
+     "sources"
+    ],
+    "summary": "Per-match video plan: candidates, detected types, choices (viewer+)",
+    "description": "Which upload the tracker uses for every match (live/videoplan.py): candidates with their detected type\n(wide / broadcast / stations), duplicates, the choice and why, plus the admin overrides.  Built by the worker\nevery poll and by POST .../video-plan/check; null until the first build.",
+    "operationId": "video_plan_app_v1_events__ev__video_plan_get",
+    "parameters": [
+     {
+      "name": "ev",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Ev"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/app/v1/events/{ev}/video-plan/matches/{mk}": {
+   "put": {
+    "tags": [
+     "sources"
+    ],
+    "summary": "Pin / exclude videos for one match (admin)",
+    "operationId": "plan_override_app_v1_events__ev__video_plan_matches__mk__put",
+    "parameters": [
+     {
+      "name": "mk",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Mk"
+      }
+     },
+     {
+      "name": "ev",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Ev"
+      }
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/PlanOverride"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/app/v1/events/{ev}/video-plan/check": {
+   "post": {
+    "tags": [
+     "sources"
+    ],
+    "summary": "Check the event's videos and rebuild the plan (admin; job)",
+    "operationId": "plan_check_app_v1_events__ev__video_plan_check_post",
+    "parameters": [
+     {
+      "name": "ev",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Ev"
+      }
+     }
+    ],
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "additionalProperties": true,
+        "default": {},
+        "title": "Body"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
   "/app/v1/events/{ev}/jobs/{jid}": {
    "get": {
     "tags": [
@@ -4182,6 +4334,56 @@
      "current"
     ],
     "title": "PicklistVersionOut"
+   },
+   "PlanOverride": {
+    "properties": {
+     "pin": {
+      "anyOf": [
+       {
+        "type": "string",
+        "maxLength": 200
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Pin",
+      "description": "video id / URL the tracker must use for this match"
+     },
+     "pin_stations": {
+      "anyOf": [
+       {
+        "type": "string",
+        "maxLength": 200
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Pin Stations",
+      "description": "video id / URL for the station cameras"
+     },
+     "exclude": {
+      "items": {
+       "type": "string"
+      },
+      "type": "array",
+      "maxItems": 40,
+      "title": "Exclude",
+      "description": "video ids never used for this match"
+     },
+     "add": {
+      "items": {
+       "type": "string"
+      },
+      "type": "array",
+      "maxItems": 10,
+      "title": "Add",
+      "description": "extra video ids / URLs for this match"
+     }
+    },
+    "type": "object",
+    "title": "PlanOverride"
    },
    "ProfileIn": {
     "properties": {

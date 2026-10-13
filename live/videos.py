@@ -55,7 +55,19 @@ def choose(match, cfg, cache):
 
 
 def candidates(match, cfg, cache):
-    """-> acceptable videos, best first ([] if none yet).  `cache` memoises metadata."""
+    """-> acceptable videos, best first ([] if none yet).  `cache` memoises metadata.
+    cfg["video_plan"] ({match key: plan entry}, live/videoplan.py) wins when it has a choice for this match:
+    its track video first, then the other usable candidates (wide, stations, broadcast); each dict also says
+    its detected type, layout group and whether tracking is limited.  Otherwise the title rules below."""
+    entry = (cfg.get("video_plan") or {}).get(match.get("key"))
+    if entry and entry.get("track"):
+        import videoplan
+        got = [c for c in videoplan.plan_candidates(entry, None) if YT_ID.match(c["id"])]
+        if got:
+            for c in got:
+                if not cache.get(c["id"]):
+                    cache[c["id"]] = {k: c[k] for k in ("id", "channel", "title", "duration", "height")}
+            return got
     prefer = re.compile(cfg.get("prefer", r"^Wide Match"), re.I)
     reject = re.compile(cfg.get("reject", r"^Match \d"), re.I)
     chans = set(cfg.get("allow_channels", ["FIRSTRoboticsCompetition"]))

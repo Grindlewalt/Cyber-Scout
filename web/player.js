@@ -43,7 +43,7 @@ const PL = {
   layers: [
     ["robots", "Robots", "r", 1, "*"], ["labels", "Team numbers", "l", 1, "*"], ["trails", "Trails", "t", 1, "*"], ["arcs", "Shot arcs", "a", 1, "*"],
     ["history", "Shot history", "h", 0, "*"], ["identity", "Identity fixes", "i", 1, "*"], ["score", "Scoreboard", "s", 0, "*"],
-    ["fuel", "Raw fuel tracks", "f", 0, "ov"], ["grid", "Calibration grid", "g", 0, "ov red blue"],
+    ["fuel", "Raw fuel tracks", "u", 0, "ov"], ["grid", "Calibration grid", "g", 0, "ov red blue"],
   ],
   SRC: { ov: "Overhead", red: "Red station", blue: "Blue station", field: "Field" },
   MODES: [["video", "Video", "The broadcast, nothing drawn on it"], ["field", "Field", "Top-down replay of the tracking"], ["overlay", "Overlay", "Video with tracking drawn on it, up to three views"]],
@@ -56,6 +56,8 @@ const plLayersFor = src => PL.layers.filter(l => l[4] === "*" || l[4].split(" ")
 const plDefLayers = src => Object.fromEntries(plLayersFor(src).map(l => [l[0], !!l[3]]));
 const PLAY_I = '<svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="M4.5 2.8v10.4L13 8z" fill="currentColor"/></svg>';
 const PAUSE_I = '<svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="M4 3h3v10H4zM9 3h3v10H9z" fill="currentColor"/></svg>';
+const FS_I = '<svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="M2.5 6V2.5H6M10 2.5h3.5V6M13.5 10v3.5H10M6 13.5H2.5V10" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+const FSX_I = '<svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="M6 2.5V6H2.5M13.5 6H10V2.5M10 13.5V10h3.5M2.5 10H6v3.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 
 async function analyzePage(ev, key) {
   // optional start time: #/<ev>/a/<match>?t=<video seconds> (used by the defense library)
@@ -129,7 +131,7 @@ async function analyzePage(ev, key) {
   const helpLegend = `<span class="hl"><b>Arcs</b> are coloured by shooter; the ball is yellow in flight. Landing: <b style="color:#51cf66">✓ made</b>, <b style="color:#ff6b6b">✗ missed</b>, <b style="color:#e0b020">→ pass</b>.</span>
     <span class="hl"><b>Team numbers</b>: solid = identity confidence ≥ 80%, "?" = 50–80%, grey "unknown" = under 50%, hidden when the robot is lost. Dashed boxes: position interpolated, not seen.</span>
     <span class="hl"><b>Timeline</b>: the two thin bars under each period show when the red and blue hubs are live. Ticks are made shots; triangles are identity fixes.</span>
-    <span class="hl"><b>Keys</b>: space play/pause · ←/→ one frame · shift+←/→ 5 s · v next view · [ ] nudge data sync · layer keys ${PL.layers.map(l => `${l[2]} ${l[1].toLowerCase()}`).join(", ")} (main view).</span>`;
+    <span class="hl"><b>Keys</b>: space play/pause · ←/→ one frame · shift+←/→ 5 s · v next view · f full screen (Esc leaves) · [ ] nudge data sync · layer keys ${PL.layers.map(l => `${l[2]} ${l[1].toLowerCase()}`).join(", ")} (main view).</span>`;
   $app.innerHTML = `<div class="mv">
     <h1 class="vh">${esc(d.label)}</h1>
     <div class="mv-head">
@@ -162,6 +164,7 @@ async function analyzePage(ev, key) {
           <span class="mv-sp"></span>
           <select id="mvSpeed" aria-label="Playback speed">${[0.25, 0.5, 1, 2].map(s => `<option value="${s}"${s === 1 ? " selected" : ""}>${s}×</option>`).join("")}</select>
           <button type="button" class="mv-viewb" id="mvViewB" aria-haspopup="dialog" aria-expanded="false" aria-controls="mvViewP"></button>
+          <button type="button" class="mv-ib mv-fsb" id="bFs" aria-label="Full screen" title="Full screen (f)" aria-pressed="false">${FS_I}</button>
           ${CS.help(helpLegend, "Legend and keyboard shortcuts")}
         </div>
         <div class="mv-pop" id="mvViewP" role="dialog" aria-label="View" hidden></div>
@@ -791,12 +794,48 @@ async function analyzePage(ev, key) {
     else if (k === "ArrowLeft") e.shiftKey ? seek(curT() - 5) : step(-1);
     else if (k === "ArrowRight") e.shiftKey ? seek(curT() + 5) : step(1);
     else if (k === "v") cycleMode();
+    else if (k === "f" || k === "F") toggleFs();
+    else if (k === "Escape" && mainEl.classList.contains("mv-fs-fake")) setFake(false);
     else if (k === "[") setOff(Math.round(S.offset * PL.FPS) - 1);
     else if (k === "]") setOff(Math.round(S.offset * PL.FPS) + 1);
     else { const l = PL.layers.find(x => x[2] === k.toLowerCase()); if (!l) return; toggleLayer(l[0]); }
     e.preventDefault();
   }
   document.addEventListener("keydown", onKey);
+
+  // ---- full screen: the whole viewer (every view, the overlays, timeline and controls), e.g. on a pit TV or projector.
+  // Fullscreen API on .mv-main (webkit-prefixed on older Safari / iPad); without it (iPhone) the plain video uses the native
+  // player and the other views fill the window instead. The timeline + controls hide after a few idle seconds while playing.
+  const mainEl = stageEl.closest(".mv-main"), fsB = $("bFs");
+  const fsEl = () => document.fullscreenElement || document.webkitFullscreenElement || null;
+  const fsOk = !!((mainEl.requestFullscreen || mainEl.webkitRequestFullscreen) && (document.fullscreenEnabled || document.webkitFullscreenEnabled));
+  const isFs = () => fsEl() === mainEl || mainEl.classList.contains("mv-fs-fake");
+  let idleT = 0;
+  function setFake(on) { mainEl.classList.toggle("mv-fs-fake", on); document.documentElement.style.overflow = on ? "hidden" : ""; fsChanged(); }
+  function toggleFs() {
+    if (isFs()) { if (fsEl() === mainEl) (document.exitFullscreen || document.webkitExitFullscreen).call(document); else setFake(false); return; }
+    if (fsOk) {
+      try { const r = mainEl.requestFullscreen ? mainEl.requestFullscreen({ navigationUI: "hide" }) : mainEl.webkitRequestFullscreen(); if (r && r.catch) r.catch(() => setFake(true)); }
+      catch (e) { setFake(true); }
+    } else if (vid && cfg.mode === "video" && vid.webkitEnterFullscreen) vid.webkitEnterFullscreen();
+    else setFake(true);
+  }
+  const playing = () => vid ? !vid.paused : clock.playing;
+  function wake() {
+    mainEl.classList.remove("mv-idle"); clearTimeout(idleT);
+    if (isFs()) idleT = setTimeout(() => { if (isFs() && playing() && popEl.hidden && !mainEl.querySelector(".mv-ctl").contains(document.activeElement)) mainEl.classList.add("mv-idle"); }, 2600);
+  }
+  function fsChanged() {
+    const on = isFs();
+    fsB.innerHTML = on ? FSX_I : FS_I; fsB.setAttribute("aria-pressed", on ? "true" : "false");
+    fsB.setAttribute("aria-label", on ? "Leave full screen" : "Full screen"); fsB.title = on ? "Leave full screen (Esc)" : "Full screen (f)";
+    if (!on) { mainEl.classList.remove("mv-idle"); clearTimeout(idleT); } else wake();
+    closePop(); requestAnimationFrame(() => { for (const src in pane) sizePane(pane[src]); draw(); });
+  }
+  fsB.onclick = toggleFs;
+  const onFsChange = () => fsChanged();
+  document.addEventListener("fullscreenchange", onFsChange); document.addEventListener("webkitfullscreenchange", onFsChange);
+  ["pointermove", "pointerdown", "keydown", "focusin"].forEach(t => mainEl.addEventListener(t, wake, { passive: true }));
 
   // ---- frame-accurate draw loop
   let rv = 0, raf = 0, dead = false;
@@ -809,6 +848,7 @@ async function analyzePage(ev, key) {
     if ("requestVideoFrameCallback" in HTMLVideoElement.prototype) rv = vid.requestVideoFrameCallback(onFrame);
     else { const tick = () => { if (dead) return; if (!vid.paused) { syncIns(); draw(); } raf = requestAnimationFrame(tick); }; raf = requestAnimationFrame(tick); }
     for (const ev2 of ["seeked", "timeupdate", "loadeddata", "pause", "play", "ratechange"]) vid.addEventListener(ev2, () => { syncIns(ev2 === "seeked"); draw(); updPlay(); });
+    vid.addEventListener("play", () => { if (isFs()) wake(); }); vid.addEventListener("pause", () => mainEl.classList.remove("mv-idle"));
     vid.addEventListener("loadedmetadata", () => { clock.dur = vid.duration; buildScrub(); if (!vid.currentTime) vid.currentTime = Math.max(0, t0m); });
     vid.addEventListener("error", () => {   // never loaded (missing file): fall back to the field replay; a later hiccup only says so
       if (!vid) return;
@@ -825,6 +865,9 @@ async function analyzePage(ev, key) {
   if (views().some(v => v.L && v.L.fuel)) loadFuel();
   buildScrub(); buildIdSide(); refreshList(); layout(); updPlay();
   window.__an = { ins, ov2ins, S, cfg, seek, draw, vid, shots, tracks, cam, step, toggleLayer, layout, setMode: m => { cfg.mode = m; layout(); }, setPanes: ps => { cfg.panes = ps.map(s => ({ src: s, L: plDefLayers(s) })); cfg.mode = "overlay"; layout(); } };
+  cleanup.push(() => { clearTimeout(idleT); document.removeEventListener("fullscreenchange", onFsChange); document.removeEventListener("webkitfullscreenchange", onFsChange);
+    if (fsEl() === mainEl) { try { (document.exitFullscreen || document.webkitExitFullscreen).call(document); } catch (e) { } }
+    if (mainEl.classList.contains("mv-fs-fake")) document.documentElement.style.overflow = ""; });
   cleanup.push(() => { dead = true; closePop(); document.removeEventListener("keydown", onKey); document.removeEventListener("pointerdown", onDocDown, true); removeEventListener("scroll", placePop, true); removeEventListener("resize", placePop);
     ro.disconnect(); cancelAnimationFrame(raf); if (vid && rv && vid.cancelVideoFrameCallback) vid.cancelVideoFrameCallback(rv);
     if (ins) { ins.pause(); ins.removeAttribute("src"); ins.load(); } if (vid) { vid.pause(); vid.removeAttribute("src"); vid.load(); } delete window.__an; });

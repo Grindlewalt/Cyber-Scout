@@ -326,18 +326,43 @@ def worker_config(data):
     return c.get("tba_key") or os.environ.get("TBA_KEY") or "", list(events), c.get("options") or {}
 
 
-def pick_source(doc, today=None):
-    """The livestream source to record: an enabled livestream marked primary / wide, else the webcast dated
-    today, else an admin-added one, else the first."""
-    ls = [s for s in doc.get("sources", []) if s.get("enabled", True) and s.get("kind") == "livestream" and s.get("url")]
-    if not ls: return None
-    for s in ls:
-        if s.get("primary") or s.get("role") == "wide": return s
+def live_sources(doc, today=None, event=None):
+    """Livestream sources worth trying now, best first.  TBA webcasts dated another day are skipped (a
+    multi-day event usually has a new stream per day), unless no source is dated today.  Order: marked
+    primary / wide, then dated today, then admin-added, then the rest; the same URL once.  With no livestream
+    source in sources.json at all, the event's TBA webcasts (event: TBA /event) are used directly, so a
+    followed event is recorded before anyone opens the Video page."""
+    ls = [s for s in doc.get("sources", []) if s.get("kind") == "livestream" and s.get("url")]
+    if not ls and event:
+        import sources as SRC
+        for i, w in enumerate(event.get("webcasts") or []):
+            u = SRC.webcast_url(w) if isinstance(w, dict) else None
+            if not u: continue
+            try:
+                c = SRC.classify_url(u)
+            except ValueError:
+                continue
+            ls.append(dict(id=f"tba-webcast-{i}", origin="tba", kind="livestream", provider=(w.get("type") or "").lower(),
+                           url=c["url"], role="dynamic", enabled=True, auto=True, webcast=w,
+                           label=f"Event webcast ({w.get('type')}{', ' + w['date'] if w.get('date') else ''})"))
+    ls = [s for s in ls if s.get("enabled", True)]
+    if not ls: return []
+    day = lambda s: _norm_date((s.get("webcast") or {}).get("date"))
     if today:
-        d = [s for s in ls if _norm_date((s.get("webcast") or {}).get("date")) in today]
-        if d: return d[0]
-    adm = [s for s in ls if s.get("origin") == "admin"]
-    return (adm or ls)[0]
+        ls = [s for s in ls if not day(s) or day(s) in today] or ls
+    rank = lambda s: (not (s.get("primary") or s.get("role") == "wide"), not (today and day(s) in (today or ())),
+                      s.get("origin") != "admin")
+    out, seen = [], set()
+    for s in sorted(ls, key=rank):
+        if s["url"] in seen: continue
+        seen.add(s["url"]); out.append(s)
+    return out
+
+
+def pick_source(doc, today=None, event=None):
+    """The first livestream source to try (live_sources)."""
+    ls = live_sources(doc, today, event)
+    return ls[0] if ls else None
 
 
 def _norm_date(s):
@@ -455,10 +480,10 @@ class Service:
         for ev in events:
             doc = SRC.load(os.path.join(self.data, "events", ev))
             today = self.today(ev, key)
-            s = pick_source(doc, today)
-            if s is None: continue
+            ls = live_sources(doc, today, self._event_info(ev, key) if key else None)
+            if not ls: continue
             ok, why = self.in_dates(ev, key)
-            out[ev] = dict(source=s, active=ok, why=why)
+            out[ev] = dict(source=ls[0], sources=ls, active=ok, why=why)
         return out, None, opts, key
 
     def _event_info(self, ev, key):
@@ -559,12 +584,12 @@ class Service:
             if ev not in want or not want[ev]["active"]:
                 self.stop(ev, "event unfollowed / source removed / outside event dates" if ev not in want else want[ev]["why"])
                 self.ev_state.setdefault(ev, {}).update(state="idle", message="stopped")
-            elif want[ev]["source"]["url"] != self.kids[ev]["url"]:
+            elif self.kids[ev]["url"] not in [x["url"] for x in want[ev].get("sources") or [want[ev]["source"]]]:
                 self.stop(ev, "livestream source changed")
         for ev, w in want.items():
             es = self.ev_state.setdefault(ev, dict(state="starting", restarts=0, next_try=0.0))
-            src = w["source"]
-            es["source"] = {k: src.get(k) for k in ("id", "url", "label", "role", "origin")}
+            src = (self.kids.get(ev) or {}).get("source") or w["source"]          # the one being recorded, if any
+            es["source"] = {k: src.get(k) for k in ("id", "url", "label", "role", "origin", "auto")}
             if not w["active"]:
                 es.update(state="idle", message=f"outside the event dates ({w['why']})"); continue
             k = self.kids.get(ev)
@@ -589,10 +614,10 @@ class Service:
                               next_try=now + wait)
                     self.log(f"{ev}: recorder exited ({code}); restarting in {wait}s")
             if now < es.get("next_try", 0): continue
-            try:
-                vid, ls = resolve(src["url"])
-            except Exception as e:
-                es.update(state="waiting", message=f"not live: {str(e)[:160]}",
+            src, vid, ls, err = self.choose(ev, w.get("sources") or [src], es)
+            es["source"] = {k: src.get(k) for k in ("id", "url", "label", "role", "origin", "auto")}
+            if vid is None:
+                es.update(state="waiting", message=f"not live: {err}" if err else "not live yet",
                           next_try=now + _env_f("LIVE_RESOLVE_S", "120"), live_status=None)
                 continue
             es.update(video_id=vid, live_status=ls)
@@ -615,6 +640,31 @@ class Service:
             except Exception as e:
                 self.log(f"retention failed: {e!r}")
 
+    def choose(self, ev, sources, es):
+        """Resolve each candidate livestream (yt-dlp: a channel's /live URL -> its current live video) and pick
+        one: the first that is live, else the first upcoming, else the first that resolves.  Webcasts that
+        resolve to the same video are one stream.  -> (source, video id | None, live_status, error) and
+        es["candidates"] for the status card."""
+        cands, seen, pick, err0 = [], {}, None, None
+        for s2 in sources[:5]:
+            c = dict(id=s2.get("id"), url=s2.get("url"), label=s2.get("label"),
+                     auto=bool(s2.get("auto") or s2.get("origin") == "tba"))
+            try:
+                vid, ls = resolve(s2["url"])
+                c.update(video_id=vid, live_status=ls)
+                if vid in seen: c["same_as"] = seen[vid]
+                else: seen[vid] = s2.get("id")
+            except Exception as e:
+                c["error"] = str(e)[:160]; err0 = err0 or c["error"]
+            cands.append((s2, c))
+        es["candidates"] = [c for _, c in cands]
+        for want in ("is_live", "is_upcoming", None):
+            for s2, c in cands:
+                if c.get("video_id") and not c.get("same_as") and (want is None or c.get("live_status") == want):
+                    pick = (s2, c["video_id"], c["live_status"], None); break
+            if pick: break
+        return pick or (sources[0], None, None, err0)
+
     def write_status(self, want, why_off):
         evs = set(want) | set(self.ev_state)
         _, followed, _ = worker_config(self.data)
@@ -628,7 +678,7 @@ class Service:
                           message=why_off or "no enabled livestream source in sources.json")
             st = dict(event=ev, updated=time.time(), service="recorder", live_dir=live_dir(), **{
                 k: es.get(k) for k in ("state", "message", "source", "video_id", "live_status", "pid", "restarts",
-                                       "last_exit")})
+                                       "last_exit", "candidates")})
             st["next_check_in_s"] = max(0, round(es.get("next_try", 0) - time.time())) if es.get("next_try") else None
             out = (self.kids.get(ev) or {}).get("out") or es.get("out")
             if not out and es.get("video_id"):

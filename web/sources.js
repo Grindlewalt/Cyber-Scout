@@ -13,7 +13,7 @@
                      dynamic: "switching broadcast program (cuts between cameras; may carry station-cam insets)",
                      "alliance-side": "fixed driver-station cameras" };
   const TARGETS = [["overhead", "Overhead camera"], ["station_red", "Red station cam"], ["station_blue", "Blue station cam"]];
-  const TABS = [["sources", "Sources"], ["layout", "Layout"], ["calib", "Calibration"]];
+  const TABS = [["sources", "Videos"], ["layout", "Layout"], ["calib", "Calibration"]];
   const h = s => esc(s);
   const when = ts => ts ? new Date(ts * 1000).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : "–";
   // security audit: only http(s) URLs are links; file paths, javascript:, data: etc. are plain escaped text
@@ -136,9 +136,208 @@
     }
   });
 
-  // ---------------------------------------------------------------- 1. sources
+  // ---------------------------------------------------------------- 1. videos: the per-match plan (live/videoplan.py)
+  // Every candidate upload of a match is checked once (a few low-res frames) and classified wide / broadcast / station cams;
+  // the worker picks per match. This tab shows the coverage, explains each choice and takes the rare override.
+  const TYPES = [["wide", "Wide", "Wide"], ["broadcast", "Broadcast", "Bcast"], ["stations", "Station cams", "Stn"]];
+  const TYPE_L = { wide: "Wide", broadcast: "Broadcast", stations: "Station cams" };
+  const TYPE_TIP = { wide: "fixed overhead camera, no cuts: what the tracker needs",
+                     broadcast: "program feed that cuts between cameras: robots are tracked only while the overhead camera is on air",
+                     stations: "the overhead view with the two driver-station cameras inset in the bottom corners" };
+  const mmss = s => s ? `${Math.floor(s / 60)}:${String(Math.round(s % 60)).padStart(2, "0")}` : "–";
+  const ico = (k, cls, label) => `<span class="vp-i ${cls || ""}"${label ? ` role="img" aria-label="${h(label)}" title="${h(label)}"` : ' aria-hidden="true"'}>${CS.icon(k)}</span>`;
+  const ytId = s => /^[A-Za-z0-9_-]{11}$/.test(s || "") ? s : null;
+
+  function planCounts(P) {
+    const M = (P && P.plan && P.plan.matches) || {}, ov = (P && P.overrides) || {};
+    const keys = Object.keys(M).filter(k => M[k].played || (M[k].candidates || []).length || M[k].live);
+    const has = (e, t) => (e.candidates || []).some(c => c.type === t && !c.excluded);
+    return {
+      keys, n: keys.length,
+      wide: keys.filter(k => has(M[k], "wide")).length, broadcast: keys.filter(k => has(M[k], "broadcast")).length,
+      stations: keys.filter(k => M[k].stations).length, live: keys.filter(k => M[k].live).length,
+      limited: keys.filter(k => M[k].limited).length, missing: keys.filter(k => !M[k].track && !(M[k].live && M[k].live.trackable)).length,
+      nowide: keys.filter(k => !has(M[k], "wide")).length, problems: keys.filter(k => (M[k].problems || []).length).length,
+      over: keys.filter(k => ov[k]).length, dups: keys.reduce((a, k) => a + (M[k].dups || 0), 0),
+      pending: keys.reduce((a, k) => a + (M[k].pending || 0), 0),
+    };
+  }
+  const FILTERS = [["all", "All"], ["nowide", "Missing wide"], ["limited", "Limited tracking"], ["problems", "Problems"], ["over", "Overridden"]];
+  const keep = (f, e, ov) => f === "all" || (f === "nowide" ? !(e.candidates || []).some(c => c.type === "wide" && !c.excluded)
+    : f === "limited" ? !!e.limited : f === "problems" ? (e.problems || []).length > 0 : f === "over" ? !!ov : true);
+
+  function cellHtml(e, t) {
+    const cs = (e.candidates || []).filter(c => c.type === t && !c.excluded);
+    const pend = (e.candidates || []).some(c => c.pending);
+    const dup = cs.filter(c => c.dup_of).length;
+    const chosen = t === "stations" ? !!e.stations && (e.candidates || []).some(c => c.id === e.stations && c.type === "stations")
+      : e.track_type === t;
+    if (!cs.length && !(t === "stations" && e.stations)) return pend ? `<span class="vp-pend" title="being checked">…</span>` : `<span class="vp-none" aria-label="none">·</span>`;
+    let s = chosen ? ico("starOn", "on", t === "stations" ? "station cams from this" : "tracked from this")
+      : ico("check", "ok", `${cs.length} available`);
+    if (e.track_type === t && e.limited) s += ico("warn", "lim", "tracked from this: limited tracking");
+    if (cs.length > 1) s += `<span class="vp-n" title="${cs.length} uploads${dup ? `, ${dup} duplicate${dup > 1 ? "s" : ""}` : ""}">${cs.length}${dup ? `<i>dup ${dup}</i>` : ""}</span>`;
+    return s;
+  }
+  function liveCell(e) {
+    const L = e.live; if (!L) return `<span class="vp-none" aria-label="none">·</span>`;
+    return L.trackable && !e.track ? ico("starOn", "on", "tracked from the livestream clip") : ico("check", "ok", L.clip ? "livestream clip" : "found in the livestream (no clip)");
+  }
+  function usesHtml(e) {
+    if (e.track) return `<span class="vp-use ${e.limited ? "lim" : ""}">${h(TYPE_L[e.track_type] || e.track_type)}${e.pinned ? ` <span class="pill">pinned</span>` : ""}</span>`;
+    if (e.live && e.live.trackable) return `<span class="vp-use">Livestream</span>`;
+    return e.pending ? `<span class="muted">checking…</span>` : `<span class="vp-use none">none</span>`;
+  }
+
   async function sourcesTab(ev, el) {
-    const d = await A("GET", `events/${ev}/sources`);
+    const [P, d] = await Promise.all([A("GET", `events/${ev}/video-plan`).catch(e => ({ error: e })), A("GET", `events/${ev}/sources`)]);
+    const S = d.sources || [];
+    const M = (P.plan && P.plan.matches) || {};
+    let filt = "all", st0 = null;
+    try { filt = sessionStorage.getItem("cs:vpfilt") || "all"; } catch (e) { }
+    if (!FILTERS.some(f => f[0] === filt)) filt = "all";
+    const help = `<span class="hl">Every upload linked to a match is checked once: a few small frames, no download. It is classified as <b>wide</b> (fixed overhead camera), <b>broadcast</b> (cuts between cameras) or <b>station cams</b> (overhead view with the two driver-station cameras inset).</span>
+      <span class="hl">Per match the tracker uses the best wide video, else a station-cam or broadcast video (<b>limited tracking</b>: insets hide the near corners, or cuts hide the field). Station cams feed the driver-station pass. Identical uploads count once; a title naming another match is never used.</span>
+      <span class="hl">Open a match to see its videos and, rarely, pin or exclude one. The worker rebuilds this every poll; <b>Check videos</b> checks everything now.</span>`;
+    el.innerHTML = `<section class="card vp-sum" aria-label="Video coverage"><div id="vpsum"></div>
+        <div class="vs-row vp-acts0"><button id="vpcheck" type="button">Check videos</button><button id="disc" type="button">Discover from TBA</button>
+          ${CS.help(help, "How match videos are chosen")}<span id="dst" class="muted small" role="status"></span></div></section>
+      <div id="lsrec"></div>
+      <section class="card vp-cov" aria-labelledby="vpcovh"><div class="vp-covh"><h2 id="vpcovh">Matches</h2><div class="vp-filt" role="group" aria-label="Show matches" id="vpfilt"></div></div>
+        <div id="vpgrid"></div>
+        <p class="vp-legend muted small">${ico("starOn", "on")} chosen · ${ico("check", "ok")} available · ${ico("warn", "lim")} limited tracking · <span class="vp-n">2<i>dup 1</i></span> uploads, duplicates · <span class="vp-pend">…</span> being checked</p></section>
+      <details class="card vp-adv" id="vpadv"><summary>Advanced: sources <span class="muted small">${S.length} · title families, webcasts, pasted URLs</span></summary><div id="vpadvb"></div></details>
+      <dialog class="vp-sheet" id="vpsheet" aria-labelledby="vpsh"></dialog>`;
+    // ---- summary line (+ livestream state)
+    let lsSt = null;
+    const drawSum = () => {
+      const c = planCounts(P), box = document.getElementById("vpsum"); if (!box) return;
+      if (P.error) { box.innerHTML = `<div class="muted">${P.error.status === 503 ? h(errMsg(P.error)) : "Couldn't load the video plan: " + h(errMsg(P.error))}</div>`; return; }
+      if (!P.plan) { box.innerHTML = `<div class="vp-line"><b>No video plan yet.</b> <span class="muted">The worker builds it on its next poll, or press <b>Check videos</b>.</span></div>`; return; }
+      const of = n => `${n}<span class="muted">/${c.n}</span>`;
+      const ls = lsSt && lsSt.state ? `${(LS_LABEL[lsSt.state] || lsSt.state).toLowerCase()}${lsSt.state === "recording" && lsSt.behind_live_s != null ? ` (${dur(lsSt.behind_live_s)} behind)` : ""}` : "–";
+      box.innerHTML = `<div class="vp-line"><span title="${h(TYPE_TIP.wide)}"><b>Wide</b> ${of(c.wide)}</span><span class="vp-dot" aria-hidden="true">·</span>
+          <span title="${h(TYPE_TIP.broadcast)}"><b>Broadcast</b> ${of(c.broadcast)}</span><span class="vp-dot" aria-hidden="true">·</span>
+          <span title="${h(TYPE_TIP.stations)}"><b>Station cams</b> ${of(c.stations)}</span><span class="vp-dot" aria-hidden="true">·</span>
+          <span><b>Livestream</b> ${h(ls)}</span></div>
+        <div class="vp-subl muted small">Tracker: ${c.n - c.missing - c.limited} wide${c.limited ? ` · <span class="vp-lim">${c.limited} limited</span>` : ""}${c.missing ? ` · ${c.missing} without a usable video` : ""}
+          ${c.dups ? ` · ${c.dups} duplicate upload${c.dups > 1 ? "s" : ""} ignored` : ""}${c.pending ? ` · ${c.pending} video${c.pending > 1 ? "s" : ""} not checked yet` : ""}
+          · built ${h(when(P.plan.built_at))}</div>`;
+    };
+    drawSum();
+    // ---- coverage grid
+    const drawGrid = () => {
+      const c = planCounts(P), g = document.getElementById("vpgrid"), fb = document.getElementById("vpfilt"); if (!g) return;
+      const cnt = { all: c.n, nowide: c.nowide, limited: c.limited, problems: c.problems, over: c.over };
+      fb.innerHTML = FILTERS.map(([k, t]) => `<button type="button" class="chip ${k === filt ? "on" : ""}" data-f="${k}" aria-pressed="${k === filt}">${t} <span class="muted">${cnt[k]}</span></button>`).join("");
+      if (!P.plan) { g.innerHTML = `<div class="empty small">Nothing yet.</div>`; return; }
+      const ov = P.overrides || {};
+      const ks = c.keys.filter(k => keep(filt, M[k], ov[k]));
+      const row = k => { const e = M[k];
+        return `<tr data-k="${h(k)}" class="${(e.problems || []).length ? "prob" : ""}"><th scope="row"><button type="button" class="vp-mk" data-k="${h(k)}" aria-haspopup="dialog">${h(e.label || k)}</button>${ov[k] ? ico("admin", "ov", "overridden by an admin") : ""}</th>
+          ${TYPES.map(([t, l]) => `<td data-l="${l}">${cellHtml(e, t)}</td>`).join("")}<td data-l="Live clip">${liveCell(e)}</td><td class="vp-uc">${usesHtml(e)}</td></tr>`; };
+      const qs = ks.filter(k => /_qm\d+$/.test(k)), po = ks.filter(k => !/_qm\d+$/.test(k));
+      const sec = (t, L) => L.length ? `<tbody><tr class="vp-sec"><th colspan="6" scope="rowgroup">${t} <span class="muted">${L.length}</span></th></tr>${L.map(row).join("")}</tbody>` : "";
+      g.innerHTML = ks.length ? `<div class="vp-gw"><table class="vp-grid"><thead><tr><th scope="col">Match</th>${TYPES.map(([t, l, s]) => `<th scope="col" title="${h(TYPE_TIP[t])}"><span class="vp-hl">${l}</span><span class="vp-hs" aria-hidden="true">${s}</span></th>`).join("")}
+          <th scope="col"><span class="vp-hl">Live clip</span><span class="vp-hs" aria-hidden="true">Live</span></th><th scope="col" class="vp-uc">Tracker uses</th></tr></thead>${sec("Qualifications", qs)}${sec("Playoffs", po)}</table></div>`
+        : `<div class="empty small">No matches ${filt === "all" ? "with videos yet" : "in this filter"}.</div>`;
+    };
+    drawGrid();
+    document.getElementById("vpfilt").onclick = e => { const b = e.target.closest("[data-f]"); if (!b) return; filt = b.dataset.f; try { sessionStorage.setItem("cs:vpfilt", filt); } catch (x) { } drawGrid(); };
+    document.getElementById("vpgrid").onclick = e => { const tr = e.target.closest("tr[data-k]"); if (tr) openSheet(tr.dataset.k, e.target.closest("button")); };
+    // ---- livestream recorder (card + summary), refreshed while this tab is open
+    const lsEl = document.getElementById("lsrec");
+    const lsDraw = async () => { const st = await liveRec.load(ev); lsSt = st; if (lsEl.isConnected) { lsEl.innerHTML = liveRec.card(st, ev); drawSum(); } };
+    lsDraw(); const lsIv = setInterval(lsDraw, 15000); cleanup.push(() => clearInterval(lsIv));
+    // ---- actions
+    const dst = t => { const s = document.getElementById("dst"); if (s) s.textContent = t; };
+    document.getElementById("vpcheck").onclick = async e => {
+      e.target.disabled = true;
+      try { dst("checking videos…"); const r = await job(ev, A("POST", `events/${ev}/video-plan/check`, {}), dst); dst(`${r.checked} video${r.checked === 1 ? "" : "s"} checked`); route(false); }
+      catch (x) { dst(errMsg(x)); e.target.disabled = false; }
+    };
+    document.getElementById("disc").onclick = async () => {
+      try { dst("asking TBA…"); await job(ev, A("POST", `events/${ev}/sources/discover`), dst); route(false); }
+      catch (x) { dst(errMsg(x)); }
+    };
+    // ---- the per-match sheet: candidates, why, pin / exclude
+    const dlg = document.getElementById("vpsheet");
+    let opener = null;
+    function openSheet(k, from) {
+      opener = from || null; drawSheet(k);
+      try { dlg.showModal(); } catch (x) { dlg.setAttribute("open", ""); }
+      const f = dlg.querySelector(".vp-x"); if (f) f.focus();
+    }
+    dlg.addEventListener("close", () => { if (opener && opener.isConnected) opener.focus(); });
+    dlg.addEventListener("click", e => { if (e.target === dlg) dlg.close(); });
+    function drawSheet(k) {
+      const e = M[k] || { candidates: [] }, ov = (P.overrides || {})[k] || null, L = e.live;
+      const cs = (e.candidates || []).slice().sort((a, b) => (b.id === e.track) - (a.id === e.track) || (b.id === e.stations) - (a.id === e.stations)
+        || ["wide", "stations", "broadcast", undefined, null].indexOf(a.type) - ["wide", "stations", "broadcast", undefined, null].indexOf(b.type));
+      const tr = cs.find(c => c.id === e.track);
+      const head = tr ? `Tracker uses <b>${h(tr.title || tr.id)}</b> <span class="muted">(${h(TYPE_L[tr.type] || "?")}${e.pinned ? ", pinned" : ", chosen automatically"})</span>${e.limited ? `<div class="vp-limn">${ico("warn", "lim")} Limited tracking: ${h(e.limited)}.</div>` : ""}`
+        : L && L.trackable ? "Tracked from the livestream clip." : e.pending ? "Videos are still being checked." : "No usable video for the tracker yet.";
+      const card = c => {
+        const flags = [];
+        if (c.id === e.track) flags.push(`<span class="vp-f on">${ico("starOn", "on")} tracking${e.pinned ? " (pinned)" : ""}</span>`);
+        if (c.id === e.stations) flags.push(`<span class="vp-f on">${ico("starOn", "on")} station cams${e.pinned_stations ? " (pinned)" : ""}</span>`);
+        if (c.dup_of) flags.push(`<span class="vp-f">duplicate of ${h(c.dup_of)}</span>`);
+        if (c.excluded) flags.push(`<span class="vp-f bad">${ico("ban")} ${h(c.excluded)}</span>`);
+        if (c.title_ok === false && !c.excluded) flags.push(`<span class="vp-f bad">title names another match</span>`);
+        if (c.pending) flags.push(`<span class="vp-f">not checked yet</span>`);
+        const excl = ov && (ov.exclude || []).includes(c.id), url = `https://youtu.be/${encodeURIComponent(c.id)}`;
+        return `<article class="vp-cand ${c.id === e.track ? "chosen" : ""} ${c.excluded ? "excl" : ""}">
+          <a class="vp-th" href="${h(url)}" target="_blank" rel="noopener noreferrer" tabindex="-1" aria-hidden="true"><img src="https://i.ytimg.com/vi/${h(c.id)}/mqdefault.jpg" alt="" loading="lazy" width="160" height="90"></a>
+          <div class="vp-ci"><div class="vp-ct"><a href="${h(url)}" target="_blank" rel="noopener noreferrer">${h(c.title || c.id)}<span class="vh"> (opens YouTube)</span></a></div>
+            <div class="muted small">${h(c.channel || "?")} · ${mmss(c.duration)}${c.height ? ` · ${h(c.height)}p` : ""} · ${(c.via || []).includes("tba") ? "linked on TBA" : (c.via || []).includes("admin") ? "added by an admin" : "from a channel / playlist"}</div>
+            ${c.type ? `<div class="vp-ty"><span class="pill vp-p ${h(c.type)}" title="${h(TYPE_TIP[c.type] || "")}">${h(TYPE_L[c.type] || c.type)}</span> <span class="muted small">${c.conf != null ? Math.round(c.conf * 100) + "% · " : ""}${h(c.why || "")}</span></div>` : ""}
+            ${flags.length ? `<div class="vp-fl">${flags.join("")}</div>` : ""}
+            <div class="vp-ab">${c.id !== e.track ? `<button type="button" class="small" data-act="pin" data-v="${h(c.id)}">Use for tracking</button>` : ""}
+              ${c.type === "stations" && c.id !== e.stations ? `<button type="button" class="small" data-act="pst" data-v="${h(c.id)}">Use for station cams</button>` : ""}
+              <button type="button" class="small" data-act="${excl ? "inc" : "exc"}" data-v="${h(c.id)}">${excl ? "Include again" : "Exclude"}</button></div></div></article>`;
+      };
+      dlg.innerHTML = `<div class="vp-shh"><h2 id="vpsh">${h(e.label || k)} <span class="muted">videos</span></h2><button type="button" class="tb-btn vp-x" aria-label="Close">${CS.icon("close")}</button></div>
+        <div class="vp-shb"><div class="vp-head">${head}</div>
+          ${(e.problems || []).length ? `<div class="vp-prob">${e.problems.map(p => `<div>${ico("warn", "lim")} ${h(p)}</div>`).join("")}</div>` : ""}
+          ${L ? `<div class="vp-live small"><b>Livestream</b> ${L.clip && CS.mediaUrl && CS.mediaUrl(L.clip) ? `<a href="${h(CS.mediaUrl(L.clip))}" target="_blank" rel="noopener">clip</a>` : "match found, no clip"} · ${L.trackable ? "trackable (the stream camera is calibrated)" : h(L.note || "not trackable")}</div>` : ""}
+          ${cs.length ? cs.map(card).join("") : `<div class="empty small">No video linked to this match yet.</div>`}
+          <form class="vp-add vs-form" id="vpadd"><input name="u" placeholder="Add a YouTube link for this match…" aria-label="YouTube link to add" required><button>Add</button></form>
+          <div class="vs-row vp-shf">${ov ? `<button type="button" id="vpauto">Back to automatic</button>` : ""}<button type="button" id="vprck">Check these videos again</button><span id="vpst" class="muted small" role="status"></span></div>
+          ${ov ? `<p class="muted small">Overridden by ${h(ov.by || "an admin")} ${h(when(ov.at))}.</p>` : ""}</div>`;
+      const say = t => { const s = document.getElementById("vpst"); if (s) s.textContent = t; };
+      const put = async next => {
+        say("saving…");
+        try {
+          const r = await A("PUT", `events/${ev}/video-plan/matches/${encodeURIComponent(k)}`, next);
+          P.overrides = P.overrides || {}; if (r.override) P.overrides[k] = r.override; else delete P.overrides[k];
+          if (r.entry) M[k] = Object.assign(r.entry, { label: (M[k] || {}).label || r.entry.label, played: (M[k] || {}).played });
+          drawSheet(k); drawGrid(); drawSum();
+          const f = dlg.querySelector(".vp-x"); if (f) f.focus();
+        } catch (x) { say(errMsg(x)); }
+      };
+      const cur = () => ({ pin: (ov && ov.pin) || null, pin_stations: (ov && ov.pin_stations) || null, exclude: ((ov && ov.exclude) || []).slice(), add: ((ov && ov.add) || []).slice() });
+      dlg.querySelector(".vp-x").onclick = () => dlg.close();
+      dlg.querySelectorAll("[data-act]").forEach(b => b.onclick = () => {
+        const n = cur(), v = b.dataset.v;
+        if (b.dataset.act === "pin") { n.pin = v; n.exclude = n.exclude.filter(x => x !== v); }
+        if (b.dataset.act === "pst") n.pin_stations = v;
+        if (b.dataset.act === "exc") { n.exclude.push(v); if (n.pin === v) n.pin = null; if (n.pin_stations === v) n.pin_stations = null; }
+        if (b.dataset.act === "inc") n.exclude = n.exclude.filter(x => x !== v);
+        put(n);
+      });
+      const au = document.getElementById("vpauto"); if (au) au.onclick = () => put({ pin: null, pin_stations: null, exclude: [], add: [] });
+      document.getElementById("vpadd").onsubmit = ev2 => { ev2.preventDefault(); const n = cur(); n.add.push(ev2.target.u.value.trim()); put(n); };
+      document.getElementById("vprck").onclick = async () => {
+        const ids = (e.candidates || []).map(c => c.id).filter(ytId);
+        if (!ids.length) return;
+        try { say("checking…"); await job(ev, A("POST", `events/${ev}/video-plan/check`, { only: ids }), say); route(false); } catch (x) { say(errMsg(x)); }
+      };
+    }
+    // ---- advanced: the raw sources (title families, webcasts, pasted URLs) -- the old Sources tab
+    advancedSources(ev, document.getElementById("vpadvb"), d);
+  }
+
+  function advancedSources(ev, el, d) {
     const S = d.sources || [];
     const cov = s => {
       const c = s.coverage || {};
@@ -148,13 +347,9 @@
       return "whole event";
     };
     el.innerHTML = `
-      <div class="card vs-row">
-        <button id="disc">Discover from The Blue Alliance</button>
-        ${CS.help("Finds the event webcasts and the per-match uploads TBA links (grouped by title, e.g. “Wide Match N”).", "What Discover finds")}
-        <span id="dst" class="muted small"></span>
-      </div>
-      <div id="lsrec"></div>
-      <div class="card vs-tw" style="margin-top:12px">
+      <p class="muted small vp-advn">Where candidate videos come from: TBA webcasts (recorded automatically on their day), upload families TBA links (grouped by title) and anything pasted below.
+        Switching a family <b>off</b> excludes its videos from every match. The per-match choice above does not need roles; <i>Tracked</i> only matters for matches the plan has not checked yet.</p>
+      <div class="vs-tw">
         <table class="mini vs-src"><thead><tr><th>Source</th><th>Type</th><th title="${h(Object.entries(ROLE_TIP).map(([k, v]) => k + ": " + v).join("\n"))}">Camera role</th>
           <th title="the overhead video the tracker processes">Tracked</th><th>Covers</th><th>Layout</th><th>On</th><th></th></tr></thead>
         <tbody>${S.length ? S.map(s => `<tr data-id="${h(s.id)}">
@@ -169,7 +364,7 @@
           <td class="vs-x"><button class="small" data-del>Remove</button></td></tr>`).join("") :
           `<tr><td colspan="8" class="muted">No sources yet: discover them from TBA or paste a URL below.</td></tr>`}</tbody></table>
       </div>
-      <div class="card" style="margin-top:12px">
+      <div style="margin-top:12px">
         <h3 style="margin:0 0 8px">Add a source</h3>
         <form id="add" class="vs-form">
           <input name="url" required placeholder="YouTube / Twitch URL (livestream, video, playlist, channel), .m3u8/.mp4 URL, or /media/… file" style="flex:3 1 380px">
@@ -179,20 +374,11 @@
           <button>Add</button>${CS.help("Alternate angles (e.g. a team's own overhead recording) can be added the same way; mark the one the tracker should use as <i>tracked</i>.", "About alternate angles")}<span id="ast" class="muted small"></span>
         </form>
       </div>
-      <div class="card muted small" style="margin-top:12px">
-        Worker video choice: prefer <code>${h((d.video_config || {}).prefer || "^Wide Match (default)")}</code>${(d.video_config || {}).reject ? `, skip <code>${h(d.video_config.reject)}</code>` : ""}${d.station_pattern ? ` · station-cam uploads <code>${h(d.station_pattern)}</code>` : ""}${d.livestream ? ` · livestream ${urlHtml(d.livestream, true)}` : ""}.
+      <div class="muted small" style="margin-top:12px">
+        Fallback (matches not checked yet): prefer <code>${h((d.video_config || {}).prefer || "^Wide Match (default)")}</code>${(d.video_config || {}).reject ? `, skip <code>${h(d.video_config.reject)}</code>` : ""}${d.station_pattern ? ` · station-cam uploads <code>${h(d.station_pattern)}</code>` : ""}${d.livestream ? ` · livestream ${urlHtml(d.livestream, true)}` : ""}.
         ${d.jobs_inline ? "" : "Frame grabs and calibration run in the worker (its video job runner must be on)."}
         Next: <a href="#/${ev}/sources/layout">draw the layout</a>, then <a href="#/${ev}/sources/calib">calibrate the cameras</a>.
       </div>`;
-    // livestream recorder status (refreshed while this tab is open)
-    const lsEl = document.getElementById("lsrec");
-    const lsDraw = async () => { const st = await liveRec.load(ev); if (lsEl.isConnected) lsEl.innerHTML = liveRec.card(st, ev); };
-    lsDraw(); const lsIv = setInterval(lsDraw, 15000); cleanup.push(() => clearInterval(lsIv));
-    document.getElementById("disc").onclick = async () => {
-      const st = document.getElementById("dst");
-      try { st.textContent = "asking TBA…"; await job(ev, A("POST", `events/${ev}/sources/discover`), t => st.textContent = t); route(false); }
-      catch (e) { st.textContent = errMsg(e); }
-    };
     el.querySelectorAll("tr[data-id]").forEach(tr => {
       const id = tr.dataset.id;
       tr.querySelectorAll("[data-f]").forEach(inp => inp.onchange = async () => {
@@ -254,20 +440,30 @@
 
   // ---------------------------------------------------------------- 2. layout box editor
   async function layoutTab(ev, el, sid) {
-    const [d, L] = await Promise.all([A("GET", `events/${ev}/sources`), A("GET", `events/${ev}/layout`)]);
-    const S = d.sources || [];
-    if (!S.length) { el.innerHTML = `<div class="empty">Add a video source first (<a href="#/${ev}/sources/sources">Sources</a>).</div>`; return; }
-    const src = S.find(s => s.id === sid) || S.find(s => s.primary) || S[0];
+    const [d, L, P] = await Promise.all([A("GET", `events/${ev}/sources`), A("GET", `events/${ev}/layout`),
+                                         A("GET", `events/${ev}/video-plan`).catch(() => ({}))]);
+    // boxes are drawn once per detected video type + channel (the plan's groups), not per title family;
+    // the raw sources stay selectable for livestreams / pasted URLs
+    const G = (P.groups || []).map(g => ({ ...g, label: `${g.label} (${g.n} match${g.n === 1 ? "" : "es"})` }))
+      .sort((a, b) => ["wide", "stations", "broadcast"].indexOf(a.type) - ["wide", "stations", "broadcast"].indexOf(b.type) || b.n - a.n);
+    const S0 = (d.sources || []).filter(s => !G.some(g => g.id === s.id));
+    const S = [...G, ...S0];
+    if (!S.length) { el.innerHTML = `<div class="empty">No videos yet: discover them on the <a href="#/${ev}/sources/sources">Videos</a> tab.</div>`; return; }
+    const src = S.find(s => s.id === sid) || G.find(g => !g.has_layout) || G[0] || S.find(s => s.primary) || S[0];
+    const optList = (list, sel) => list.map(s => `<option value="${h(s.id)}" ${s.id === sel ? "selected" : ""}>${h(s.label || s.id)}${s.origin === "auto" ? "" : ` (${h(s.role)})`}</option>`).join("");
+    const opts = sel => (G.length ? `<optgroup label="Detected video types">${optList(G, sel)}</optgroup>` : "") +
+      (S0.length ? `<optgroup label="Sources (advanced)">${optList(S0, sel)}</optgroup>` : "");
     const saved = ((L.layout || {}).sources || {})[src.id];
     let regions = saved ? saved.regions.map(r => ({ ...r })) : [];
     let sugg = [], sel = -1, kind = "field", W = saved ? saved.W : 1920, H = saved ? saved.H : 1080, dirty = false;
     el.innerHTML = `
       <div class="vs-row">
-        <label class="small">Source <select id="srcsel">${S.map(s => `<option value="${h(s.id)}" ${s.id === src.id ? "selected" : ""}>${h(s.label || s.id)} (${h(s.role)})</option>`).join("")}</select></label>
+        <label class="small">Video <select id="srcsel">${opts(src.id)}</select></label>
         <label class="small">at <input id="ft" class="vs-num" type="number" step="1" min="0" placeholder="0" aria-label="Frame time in seconds"> s</label>
         <button id="grab">Grab frame</button>
         <button id="sug" title="graphics that never change, the 1 Hz clock, picture-in-picture rectangles, the field">Suggest boxes</button>
         <label class="small">compare with <select id="other"><option value="">(none)</option>${S.filter(s => s.id !== src.id).map(s => `<option value="${h(s.id)}">${h(s.label || s.id)}</option>`).join("")}</select></label>
+        ${src.origin === "auto" ? CS.help(`<span class="hl">These boxes apply to every match whose chosen video is <b>${h(TYPE_L[src.type] || src.type)}</b> from ${h(src.channel || "this channel")}: draw them once per type.</span>`, "Which videos these boxes apply to") : ""}
         <span id="lst" class="muted small"></span>
       </div>
       <div class="vs-edit">

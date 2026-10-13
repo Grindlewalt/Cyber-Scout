@@ -81,6 +81,7 @@ _YT_ID = re.compile(r"^[A-Za-z0-9_-]{11}$")
 _YT_LIST = re.compile(r"^[A-Za-z0-9_-]{2,64}$")
 _YT_BASE = re.compile(r"^/(@[A-Za-z0-9._%-]{1,100}|channel/[A-Za-z0-9_-]{1,64}|c/[A-Za-z0-9._%-]{1,100}|user/[A-Za-z0-9._%-]{1,100})(?=/|$)")
 _TWITCH_CH = re.compile(r"^[A-Za-z0-9_]{1,25}$")
+_YT_CHAN = re.compile(r"^UC[A-Za-z0-9_-]{22}$")
 _HOST_RE = re.compile(r"^[a-z0-9.-]{1,253}$")
 _YT_HOSTS = ("youtube.com", "youtu.be", "music.youtube.com")
 
@@ -266,6 +267,7 @@ def webcast_url(w):
     t, ch = (w.get("type") or "").lower(), str(w.get("channel") or "").strip()
     if t == "youtube":
         if _YT_ID.match(ch): return f"https://www.youtube.com/watch?v={ch}"
+        if _YT_CHAN.match(ch): return f"https://www.youtube.com/channel/{ch}/live"     # a channel id: its current live
         m = _YT_BASE.match("/" + ch.strip("/"))
         return f"https://www.youtube.com/{m.group(1)}/live" if m else None
     if t == "twitch":
@@ -299,23 +301,11 @@ def family_pattern(fam):
     return "^" + r"\d+(?:\s*\([^)]*\))?".join(parts).replace(r"\ ", r"\s+") + r"\s*$"
 
 
-_LV = [(r"\b(?:qualification|quals?|q)\s*(?:match\s*)?(\d+)\b", "qm"),
-       (r"\b(?:finals?|f)\s*(?:match\s*)?(\d+)\b", "f"),
-       (r"\b(?:playoffs?|semi-?finals?|sf|elim(?:ination)?s?|upper bracket|lower bracket)\b.*?\bmatch\s*(\d+)\b", "sf"),
-       (r"^\s*match\s*(\d+)\s*\(", "sf")]
-
-
 def match_key_from_title(title, ev, matches=None):
-    """Best-effort match key from a video title ("Qualification 17 - ...", "Q17", "Playoff Match 3", "Final 2")."""
-    t = (title or "").lower()
-    keys = {m["key"] for m in (matches or [])}
-    for pat, lv in _LV:
-        m = re.search(pat, t)
-        if not m: continue
-        n = int(m.group(1))
-        k = f"{ev}_qm{n}" if lv == "qm" else f"{ev}_f1m{n}" if lv == "f" else f"{ev}_sf{n}m1"
-        if not keys or k in keys: return k
-    return None
+    """Best-effort match key from a video title ("Qualification 17 - ...", "Q17", "Match 17", "Playoff Match 3",
+    "Match 5 (R2)", "Final 2", "Final Tiebreaker"); see videoplan.parse_title."""
+    import videoplan as VP
+    return VP.title_key(title, ev, [m["key"] for m in (matches or [])] or None)
 
 
 def _yt_videos(m):
@@ -349,7 +339,7 @@ def discover(ev, event, matches, meta_fn=oembed, meta_cache=None, sample=10, log
             continue
         u = c["url"]
         out.append(dict(id=f"tba-webcast-{i}", origin="tba", kind="livestream", provider=(w.get("type") or "").lower(),
-                        url=u, role="dynamic", coverage={"mode": "all"}, enabled=True,
+                        url=u, role="dynamic", coverage={"mode": "all"}, enabled=True, auto=True,
                         label=f"Event webcast ({w.get('type')}{', ' + w['date'] if w.get('date') else ''})",
                         sample=dict(video=c.get("video") or u, t=None), webcast=w))
     withv = sorted([m for m in matches or [] if _yt_videos(m)], key=_order)
@@ -662,8 +652,25 @@ def _live_imports():
     return np, cv2, LY, CB
 
 
+def plan_group(ev_dir, sid):
+    """A detected video type group of the event's plan (videoplan.groups: one layout per type + channel) as a
+    source-like dict, or None."""
+    try:
+        with open(os.path.join(ev_dir, "video_plan.json")) as f:
+            g = (json.load(f).get("groups") or {}).get(sid)
+        return dict(g) if g else None
+    except (OSError, ValueError, AttributeError):
+        return None
+
+
+def find_source(ev_dir, sid, doc=None):
+    """A source of sources.json, else a plan group with that id, else None."""
+    s = get(doc if doc is not None else load(ev_dir), sid)
+    return s if s is not None else plan_group(ev_dir, sid)
+
+
 def _source(data, ev, sid):
-    s = get(load(_ev_dir(data, ev)), sid)
+    s = find_source(_ev_dir(data, ev), sid)
     if s is None: raise ValueError(f"unknown source {sid}")
     if s.get("kind") == "file" and not file_allowed(s["url"]):
         raise ValueError("file source outside the allowed directories")
@@ -866,7 +873,61 @@ def job_discover(data, ev, p, log=print):
     except OSError: pass
     d = merge(load(_ev_dir(data, ev)), found)
     save(_ev_dir(data, ev), d)
+    try:
+        import videoplan as VP
+        if p.get("_matches") is not None:
+            VP.save_plan(_ev_dir(data, ev), VP.build_plan(ev, _ev_dir(data, ev), p["_matches"], d, VP.load_cache(data),
+                                                         live=VP.live_clips(ev)))
+    except Exception:
+        traceback.print_exc()
     return dict(found=len(found), sources=d["sources"])
+
+
+def job_plan(data, ev, p, log=print):
+    """Video page "Check videos": classify every candidate upload not checked yet (a few low-res frames
+    each, see videoplan.classify_video) and rebuild the per-match plan."""
+    import videoplan as VP
+    matches = p.get("_matches") or []
+    doc = load(_ev_dir(data, ev))
+    recs = VP.load_cache(data)
+    if not p.get("only"):
+        recs.update(VP.classify_many(data, [v for v in VP.todo(matches, doc, recs)], workers=int(p.get("workers", 3)), log=log))
+        try:                                       # channels of the classified uploads: what TBA does not link
+            VP.scan_channels(data, ev, matches, recs, log=log, max_age=0)
+        except Exception as e:
+            log(f"{ev}: channel scan failed: {e!r:.160}")
+    vids = VP.todo(matches, doc, recs, scan=VP.load_scan(_ev_dir(data, ev))) if not p.get("only") else \
+        [v for v in p["only"] if _YT_ID.match(str(v))]
+    done = VP.classify_many(data, vids, workers=int(p.get("workers", 3)), log=log) if vids else {}
+    plan = VP.build_plan(ev, _ev_dir(data, ev), matches, load(_ev_dir(data, ev)), VP.load_cache(data), live=VP.live_clips(ev))
+    VP.save_plan(_ev_dir(data, ev), plan)
+    return dict(checked=len(done), summary=plan["summary"])
+
+
+def auto_discover(data, ev, event, matches, max_age=6 * 3600, live_max_age=1200, log=print, meta_fn=oembed):
+    """Worker (every poll, throttled): run TBA discovery on its own -- event webcasts become livestream
+    sources and new per-match uploads are titled -- when sources.json was never discovered or is older than
+    max_age (live_max_age while the event is on).  Returns True when it ran."""
+    evd = _ev_dir(data, ev)
+    doc = load(evd)
+    import datetime as _dt
+    today = _dt.date.today().isoformat()
+    on = bool(event) and (event.get("start_date") or "9") <= today <= (event.get("end_date") or event.get("start_date") or "0")
+    age = time.time() - (doc.get("discovered_at") or 0)
+    if age < (live_max_age if on else max_age): return False
+    cache_p = os.path.join(data, "cache", "ytmeta_oembed.json")
+    try: cache = json.load(open(cache_p))
+    except (OSError, ValueError): cache = {}
+    found = discover(ev, event or {}, matches or [], meta_fn, cache, full=True, log=log)
+    os.makedirs(os.path.dirname(cache_p), exist_ok=True)
+    try: _jsave(cache_p, cache)
+    except OSError: pass
+    d = merge(load(evd), found)
+    save(evd, d)
+    n_ls = sum(1 for x in found if x["kind"] == "livestream")
+    log(f"{ev}: video sources discovered from TBA ({n_ls} webcast{'s' if n_ls != 1 else ''}, "
+        f"{len(found) - n_ls} upload famil{'ies' if len(found) - n_ls != 1 else 'y'})")
+    return True
 
 
 def job_index_playlist(data, ev, p, log=print):
@@ -893,7 +954,7 @@ def job_index_playlist(data, ev, p, log=print):
 
 
 JOBS = dict(frame=job_frame, suggest=job_suggest, detect=job_detect, fit=job_fit, overlay=job_overlay,
-            discover=job_discover, index_playlist=job_index_playlist)
+            discover=job_discover, index_playlist=job_index_playlist, plan=job_plan)
 LIGHT_JOBS = {"discover"}           # no vision stack needed: always runs in the API process
 
 

@@ -282,6 +282,34 @@ These were added in security round 2 (commit 74e84af).
 - A job still queued after 1 h is marked "expired".
 - CLI: `python live/sources.py jobs DATA [--watch]`.
 
+### 1.2b Per-match video plan — `live/videoplan.py`
+
+Replaces the per-family roles as the way a match's upload is chosen (families stay as an "Advanced" fallback).
+
+- **Candidates** per match (`gather`): its TBA videos, every per-match source's video for that key, admin
+  additions, and the **channel scan** (`scan_channels`): the event's channels are listed (`yt-dlp --flat-playlist`)
+  and an unlinked upload whose title names match K counts when a TBA-linked upload of K from the same channel sits
+  within 4 places of it (2026wabon: TBA links 11 "Wide Match N", the channel has 67).
+- **Classification** (`classify_video`, once per video, cached in `DATA/cache/vclass.json`): `yt-dlp -J` (IPv4) for
+  metadata + a 240–360p video-only URL; six short bursts (keyframe + 6 frames) are read with HTTP range requests
+  (`RangeFile`, ~1.5 MB, ~5 s per video, never the whole file). `wide` = fixed camera (edge similarity between
+  samples, no cuts, no global motion); `stations` = fixed view + two bottom-corner insets (a vertical intensity
+  step at one column in every frame); `broadcast` = cuts/pans. A different-camera first/last sample is an
+  intro/outro, not a cut. Fewer than 4 readable samples → unknown, retried later.
+- **Choice** (`choose`): drop excluded (admin, switched-off family, title naming another match via `parse_title`,
+  integrity "wrong video" from a processed match, too long/short) and duplicates (`duplicates`: duration ±1 s and
+  matching frame + motion pHashes); track = best wide → stations (limited: insets hide the near corners) →
+  broadcast (limited: cuts); a `stations` video for the station pass; the livestream clip if recorded.
+- **Files**: `DATA/events/<ev>/video_plan.json` (matches, videos, groups = type + channel for one layout per type),
+  `channel_scan.json`; overrides in `sources.json` `match_overrides` (`pin`, `pin_stations`, `exclude`, `add`).
+- **Worker**: `worker.py:video_plan` per poll (auto TBA discovery when stale, ≤12 checks / 60 s, rebuild);
+  `videos.candidates` returns the plan's ranking (with `type`, `limited`, `group`), else the title rules;
+  `videoplan.layout_for` passes the group's drawn layout (or detected inset masks) to `process.process`;
+  `stationcam.find_inset_video` uses the plan's `stations` video. API: `GET/PUT/POST /events/<ev>/video-plan...`.
+- **Livestream**: the recorder (`liveingest.live_sources`) uses today's TBA webcasts (or the TBA event's webcasts
+  when sources.json has none), resolves each (`/@channel/live` → current video), drops webcasts that resolve to the
+  same video, records the first live one, and re-resolves when a stream ends.
+
 ### 1.3 Choosing the upload — `live/videos.py:candidates`
 
 The config comes from `event.json` merged with `video_config`. Defaults are
