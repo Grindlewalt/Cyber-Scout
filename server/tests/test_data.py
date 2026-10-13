@@ -47,7 +47,7 @@ def test_picklist_versioning(team):
     assert r.status_code == 409 and r.json()["detail"]["current"]["version"] == 2
     assert v.get("/events/2026wasam/picklists/main").json()["data"] == {"stars": []}
     assert s.put("/events/2026wasam/picklists/a%2Fb", {"data": {}}).status_code in (404, 422)
-    assert s.put("/events/2026wasam/picklists/big", {"data": {"x": "y" * 300000}}).status_code == 413
+    assert s.put("/events/2026wasam/picklists/big", {"data": {"x": "y" * 300000}}).status_code in (413, 422)   # strict schema rejects it first
 
 
 def test_overrides_file(team, data):
@@ -84,3 +84,14 @@ def test_openapi(client):
     for p in ("/app/v1/session", "/app/v1/auth/login", "/app/v1/users", "/app/v1/settings/tba-key",
               "/app/v1/events/{ev}/picklists/{name}", "/app/v1/events/{ev}/overrides/{match}"):
         assert p in paths, p
+
+
+def test_picklist_rejects_markup(team):
+    """Security audit finding 1: picklist data is strictly typed (no strings where the UI renders numbers)."""
+    s = team["strategist"]
+    bad = [{"weights": {"made": "<img src=x onerror=alert(1)>"}}, {"stars": ["<b>x</b>"]},
+           {"weights": {"<x>": 1}}, {"html": "<script>"}, {"weights": {"made": 1e9}}]
+    for d in bad:
+        assert s.put("/events/2026wasam/picklists/main", {"data": d}).status_code == 422, d
+    ok = s.put("/events/2026wasam/picklists/main", {"data": {"stars": ["frc4911"], "dnp": ["frc254"], "weights": {"blend": 4, "made": 0.5}}})
+    assert ok.status_code == 200 and ok.json()["data"]["weights"]["made"] == 0.5

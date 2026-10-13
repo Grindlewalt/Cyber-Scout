@@ -2,7 +2,7 @@
 import json, os, re, threading, time
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from .. import db as DB
 from ..config import cfg
@@ -30,8 +30,36 @@ class PicklistOut(BaseModel):
     updated_by: dict | None
 
 
+WEIGHT_KEY_RE = re.compile(r"^[a-z][a-z0-9_]{0,23}$")
+
+
+class PicklistData(BaseModel):
+    """Strict shape (web/event.js): team keys and numeric weights only -- anything else is rejected, so a
+    strategist can't store markup that another user's browser renders (security audit finding 1)."""
+    model_config = ConfigDict(extra="forbid")
+    stars: list[str] | None = Field(None, max_length=200)
+    dnp: list[str] | None = Field(None, max_length=200)
+    weights: dict[str, float] | None = Field(None, max_length=40)
+
+    @field_validator("stars", "dnp")
+    @classmethod
+    def _teams(cls, v):
+        if v is not None and not all(isinstance(t, str) and TEAM_RE.match(t) for t in v):
+            raise ValueError("team keys only, e.g. frc4911")
+        return v
+
+    @field_validator("weights")
+    @classmethod
+    def _weights(cls, v):
+        if v is not None:
+            for k, w in v.items():
+                if not WEIGHT_KEY_RE.match(k) or not (-10.0 <= w <= 10.0) or w != w:
+                    raise ValueError("weights: short lowercase metric names -> numbers in -10..10")
+        return v
+
+
 class PicklistIn(BaseModel):
-    data: dict = Field(description="client-defined JSON object (web/event.js: {stars:[team], dnp:[team], weights:{metric:w}})")
+    data: PicklistData = Field(description="{stars:[team], dnp:[team], weights:{metric: number}} (web/event.js)")
     base_version: int | None = Field(None, description="optimistic concurrency: 409 if the stored version differs")
 
 
@@ -64,7 +92,7 @@ def get_picklist(name: str, ev: str = Depends(valid_event), user: User = Depends
 def put_picklist(name: str, body: PicklistIn, ev: str = Depends(valid_event),
                  user: User = Depends(require_role("strategist")), db=Depends(DB.get_db)):
     _pl_name(name)
-    blob = json.dumps(body.data, separators=(",", ":"))
+    blob = json.dumps(body.data.model_dump(exclude_unset=True), separators=(",", ":"))
     if len(blob) > MAX_PICKLIST_BYTES:
         raise HTTPException(413, "picklist too large")
     with DB.tx(db):
