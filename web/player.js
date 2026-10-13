@@ -99,7 +99,7 @@ async function analyzePage(ev, key) {
       <button id="bPlay" title="space">Play</button><button id="bBack" title="left arrow">&#9664; frame</button><button id="bFwd" title="right arrow">frame &#9654;</button>
       <button id="bM5">-5 s</button><button id="bP5">+5 s</button>
       <span class="an-speed" id="anSpeed">${[0.25, 0.5, 1, 2].map(s => `<button data-s="${s}" class="${s === 1 ? "on" : ""}">${s}&times;</button>`).join("")}</span>
-      ${ST ? `<span class="an-speed" id="anView" title="camera view (v key)">${VIEWS.map(v => `<button data-v="${v[0]}">${v[1]}</button>`).join("")}</span>` : ""}
+      ${ST ? `<span class="an-speed" id="anView" title="camera view (v key)">${VIEWS.map(v => `<button data-v="${v[0]}">${v[1]}</button>`).join("")}</span>` : hasVideo ? `<span class="an-speed muted small" title="Station views come from the event's separate &quot;Match N&quot; upload with the two driver-station cameras. This match has none on TBA (day 2 and playoffs at this event only have the broadcast).">Overhead only · no station cams for this match</span>` : ""}
       <span class="muted small" id="anTime"></span>
       <label class="small muted" title="Shift data relative to video, in frames ( [ and ] keys )">sync <input id="anOff" type="number" step="1" value="${Math.round(S.offset * PL.FPS)}" style="width:54px"> fr</label>
     </div>
