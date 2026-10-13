@@ -323,3 +323,6 @@ pre code { background: none; border: 0; padding: 0; font-size: inherit; }
 
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { transition: none !important; animation: none !important; scroll-behavior: auto !important; } }
 @media (prefers-contrast: more) { :root { --ink-2: var(--ink); --ink-3: var(--ink); --line: var(--line-strong); } }
+
+.file.missing { opacity: .45; pointer-events: none; }
+.file.missing span::after { content: " · not published yet"; }

@@ -35,8 +35,17 @@
   <div class="wrap page-h">
     <h1 class="display">Download Cyber-Scout</h1>
     <p class="lead">Two parts: the <b>server</b>, which runs the tracking on one team computer, and the <b>clients</b>, which keep a copy of the data on every laptop and phone so they work on bad venue Wi-Fi.</p>
-    <p class="pipeline-note"><i aria-hidden="true"></i>Installers and apps are coming from the build pipeline; until they're published, the links below may not work yet.</p>
   </div>
+  <section class="wrap dl-sec" id="quick" aria-labelledby="quick-h">
+    <h2 id="quick-h">Quick install</h2>
+    <p>Everything comes from this page: no GitHub account needed. The server installer downloads the code and the detector model from here too.</p>
+    <p><b>Server, Linux or macOS</b> (needs Docker; an NVIDIA GPU is used if present):</p>
+    <pre><code class="js-cmd" data-cmd="curl -fsSL {SITE}/downloads/get.sh | bash">curl -fsSL /downloads/get.sh | bash</code></pre>
+    <p><b>Server, Windows</b> (PowerShell, needs Docker Desktop with WSL 2):</p>
+    <pre><code class="js-cmd" data-cmd="irm {SITE}/downloads/get.ps1 | iex">irm /downloads/get.ps1 | iex</code></pre>
+    <p><b>Laptops:</b> download the Client for your system below, run it, and enter this server's address. <b>Phones:</b> install the Android app below, or open the server's site and use "Add to Home Screen".</p>
+    <p class="muted">Checksums: <a href="downloads/SHA256SUMS">SHA256SUMS</a> · version <span id="dl-ver">…</span></p>
+  </section>
 
   <section class="wrap dl-sec" id="server" aria-labelledby="server-h">
     <h2 id="server-h">Server</h2>
@@ -196,5 +205,6 @@
   </div>
 </footer>
 <script src="assets/site.js" defer></script>
+<script src="assets/download.js" defer></script>
 </body>
 </html>
