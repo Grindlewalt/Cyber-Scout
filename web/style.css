@@ -79,7 +79,7 @@ a:hover { text-decoration-color: currentColor; }
 .shell { display: grid; grid-template-columns: var(--sb-w) minmax(0, 1fr); min-height: 100vh; }
 body.sb-off .shell { grid-template-columns: 0 minmax(0, 1fr); }
 body.sb-off .sidebar { visibility: hidden; }
-body.bare .shell { grid-template-columns: 0 minmax(0, 1fr); } body.bare .sidebar, body.bare .tabbar, body.bare .timectl, body.bare #sbtoggle { display: none !important; }
+body.bare .shell { grid-template-columns: minmax(0, 1fr); }  /* sidebar is display:none here, so main must take the only column */ body.bare .sidebar, body.bare .tabbar, body.bare .timectl, body.bare #sbtoggle { display: none !important; }
 .sidebar { position: sticky; top: 0; height: 100vh; overflow-y: auto; background: var(--surface); border-right: 1px solid var(--line);
   padding: 14px 10px 20px; display: flex; flex-direction: column; gap: 14px; }
 .sb-brand { display: flex; align-items: center; gap: 9px; font-weight: 700; font-size: 15px; text-decoration: none; padding: 4px 8px; }
