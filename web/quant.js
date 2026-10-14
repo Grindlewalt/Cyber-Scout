@@ -62,22 +62,39 @@ function densityLayer(F, pts, cell = .5, hue = 50) {          // pts: [[x_m,y_m]
     ctx.fillRect(Math.min(x0, x1), Math.min(y0, y1), Math.abs(x1 - x0) + .5, Math.abs(y1 - y0) + .5);
   }
 }
-/** shots: team's shots_map entries. mode: "pts" | "heat" | "both" */
-function drawShotChart(F, shots, mode = "both", pf = "all") {
+// shot classes. "out" = not aimed at our hub: passes, feeds and clears (lobbed out of the far end). Old data has no
+// pass_kind: a "missed" shot that LANDED nearer the opponent's hub (HUBS.blue, team frame) is a clear, not a miss.
+const shotIsClear = s => s.o === "pass" ? s.k === "clear"
+  : s.o === "missed" && !!s.land && Math.hypot(s.land[0] / 100 - HUBS.blue[0], s.land[1] / 100 - HUBS.blue[1]) < Math.hypot(s.land[0] / 100 - HUBS.red[0], s.land[1] / 100 - HUBS.red[1]);
+const shotIsOut = s => s.o === "pass" || shotIsClear(s);
+const shotIsHub = s => (s.o === "made" || s.o === "missed") && !shotIsClear(s);
+const SHOW_CHIPS = [["all", "All"], ["hub", "Hub shots"], ["out", "Passes & clears"]];
+const shotsIn = (shots, pf = "all") => (shots || []).filter(s => pf === "all" || (pf === "auto" ? s.p === "auto" : s.p !== "auto"));
+/** {all, hub, out} counts after the period filter (for chip labels) */
+function shotCounts(shots, pf = "all") { const u = shotsIn(shots, pf), h = u.filter(shotIsHub).length, o = u.filter(shotIsOut).length; return { all: u.length, hub: h, out: o }; }
+/** inline legend for drawShotChart's dot colours */
+function shotLegend() {
+  return `<span class="shotlegend"><span><i style="background:${C_MADE}"></i>made</span><span><i style="background:${C_MISS}"></i>missed</span><span title="passes, feeds and clears: FUEL sent somewhere other than our hub"><i style="background:${C_PASS}"></i>pass / clear <span class="muted">(not toward hub)</span></span></span>`;
+}
+/** shots: team's shots_map entries. mode: "pts" | "heat" | "both"; pf: "all" | "auto" | "tele";
+ *  show: "all" | "hub" (made/missed toward our hub) | "out" (passes, feeds, clears). Density uses the shown class
+ *  (hub shots for "all"/"hub"). Returns the number of points shown. */
+function drawShotChart(F, shots, mode = "both", pf = "all", show = "all") {
   const { ctx, P, c, bg } = F; bg(.55);
-  const use = shots.filter(s => pf === "all" || (pf === "auto" ? s.p === "auto" : s.p !== "auto"));
-  if (mode !== "pts") densityLayer(F, use.filter(s => s.o !== "pass").map(s => [s.xy[0] / 100, s.xy[1] / 100]), .5, 55);
+  const use = shotsIn(shots, pf), hubS = use.filter(shotIsHub), outS = use.filter(shotIsOut);
+  const shown = show === "hub" ? hubS : show === "out" ? outS : use;
+  if (mode !== "pts") densityLayer(F, (show === "out" ? outS : hubS).map(s => [s.xy[0] / 100, s.xy[1] / 100]), .5, 55);
   drawHubMark(F, HUBS.red[0], HUBS.red[1]);
   if (mode !== "heat") {
     const r = Math.max(2, c.width / 330);
-    for (const s of use) {
+    for (const s of shown) {
       const [x, y] = P(s.xy[0] / 100, s.xy[1] / 100);
-      ctx.fillStyle = s.o === "made" ? C_MADE : s.o === "pass" ? C_PASS : C_MISS; ctx.globalAlpha = .75;
+      ctx.fillStyle = s.o === "made" ? C_MADE : shotIsOut(s) ? C_PASS : C_MISS; ctx.globalAlpha = .75;
       ctx.beginPath(); ctx.arc(x, y, r, 0, 7); ctx.fill();
     }
     ctx.globalAlpha = 1;
   }
-  return use.length;
+  return shown.length;
 }
 function drawIntakeMap(F, pts, mode = "both") {
   const { ctx, P, c, bg } = F; bg(.55);
@@ -114,8 +131,61 @@ function chipRow(el, opts, cur, cb) {       // single-select chips
   el.querySelectorAll(".chip").forEach(ch => ch.onclick = () => { el.querySelectorAll(".chip").forEach(x => x.classList.toggle("on", x === ch)); cb(ch.dataset.k); });
 }
 
+// ------------------------------------------------------------------ hub active / inactive behaviour (team analytics.hub)
+// Teleop shifts split by whether our own hub is active (FUEL scored while it is inactive does not count). Each phase is
+// {observed_s, shots_pm, made_pm, passes_pm, intakes_pm, defending_frac, zone:{own,neutral,opp}} of {v,n,conf,trend} leaves.
+// Activity labels: score = value / threshold; an activity applies at score >= 1 and the top two that apply are combined
+// ("Passing + collecting"). Thresholds tuned on 2026wasam (hub active: scorers 30-110 shots/min, others 2-17; hub inactive:
+// scorers pass/stockpile 10-57/min and collect 6-13/min; defending_frac tops out near 0.23):
+//   Scoring    shots at our hub        >= 8 / min
+//   Defending  defending_frac          >= 15 %
+//   Passing    passes + feeds + clears >= 5 / min
+//   Collecting intakes                 >= 5 / min, or >= 55 % of the time in the neutral zone
+// None applies: "Holding in own zone" (own >= 60 %), "Waiting in opponent zone" (opp >= 50 %), else "Mostly idle";
+// with "(some <activity>)" when the strongest activity is at least half its threshold.
+const HUB_T = { shots_pm: 8, defending_frac: .15, passes_pm: 5, intakes_pm: 5, neutral: .55, own: .6, opp: .5 };
+const HUB_ACT = [
+  [h => h.shots_pm / HUB_T.shots_pm, "Scoring", "scoring"],
+  [h => h.defending_frac / HUB_T.defending_frac, "Defending", "defending"],
+  [h => h.passes_pm / HUB_T.passes_pm, "Passing / feeding", "passing"],
+  [h => Math.max(h.intakes_pm / HUB_T.intakes_pm, h.neutral / HUB_T.neutral), "Collecting in neutral zone", "collecting"],
+];
+const HUB_THIN = 3;             // fewer matches than this: shown greyed as thin data
+const per = (v, one, many = one + "s") => `${rate_(v)} ${rate_(v) === "1" ? one : many}/min`;
+const rate_ = v => !has(v) ? "–" : v >= 9.95 ? String(Math.round(v)) : Number(v).toFixed(1).replace(/\.0$/, "");
+/** analytics.hub -> null | {on:{label, html, n, thin}, off:{...}} (label: plain text; html: supporting numbers) */
+function hubPhaseSummary(hub) {
+  if (!hub || (!hub.on && !hub.off)) return null;
+  const one = ph => {
+    const z = (ph && ph.zone) || {};
+    const g = ph ? { shots_pm: val(ph.shots_pm), made_pm: val(ph.made_pm), passes_pm: val(ph.passes_pm), intakes_pm: val(ph.intakes_pm),
+      defending_frac: val(ph.defending_frac), own: val(z.own), neutral: val(z.neutral), opp: val(z.opp), obs: val(ph.observed_s) } : {};
+    if (!ph || !Object.values(g).some(has)) return { label: "Not observed", html: `<span class="muted">under 5 s of video in this state</span>`, n: 0, thin: true };
+    const n = Math.max(0, ...[ph.observed_s, ph.shots_pm, ph.defending_frac, z.own].map(mn).filter(has));
+    const sc = HUB_ACT.map(([f, l, sh]) => [f(g) || 0, l, sh]).sort((a, b) => b[0] - a[0]), hits = sc.filter(x => x[0] >= 1);
+    const label = hits.length > 1 ? hits[0][2][0].toUpperCase() + hits[0][2].slice(1) + " + " + hits[1][2] : hits.length ? hits[0][1]
+      : ((g.own || 0) >= HUB_T.own ? "Holding in own zone" : (g.opp || 0) >= HUB_T.opp ? "Waiting in opponent zone" : "Mostly idle") + (sc[0][0] >= .5 ? ` (some ${sc[0][2]})` : "");
+    const bits = [];
+    if (has(g.shots_pm)) bits.push(`${per(g.shots_pm, "shot")}${has(g.made_pm) && g.shots_pm > 0 ? ` (${rate_(g.made_pm)} made)` : ""}`, per(g.passes_pm, "pass", "passes"), per(g.intakes_pm, "intake"));
+    else bits.push(`<span class="muted">no shot data</span>`);
+    if (has(g.defending_frac)) bits.push(`${pct(g.defending_frac)} defending`);
+    if ([g.own, g.neutral, g.opp].some(has)) bits.push(`own ${pct(g.own)} / mid ${pct(g.neutral)} / opp ${pct(g.opp)}`);
+    const thin = n < HUB_THIN;
+    const html = bits.map(b => `<span>${b}</span>`).join(" · ") + ` <span class="hp-n">n=${n}${has(g.obs) ? ` · ~${Math.round(g.obs)} s/match seen` : ""}</span>${thin ? ' <span class="pill thin" title="fewer than 3 matches observed in this state: anecdotal">thin data</span>' : ""}`;
+    return { label, html, n, thin };
+  };
+  return { on: one(hub.on), off: one(hub.off) };
+}
+/** the two-line "When hub is active: … / When hub is inactive: …" block; "" when there is no hub data */
+function hubPhaseBlock(hub) {
+  const HP = hubPhaseSummary(hub); if (!HP) return "";
+  return `<div class="hubph">${[["on", "When hub is active"], ["off", "When hub is inactive"]].map(([k, t]) => `<div class="hp-row ${k}${HP[k].thin ? " thin" : ""}"><div class="hp-h"><span class="hp-k">${t}:</span> <b>${esc(HP[k].label)}</b></div><div class="hp-d">${HP[k].html}</div></div>`).join("")}</div>`;
+}
+const hubHelp = () => `<span class="hl"><b>Teleop shifts split by whether our own hub is active.</b> FUEL scored into an inactive hub does not count, so strong teams switch jobs then: collect, pass/feed, or defend.</span>`
+  + `<span class="hl">Rates are per minute of video actually seen in that state, averaged over n verified matches. Grey = fewer than ${HUB_THIN} matches: anecdotal.</span>`
+  + `<span class="hl">Labels: Scoring ≥ ${HUB_T.shots_pm} shots/min at our hub · Defending ≥ ${pct(HUB_T.defending_frac)} of the time · Passing ≥ ${HUB_T.passes_pm} passes, feeds or clears/min · Collecting ≥ ${HUB_T.intakes_pm} intakes/min or ≥ ${pct(HUB_T.neutral)} of the time in the neutral zone. When two apply, the stronger comes first. Otherwise the zone it waits in, or "Mostly idle".</span>`;
+
 // ------------------------------------------------------------------ team page
-const ROLE_TXT = { scorer: "Scorer", feeder: "Feeder / passer", collector: "Collector", defender: "Defender", hybrid: "Hybrid" };
 function section(id, title, body, note = "") {
   return `<section class="card sect" id="s-${id}"><h2>${title}${note ? " " + CS.help(note, "About " + String(title).replace(/<[^>]*>/g, "").toLowerCase()) : ""}</h2>${body}</section>`;
 }
@@ -137,7 +207,7 @@ async function teamPage(ev, tk) {
   const ms = d.matches || [], an = ms.map(m => m.analytics || null);
   const tr = fn => an.map((a, i) => { try { return a && ms[i].verified ? fn(a) : null; } catch (x) { return null; } });
   const starred = (lsGet("cyberscout:picks:" + ev, {}).stars || []).includes(tk);
-  const role = ag && ag.role;
+  const HP = tainted ? null : hubPhaseSummary(ag && ag.hub);
   const mcf = m => m.team_conf != null ? m.team_conf : m.conf;
   const cfs = ms.map(mcf).filter(x => x != null), idMean = d.team_conf != null ? d.team_conf : cfs.length ? cfs.reduce((a, b) => a + b, 0) / cfs.length : null;
   const nLow = cfs.filter(x => x < IDC.low).length;
@@ -149,7 +219,7 @@ async function teamPage(ev, tk) {
 
   $app.innerHTML = `<div class="titlebar"><div><h1>${d.number} <span class="muted" style="font-weight:500">${esc(d.nickname || "")}</span></h1>
     <div class="sub">${d.rank ? `Rank ${d.rank} · ` : ""}${d.opr != null ? `OPR ${fx(d.opr)} · ` : ""}${CV.n} verified match${CV.n === 1 ? "" : "es"}${CV.of ? ` of ${CV.of} played` : ""}${d.tracked > CV.n ? ` <span class="muted small">(${d.tracked - CV.n} replay-only)</span>` : ""}
-      ${role ? ` · <span class="pill role">${ROLE_TXT[val(role)] || val(role)}</span>` : ""}
+      ${HP ? ` · <span class="hp-pills"><span class="pill hp on${HP.on.thin ? " thin" : ""}" title="teleop, while our hub is active (n=${HP.on.n})">Hub active: ${esc(HP.on.label)}</span> <span class="pill hp off${HP.off.thin ? " thin" : ""}" title="teleop, while our hub is inactive (n=${HP.off.n})">Inactive: ${esc(HP.off.label)}</span></span>` : ""}
       · ${covPill(CV)} ${flagChips(SR)} · <a href="https://www.thebluealliance.com/team/${d.number}/${(e && e.year) || ""}" target="_blank" rel="noopener">TBA</a></div></div>
     <button id="star" type="button" class="${starred ? "on" : ""}" aria-pressed="${starred}">${CS.icon(starred ? "starOn" : "star")}<span>${starred ? "Starred" : "Star"}</span></button></div>
     <nav class="jump">${navs.map(([k, l]) => `<a href="#" data-j="${k}">${l}</a>`).join("")}</nav>
@@ -184,9 +254,9 @@ async function teamPage(ev, tk) {
         ${tile("1st shot (auto)", S.first_shot_auto, "1", " s")}${tile("1st shot (teleop)", S.first_shot_teleop, "1", " s")}</div>
       <h3>By period <span class="muted small">(made / attempts per match)</span></h3>${S.by_period ? periodBars(S.by_period) : ""}`,
       "Aggregates are per-match means over tracked matches. n = matches the metric was available in; the bar is confidence (coverage × sample size).")}
-    ${section("shots", "Shot chart", `<div class="chipbar"><div class="chips" id="sc-p"></div><div class="chips" id="sc-m"></div></div><div id="shotmap"></div>
-      <div class="legendline"><i style="background:${C_MADE}"></i>made <i style="background:${C_MISS}"></i>missed <i style="background:${C_PASS}"></i>pass <span class="muted small" id="sc-n"></span></div>`,
-      "Launch positions from the team's own end (own alliance wall on the left, hub ringed). Density shows where it shoots from, all attempts.")}
+    ${section("shots", "Shot chart", `<div class="chipbar sep"><div class="chips" id="sc-s" role="group" aria-label="Which shots"></div><div class="chips" id="sc-p" role="group" aria-label="Match period"></div><div class="chips" id="sc-m" role="group" aria-label="Display"></div></div><div id="shotmap"></div>
+      <div class="legendline">${shotLegend()} <span class="muted small" id="sc-n"></span></div>`,
+      `<span class="hl">Launch positions from the team's own end (own alliance wall on the left, our hub ringed).</span><span class="hl"><b>Hub shots</b> = made or missed at our hub. <b>Passes &amp; clears</b> = FUEL sent anywhere else: passes and feeds to a partner or the floor, and clears lobbed out of the far end near the opponent's hub (older data: misses that landed nearer the opponent's hub).</span><span class="hl">Density shows where the selected set is launched from (hub shots unless Passes &amp; clears is picked).</span>`)}
     ${section("intake", "Intake map", `<div id="intakemap"></div>
       <div class="tiles" style="margin-top:10px">${tile("Intakes / match", ag && ag.collection && ag.collection.intakes, "1")}${tile("Per minute", ag && ag.collection && ag.collection.per_min, "1")}
       ${["neutral", "depot", "outpost", "opp"].map(k => tile("From " + k, ag && ag.collection && ag.collection.by_loc && ag.collection.by_loc[k], "1")).join("")}</div>`, "Where floor fuel was picked up, from the team's own end.")}
@@ -206,9 +276,9 @@ async function teamPage(ev, tk) {
     ${section("end", "Endgame", `<div class="grid2"><div><h3>Climb level</h3>${bars([0, 1, 2, 3].map(l => ["Level " + l || "none", levels[l] || 0, nL, `${levels[l] || 0}/${nL}`, l ? C_MADE : "#475569"]).map(r => (r[0] = r[0] === "Level 0" ? "None" : r[0], r)))}</div>
       <div class="tiles">${tile("Climb rate", has(EG.climb_rate) ? { v: EG.climb_rate, n: EG.n } : null, "p")}${tile("Attempt rate", has(EG.attempt_rate) ? { v: EG.attempt_rate, n: EG.n } : null, "p")}
         ${tile("Arrives at tower", EG.arrive_t, "0", " s", "match time")}${tile("Climb duration", EG.duration_s, "1", " s")}${tile("Stops scoring", EG.stop_scoring_t, "0", " s", "match time")}</div></div>`)}
-    ${section("rel", "Reliability & role", `<div class="grid2"><div class="tiles">${tile("Dead matches", has(RL.dead_matches) ? { v: RL.dead_matches, n: RL.n } : null, "0", "", "no movement for 15 s or more mid-match, not climbing")}
+    ${section("rel", "Reliability & hub phases", `<div class="grid2"><div class="tiles">${tile("Dead matches", has(RL.dead_matches) ? { v: RL.dead_matches, n: RL.n } : null, "0", "", "no movement for 15 s or more mid-match, not climbing")}
         ${tile("Avg dead time", RL.mean_dead_s, "1", " s")}${tile("Low-coverage matches", has(RL.low_coverage_matches) ? RL.low_coverage_matches : null, "0")}</div>
-      <div>${role ? `<h3>Role <span class="pill role">${ROLE_TXT[val(role)] || val(role)}</span> ${confBar(mc(role), "role confidence")} <span class="muted small">n=${mn(role)}</span></h3>${role.scores ? bars(Object.entries(role.scores).sort((a, b) => b[1] - a[1]).map(([k, v]) => [ROLE_TXT[k] || k, v, 1, pct(v)])) : ""}` : ""}</div></div>`)}
+      <div><h3 class="hp-h3">Hub active vs inactive ${CS.help(hubHelp(), "About hub active / inactive")}</h3>${HP ? hubPhaseBlock(ag.hub) : `<div class="muted small">${tainted ? "Hidden: this team's aggregates still mix in unverified matches." : "No hub-phase data for this team yet (needs a site rebuild with verified video)."}</div>`}</div></div>`)}
     ${section("matches", "Matches", `<div class="tablewrap"><table><thead><tr><th>Match</th><th>All.</th><th class="num" data-pri="800">Made/Att</th><th class="num" data-pri="700">Acc</th><th class="num" data-pri="200">Fire /s</th><th class="num" data-pri="190">Volley</th><th class="num" data-pri="300">Cycle s</th>
       <th class="num" data-pri="180">Intakes</th><th data-pri="120">Auto</th><th class="num" data-pri="500">Auto made</th><th data-pri="450">Climb</th><th class="num" data-pri="170">Def s</th><th class="num" data-pri="160">Cont.</th><th class="num" data-pri="150">Pins</th><th class="num" data-pri="140">Dist m</th><th title="verified identity (v2, ≥ 60%)" data-pri="250">Verified</th><th data-pri="400">Flags</th></tr></thead>
       <tbody>${ms.map((m, i) => { const a = an[i]; const lo = mcf(m) != null && mcf(m) < IDC.low; if (!m.verified) return `<tr class="sc-dis"><td><a href="#/${ev}/m/${m.match}">${esc(m.short)}</a></td><td class="${m.alliance[0]}">${m.alliance[0].toUpperCase()}</td><td colspan="15" class="muted wrapc" title="identity not verified (v1 tracks or confidence &lt; 60%): replay only, feeds no numbers">not verified · replay only</td></tr>`;
@@ -230,11 +300,13 @@ async function teamPage(ev, tk) {
   };
 
   // shot chart
-  let smode = "both", sper = "all";
+  let smode = "both", sper = "all", sshow = "all";
   const shots = d.shots_map || [];
-  chipRow(document.getElementById("sc-p"), [["all", "All"], ["auto", "Auto"], ["tele", "Teleop"]], sper, k => { sper = k; SC.redraw(); });
+  const showChips = () => { const c = shotCounts(shots, sper); chipRow(document.getElementById("sc-s"), SHOW_CHIPS.map(([k, l]) => [k, `${l} <span class="chipn">${c[k]}</span>`]), sshow, k => { sshow = k; SC.redraw(); }); };
+  chipRow(document.getElementById("sc-p"), [["all", "All"], ["auto", "Auto"], ["tele", "Teleop"]], sper, k => { sper = k; showChips(); SC.redraw(); });
+  showChips();
   chipRow(document.getElementById("sc-m"), [["both", "Points + density"], ["pts", "Points"], ["heat", "Density"]], smode, k => { smode = k; SC.redraw(); });
-  const SC = liveCanvas(document.getElementById("shotmap"), F => { const n = drawShotChart(F, shots, smode, sper); document.getElementById("sc-n").textContent = `${n} shots`; });
+  const SC = liveCanvas(document.getElementById("shotmap"), F => { const n = drawShotChart(F, shots, smode, sper, sshow); document.getElementById("sc-n").textContent = `${n} ${sshow === "out" ? (n === 1 ? "pass / clear" : "passes & clears") : n === 1 ? "shot" : "shots"}`; });
   liveCanvas(document.getElementById("intakemap"), F => drawIntakeMap(F, d.intakes_map || []));
 
   // autos / routines

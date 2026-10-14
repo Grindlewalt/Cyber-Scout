@@ -50,9 +50,10 @@ class PicklistData(BaseModel):
     model_config = ConfigDict(extra="forbid")
     stars: list[str] | None = Field(None, max_length=200)
     dnp: list[str] | None = Field(None, max_length=200)
+    order: list[str] | None = Field(None, max_length=200, description="custom (dragged) ranking, best first")
     weights: dict[str, float] | None = Field(None, max_length=40)
 
-    @field_validator("stars", "dnp")
+    @field_validator("stars", "dnp", "order")
     @classmethod
     def _teams(cls, v):
         if v is not None and not all(isinstance(t, str) and TEAM_RE.match(t) for t in v):
@@ -71,7 +72,7 @@ class PicklistData(BaseModel):
 
 class PicklistIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    data: PicklistData = Field(description="{stars:[team], dnp:[team], weights:{metric: number}} (web/event.js)")
+    data: PicklistData = Field(description="{stars:[team], dnp:[team], order:[team], weights:{metric: number}} (web/event.js)")
     base_version: int | None = Field(None, description="optimistic concurrency: 409 if the stored version differs")
 
 

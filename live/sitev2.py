@@ -137,6 +137,10 @@ def web_team_analytics(agg, per_match_web, id_conf=1.0):
                     "stop_scoring_t": L("endgame.left_scoring_area_s"), "n": len(per_match_web)},
         "reliability": {"dead_matches": agg.get("dead_matches"), "n": agg.get("n_matches"),
                         "mean_dead_s": L("reliability.dead_s"), "low_coverage_matches": agg.get("low_coverage_matches")},
+        # teleop shifts 1-4 split by whether the team's own hub was active (analytics._hub_phases)
+        "hub": {ph: {**{k: L(f"strategy.hub_{ph}.{k}") for k in ("observed_s", "shots_pm", "made_pm", "passes_pm",
+                                                             "intakes_pm", "defending_frac")},
+                     "zone": {z: L(f"strategy.hub_{ph}.zone.{z}") for z in ("own", "neutral", "opp")}} for ph in ("on", "off")},
         "role": {"v": role, "scores": {k: round(v / max(1, sum(rc.values())), 2) for k, v in rc.items()},
                  "n": sum(rc.values()), "conf": round(id_conf, 2)},
     }

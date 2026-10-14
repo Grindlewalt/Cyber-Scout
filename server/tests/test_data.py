@@ -94,8 +94,10 @@ def test_picklist_rejects_markup(team):
     """Security audit finding 1: picklist data is strictly typed (no strings where the UI renders numbers)."""
     s = team["strategist"]
     bad = [{"weights": {"made": "<img src=x onerror=alert(1)>"}}, {"stars": ["<b>x</b>"]},
-           {"weights": {"<x>": 1}}, {"html": "<script>"}, {"weights": {"made": 1e9}}]
+           {"weights": {"<x>": 1}}, {"html": "<script>"}, {"weights": {"made": 1e9}}, {"order": ["frc1", "<i>"]}]
     for d in bad:
         assert s.put("/events/2026wasam/picklists/main", {"data": d}).status_code == 422, d
     ok = s.put("/events/2026wasam/picklists/main", {"data": {"stars": ["frc4911"], "dnp": ["frc254"], "weights": {"blend": 4, "made": 0.5}}})
     assert ok.status_code == 200 and ok.json()["data"]["weights"]["made"] == 0.5
+    ok = s.put("/events/2026wasam/picklists/main", {"data": {"stars": [], "order": ["frc254", "frc4911"]}})
+    assert ok.status_code == 200 and ok.json()["data"]["order"] == ["frc254", "frc4911"]

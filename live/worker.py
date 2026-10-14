@@ -360,10 +360,15 @@ def build_site(ev, tba):
                                      | {"team": team, "unattributed": unattr})
                     if team in per_team and sh.get("origin"):
                         al = alli_of.get(ti, "red")
+                        # a "miss" at the other alliance's hub is a clear out of that end (analytics._is_clear)
+                        oc = sh.get("outcome")
+                        pk = sh.get("pass_kind") if oc == "pass" else None   # hubcam can flip a pass to made
+                        if oc == "missed" and sh.get("target") not in (None, f"{al}_hub"):
+                            oc, pk = "pass", "clear"
                         o = sitev2.team_frame(sh["origin"], al); ld = sitev2.team_frame(sh.get("landing") or sh["origin"], al)
                         per_team[team]["shots"].append({"xy": [round(o[0] * 100), round(o[1] * 100)],
                                                         "land": [round(ld[0] * 100), round(ld[1] * 100)],
-                                                        "o": sh.get("outcome"), "p": sh.get("period"), "m": row["short"]})
+                                                        "o": oc, "k": pk, "p": sh.get("period"), "m": row["short"]})
                 for it in evs.get("intakes", []) or []:
                     team = team_of.get(it.get("track_idx"))
                     if team in per_team and it.get("xy"):

@@ -781,8 +781,8 @@ def _fuel(events, k, P, ctx, match, tm):
             if (s.get("shooter") or {}).get("track_idx") == k and (s.get("shooter") or {}).get("kind", "robot") == "robot"]
     ints = [x for x in (events.get("intakes") or []) if x.get("track_idx") == k]
     mine.sort(key=lambda s: s.get("match_t", s.get("t", 0)))
-    shots = [s for s in mine if s.get("outcome") != "pass"]
-    passes = [s for s in mine if s.get("outcome") == "pass"]
+    shots = [s for s in mine if s.get("outcome") != "pass" and not _is_clear(s, al)]
+    passes = [s for s in mine if s.get("outcome") == "pass" or _is_clear(s, al)]
     mt = lambda s: float(match_clock(s.get("match_t", 0.0), match))
     rt = lambda s: float(s.get("match_t", 0.0))                       # replay time
     made = [s for s in shots if s.get("outcome") == "made"]
@@ -794,7 +794,7 @@ def _fuel(events, k, P, ctx, match, tm):
     for s in mine:
         pn = "pause" if in_pause(rt(s), match) else (ctx.period_of(mt(s)) or s.get("period") or "other")
         d = byp.setdefault(pn, {"shots": 0, "made": 0, "missed": 0, "passes": 0})
-        if s.get("outcome") == "pass":
+        if s.get("outcome") == "pass" or _is_clear(s, al):
             d["passes"] += 1
         else:
             d["shots"] += 1
@@ -952,6 +952,67 @@ def _strategy(i, P, D, N, ctx, defout, fuel, reli):
     return out, cov
 
 
+# ================================================================================ hub on / off
+HUB_GRACE_S = 3.0          # = shots.GRACE_S: fuel still counts this long after its hub deactivates
+def _hub_phases(k, P, ctx, match, events, sched, dres, N):
+    """What the robot does in teleop shifts 1-4 while its own hub is active ("on") vs inactive ("off").
+    Rates are per observed minute in that state; shots = hub shots (made/missed), clears of the opposing hub
+    count as passes. The first HUB_GRACE_S of an inactive shift belongs to neither (fuel still counts then).
+    None when the shift schedule is unknown (TBA tie with no per-shift signal)."""
+    p = P[k]
+    act = (sched or {}).get(p.alliance) or {}
+    shifts = [(n, a, b) for n, a, b in ctx.periods if n.startswith("shift") and act.get(n) is not None]
+    if not shifts:
+        return None, None
+    on_of = lambda t: next((act[n] if act[n] or t >= a + HUB_GRACE_S else None for n, a, b in shifts if a <= t < b), None)
+    t = p.t
+    base = p.good & ~p.pause
+    zr = p.raw_zone(ctx)
+    dm = np.zeros(len(t), bool)
+    dfd = (dres.get(k) or {}).get("defending") if dres else None
+    if dfd is not None:
+        m_ = min(len(dm), len(dfd), N)
+        dm[:m_] = dfd[:m_]
+    state = np.array([on_of(x) for x in t], dtype=object)
+    mine, ints = [], []
+    if events and isinstance(events, dict):
+        mine = [s for s in (events.get("shots") or []) if (s.get("shooter") or {}).get("track_idx") == k
+                and (s.get("shooter") or {}).get("kind", "robot") == "robot"]
+        ints = [x for x in (events.get("intakes") or []) if x.get("track_idx") == k]
+    ev_ok = bool(events and isinstance(events, dict))
+    out, cov = {}, []
+    for name, flag in (("hub_on", True), ("hub_off", False)):
+        m = base & (state == flag)
+        n = int(m.sum())
+        full = sum(b - a - (0 if flag else HUB_GRACE_S) for n_, a, b in shifts if act[n_] is flag)
+        cov.append(n / p.hz / full if full else 0.0)
+        if n < p.hz * 5:                      # under 5 s observed in this state: nothing to say
+            out[name] = None
+            continue
+        mins = n / p.hz / 60.0
+        inn = lambda tt: on_of(float(tt)) is flag
+        sh = [x for x in mine if inn(match_clock(x.get("match_t", 0.0), match))]
+        hub = [x for x in sh if x.get("outcome") in ("made", "missed") and not _is_clear(x, p.alliance)]
+        d = {"observed_s": _num(n / p.hz, 1),
+             "zone": {"own": _num((zr[m] == 2).mean()), "neutral": _num((zr[m] == 1).mean()),
+                      "opp": _num((zr[m] == 0).mean())},
+             "defending_frac": _num(dm[m].mean())}
+        if ev_ok:
+            d.update({"shots_pm": _num(len(hub) / mins, 2),
+                      "made_pm": _num(sum(x.get("outcome") == "made" for x in hub) / mins, 2),
+                      "passes_pm": _num((len(sh) - len(hub) - sum(x.get("outcome") not in ("made", "missed", "pass")
+                                                                    for x in sh)) / mins, 2),
+                      "intakes_pm": _num(sum(inn(match_clock(x.get("match_t", 0.0), match)) for x in ints) / mins, 2)})
+        out[name] = d
+    return out, _num(min(cov))
+
+
+def _is_clear(s, alliance):
+    """A 'missed' shot that came near the OTHER alliance's hub: robots only score in their own hub, so this is a
+    clear / lob out of the far zone, not a scoring attempt (shots.py now labels these passes at reconstruction)."""
+    return s.get("outcome") == "missed" and s.get("target") not in (None, f"{alliance}_hub")
+
+
 # ================================================================================ main entry
 def match_analytics(match, events=None, rules=None, tba_match=None):
     ctx = Ctx(rules)
@@ -978,6 +1039,11 @@ def match_analytics(match, events=None, rules=None, tba_match=None):
                 levels_auto[k] = b.get("autoTowerRobot%d" % s)
     D, N = _pair_arrays(P)
     dres = _defense_all(P, D, N, ctx, events)
+    try:
+        from shots import hub_schedule
+        sched = hub_schedule(tba_match)[0] if tba_match else None
+    except Exception:                                   # pragma: no cover
+        sched = None
     tracks = {}
     shots_by = None
     fuels, shot_ts_by = {}, {}
@@ -1001,6 +1067,9 @@ def match_analytics(match, events=None, rules=None, tba_match=None):
         rl, c_rl = _reliability(p, ctx, match)
         de = _defense_out(k, dres, P, D, N, ctx, shots_by, c_mv)
         st, c_st = _strategy(k, P, D, N, ctx, de, fuels[k], rl)
+        hp, c_hp = _hub_phases(k, P, ctx, match, events, sched, dres, N)
+        if hp:
+            st.update(hp)
         fuels[k]["coverage"] = {"events_present": fuels[k]["events_present"], "n_shots": fuels[k].get("n_shots")}
         tracks[k] = {
             "meta": {"track_idx": k, "alliance": p.alliance, "team": team[k], "station": station[k],

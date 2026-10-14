@@ -4179,6 +4179,22 @@
       ],
       "title": "Dnp"
      },
+     "order": {
+      "anyOf": [
+       {
+        "items": {
+         "type": "string"
+        },
+        "type": "array",
+        "maxItems": 200
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Order",
+      "description": "custom (dragged) ranking, best first"
+     },
      "weights": {
       "anyOf": [
        {
@@ -4204,7 +4220,7 @@
     "properties": {
      "data": {
       "$ref": "#/components/schemas/PicklistData",
-      "description": "{stars:[team], dnp:[team], weights:{metric: number}} (web/event.js)"
+      "description": "{stars:[team], dnp:[team], order:[team], weights:{metric: number}} (web/event.js)"
      },
      "base_version": {
       "anyOf": [

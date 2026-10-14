@@ -981,6 +981,11 @@ class Reconstructor:
                 in_zone = (o[0] < self.F.blue_x + ZONE_MARGIN) if hal == "blue" else (o[0] > self.F.red_x - ZONE_MARGIN)
                 if not in_zone:
                     near = False
+            if near and kind == "robot" and sal in ("red", "blue") and hal != sal:
+                # robots only score in their own hub: a launch that comes near the OTHER alliance's hub is a
+                # clear / lob out of that end of the field, not a missed shot (strategist review 2026-10)
+                near = False
+                c["clear"] = True
             if near and kind == "human" and not c.get("bounced"):
                 near = False                    # human-player throws are feeds into the field
             if near:
@@ -1126,7 +1131,8 @@ class Reconstructor:
             made_dc=None if c.get("made_dc") is None else round(c["made_dc"], 1),
             land_dc=None if c.get("land_dc") is None else round(c["land_dc"], 1),
             bounced=c.get("bounced"),
-            pass_kind=(("feed" if c.get("receiver") is not None else "floor") if d["outcome"] == "pass" else None),
+            pass_kind=(("feed" if c.get("receiver") is not None else "clear" if c.get("clear") else "floor")
+                       if d["outcome"] == "pass" else None),
             receiver_idx=c.get("receiver") if d["outcome"] == "pass" else None,
             cross_alliance=bool(kind == "robot" and hub_al is not None and al != hub_al), **(rx or {}))
 
