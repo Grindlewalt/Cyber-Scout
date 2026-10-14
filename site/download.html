@@ -4,11 +4,11 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark">
-<meta name="theme-color" content="#f3f3f1" media="(prefers-color-scheme: light)">
-<meta name="theme-color" content="#050505" media="(prefers-color-scheme: dark)">
-<title>Download · Cyber-Scout</title>
+<meta name="theme-color" content="#f6f7fa" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0b1122" media="(prefers-color-scheme: dark)">
+<title>Install guide: Cyber-Scout</title>
 <meta name="description" content="Install the Cyber-Scout server (Linux, macOS, Windows) and the Cyber-Scout Client for Windows, macOS, Linux and Android.">
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230b0b0b'/%3E%3Cpath d='M7 23c3-9 8-13 13-13' stroke='%23fff' stroke-width='3' fill='none' stroke-linecap='round'/%3E%3Ccircle cx='23.5' cy='10' r='3.5' fill='%23fff'/%3E%3C/svg%3E">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23101631'/%3E%3Cpath d='M7 23c3-9 8-13 13-13' stroke='%23fff' stroke-width='3' fill='none' stroke-linecap='round'/%3E%3Ccircle cx='23.5' cy='10' r='3.5' fill='%23f6c90e'/%3E%3C/svg%3E">
 <link rel="preload" href="fonts/instrument-sans.woff2" as="font" type="font/woff2" crossorigin>
 <script src="assets/mode.js"></script>
 <link rel="stylesheet" href="assets/site.css">
@@ -19,13 +19,13 @@
   <div class="wrap">
     <a class="brand" href="index.html" aria-label="Cyber-Scout home"><svg viewBox="0 0 32 32" aria-hidden="true"><rect class="m-bg" width="32" height="32" rx="8"/><path class="m-fg" d="M7 23c3-9 8-13 13-13" stroke-width="3" fill="none" stroke-linecap="round"/><circle class="m-dot" cx="23.5" cy="10" r="3.5"/></svg>Cyber-Scout</a>
     <nav class="nav" aria-label="Site">
-      <a href="index.html#how">How it works</a><a href="index.html#strategy">Strategy</a><a href="index.html#accuracy">Accuracy</a><a href="docs.html">Docs</a><a href="download.html" aria-current="page">Download</a>
+      <a href="index.html#what">What it does</a><a href="index.html#install">Install</a><a href="index.html#client">Client</a><a href="docs.html">Docs</a>
     </nav>
     <a class="btn primary" href="demo/">Live demo</a>
     <details class="menu">
       <summary aria-label="Menu"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg></summary>
       <nav class="menu-p" aria-label="Site">
-        <a href="index.html#how">How it works</a><a href="index.html#strategy">Strategy</a><a href="index.html#accuracy">Accuracy</a><a href="docs.html">Docs</a><a href="download.html" aria-current="page">Download</a>
+        <a href="index.html#what">What it does</a><a href="index.html#install">Install</a><a href="index.html#client">Client</a><a href="docs.html">Docs</a><a href="demo/">Live demo</a>
       </nav>
     </details>
   </div>
@@ -33,19 +33,11 @@
 
 <main id="main">
   <div class="wrap page-h">
-    <h1 class="display">Download Cyber-Scout</h1>
-    <p class="lead">Two parts: the <b>server</b>, which runs the tracking on one team computer, and the <b>clients</b>, which keep a copy of the data on every laptop and phone so they work on bad venue Wi-Fi.</p>
+    <h1 class="display">Install guide</h1>
+    <p class="lead">The one-line install and the downloads are on the home page. This page has the details: what each installer does, the first run on every system, and what you need.</p>
+    <div class="acts"><a class="btn primary" href="index.html#install">One-line install</a><a class="btn" href="index.html#client">Client downloads</a></div>
+    <p class="muted" style="font-size:15px;margin-top:20px">Checksums: <a href="downloads/SHA256SUMS">SHA256SUMS</a>. Version <span id="dl-ver">…</span>.</p>
   </div>
-  <section class="wrap dl-sec" id="quick" aria-labelledby="quick-h">
-    <h2 id="quick-h">Quick install</h2>
-    <p>Everything comes from this page: no GitHub account needed. The server installer downloads the code and the detector model from here too.</p>
-    <p><b>Server, Linux or macOS</b> (needs Docker; an NVIDIA GPU is used if present):</p>
-    <pre><code class="js-cmd" data-cmd="curl -fsSL {SITE}/downloads/get.sh | bash">curl -fsSL /downloads/get.sh | bash</code></pre>
-    <p><b>Server, Windows</b> (PowerShell, needs Docker Desktop with WSL 2):</p>
-    <pre><code class="js-cmd" data-cmd="irm {SITE}/downloads/get.ps1 | iex">irm /downloads/get.ps1 | iex</code></pre>
-    <p><b>Laptops:</b> download the Client for your system below, run it, and enter this server's address. <b>Phones:</b> install the Android app below, or open the server's site and use "Add to Home Screen".</p>
-    <p class="muted">Checksums: <a href="downloads/SHA256SUMS">SHA256SUMS</a> · version <span id="dl-ver">…</span></p>
-  </section>
 
   <section class="wrap dl-sec" id="server" aria-labelledby="server-h">
     <h2 id="server-h">Server</h2>

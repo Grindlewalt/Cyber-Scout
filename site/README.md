@@ -4,10 +4,12 @@ A static site: no build step for the pages, no external CDNs, no cookies, no ana
 
 ```
 site/
-  index.html        landing page (what it is, how it works, strategy, measured accuracy, offline, server, credits)
-  download.html     server installers + Client / Android downloads, install steps, system requirements
+  index.html        home: headline, what it captures / produces / how it runs, one screenshot, one-line server
+                    install per OS (auto-detected, copy button; ?os=linux|macos|windows forces one), Client downloads
+  download.html     install guide: what the installers do, first run per OS, Android, system requirements
   docs.html         readable overview of docs/guide/README.md (links to the repo for the rest)
-  assets/           site.css (Jet & Paper tokens), mode.js (appearance before first paint), site.js (switch, menu)
+  assets/           site.css (field palette: navy ink, alliance red / blue, FUEL yellow), mode.js (appearance before
+                    first paint), site.js (switch, menu), download.js (install commands, OS pick, copy, downloads)
   fonts/            Instrument Sans (variable, OFL; copied from web/fonts/)
   img/              webp screenshots and broadcast frames (see "Images" below)
   downloads/        installers and apps go here (from the build pipeline; README.txt lists the exact names)
