@@ -76,8 +76,11 @@ def hsv_desc(img, x0, y0, x1, y1):
     m = (V > 35) & (V < 250)
     if m.sum() < 20:
         return np.zeros(HB * SB + 4, np.float32)
-    hh = np.histogram2d(H[m], S[m], bins=[HB, SB], range=[[0, 180], [0, 256]])[0].ravel()
-    vv = np.histogram(V[m], bins=4, range=(0, 256))[0]
+    # integer binning == np.histogram2d(bins=[HB, SB], range=[[0, 180], [0, 256]]) / np.histogram(bins=4, range=(0, 256))
+    # (identical counts incl. bin edges; ~4x faster: this runs twice per detection per frame)
+    h_, s_, v_ = H[m].astype(np.int32), S[m].astype(np.int32), V[m].astype(np.int32)
+    hh = np.bincount((h_ * HB) // 180 * SB + (s_ * SB) // 256, minlength=HB * SB)
+    vv = np.bincount(v_ >> 6, minlength=4)
     d = np.r_[hh, vv].astype(np.float32)
     return d / max(d.sum(), 1)
 
