@@ -553,7 +553,7 @@ def media_for(s, match_key=None):
         if not vid: return None, None
         return media_ok(vid), (s.get("sample") or {}).get("t") or 60.0
     smp = s.get("sample") or {}
-    if s.get("kind") == "livestream" and s.get("_ev") and not smp.get("video"):
+    if s.get("kind") == "livestream" and s.get("_ev") and smp.get("video") in (None, "", s.get("url")):
         p, t = recorded_media(s["_ev"], s)          # the recorder's copy: local, seekable, many frames
         if p: return p, t
     v = smp.get("video") or s.get("url")
@@ -588,11 +588,45 @@ def recorded_media(ev, s, root=None):
                        key=os.path.getmtime)
         clips = [c for c in clips if os.path.getsize(c) > 100_000]
         if clips: return clips[-1], 60.0
-        segs = sorted(os.path.join(d, "seg", f) for f in _ls(os.path.join(d, "seg")) if f.endswith(".ts"))
-        segs = segs[:-1] if len(segs) > 1 else segs          # the newest one is still being written
-        segs = [x for x in segs if os.path.getsize(x) > 100_000]
-        if segs: return segs[-1], 30.0
+        p = recent_sample(d)
+        if p: return p, 90.0
     return None, None
+
+
+def recent_sample(d, seconds=180.0, max_age=120.0):
+    """<d>/sample.ts: the last ~`seconds` of real recorded chunks, concatenated (a Twitch segment file is only
+    24 s; frame grabs, layout suggestions and the calibration wizard want a few minutes to pick from).
+    Rebuilt when older than max_age.  -> path or None."""
+    out = os.path.join(d, "sample.ts")
+    try:
+        if time.time() - os.path.getmtime(out) < max_age and os.path.getsize(out) > 100_000: return out
+    except OSError:
+        pass
+    rows, n = [], {}
+    try:
+        with open(os.path.join(d, "chunks.jsonl")) as f:
+            for line in f:
+                try: rows.append(json.loads(line))
+                except ValueError: pass
+    except OSError:
+        return None
+    for r in rows:
+        if r.get("pts") is not None: n[r["pts"]] = n.get(r["pts"], 0) + 1
+    rows = sorted((r for r in rows if r.get("pts") is not None and n[r["pts"]] == 1 and r.get("file")), key=lambda r: r["sq"])
+    rows = rows[:-1]                                         # the newest chunk may still be written
+    got, keep = 0.0, []
+    for r in reversed(rows):
+        if not os.path.exists(os.path.join(d, r["file"])): break
+        keep.append(r); got += r.get("dur") or 5.0
+        if got >= seconds: break
+    if got < 10: return None
+    tmp = out + ".tmp"
+    with open(tmp, "wb") as o:
+        for r in reversed(keep):
+            with open(os.path.join(d, r["file"]), "rb") as f:
+                f.seek(r["off"]); o.write(f.read(r["size"]))
+    os.replace(tmp, out)
+    return out
 
 
 def _ls(d):
@@ -845,8 +879,11 @@ def job_detect(data, ev, p, log=print):
     s = _source(data, ev, p.get("source") or sid)
     media, t0 = media_for(s, p.get("match"))
     if not media: raise ValueError("no video for this source yet")
-    fr, ts = _grab_many(LY, s, media, t0, int(p.get("n", 8)), 6.0)
+    live = s.get("kind") == "livestream" and not LY.is_remote(media)
+    fr, ts = _grab_many(LY, s, media, t0, int(p.get("n", 16 if live else 8)), 6.0)
     if not fr: raise ValueError("could not read frames")
+    if live and len(fr) >= 6:          # a program feed cuts away (close-ups, results screen): keep the main view
+        fr, ts = _main_view(np, cv2, fr, ts)
     FH, FW = fr[0].shape[:2]
     if crop: fr = [f[crop[1]:crop[3], crop[0]:crop[2]] for f in fr]
     H, W = fr[0].shape[:2]
@@ -869,6 +906,15 @@ def job_detect(data, ev, p, log=print):
     json.dump(st, open(_wizard_path(data, ev, target), "w"))
     res["points"] = st["points_catalog"]; res["lines"] = st["lines_catalog"]
     return res
+
+
+def _main_view(np, cv2, fr, ts):
+    """Frames showing the view most frames show (distance to the median thumbnail): drops cut-aways."""
+    th = np.stack([cv2.resize(cv2.cvtColor(f, cv2.COLOR_BGR2GRAY), (96, 54), interpolation=cv2.INTER_AREA).astype(np.float32)
+                   for f in fr])
+    d = np.abs(th - np.median(th, 0)).mean((1, 2))
+    keep = [i for i in range(len(fr)) if d[i] <= max(12.0, 2.0 * float(np.median(d)))]
+    return ([fr[i] for i in keep], [ts[i] for i in keep]) if len(keep) >= 3 else (fr, ts)
 
 
 def job_fit(data, ev, p, log=print):

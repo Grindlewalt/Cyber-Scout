@@ -197,10 +197,30 @@ def test_recorded_media_for_livestream_frames(env):
     s = dict(id="url-abc", kind="livestream", url="https://www.youtube.com/@x/live")
     assert SRC.recorded_media(EV, s) == (None, None)
     d = write_dir(env, "vidA", [])
+    rows = []
     for i in range(3):
-        (d / "seg" / f"{i:05d}.ts").write_bytes(b"x" * 200_000)
-    assert SRC.recorded_media(EV, s) == (str(d / "seg" / "00001.ts"), 30.0)     # newest complete segment
+        (d / "seg" / f"{i:05d}.ts").write_bytes(bytes([65 + i]) * 200_000)
+        rows += [dict(sq=10 * i + k, file=f"seg/{i:05d}.ts", off=k * 50_000, size=50_000, pts=100.0 + 20 * i + 5 * k, dur=5.0)
+                 for k in range(4)]
+    rows += [dict(sq=900 + k, file="seg/00000.ts", off=0, size=50_000, pts=7.0, dur=5.0) for k in range(5)]   # repeated chunk: junk
+    (d / "chunks.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+    smp = str(d / "sample.ts")
+    assert SRC.recorded_media(EV, s) == (smp, 90.0)        # the last minutes of real chunks, concatenated
+    assert os.path.getsize(smp) == 11 * 50_000              # 12 real chunks minus the newest (may still be written)
+    assert SRC.media_for(dict(s, _ev=EV, sample={"video": s["url"]})) == (smp, 90.0)   # sample = the stream URL itself
     (d / "clips" / "qm1.mp4").write_bytes(b"x" * 200_000)
     assert SRC.recorded_media(EV, s) == (str(d / "clips" / "qm1.mp4"), 60.0)    # a match clip beats segments
     assert SRC.media_for(dict(s, _ev=EV)) == (str(d / "clips" / "qm1.mp4"), 60.0)
     assert SRC.media_for(dict(s, _ev=EV, sample={"video": "abcdefghijk"}))[0].endswith("v=abcdefghijk")   # explicit sample wins
+
+
+def test_calibration_frames_keep_the_main_view():
+    """A program feed cuts away (close-ups, results screen): the wizard keeps the frames of the main view."""
+    import numpy as np, cv2
+    rng = np.random.default_rng(1)
+    wide = rng.integers(0, 255, (54, 96, 3), dtype=np.uint8)
+    fr = [cv2.resize(wide, (960, 540)) + rng.integers(0, 6, (540, 960, 3), dtype=np.uint8) for _ in range(8)]
+    fr += [np.full((540, 960, 3), 200, np.uint8), np.zeros((540, 960, 3), np.uint8), np.full((540, 960, 3), 90, np.uint8)]
+    ts = list(range(len(fr)))
+    kf, kt = SRC._main_view(np, cv2, fr, ts)
+    assert kt == list(range(8))
