@@ -618,13 +618,48 @@ function drawCompList() {
       <a class="cmp-act" href="#/admin/events">${CS.icon("admin")}<span>Manage competitions</span></a></div>` : ""}</div>`;
   placeDlg();
 }
+// Add: type a name, city or key -> TBA events of the season (GET app/v1/events/search, ranked on the server, which keeps the TBA
+// key); with nothing typed, events on now / soon / just ended and your team's first. One click follows.
+const WHEN_T = { now: "On now", soon: "Soon", recent: "Just ended" };
 function drawCompAdd() {
-  const d = compDialog();
+  const d = compDialog(), y0 = new Date().getFullYear();
   d.dataset.mode = "add"; d.classList.add("wide"); placeDlg();
   d.innerHTML = `<div class="cmp-in">${DLG_HEAD("Add a competition", true)}<div class="cmp-body">
-    <p class="cmp-note">A competition gets its own teams, matches, scoring, picklists, notes and video setup. Accounts, roles, your team number and settings are shared.</p>
-    <div id="cmppick"></div></div></div>`;
-  CS.eventPicker(d.querySelector("#cmppick"), { showFollowed: false, allowUnfollow: false, onFollow: ev => { if (ev && EVK.test(ev.key || "")) drawCompAdded(ev); } });
+    <form class="cmp-find" role="search" id="cmpfind"><label class="vh" for="cmpq">Find an event on The Blue Alliance</label>
+      <input id="cmpq" class="csin" type="search" placeholder="Event name, city or key (2026wasam)…" autocomplete="off" autocapitalize="none" spellcheck="false" enterkeyhint="search">
+      <select id="cmpyr" aria-label="Season">${[y0 + 1, y0, y0 - 1, y0 - 2].map(y => `<option ${y === y0 ? "selected" : ""}>${y}</option>`).join("")}</select></form>
+    <div class="cmp-res" id="cmpres" aria-live="polite"><div class="cmp-none">Loading events from The Blue Alliance…</div></div>
+    <p class="cmp-note">Each competition gets its own teams, matches, scoring, picklists, notes and video setup. Accounts, roles, your team number and settings are shared.</p></div></div>`;
+  const q = d.querySelector("#cmpq"), yr = d.querySelector("#cmpyr"), res = d.querySelector("#cmpres");
+  let seq = 0, t = 0;
+  const hit = e => { const place = [e.city, e.state_prov].filter(Boolean).join(", ");
+    const tags = [WHEN_T[e.when] ? `<span class="pill cmp-when ${e.when}">${WHEN_T[e.when]}</span>` : "", e.offseason ? `<span class="pill">Offseason</span>` : "",
+      e.your_team ? `<span class="pill cmp-mine">Your team</span>` : ""].join("");
+    return `<div class="cmp-hit"><span class="cmp-main"><b>${esc(e.name || e.key)}</b><span class="cmp-sub">${esc([e.key, compDates(e), place].filter(Boolean).join(" · "))}</span>${tags ? `<span class="cmp-tags">${tags}</span>` : ""}</span>
+      ${e.followed ? `<a class="cmp-btn" href="#/${esc(e.key)}" data-ev="${esc(e.key)}">Open</a>` : `<button type="button" class="cmp-btn primary" data-follow="${esc(e.key)}" aria-label="Follow ${esc(e.name || e.key)}">Follow</button>`}</div>`; };
+  async function find() {
+    const my = ++seq, v = q.value.trim();
+    try {
+      const r = await CS.app("GET", `events/search?q=${encodeURIComponent(v)}&year=${/^\d{4}/.test(v) ? v.slice(0, 4) : yr.value}&limit=12`);
+      if (my !== seq || !d.open) return;
+      res.innerHTML = r.results.length ? `${v ? "" : `<div class="cmp-rh">${r.team_number ? `On now, soon and team ${esc(r.team_number)}'s events first` : "On now and soon first"}</div>`}${r.results.map(hit).join("")}
+        ${r.n_matched > r.results.length ? `<div class="cmp-none">${r.n_matched - r.results.length} more: type more of the name.</div>` : ""}`
+        : `<div class="cmp-none">No ${esc(r.year)} event matches “${esc(v)}”. Try the city, or the event key from its TBA link (thebluealliance.com/event/<b>2026wasam</b>).</div>`;
+    } catch (e) {
+      if (my !== seq) return;
+      res.innerHTML = `<div class="cmp-none cserr" role="alert">${esc(e.status === 409 ? "Set your TBA Read API key first (Admin → Settings): event lists come from The Blue Alliance." : e.message)}</div>`;
+    }
+  }
+  q.oninput = () => { clearTimeout(t); t = setTimeout(find, 220); };
+  yr.onchange = find;
+  d.querySelector("#cmpfind").onsubmit = e => { e.preventDefault(); clearTimeout(t); find(); };
+  res.onclick = async e => {
+    const b = e.target.closest("[data-follow]"); if (!b) return;
+    b.disabled = true; b.textContent = "Following…";
+    try { const ev = await CS.app("POST", "events", { key: b.dataset.follow }); if (ev && EVK.test(ev.key || "")) drawCompAdded(ev); }
+    catch (x) { b.disabled = false; b.textContent = "Follow"; res.insertAdjacentHTML("afterbegin", `<div class="cmp-none cserr" role="alert">${esc(x.message)}</div>`); }
+  };
+  find(); setTimeout(() => q.focus(), 0);
 }
 function drawCompAdded(ev) {
   const d = compDialog(), k = esc(ev.key), n = esc(ev.name || ev.key);
@@ -632,7 +667,7 @@ function drawCompAdded(ev) {
   loadComps(true).then(() => renderComp(shellEv));
   d.innerHTML = `<div class="cmp-in">${DLG_HEAD("Competition added", true)}<div class="cmp-body">
     <p><b>Now following ${n}.</b> Its schedule, rankings and predictions appear within a few minutes.</p>
-    <p class="cmp-note">Robots are tracked once its video is set up: which stream or uploads to use, the layout boxes and a camera calibration. Each competition has its own setup.</p>
+    <p class="cmp-note"><b>Next: its video.</b> Paste the event's stream or video link (YouTube or Twitch), then its field setup on the stream's card. Robots are tracked once that's done; each competition has its own setup.</p>
     <div class="cmp-go"><a class="cmp-btn primary" href="#/${k}/sources" data-ev="${k}">${CS.icon("video")}Set up video</a>
       <a class="cmp-btn" href="#/${k}" data-ev="${k}">Open its dashboard</a><button type="button" class="cmp-btn" data-add>Add another</button></div></div></div>`;
   const f = d.querySelector(".cmp-btn.primary"); if (f) f.focus();
