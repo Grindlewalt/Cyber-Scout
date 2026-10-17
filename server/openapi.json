@@ -589,6 +589,81 @@
     }
    }
   },
+  "/app/v1/events/search": {
+   "get": {
+    "tags": [
+     "events"
+    ],
+    "summary": "Find an event on TBA by name, place or key (admin)",
+    "description": "The season's events (TBA /events/{year}/simple, cached an hour) ranked against `q` (words match the start of\na word of the name, city, state, district or the key).  Empty q: events on now, soon and just ended first, your\nteam's events next.  A full event key from another season is looked up directly.  The TBA key never leaves\nthe server.",
+    "operationId": "search_events_app_v1_events_search_get",
+    "parameters": [
+     {
+      "name": "q",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string",
+       "maxLength": 80,
+       "default": "",
+       "title": "Q"
+      }
+     },
+     {
+      "name": "year",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "integer",
+         "maximum": 2100,
+         "minimum": 1992
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Year"
+      }
+     },
+     {
+      "name": "limit",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer",
+       "maximum": 50,
+       "minimum": 1,
+       "default": 12,
+       "title": "Limit"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/EventSearchOut"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
   "/app/v1/events": {
    "get": {
     "tags": [
@@ -1673,7 +1748,7 @@
      "sources"
     ],
     "summary": "Match video mode + livestream-only readiness (viewer+)",
-    "description": "video_mode: auto (per-match uploads, plus the livestream clip when the stream is trackable) or livestream\n(offseason: TBA gives the match list; every match is tracked from the recorded livestream, never an upload).\nchecks: what livestream-only mode needs (stream source, recorder, layout field box, calibration, TBA).",
+    "description": "video_mode: auto (per-match uploads, plus the livestream clip when the stream is trackable) or livestream\n(offseason: TBA gives the match list; every match is tracked from the recorded livestream, never an upload).\nchecks: what livestream-only mode needs (stream source, recorder, layout field box, calibration, TBA).\nsuggested / suggested_why: the default the Video page offers (livestream for an offseason event without\nmatch videos on TBA); chosen: an admin has set the mode (else the event runs on the default, auto).",
     "operationId": "get_video_mode_app_v1_events__ev__video_mode_get",
     "parameters": [
      {
@@ -1801,7 +1876,7 @@
     "tags": [
      "sources"
     ],
-    "summary": "Edit a source: role, primary, coverage, ... (admin)",
+    "summary": "Edit a source: link, role, station, primary, coverage, ... (admin)",
     "operationId": "patch_source_app_v1_events__ev__sources__sid__patch",
     "parameters": [
      {
@@ -1858,7 +1933,8 @@
     "tags": [
      "sources"
     ],
-    "summary": "Remove a source (admin; its layout is kept)",
+    "summary": "Remove a source (admin; a TBA one stays listed as dismissed so discovery doesn't re-add it)",
+    "description": "An admin-added source is deleted.  A TBA source (event webcast, upload family) is switched off and marked\n`dismissed`: TBA discovery keeps it off, and the recorder doesn't fall back to TBA's webcasts.  Restore it\nwith PATCH {\"dismissed\": false, \"enabled\": true}.  Layout boxes are kept either way.",
     "operationId": "delete_source_app_v1_events__ev__sources__sid__delete",
     "parameters": [
      {
@@ -3469,6 +3545,152 @@
     ],
     "title": "BundleIn"
    },
+   "EventHit": {
+    "properties": {
+     "key": {
+      "type": "string",
+      "title": "Key"
+     },
+     "name": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Name"
+     },
+     "short_name": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Short Name"
+     },
+     "event_type": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Event Type",
+      "description": "TBA event_type (99 offseason, 100 preseason)"
+     },
+     "offseason": {
+      "type": "boolean",
+      "title": "Offseason",
+      "default": false
+     },
+     "start_date": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Start Date"
+     },
+     "end_date": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "End Date"
+     },
+     "city": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "City"
+     },
+     "state_prov": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "State Prov"
+     },
+     "country": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Country"
+     },
+     "district": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "District"
+     },
+     "year": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Year"
+     },
+     "followed": {
+      "type": "boolean",
+      "title": "Followed",
+      "default": false
+     },
+     "your_team": {
+      "type": "boolean",
+      "title": "Your Team",
+      "description": "your team (settings.team_number) is registered",
+      "default": false
+     },
+     "when": {
+      "type": "string",
+      "title": "When",
+      "description": "now | soon (within 14 days) | recent (ended within 14 days) | later | past",
+      "default": "later"
+     }
+    },
+    "type": "object",
+    "required": [
+     "key"
+    ],
+    "title": "EventHit"
+   },
    "EventIn": {
     "properties": {
      "key": {
@@ -3643,6 +3865,49 @@
      "added_at"
     ],
     "title": "EventOut"
+   },
+   "EventSearchOut": {
+    "properties": {
+     "year": {
+      "type": "integer",
+      "title": "Year"
+     },
+     "q": {
+      "type": "string",
+      "title": "Q"
+     },
+     "team_number": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Team Number"
+     },
+     "results": {
+      "items": {
+       "$ref": "#/components/schemas/EventHit"
+      },
+      "type": "array",
+      "title": "Results"
+     },
+     "n_matched": {
+      "type": "integer",
+      "title": "N Matched",
+      "description": "events matching before the limit",
+      "default": 0
+     }
+    },
+    "type": "object",
+    "required": [
+     "year",
+     "q",
+     "results"
+    ],
+    "title": "EventSearchOut"
    },
    "FitIn": {
     "properties": {
@@ -4967,7 +5232,8 @@
         "type": "null"
        }
       ],
-      "title": "Label"
+      "title": "Label",
+      "description": "null: a short name from the link"
      },
      "primary": {
       "type": "boolean",
@@ -4985,6 +5251,30 @@
        }
       ],
       "title": "Coverage"
+     },
+     "station": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Station",
+      "description": "alliance-side only: red | blue (which driver-station camera)"
+     },
+     "live": {
+      "anyOf": [
+       {
+        "type": "boolean"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Live",
+      "description": "true: a YouTube video link of a stream that is live / scheduled (recorded like a /live link); channel /live and Twitch channels are live anyway"
      }
     },
     "type": "object",
@@ -4995,6 +5285,55 @@
    },
    "SourcePatch": {
     "properties": {
+     "url": {
+      "anyOf": [
+       {
+        "type": "string",
+        "maxLength": 2000
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Url",
+      "description": "replace the link (admin-added sources only; keeps the id, so its layout boxes and calibration stay)"
+     },
+     "live": {
+      "anyOf": [
+       {
+        "type": "boolean"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Live",
+      "description": "with url: see SourceIn.live"
+     },
+     "station": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Station",
+      "description": "red | blue | '' (none)"
+     },
+     "dismissed": {
+      "anyOf": [
+       {
+        "type": "boolean"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Dismissed",
+      "description": "false: restore a removed TBA source (with enabled: true)"
+     },
      "role": {
       "anyOf": [
        {

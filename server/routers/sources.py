@@ -85,12 +85,20 @@ class SourceIn(BaseModel):
     url: str = Field(..., max_length=2000, description="YouTube/Twitch URL (video, livestream, playlist, channel), "
                                                         "direct .mp4/.m3u8 URL, or a file path under the media/data dir")
     role: str = Field("wide", description="wide | dynamic | alliance-side")
-    label: str | None = Field(None, max_length=200)
+    label: str | None = Field(None, max_length=200, description="null: a short name from the link")
     primary: bool = False
     coverage: dict | None = None
+    station: str | None = Field(None, description="alliance-side only: red | blue (which driver-station camera)")
+    live: bool | None = Field(None, description="true: a YouTube video link of a stream that is live / scheduled "
+                                                "(recorded like a /live link); channel /live and Twitch channels are live anyway")
 
 
 class SourcePatch(BaseModel):
+    url: str | None = Field(None, max_length=2000, description="replace the link (admin-added sources only; keeps the id, "
+                                                               "so its layout boxes and calibration stay)")
+    live: bool | None = Field(None, description="with url: see SourceIn.live")
+    station: str | None = Field(None, description="red | blue | '' (none)")
+    dismissed: bool | None = Field(None, description="false: restore a removed TBA source (with enabled: true)")
     role: str | None = None
     primary: bool | None = None
     enabled: bool | None = None
@@ -109,7 +117,9 @@ def list_sources(ev: str = Depends(valid_event), user: User = Depends(require_ro
         s["has_layout"] = s["id"] in (lay.get("sources") or {})
         s["n_videos"] = len(s.get("videos") or {})
         s["has_frame"] = os.path.exists(os.path.join(_evd(ev), "frames", f"{s['id']}.jpg"))
+    st = _stream_source(doc)
     return dict(event=ev, sources=doc.get("sources", []), discovered_at=doc.get("discovered_at"),
+                stream_source=st["id"] if st else None, stations=list(S.STATIONS),
                 roles=list(S.ROLES), kinds=L.KINDS, jobs_inline=S.vision_available(),
                 video_config=S.video_config(doc, None, lay), station_pattern=S.station_pattern(doc, lay),
                 livestream=S.livestream_url(doc), video_mode=S.video_mode(doc))
@@ -212,16 +222,54 @@ def _event_dirs(ev):
         return [_evd(ev)]
 
 
+OFFSEASON_TYPES = {99: "offseason", 100: "preseason"}       # TBA event_type
+_SUGGEST = {}                                                # ev -> (time, (mode, why)); TBA calls are cached too
+
+
+def _suggest_mode(ev, db):
+    """Default for the Video page: livestream only for an offseason / preseason event whose matches have no videos
+    on TBA, else uploads + livestream.  (None, why) when TBA can't be asked (no key, TBA down)."""
+    c = _SUGGEST.get(ev)
+    if c and time.time() - c[0] < 300:
+        return c[1]
+    try:
+        key = DB.get_setting(db, "tba_key")
+        if not key:
+            return None, "no TBA key"
+        e = tba_call(key, f"/event/{ev}/simple", ttl=3600) or {}
+        try:
+            ms = tba_call(key, f"/event/{ev}/matches", ttl=300) or []
+        except HTTPException as x:
+            if x.status_code != 404: raise
+            ms = []
+    except HTTPException as x:
+        return None, f"TBA: {x.detail}"
+    nv = sum(1 for m in ms if any((v or {}).get("type") == "youtube" for v in m.get("videos") or []))
+    off = OFFSEASON_TYPES.get(e.get("event_type"))
+    if off and not nv:
+        out = ("livestream", f"{off} event and TBA lists no match videos" + ("" if ms else " (no schedule yet)"))
+    elif not nv:
+        out = ("auto", "TBA lists no match videos yet; official events usually get per-match uploads")
+    else:
+        out = ("auto", f"TBA links videos for {nv} match{'es' if nv != 1 else ''}")
+    _SUGGEST[ev] = (time.time(), out)
+    return out
+
+
 @router.get("/events/{ev}/video-mode", summary="Match video mode + livestream-only readiness (viewer+)")
-def get_video_mode(ev: str = Depends(valid_event), user: User = Depends(require_role("viewer"))):
+def get_video_mode(ev: str = Depends(valid_event), user: User = Depends(require_role("viewer")), db=Depends(DB.get_db)):
     """video_mode: auto (per-match uploads, plus the livestream clip when the stream is trackable) or livestream
     (offseason: TBA gives the match list; every match is tracked from the recorded livestream, never an upload).
-    checks: what livestream-only mode needs (stream source, recorder, layout field box, calibration, TBA)."""
+    checks: what livestream-only mode needs (stream source, recorder, layout field box, calibration, TBA).
+    suggested / suggested_why: the default the Video page offers (livestream for an offseason event without
+    match videos on TBA); chosen: an admin has set the mode (else the event runs on the default, auto)."""
     S, _ = _mods()
     doc = _doc(ev)
     src = _stream_source(doc)
+    sug, why = _suggest_mode(ev, db)
     return dict(event=ev, video_mode=S.video_mode(doc), modes=list(S.VIDEO_MODES), at=doc.get("video_mode_at"),
-                by=doc.get("video_mode_by"), stream_source=src["id"] if src else None, checks=_readiness(ev, doc))
+                by=doc.get("video_mode_by"), chosen=bool(doc.get("video_mode_at")), suggested=sug, suggested_why=why,
+                stream_source=src["id"] if src else None, checks=_readiness(ev, doc))
 
 
 @router.put("/events/{ev}/video-mode", summary="Set the match video mode (admin)")
@@ -237,7 +285,7 @@ def put_video_mode(body: VideoModeIn, request: Request, ev: str = Depends(valid_
     _save(ev, doc)
     with DB.tx(db):
         audit.record(db, request, user, "sources.video_mode", ev, ev, {"video_mode": before}, {"video_mode": body.video_mode})
-    return get_video_mode(ev, user)
+    return get_video_mode(ev, user, db)
 
 
 @router.post("/events/{ev}/sources/discover", summary="Discover sources from TBA (admin)")
@@ -258,32 +306,46 @@ def add_source(body: SourceIn, ev: str = Depends(valid_event), user: User = Depe
     S, _ = _mods()
     doc = _doc(ev)
     try:
-        s = S.add(doc, body.url, body.role, body.label, body.coverage, user.display_name or f"Teammate #{user.id}", body.primary)
+        s = S.add(doc, body.url, body.role, body.label, body.coverage, user.display_name or f"Teammate #{user.id}", body.primary,
+                  station=body.station, live=body.live)
     except ValueError as e:
         raise HTTPException(422, str(e))
     _save(ev, doc)
-    if s["kind"] == "per_match":                     # playlist / channel: map its titles to matches
-        matches = []
-        try:
-            k = DB.get_setting(db, "tba_key")
-            if k: matches = [dict(key=m["key"]) for m in tba_call(k, f"/event/{ev}/matches", ttl=300) or []]
-        except HTTPException:
-            pass
-        s["job"] = _job(ev, "index_playlist", {"source": s["id"], "_matches": matches}, user)
+    if s["kind"] == "per_match":
+        s["job"] = _index_job(ev, s, user, db)
     return s
 
 
-@router.patch("/events/{ev}/sources/{sid}", summary="Edit a source: role, primary, coverage, ... (admin)")
-def patch_source(sid: str, body: SourcePatch, ev: str = Depends(valid_event), user: User = Depends(require_role("admin"))):
+def _index_job(ev, s, user, db):
+    """A playlist / channel source: map its titles to matches (job)."""
+    matches = []
+    try:
+        k = DB.get_setting(db, "tba_key")
+        if k: matches = [dict(key=m["key"]) for m in tba_call(k, f"/event/{ev}/matches", ttl=300) or []]
+    except HTTPException:
+        pass
+    return _job(ev, "index_playlist", {"source": s["id"], "_matches": matches}, user)
+
+
+@router.patch("/events/{ev}/sources/{sid}", summary="Edit a source: link, role, station, primary, coverage, ... (admin)")
+def patch_source(sid: str, body: SourcePatch, ev: str = Depends(valid_event), user: User = Depends(require_role("admin")),
+                 db=Depends(DB.get_db)):
     S, _ = _mods()
     doc = _doc(ev)
+    by = user.display_name or f"Teammate #{user.id}"
+    patch = body.model_dump(exclude_none=True)
+    url, live = patch.pop("url", None), patch.pop("live", None)
     try:
-        s = S.update(doc, sid, body.model_dump(exclude_none=True), user.display_name or f"Teammate #{user.id}")
+        if url is not None:
+            S.set_url(doc, sid, url, by, live=live)
+        s = S.update(doc, sid, patch, by)
     except KeyError:
         raise HTTPException(404, "no such source")
     except ValueError as e:
         raise HTTPException(422, str(e))
     _save(ev, doc)
+    if url is not None and s["kind"] == "per_match":
+        s["job"] = _index_job(ev, s, user, db)
     lay = _layout_doc(ev)
     if lay and body.primary and sid in (lay.get("sources") or {}):
         lay["processing_source"] = sid
@@ -291,11 +353,15 @@ def patch_source(sid: str, body: SourcePatch, ev: str = Depends(valid_event), us
     return s
 
 
-@router.delete("/events/{ev}/sources/{sid}", status_code=204, summary="Remove a source (admin; its layout is kept)")
+@router.delete("/events/{ev}/sources/{sid}", status_code=204,
+               summary="Remove a source (admin; a TBA one stays listed as dismissed so discovery doesn't re-add it)")
 def delete_source(sid: str, ev: str = Depends(valid_event), user: User = Depends(require_role("admin"))):
+    """An admin-added source is deleted.  A TBA source (event webcast, upload family) is switched off and marked
+    `dismissed`: TBA discovery keeps it off, and the recorder doesn't fall back to TBA's webcasts.  Restore it
+    with PATCH {"dismissed": false, "enabled": true}.  Layout boxes are kept either way."""
     S, _ = _mods()
     doc = _doc(ev)
-    if not S.remove(doc, sid):
+    if not S.discard(doc, sid, user.display_name or f"Teammate #{user.id}"):
         raise HTTPException(404, "no such source")
     _save(ev, doc)
 

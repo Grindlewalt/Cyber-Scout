@@ -20,6 +20,8 @@ data/events/<ev>/sources.json
       "coverage": {"mode": "all" | "matches" | "range", "matches": [...], "from": "qm1", "to": "qm40"},
       "videos": {"2026wasam_qm17": "<youtube id>"},   # per-match videos found so far
       "sample": {"video": "<youtube id | url | path>", "match": "2026wasam_qm17", "t": 60},
+      "station": "red" | "blue",          # alliance-side: which driver-station camera (Video page "Red station cam")
+      "dismissed": true,                  # a TBA source the admin removed: kept disabled so discovery doesn't re-add it
       "label": "...", "enabled": true, "updated_at": ..., "updated_by": "..."}]}
 
 Roles: wide = fixed overhead / wide field camera (what the tracker needs); dynamic = switching broadcast
@@ -400,7 +402,8 @@ def _order(m):
     return ({"qm": 0, "ef": 1, "qf": 2, "sf": 3, "f": 4}.get(lv, 5), nums)
 
 
-USER_FIELDS = ("role", "primary", "coverage", "enabled", "label", "sample", "notes", "updated_by")
+USER_FIELDS = ("role", "primary", "coverage", "enabled", "label", "sample", "notes", "updated_by", "station", "dismissed")
+STATIONS = ("red", "blue")
 
 
 def merge(doc, found):
@@ -421,24 +424,90 @@ def merge(doc, found):
     return doc
 
 
-def add(doc, url, role="wide", label=None, coverage=None, by=None, primary=False):
+def _checked(url, live=None):
+    """classify_url + the same checks as a pasted source (allowed file roots, public http hosts).  live=True turns
+    a YouTube video link into a livestream (a watch link of a stream that is live / scheduled: the recorder
+    records it); a channel /live link or a Twitch channel is a livestream anyway, a Twitch /videos/ link a VOD."""
     c = classify_url(url)
     if c["kind"] == "file" and not file_allowed(c["url"]):
         raise ValueError("file sources must be under the media or data directory")
     if c["provider"] == "http":
         safe_public_url(c["url"], cache_s=0)       # private / loopback / docker / Tailscale hosts: refused
-    sid = "url-" + hashlib.sha1(c["url"].encode()).hexdigest()[:8]
-    if get(doc, sid): raise ValueError("that source is already listed")
+    if live and c["kind"] == "video" and c["provider"] == "youtube":
+        c = dict(c, kind="livestream")
+    return c
+
+
+def default_label(c):
+    """A short name for a pasted link: "Twitch firstwa", "YouTube @FIRSTWashington live", "YouTube video <id>"."""
+    u = urllib.parse.urlsplit(c["url"]) if "://" in c["url"] else None
+    if c["provider"] == "twitch":
+        tail = u.path.strip("/") if u else c["url"]
+        return f"Twitch {tail.replace('videos/', 'video ')}"
+    if c["provider"] == "youtube":
+        if c.get("playlist"): return f"YouTube playlist {c['playlist']}"
+        if c.get("video"): return f"YouTube {'stream' if c['kind'] == 'livestream' else 'video'} {c['video']}"
+        base = (u.path.strip("/").split("/") or [""])[0] if u else ""
+        if base in ("channel", "c", "user"): base = "/".join(u.path.strip("/").split("/")[:2])
+        return f"YouTube {base} {'live' if c['kind'] == 'livestream' else 'uploads'}".strip()
+    if c["provider"] == "file": return os.path.basename(c["url"]) or c["url"]
+    return (u.hostname if u else None) or c["url"]
+
+
+def add(doc, url, role="wide", label=None, coverage=None, by=None, primary=False, station=None, live=None):
+    c = _checked(url, live)
+    for o in doc.get("sources", []):
+        if o.get("url") == c["url"] and not o.get("dismissed"):    # a removed TBA copy of the link doesn't count
+            raise ValueError("that link is already listed" + (" (from TBA): change what it is instead" if o.get("origin") == "tba" else ""))
     if role not in ROLES: raise ValueError(f"role must be one of {ROLES}")
+    if station not in (None, *STATIONS): raise ValueError(f"station must be one of {STATIONS}")
+    sid = base = "url-" + hashlib.sha1(c["url"].encode()).hexdigest()[:8]
+    n = 1
+    while get(doc, sid): n += 1; sid = f"{base}-{n}"        # a replaced link kept its id: never reuse it
     s = dict(id=sid, origin="admin", kind=c["kind"], provider=c["provider"], url=c["url"], role=role,
-             coverage=coverage or {"mode": "all"}, enabled=True, label=label or c["url"],
+             coverage=coverage or {"mode": "all"}, enabled=True, label=label or default_label(c),
              sample=dict(video=c.get("video") or c["url"], t=None), updated_at=time.time(), updated_by=by)
     if c.get("playlist"): s["playlist"] = c["playlist"]
+    if station and role == "alliance-side": s["station"] = station
     if primary:
         for o in doc.get("sources", []): o["primary"] = False
         s["primary"] = True
     doc.setdefault("sources", []).append(s)
     return s
+
+
+def set_url(doc, sid, url, by=None, live=None):
+    """Replace the link of an admin source in place: same id, so its layout boxes and camera calibration
+    (layout.json / camera.json carry the source id) stay with it.  A TBA source's link comes from TBA: remove
+    it (discard) and add the new link instead."""
+    s = get(doc, sid)
+    if s is None: raise KeyError(sid)
+    if s.get("origin") != "admin": raise ValueError("this link comes from TBA: remove it and add yours instead")
+    c = _checked(url, live)
+    if any(o is not s and o.get("url") == c["url"] and not o.get("dismissed") for o in doc.get("sources", [])):
+        raise ValueError("that link is already listed")
+    old, auto = s.get("url"), {"", s.get("url")}
+    try: auto.add(default_label(classify_url(old)))
+    except (ValueError, TypeError): pass
+    s.update(kind=c["kind"], provider=c["provider"], url=c["url"], sample=dict(video=c.get("video") or c["url"], t=None),
+             updated_at=time.time(), updated_by=by)
+    if (s.get("label") or "") in auto: s["label"] = default_label(c)      # an automatic name follows the link
+    s.pop("playlist", None)
+    if c.get("playlist"): s["playlist"] = c["playlist"]
+    if c["kind"] != "per_match": s.pop("videos", None)
+    return s
+
+
+def discard(doc, sid, by=None):
+    """Video page "Remove": an admin source is deleted; a TBA source (webcast, upload family) is kept but switched
+    off and marked dismissed, so TBA discovery (auto_discover / merge) does not add it back and the recorder
+    does not fall back to TBA's webcasts.  -> "removed" | "dismissed" | None (no such source)."""
+    s = get(doc, sid)
+    if s is None: return None
+    if s.get("origin") == "admin":
+        remove(doc, sid); return "removed"
+    s.update(enabled=False, dismissed=True, primary=False, updated_at=time.time(), updated_by=by)
+    return "dismissed"
 
 
 _MATCH_KEY = re.compile(r"^[0-9]{4}[a-z0-9]{1,16}_[a-z0-9]{1,12}$")
@@ -480,6 +549,12 @@ def update(doc, sid, patch, by=None):
         if k not in USER_FIELDS or v is None: continue
         if k == "role" and v not in ROLES: raise ValueError(f"role must be one of {ROLES}")
         if k == "sample": v = clean_sample(v)
+        if k == "station":
+            if v == "": s.pop("station", None); continue
+            if v not in STATIONS: raise ValueError(f"station must be one of {STATIONS}")
+        if k == "dismissed":
+            v = bool(v)
+            if not v: s.pop("dismissed", None); continue
         if k == "primary" and v:
             for o in doc.get("sources", []): o["primary"] = False
         s[k] = v
