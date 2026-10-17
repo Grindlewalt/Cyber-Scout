@@ -40,8 +40,9 @@ class Detector:
         dev = int(os.environ.get("GPU_DEVICE", "0"))
         want = [] if os.environ.get("FORCE_CPU") == "1" else [("CUDAExecutionProvider", {"device_id": dev})]
         if os.environ.get("ORT_COREML") == "1":   # Mac server (deploy/macos): Apple GPU / Neural Engine via Core ML
-            # NeuralNetwork + ALL (Neural Engine): 25.7 ms/frame for YOLO11s 544x1280 on an M1 vs 32 ms MLProgram
-            want.append(("CoreMLExecutionProvider", {"ModelFormat": os.environ.get("ORT_COREML_FORMAT", "NeuralNetwork"),
+            # MLProgram: ~22 ms/frame for YOLO11s 544x1280 on an M2 alone; in the worker loop (with the CPU OCR workers)
+            # 12.9 fps vs 11.1 fps for NeuralNetwork, whose CPU-fallback layers compete with OCR
+            want.append(("CoreMLExecutionProvider", {"ModelFormat": os.environ.get("ORT_COREML_FORMAT", "MLProgram"),
                                                      "MLComputeUnits": os.environ.get("ORT_COREML_UNITS", "ALL"),
                                                      "ModelCacheDirectory": os.path.join(os.environ.get(
                                                          "DATA", "/tmp"), "cache", "coreml")}))
