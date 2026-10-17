@@ -37,6 +37,13 @@ WORKER  (live/worker.py hooks; LiveView below)
     field or overhead box AND a calibration of that camera exists: events/<ev>/camera_<source id>.json, or
     events/<ev>/camera.json when it was calibrated on that source ("source" key, calibration wizard).
     Otherwise the match is tracked from the per-match uploads once they appear (as before).
+  * TBA-time cut (tba_cut; the worker calls it in "livestream only" video mode): a match TBA lists with an
+    actual_time but the overlay analyser found no usable record for (overlay unreadable, aborted read, ...) is
+    cut out of the recording by time instead: TBA actual_time -> stream pts via the chunks' wall clock
+    (EXT-X-PROGRAM-DATE-TIME), clip [T - 15 s, T + 163 + 10 s], auto start measured on the clip (clock OCR)
+    or else taken from TBA's time (flag start_from_tba_time: then process.py's own clock / robot-motion start
+    detection decides).  Written as <dir>/matches/tba-<match>.json + clips/tba-<match>.mp4 (flag cut_by_tba_time),
+    so it is an ordinary record from then on.
 """
 import glob, json, os, re, shutil, signal, subprocess, sys, time
 from datetime import datetime, timedelta, timezone
@@ -47,6 +54,9 @@ if HERE not in sys.path:
 
 MATCH_S = 163.0
 BAD_FLAGS = ("aborted_", "clock_lost_", "timeout_countdown", "zero_score_no_auto", "no_results_screen", "clip_failed")
+TBA_LEAD_S = float(os.environ.get("LIVE_TBA_LEAD", "15"))    # TBA-time cut: clip starts this before actual_time
+TBA_TAIL_S = float(os.environ.get("LIVE_TBA_TAIL", "10"))    # ... and ends this after the final 0:00
+TBA_WAIT_S = float(os.environ.get("LIVE_TBA_WAIT", "900"))   # analyser stalled this long past the match: cut anyway
 
 
 def data_dir(): return os.environ.get("DATA", "/data")
@@ -192,6 +202,128 @@ def posted(m):
     return not m.get("livestream") and s is not None and s >= 0
 
 
+# ---------------------------------------------------------------- TBA-time cut (livestream-only mode)
+def _rows(d):
+    rows = []
+    try:
+        with open(os.path.join(d, "chunks.jsonl")) as f:
+            for line in f:
+                try: rows.append(json.loads(line))
+                except ValueError: pass
+    except OSError:
+        pass
+    return rows
+
+
+def pts_at(rows, t_wall):
+    """unix time -> stream pts via the chunk nearest in wall time (None: no wall clock in the index)."""
+    best = None
+    for r in rows:
+        if r.get("wall") is None or r.get("pts") is None: continue
+        if best is None or abs(r["wall"] - t_wall) < abs(best["wall"] - t_wall): best = r
+    return best["pts"] + (t_wall - best["wall"]) if best else None
+
+
+def tba_cut_plan(ev, m, root=None, now=None, lead=None, tail=None):
+    """Can match m be cut from the recording by TBA's actual_time?  -> (dict(dir, pts, t0, t1), None) or
+    (None, reason).  Needs: TBA actual_time; the recording covering [T - lead, T + 163 + tail] (at most 2
+    missing chunks, files still on disk); the analyser past the match end (else it may still cut it itself),
+    unless it is stalled TBA_WAIT_S past the match."""
+    lead = TBA_LEAD_S if lead is None else lead; tail = TBA_TAIL_S if tail is None else tail
+    T = m.get("actual_time")
+    if not T: return None, "TBA has no start time for this match"
+    now = time.time() if now is None else now
+    if now < T + MATCH_S + tail + 20: return None, "match not over yet"
+    why = "the recording does not cover this match"
+    mid = "tba-" + m["key"].split("_", 1)[1]
+    dirs = sorted(glob.glob(os.path.join(root or live_dir(), ev, "*")), key=lambda x: -os.path.getmtime(x))
+    if any(os.path.exists(os.path.join(d, "matches", f"{mid}.json")) for d in dirs):
+        return None, "already cut by TBA time"
+    for d in dirs:
+        rows = _rows(d)
+        p = pts_at(rows, T) if rows else None
+        if p is None: continue
+        t0, t1 = p - lead, p + MATCH_S + tail
+        have = [r for r in rows if r.get("pts") is not None and r["pts"] + r.get("dur", 5.0) > t0 and r["pts"] < t1
+                and os.path.exists(os.path.join(d, r.get("file") or ""))]
+        need = int((t1 - t0) // 5.0)
+        if len(have) < need - 2:
+            if have: why = f"the recording is missing {need - len(have)} of {need} chunks of this match"
+            continue
+        an = _jload(os.path.join(d, "analyzer.json"), {}) or {}
+        if (an.get("t_last") or -1e18) < t1 + 20 and now < T + MATCH_S + TBA_WAIT_S:
+            return None, "the stream analyser has not reached this match yet"
+        return dict(dir=d, pts=p, t0=t0, t1=t1, lead=lead), None
+    return None, why
+
+
+def tba_record_fields(ev, m):
+    """comp_level / set / number of a record whose record_key is m's key (None for other formats)."""
+    lv, s, n = m.get("comp_level"), m.get("set_number"), m.get("match_number")
+    rec = dict(comp_level=lv, set=s, number=n)
+    return rec if record_key(ev, rec) == m["key"] else None
+
+
+def tba_cut(ev, m, root=None, now=None, log=print, ocr=None, cut=None, measure=None):
+    """Cut match m from the recording by TBA's time (tba_cut_plan) and write it as a record.  cut / measure
+    are injectable (tests): cut(dir, t0, t1, dst) -> pts of the clip's first frame; measure(clip) -> auto
+    start s into the clip or None.  -> (record path, None) or (None, reason)."""
+    f = tba_record_fields(ev, m)
+    if f is None: return None, "match key format not supported"
+    plan, why = tba_cut_plan(ev, m, root, now)
+    if plan is None: return None, why
+    d, mid = plan["dir"], "tba-" + m["key"].split("_", 1)[1]
+    sid = (_jload(os.path.join(d, "meta.json"), {}) or {}).get("source")
+    tr = trackable(ev, sid)
+    if not tr["ok"]: return None, f"stream not trackable: {tr['reason']}"
+    clip = os.path.join(d, "clips", f"{mid}.mp4"); os.makedirs(os.path.dirname(clip), exist_ok=True)
+    flags = ["cut_by_tba_time"]
+    try:
+        if cut is None:
+            import livestream as LS
+            cs = LS.ChunkStore(d); cs.refresh()
+            _, a0 = cs.cut(plan["t0"], plan["t1"], clip)
+            if getattr(cs, "last_gaps", 0): flags.append(f"clip_missing_chunks_{cs.last_gaps}")
+        else:
+            a0 = cut(d, plan["t0"], plan["t1"], clip)
+    except Exception as e:
+        return None, f"cut failed: {e!r}"[:200]
+    est = plan["pts"] - (a0 if a0 is not None else plan["t0"])
+    auto = None
+    try:
+        if measure is not None:
+            auto = measure(clip)
+        else:
+            import livestream as LS
+            o = ocr() if callable(ocr) else ocr                  # loaded only when there is a clip to measure
+            auto = LS.measure_auto_start(clip, o) if o is not None else None
+    except Exception as e:
+        log(f"{m['key']}: auto-start measurement failed: {e!r:.120}")
+    if auto is None or not (0.0 <= auto <= 60.0) or abs(auto - est) > 45:
+        auto = round(est, 3); flags.append("start_from_tba_time")
+    tk = {a: [int(t[3:]) for t in ((m.get("alliances") or {}).get(a) or {}).get("team_keys") or [] if t[3:].isdigit()]
+          for a in ("red", "blue")}
+    sc = {a: ((m.get("alliances") or {}).get(a) or {}).get("score") for a in ("red", "blue")}
+    sc = sc if all(v is not None and v >= 0 for v in sc.values()) else None
+    try:
+        from tba import match_label
+        name = match_label(m)
+    except Exception:
+        name = m["key"]
+    rec = dict(id=mid, match_name=name, **f, teams=tk, score=sc,
+               score_source="tba" if sc else None, breakdown=None, alliance_names=None,
+               t_start_stream=round(plan["pts"], 3),
+               t_start_utc=datetime.fromtimestamp(m["actual_time"], timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-4] + "Z",
+               clip=clip, auto_start_in_clip=auto, confidence=dict(match=0.5, name=1.0, teams=1.0 if all(len(v) == 3 for v in tk.values()) else 0.0,
+                                                                     score=1.0 if sc else 0.0),
+               flags=flags, evidence={}, cut_from=dict(actual_time=m["actual_time"], lead=plan["lead"], at=time.time()))
+    p = os.path.join(d, "matches", f"{mid}.json")
+    _jsave(p, rec)
+    log(f"{m['key']}: cut from the livestream by TBA time ({os.path.basename(d)} pts {plan['pts']:.1f}, "
+        f"auto start {auto:.2f}s{' estimated' if 'start_from_tba_time' in flags else ' measured'})")
+    return p, None
+
+
 # ---------------------------------------------------------------- trackability
 def stream_camera(ev, sid):
     """Calibration of a stream source's camera: events/<ev>/camera_<sid>.json, else camera.json when it was
@@ -233,6 +365,14 @@ class LiveView:
         self.clips = latest(self.recs, need_clip=True)
         self._tr = {}
 
+    def clip_record(self, key, skip=()):
+        """The latest usable clip record of a match, ignoring record paths in `skip` (livestream-only mode:
+        clips rejected / failed before)."""
+        if not skip: return self.clips.get(key)
+        ok = [r for r in sorted(self.recs, key=_order) if r.get("_key") == key and not problems(r) and clip_ok(r)
+              and r["_path"] not in skip]
+        return ok[-1] if ok else None
+
     def __bool__(self):
         return bool(self.recs)
 
@@ -248,9 +388,9 @@ class LiveView:
         """Synthesized matches for records whose key TBA does not list."""
         return [synth_match(self.ev, r) for k, r in self.fast.items() if k not in tba_keys]
 
-    def for_processing(self, m, is_posted):
+    def for_processing(self, m, is_posted, skip=()):
         """-> the live input for process_match (or None): usable clip, trackable stream, known teams."""
-        r = self.clips.get(m["key"])
+        r = self.clip_record(m["key"], skip)
         if r is None: return None
         sid = (r.get("_meta") or {}).get("source")
         tr = self.track(sid)
@@ -270,9 +410,29 @@ class LiveView:
                     teams=teams, teams_from=src, tba_posted=bool(is_posted), stream_score=r.get("score"),
                     stream_teams=r.get("teams"), flags=r.get("flags"))
         return dict(clip=clip_of(r), start=float(r["auto_start_in_clip"]), camera=tr["camera"], layout=tr["layout"],
+                    start_trusted="start_from_tba_time" not in (r.get("flags") or []),
                     teams=teams, teams_from=src, source=sid, tba_posted=bool(is_posted), info=info,
                     video=dict(id=f"live-{re.sub(r'[^A-Za-z0-9_-]', '', vid)[:24]}-{r['id']}",
                                title=f"Livestream: {r.get('match_name') or r['id']}", channel="livestream"))
+
+    def wait_reason(self, m, skip=()):
+        """Why match m has no live input yet (livestream-only mode status note); None = it has one."""
+        r = self.clip_record(m["key"], skip)
+        if r is None:
+            if skip and self.clips.get(m["key"]) is not None: return "its livestream clip was rejected / failed"
+            f = self.fast.get(m["key"])
+            if f is not None: return "the stream record has no usable clip"
+            bad = [x for x in self.recs if x.get("_key") == m["key"]]
+            if bad: return f"the stream analyser rejected it ({', '.join(problems(bad[-1]))[:80]})"
+            return "the stream analyser has not found this match"
+        tr = self.track((r.get("_meta") or {}).get("source"))
+        if not tr["ok"]: return f"stream not trackable: {tr['reason']}"
+        common = lineup_common(r, m)
+        if common is not None and common < 4: return "the stream's teams disagree with TBA's lineup"
+        if team_keys(r) is None and not all(len(((m.get("alliances") or {}).get(a) or {}).get("team_keys") or []) == 3
+                                            for a in ("red", "blue")):
+            return "teams unknown (not on TBA, not read off the stream)"
+        return None
 
     def site_row(self, key):
         r = self.fast.get(key)

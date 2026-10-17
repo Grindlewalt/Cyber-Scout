@@ -853,6 +853,24 @@ html[data-net="off"] .timectl.live .tc-tag i { background: var(--ink-3); box-sha
 .cx-v .code { white-space: normal; overflow-wrap: anywhere; }
 
 /* ---- Video page: per-match video plan (web/sources.js "Videos" tab; live/videoplan.py) ---- */
+/* Video page: match video mode + livestream-only checklist (sources.js vmCard) */
+.vm-card { display: grid; gap: var(--sp-2); margin-bottom: 12px; }
+.vm-card.vm-on { border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); }
+.vm-head { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2) var(--sp-3); }
+.vm-head h2 { margin: 0; font-size: var(--fs-t3); }
+.vm-seg { display: flex; flex-wrap: wrap; gap: 6px; }
+.vm-seg .chip { min-height: 32px; font-size: var(--fs-foot); }
+.vm-sub { margin: 0; }
+.vm-chk { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+.vm-chk li { display: flex; align-items: flex-start; gap: var(--sp-2); padding: 6px 8px; border-radius: var(--r-s); }
+.vm-chk li.vm-bad { background: color-mix(in srgb, var(--bad) 8%, transparent); }
+.vm-chk li.vm-warn { background: var(--caution-tint); }
+.vm-chk .vp-i { flex: 0 0 auto; margin-top: 2px; }
+.vm-chk .vp-i.ok { color: var(--good); } .vm-chk .vp-i.bad { color: var(--bad); }
+.vm-t { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; display: grid; gap: 6px; }
+.vm-t > button { justify-self: start; }
+.vm-go { flex: 0 0 auto; font-size: var(--fs-foot); font-weight: 600; white-space: nowrap; }
+.vm-add input { flex: 1 1 320px; }
 .vp-sum { display: grid; gap: var(--sp-2); }
 .vp-line { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px var(--sp-2); font-size: var(--fs-callout); }
 .vp-line b { font-weight: 600; } .vp-line .vp-dot { color: var(--ink-3); }

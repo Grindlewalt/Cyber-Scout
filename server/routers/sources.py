@@ -15,11 +15,11 @@ Files (DATA = cfg.DATA):
 """
 import json, os, shutil, sys, time
 
-from fastapi import APIRouter, Body, Depends, HTTPException
+from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
-from .. import db as DB
+from .. import audit, db as DB
 from ..config import cfg
 from ..deps import User, require_role, valid_event
 from ..security import atomic_write_json
@@ -112,7 +112,132 @@ def list_sources(ev: str = Depends(valid_event), user: User = Depends(require_ro
     return dict(event=ev, sources=doc.get("sources", []), discovered_at=doc.get("discovered_at"),
                 roles=list(S.ROLES), kinds=L.KINDS, jobs_inline=S.vision_available(),
                 video_config=S.video_config(doc, None, lay), station_pattern=S.station_pattern(doc, lay),
-                livestream=S.livestream_url(doc))
+                livestream=S.livestream_url(doc), video_mode=S.video_mode(doc))
+
+
+# ------------------------------------------------------------------ match video mode
+class VideoModeIn(BaseModel):
+    video_mode: str = Field(..., description="auto = per-match uploads + livestream | livestream = livestream only "
+                                             "(TBA gives the match list; no upload is looked up)")
+
+
+def _stream_source(doc):
+    """The livestream source the recorder records first (liveingest.live_sources order, without dates)."""
+    ls = [s for s in doc.get("sources", []) if s.get("kind") == "livestream" and s.get("url") and s.get("enabled", True)]
+    ls.sort(key=lambda s: (not (s.get("primary") or s.get("role") == "wide"), s.get("origin") != "admin"))
+    return ls[0] if ls else None
+
+
+def _live_status(ev):
+    try:
+        st = json.load(open(os.path.join(_evd(ev), "livestream.json")))
+    except (OSError, ValueError):
+        return None
+    st["age_s"] = round(time.time() - float(st.get("updated") or 0), 1)
+    return st
+
+
+def _readiness(ev, doc):
+    """Checklist for livestream-only mode: stream source, recorder, layout field box, calibration, TBA matches.
+    Each item {key, label, state: ok | warn | bad, detail, tab}."""
+    out = []
+    add = lambda key, label, state, detail, tab=None: out.append(dict(key=key, label=label, state=state, detail=detail, tab=tab))
+    src = _stream_source(doc)
+    if src is None:
+        add("source", "Livestream source", "bad", "add the event's livestream URL (YouTube / Twitch) below", "sources")
+    else:
+        tracked = src.get("primary") or src.get("role") == "wide"
+        add("source", "Livestream source", "ok" if tracked else "warn",
+            (src.get("label") or src.get("url") or src["id"]) + ("" if tracked else
+             " · set its camera role to wide (or mark it Tracked) so it is the stream that is calibrated"), "sources")
+    st = _live_status(ev)
+    if src is None:
+        pass
+    elif not st:
+        add("recorder", "Recorder", "bad", "no status from the recorder service (is the `recorder` container running?)")
+    else:
+        stale = st["age_s"] > LIVE_STALE_S
+        state = st.get("state")
+        if stale and state in ("recording", "waiting", "starting"):
+            add("recorder", "Recorder", "bad", f"not reporting for {st['age_s']:.0f} s (is the `recorder` container running?)")
+        elif state == "recording":
+            b = st.get("behind_live_s")
+            add("recorder", "Recorder", "ok", "recording" + (f", {b:.0f} s behind live" if isinstance(b, (int, float)) else ""))
+        elif state in ("waiting", "starting", "idle", "stream_over"):
+            add("recorder", "Recorder", "warn", st.get("message") or state.replace("_", " "))
+        else:
+            add("recorder", "Recorder", "bad", st.get("message") or str(state))
+    lay = (_layout_doc(ev) or {}).get("sources") or {}
+    sid = src["id"] if src else None
+    regs = {r.get("kind") for r in (lay.get(sid) or {}).get("regions", [])} if sid else set()
+    if sid:
+        if regs & {"field", "overhead"}:
+            add("layout", "Layout: field box", "ok", "drawn")
+        else:
+            add("layout", "Layout: field box", "bad", "draw the field box on a frame of the stream", "layout")
+        add("clock", "Layout: clock box", "ok" if "clock" in regs else "warn",
+            "drawn" if "clock" in regs else "optional: the analyser looks for the FIRST overlay clock at its usual place", "layout")
+        cam = None
+        for d in _event_dirs(ev):
+            if os.path.exists(os.path.join(d, f"camera_{sid}.json")): cam = f"camera_{sid}.json"; break
+            p = os.path.join(d, "camera.json")
+            if os.path.exists(p):
+                try:
+                    if (json.load(open(p)) or {}).get("source") == sid: cam = "camera.json"; break
+                except (OSError, ValueError):
+                    pass
+        if cam:
+            add("calibration", "Calibration", "ok", f"stream camera calibrated ({cam})")
+        else:
+            other = os.path.exists(os.path.join(_evd(ev), "camera.json"))
+            add("calibration", "Calibration", "bad", "calibrate the stream camera (Calibration tab)" +
+                (" · camera.json was made on another video" if other else ""), "calib")
+    try:
+        sj = json.load(open(os.path.join(cfg.DATA, "site", "api", ev, "event.json")))
+        ms = sj.get("matches") or []
+        add("tba", "TBA match list", "ok" if ms else "warn",
+            f"{len(ms)} match{'es' if len(ms) != 1 else ''} listed" if ms else
+            "no matches on TBA yet: matches found on the stream are added from its overlay")
+    except (OSError, ValueError):
+        add("tba", "TBA match list", "warn", "no site data yet (the worker builds it on its next poll)")
+    return out
+
+
+def _event_dirs(ev):
+    """The data dir first (cfg.DATA), then the repo's shipped events/<ev>/ (like _calib_status)."""
+    _, L = _mods()
+    try:
+        return [_evd(ev)] + list(L.event_dirs(ev))[1:]
+    except Exception:
+        return [_evd(ev)]
+
+
+@router.get("/events/{ev}/video-mode", summary="Match video mode + livestream-only readiness (viewer+)")
+def get_video_mode(ev: str = Depends(valid_event), user: User = Depends(require_role("viewer"))):
+    """video_mode: auto (per-match uploads, plus the livestream clip when the stream is trackable) or livestream
+    (offseason: TBA gives the match list; every match is tracked from the recorded livestream, never an upload).
+    checks: what livestream-only mode needs (stream source, recorder, layout field box, calibration, TBA)."""
+    S, _ = _mods()
+    doc = _doc(ev)
+    src = _stream_source(doc)
+    return dict(event=ev, video_mode=S.video_mode(doc), modes=list(S.VIDEO_MODES), at=doc.get("video_mode_at"),
+                by=doc.get("video_mode_by"), stream_source=src["id"] if src else None, checks=_readiness(ev, doc))
+
+
+@router.put("/events/{ev}/video-mode", summary="Set the match video mode (admin)")
+def put_video_mode(body: VideoModeIn, request: Request, ev: str = Depends(valid_event),
+                   user: User = Depends(require_role("admin")), db=Depends(DB.get_db)):
+    S, _ = _mods()
+    doc = _doc(ev)
+    before = S.video_mode(doc)
+    try:
+        S.set_video_mode(doc, body.video_mode, user.display_name or f"Teammate #{user.id}")
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    _save(ev, doc)
+    with DB.tx(db):
+        audit.record(db, request, user, "sources.video_mode", ev, ev, {"video_mode": before}, {"video_mode": body.video_mode})
+    return get_video_mode(ev, user)
 
 
 @router.post("/events/{ev}/sources/discover", summary="Discover sources from TBA (admin)")

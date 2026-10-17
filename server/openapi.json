@@ -1667,6 +1667,95 @@
     }
    }
   },
+  "/app/v1/events/{ev}/video-mode": {
+   "get": {
+    "tags": [
+     "sources"
+    ],
+    "summary": "Match video mode + livestream-only readiness (viewer+)",
+    "description": "video_mode: auto (per-match uploads, plus the livestream clip when the stream is trackable) or livestream\n(offseason: TBA gives the match list; every match is tracked from the recorded livestream, never an upload).\nchecks: what livestream-only mode needs (stream source, recorder, layout field box, calibration, TBA).",
+    "operationId": "get_video_mode_app_v1_events__ev__video_mode_get",
+    "parameters": [
+     {
+      "name": "ev",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Ev"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   },
+   "put": {
+    "tags": [
+     "sources"
+    ],
+    "summary": "Set the match video mode (admin)",
+    "operationId": "put_video_mode_app_v1_events__ev__video_mode_put",
+    "parameters": [
+     {
+      "name": "ev",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Ev"
+      }
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/VideoModeIn"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
   "/app/v1/events/{ev}/sources/discover": {
    "post": {
     "tags": [
@@ -5297,6 +5386,20 @@
      "type"
     ],
     "title": "ValidationError"
+   },
+   "VideoModeIn": {
+    "properties": {
+     "video_mode": {
+      "type": "string",
+      "title": "Video Mode",
+      "description": "auto = per-match uploads + livestream | livestream = livestream only (TBA gives the match list; no upload is looked up)"
+     }
+    },
+    "type": "object",
+    "required": [
+     "video_mode"
+    ],
+    "title": "VideoModeIn"
    }
   }
  }

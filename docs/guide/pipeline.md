@@ -136,12 +136,14 @@ every poll. The snapshot steps only write missing snapshots.
 
 ### 0.4 Match state (`DATA/events/<ev>/status.json`)
 
-`{ "<match key>": {state, at, video, attempts, error, source, live_rejected?, live_failed?, live_reconcile?} }`
+`{ "<match key>": {state, at, video, attempts, error, source, note?, live_rejected?, live_failed?, live_skip?,
+live_fail_paths?, live_reconcile?} }`
 
 | state | meaning | what happens next |
 |---|---|---|
 | `processing` | started (written before the download) | if the worker dies here, the next poll redoes the match (no match JSON exists yet) |
 | `no_video` | no acceptable upload yet | retried after `RETRY_NO_VIDEO` = 300 s (a livestream clip bypasses the wait) |
+| `waiting_live` | livestream-only mode (§1.2c): played / started, no usable clip yet; `note` says why (site row `state_note`) | re-checked every poll (clip, else a TBA-time cut) |
 | `error` | an exception, `attempts` < `MAX_ATTEMPTS` (3) | retried on the next poll, with no back-off |
 | `failed` | 3 attempts used | **never retried automatically**: edit or delete the entry in `status.json` |
 | `done` | match JSON written | skipped while `matches/<k>.json` exists |
@@ -309,6 +311,35 @@ Replaces the per-family roles as the way a match's upload is chosen (families st
 - **Livestream**: the recorder (`liveingest.live_sources`) uses today's TBA webcasts (or the TBA event's webcasts
   when sources.json has none), resolves each (`/@channel/live` → current video), drops webcasts that resolve to the
   same video, records the first live one, and re-resolves when a stream ends.
+
+### 1.2c Match video mode: livestream only (offseason) — `sources.json` `video_mode`
+
+`video_mode` (top level of `sources.json`; `sources.video_mode(doc)`, default `"auto"`) picks where a match's video
+comes from. `auto` is everything above and below (per-match uploads + the livestream clip when trackable).
+`livestream` is for offseason events with no per-match uploads, only a livestream of a fixed wide view:
+
+- **Match list from TBA** (+ lineups, results); a match TBA does not list yet comes from the stream's overlay
+  (`LiveView.extra_matches`, qualifications included).
+- **Uploads are never looked up**: `worker.sync` skips `videoplan.refresh` (no channel scan / classification),
+  `process_match` never calls `videos.candidates` (no TBA match videos, no YouTube search). TBA webcast discovery
+  (`sources.auto_discover`) still runs, so a webcast TBA lists becomes a livestream source.
+- Per match: its clip (`LiveView.for_processing`, records in `live_skip` ignored) → `process_match(live=...)`.
+  If the analyser found no usable record, **`liveingest.tba_cut`** cuts the match from the recording by TBA's
+  `actual_time` (wall clock → stream pts via the chunks' `EXT-X-PROGRAM-DATE-TIME`; clip `[T−15 s, T+163+10 s]`,
+  `LIVE_TBA_LEAD`/`LIVE_TBA_TAIL`), once the analyser has passed the match (or `LIVE_TBA_WAIT` = 900 s after it).
+  The auto start is measured on the clip (clock OCR); else it is TBA's time (flag `start_from_tba_time`, and
+  `process.py` gets `start_trusted=False`, so its own clock / robot-motion detection decides). The cut is written as
+  an ordinary record `<dir>/matches/tba-<match>.json` + `clips/tba-<match>.mp4` (flag `cut_by_tba_time`), once.
+- **Failures**: a clip that fails twice is skipped (`live_skip`), and so is a clip whose bumpers say it is another
+  match; after `LIVE_ONLY_FAILS` (3) failed tries in total the match is `failed` with a `note`. Matches without a
+  clip are `waiting_live` with a `note` (e.g. "the stream analyser has not found this match", "stream not
+  trackable: no calibration …"); the Matches table shows "waiting for stream clip" with the note as tooltip.
+- **Setup** (Video page → "Match video: Livestream only"; API `GET/PUT /events/<ev>/video-mode`, admin, audited as
+  `sources.video_mode`): the GET returns a readiness checklist (stream source marked wide/tracked, recorder
+  status, layout field box, optional clock box, stream calibration, TBA match list).
+- **Frames of a livestream source** (Layout, suggestions, calibration wizard): `sources.recorded_media` uses the
+  recorder's copy first — the newest match clip (t = 60 s), else the newest complete 60 s segment — because a
+  live URL cannot be seeked; with nothing recorded yet the live URL is read forward once (`_grab_many`).
 
 ### 1.3 Choosing the upload — `live/videos.py:candidates`
 
@@ -1894,6 +1925,15 @@ Tests: `tests/test_liveingest.py`: `test_record_keys`, `test_latest_valid_record
 `test_worker_sync_processes_live_clips_before_tba`, `test_worker_sync_untrackable_stream_waits_for_uploads`,
 `test_service_status_files`. `server/tests/test_livestream.py` covers the status endpoint.
 
+### 14.4b Livestream-only mode (TBA-time cut)
+
+See §1.2c. `liveingest.tba_cut_plan(ev, m)` gives the reason a match cannot be cut yet ("TBA has no start time",
+"match not over yet", "the recording does not cover this match", "… missing N of M chunks", "the stream analyser
+has not reached this match yet", "already cut by TBA time"); `tba_cut` checks the stream is trackable, cuts
+with `ChunkStore.cut`, measures the start (`measure_auto_start`, the event layout's clock box applied) and writes
+the record. `LiveView.wait_reason(m)` explains a missing live input for the status note. Tests:
+`tests/test_livestream_only.py`, `server/tests/test_video_mode_api.py`.
+
 ### 14.5 Environment variables (livestream)
 
 | var | default | effect |
@@ -1912,6 +1952,9 @@ Tests: `tests/test_liveingest.py`: `test_record_keys`, `test_latest_valid_record
 | `LS_LEAD` / `LS_TAIL` | 8 / 5 s | clip padding |
 | `LS_SAMPLE_HZ` / `LS_OCR_HZ` / `LS_FULL_EVERY` | 10 / 2 / 4 | analyser rates |
 | `LS_FORMAT`, `YTDLP` | see 14.1 | yt-dlp |
+| `LIVE_TBA_LEAD` / `LIVE_TBA_TAIL` | 15 / 10 s | livestream-only mode: TBA-time clip padding |
+| `LIVE_TBA_WAIT` | 900 s | ... cut even if the analyser has not passed the match by then |
+| `LIVE_ONLY_FAILS` | 3 | ... failed clip tries before a match is `failed` (worker) |
 
 ### 14.6 Docs vs code
 

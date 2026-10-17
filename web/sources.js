@@ -189,8 +189,59 @@
     return e.pending ? `<span class="muted">checking…</span>` : `<span class="vp-use none">none</span>`;
   }
 
+  // ---------------------------------------------------------------- match video mode (sources.json video_mode)
+  // auto = per-match uploads + the livestream clip when trackable; livestream = offseason, no uploads: TBA gives the match
+  // list and every match is tracked from the recorded livestream (GET/PUT events/<ev>/video-mode, with a readiness checklist).
+  const VM_HELP = `<span class="hl"><b>Uploads + livestream</b> (normal events): each match is tracked from its per-match YouTube upload (a wide camera upload first). The livestream gives fast results and is tracked only when its camera is calibrated.</span>
+    <span class="hl"><b>Livestream only</b> (offseason events without uploads): TBA only gives the match list, lineups and results. Every match is tracked from the recorded livestream, which has to show a fixed, wide view of the field: add the stream, draw its field box and calibrate it once. No upload is ever looked up.</span>
+    <span class="hl">A match the stream analyser can't read off the broadcast overlay is cut from the recording by TBA's match start time instead.</span>`;
+  const VM_ICON = { ok: ["check", "ok", "done"], warn: ["warn", "lim", "check this"], bad: ["ban", "bad", "missing"] };
+  function vmCard(ev, V) {
+    if (!V) return "";
+    const live = V.video_mode === "livestream", C = V.checks || [];
+    const nBad = C.filter(c => c.state === "bad").length, sid = V.stream_source;
+    const link = c => !c.tab || c.state === "ok" || c.tab === "sources" ? "" :
+      `<a class="vm-go" href="#/${ev}/sources/${c.tab}${c.tab === "layout" && sid ? "/" + encodeURIComponent(sid) : ""}">${c.tab === "layout" ? "Draw boxes" : "Calibrate"}</a>`;
+    const fix = c => c.key !== "source" || c.state === "ok" ? "" : c.state === "warn" && sid
+      ? `<button type="button" class="small" id="vmtrack">Use it as the tracked wide stream</button>`
+      : `<form class="vs-form vm-add" id="vmadd"><input name="u" required aria-label="Livestream URL" placeholder="Livestream URL: YouTube /live or watch link, Twitch channel…"><button>Add stream</button></form>`;
+    return `<section class="card vm-card ${live ? "vm-on" : ""}" aria-labelledby="vmh">
+      <div class="vm-head"><h2 id="vmh">Match video</h2>
+        <div class="vm-seg" role="group" aria-label="Match video mode">
+          <button type="button" class="chip ${!live ? "on" : ""}" data-vm="auto" aria-pressed="${!live}">Uploads + livestream</button>
+          <button type="button" class="chip ${live ? "on" : ""}" data-vm="livestream" aria-pressed="${live}">Livestream only <span class="muted">· TBA match list</span></button>
+        </div>${CS.help(VM_HELP, "About the match video mode")}<span id="vmst" class="muted small" role="status"></span></div>
+      ${live ? `<p class="vm-sub small">${nBad ? `<b>${nBad} step${nBad > 1 ? "s" : ""} left</b> before matches can be tracked from the stream.` : `<b>Ready.</b> Each match is tracked from its livestream clip as soon as it is cut.`}
+          <span class="muted">Uploads are not looked up for this event.</span></p>
+        <ol class="vm-chk">${C.map(c => { const [ic, cl, al] = VM_ICON[c.state] || VM_ICON.warn;
+          return `<li class="vm-${c.state}">${ico(ic, cl, al)}<div class="vm-t"><div><b>${h(c.label)}</b> <span class="muted small">${h(c.detail || "")}</span></div>${fix(c)}</div>${link(c)}</li>`; }).join("")}</ol>`
+        : `<p class="vm-sub muted small">Offseason event with only a livestream? Switch to <b>Livestream only</b>.</p>`}
+    </section>`;
+  }
+  function vmWire(ev, box, V, redraw) {
+    const say = t => { const s = box.querySelector("#vmst"); if (s) s.textContent = t; };
+    box.querySelectorAll("[data-vm]").forEach(b => b.onclick = async () => {
+      if (b.dataset.vm === V.video_mode) return;
+      say("saving…");
+      try { await A("PUT", `events/${ev}/video-mode`, { video_mode: b.dataset.vm }); route(false); } catch (x) { say(errMsg(x)); }
+    });
+    const tb = box.querySelector("#vmtrack");
+    if (tb) tb.onclick = async () => {
+      try { await A("PATCH", `events/${ev}/sources/${encodeURIComponent(V.stream_source)}`, { role: "wide", primary: true }); redraw(); } catch (x) { say(errMsg(x)); }
+    };
+    const f = box.querySelector("#vmadd");
+    if (f) f.onsubmit = async e => {
+      e.preventDefault(); say("adding…");
+      try { await A("POST", `events/${ev}/sources`, { url: f.u.value.trim(), role: "wide", label: "Event livestream", primary: true }); route(false); }
+      catch (x) { say(errMsg(x)); }
+    };
+  }
+
   async function sourcesTab(ev, el) {
-    const [P, d] = await Promise.all([A("GET", `events/${ev}/video-plan`).catch(e => ({ error: e })), A("GET", `events/${ev}/sources`)]);
+    const [P, d, V0] = await Promise.all([A("GET", `events/${ev}/video-plan`).catch(e => ({ error: e })), A("GET", `events/${ev}/sources`),
+                                          A("GET", `events/${ev}/video-mode`).catch(() => null)]);
+    let V = V0;
+    const liveOnly = !!V && V.video_mode === "livestream";
     const S = d.sources || [];
     const M = (P.plan && P.plan.matches) || {};
     let filt = "all", st0 = null;
@@ -199,11 +250,12 @@
     const help = `<span class="hl">Every upload linked to a match is checked once: a few small frames, no download. It is classified as <b>wide</b> (fixed overhead camera), <b>broadcast</b> (cuts between cameras) or <b>station cams</b> (overhead view with the two driver-station cameras inset).</span>
       <span class="hl">Per match the tracker uses the best wide video, else a station-cam or broadcast video (<b>limited tracking</b>: insets hide the near corners, or cuts hide the field). Station cams feed the driver-station pass. Identical uploads count once; a title naming another match is never used.</span>
       <span class="hl">Open a match to see its videos and, rarely, pin or exclude one. The worker rebuilds this every poll; <b>Check videos</b> checks everything now.</span>`;
-    el.innerHTML = `<section class="card vp-sum" aria-label="Video coverage"><div id="vpsum"></div>
+    el.innerHTML = `<div id="vmode">${vmCard(ev, V)}</div>
+      <section class="card vp-sum" aria-label="Video coverage" ${liveOnly ? "hidden" : ""}><div id="vpsum"></div>
         <div class="vs-row vp-acts0"><button id="vpcheck" type="button">Check videos</button><button id="disc" type="button">Discover from TBA</button>
           ${CS.help(help, "How match videos are chosen")}<span id="dst" class="muted small" role="status"></span></div></section>
       <div id="lsrec"></div>
-      <section class="card vp-cov" aria-labelledby="vpcovh"><div class="vp-covh"><h2 id="vpcovh">Matches</h2><div class="vp-filt" role="group" aria-label="Show matches" id="vpfilt"></div></div>
+      <section class="card vp-cov" aria-labelledby="vpcovh" ${liveOnly ? "hidden" : ""}><div class="vp-covh"><h2 id="vpcovh">Matches</h2><div class="vp-filt" role="group" aria-label="Show matches" id="vpfilt"></div></div>
         <div id="vpgrid"></div>
         <p class="vp-legend muted small">${ico("starOn", "on")} chosen · ${ico("check", "ok")} available · ${ico("warn", "lim")} limited tracking · <span class="vp-n">2<i>dup 1</i></span> uploads, duplicates · <span class="vp-pend">…</span> being checked</p></section>
       <details class="card vp-adv" id="vpadv"><summary>Advanced: sources <span class="muted small">${S.length} · title families, webcasts, pasted URLs</span></summary><div id="vpadvb"></div></details>
@@ -246,9 +298,16 @@
     document.getElementById("vpfilt").onclick = e => { const b = e.target.closest("[data-f]"); if (!b) return; filt = b.dataset.f; try { sessionStorage.setItem("cs:vpfilt", filt); } catch (x) { } drawGrid(); };
     document.getElementById("vpgrid").onclick = e => { const tr = e.target.closest("tr[data-k]"); if (tr) openSheet(tr.dataset.k, e.target.closest("button")); };
     // ---- livestream recorder (card + summary), refreshed while this tab is open
-    const lsEl = document.getElementById("lsrec");
+    const lsEl = document.getElementById("lsrec"), vmEl = document.getElementById("vmode");
+    const vmDraw = async (fetch) => {
+      if (fetch) { try { V = await A("GET", `events/${ev}/video-mode`); } catch (x) { return; } }
+      if (!V || !vmEl.isConnected) return;
+      if (fetch && vmEl.contains(document.activeElement) && document.activeElement.tagName === "INPUT") return;   // don't eat a URL being typed
+      vmEl.innerHTML = vmCard(ev, V); vmWire(ev, vmEl, V, () => vmDraw(true));
+    };
+    vmDraw(false);
     const lsDraw = async () => { const st = await liveRec.load(ev); lsSt = st; if (lsEl.isConnected) { lsEl.innerHTML = liveRec.card(st, ev); drawSum(); } };
-    lsDraw(); const lsIv = setInterval(lsDraw, 15000); cleanup.push(() => clearInterval(lsIv));
+    lsDraw(); const lsIv = setInterval(() => { lsDraw(); if (liveOnly) vmDraw(true); }, 15000); cleanup.push(() => clearInterval(lsIv));
     // ---- actions
     const dst = t => { const s = document.getElementById("dst"); if (s) s.textContent = t; };
     document.getElementById("vpcheck").onclick = async e => {

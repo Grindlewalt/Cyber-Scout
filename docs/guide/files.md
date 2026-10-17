@@ -530,6 +530,7 @@ edited** when this was written (see top note).
 | `test_hardening.py` | Audit log + revert, picklist history, soft-deleted notes, identity-fix review, write limits, text / display-name validation, passwordless only on the team network, lockdown, sign everyone out, the compose api env allowlist. |
 | `test_notes_ui.py` | The API contract `web/notes.js` relies on: notes on team + match pages, ownership, hide / restore, lockdown 423, the fix merge-then-PUT flow. |
 | `test_livestream.py` | `GET /events/{ev}/livestream` reads the recorder status file. |
+| `test_video_mode_api.py` | `GET/PUT /events/{ev}/video-mode`: livestream-only mode, readiness checklist, audit, roles. |
 | `test_roles.py` | Role matrix: who may call what. |
 | `test_sources_api.py` | Pasted source URLs are normalised and validated (audit findings 2 and 4). |
 | `test_update.py` | Update endpoints: permissions, request-file schema (round trip through `cs-updater.validate_request`), status parsing, lockdown, CSRF, rate limit, the updater's pure helpers. |
@@ -634,6 +635,7 @@ Run with `python -m pytest tests` from the repo root. They need no GPU, video or
 |---|---|
 | `tests/test_fuel_cuts.py` | `fuel.py` scene-cut handling (frozen lead-in + cut must not blind auto). |
 | `tests/test_liveingest.py` | Livestream → worker: record selection, trackability, fast results, live-first processing (file fixtures). |
+| `tests/test_livestream_only.py` | Livestream-only video mode: no upload lookups, synthesized quals, clip failures → failed, TBA-time cut, recorded frames. |
 | `tests/test_matchday.py` | Pure helpers of `live/strategy/matchday.py`; defense "measured" only when the library says `significant` (queue card and preview factors). |
 | `tests/test_goals_scale.py` | `goals.py` passes the dashboard blend to the season sim unscaled (per robot). |
 | `tests/test_source_urls.py` | Audit findings 2 and 4: URL normalisation, `--` before URLs, SSRF guard in `live/sources.py`. |

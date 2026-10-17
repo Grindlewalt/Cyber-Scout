@@ -6,6 +6,8 @@ are importable, else in the worker's job thread (job_loop) / `python live/source
 
 data/events/<ev>/sources.json
   {"version": 1, "event": "2026wasam", "updated_at": ..., "discovered_at": ...,
+   "video_mode": "auto" | "livestream",  # match video: uploads + livestream (default) | livestream only
+   "video_mode_at": ..., "video_mode_by": "...",
    "sources": [{
       "id": "tba-uploads-wide-match", "origin": "tba" | "admin",
       "kind": "per_match" | "livestream" | "video" | "file",
@@ -26,12 +28,17 @@ driver-station cameras.  Picture-in-picture regions are drawn per source in layo
 
 Worker helpers: video_config(doc, cfg) -> videos.candidates() config (prefer / reject regexes from the
 primary per-match source), station_pattern(doc) -> title regex of the upload that holds the station insets,
-livestream_url(doc) -> URL for live/livestream.py, primary(doc).
+livestream_url(doc) -> URL for live/livestream.py, primary(doc), video_mode(doc).
+
+Match video mode (video_mode): "auto" = per-match uploads (TBA links, channel scan, search) + the livestream clip
+when it is trackable (unchanged behaviour); "livestream" = offseason / no uploads: TBA only gives the match list
+(and lineups, results), every match is tracked from the recorded livestream (a fixed wide view), never an upload.
 """
 import hashlib, ipaddress, json, os, re, socket, subprocess, threading, time, traceback, urllib.parse, urllib.request
 
 ROLES = ("wide", "dynamic", "alliance-side")
 KINDS = ("per_match", "livestream", "video", "file")
+VIDEO_MODES = ("auto", "livestream")
 YTDLP = os.environ.get("YTDLP", "yt-dlp")
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -74,6 +81,19 @@ def primary(doc):
     for s in en:
         if s.get("role") == "wide": return s
     return en[0] if en else None
+
+
+def video_mode(doc):
+    """"auto" (uploads + livestream) or "livestream" (livestream only; TBA for the match list)."""
+    m = (doc or {}).get("video_mode")
+    return m if m in VIDEO_MODES else "auto"
+
+
+def set_video_mode(doc, mode, by=None):
+    if mode not in VIDEO_MODES: raise ValueError(f"video_mode must be one of {VIDEO_MODES}")
+    doc["video_mode"] = mode
+    doc["video_mode_at"] = time.time(); doc["video_mode_by"] = by
+    return doc
 
 
 # ---------------------------------------------------------------- URLs
@@ -533,8 +553,53 @@ def media_for(s, match_key=None):
         if not vid: return None, None
         return media_ok(vid), (s.get("sample") or {}).get("t") or 60.0
     smp = s.get("sample") or {}
+    if s.get("kind") == "livestream" and s.get("_ev") and not smp.get("video"):
+        p, t = recorded_media(s["_ev"], s)          # the recorder's copy: local, seekable, many frames
+        if p: return p, t
     v = smp.get("video") or s.get("url")
     return (media_ok(v) if v else None), smp.get("t")
+
+
+def live_root():
+    return os.environ.get("LIVE_DIR") or os.path.join(os.environ.get("MEDIA", "/media"), "live")
+
+
+def recorded_media(ev, s, root=None):
+    """Local video of a livestream source recorded by the recorder service (MEDIA/live/<ev>/<video>/, see
+    live/liveingest.py): the newest match clip (t = 60 s: mid-match, robots on the field), else the newest
+    complete 60 s segment (t = 30 s).  -> (path, t) or (None, None).  Frame grabs, layout suggestions and the
+    calibration wizard use it for a livestream source: a live URL cannot be seeked."""
+    base = os.path.join(root or live_root(), ev)
+    try:
+        dirs = [os.path.join(base, d) for d in os.listdir(base)]
+    except OSError:
+        return None, None
+    best = []
+    for d in dirs:
+        try:
+            with open(os.path.join(d, "meta.json")) as f:
+                meta = json.load(f)
+        except (OSError, ValueError):
+            continue
+        if meta.get("source") != s.get("id") and meta.get("url") != s.get("url"): continue
+        best.append((meta.get("started") or os.path.getmtime(d), d))
+    for _, d in sorted(best, reverse=True):
+        clips = sorted((os.path.join(d, "clips", f) for f in _ls(os.path.join(d, "clips")) if f.endswith(".mp4")),
+                       key=os.path.getmtime)
+        clips = [c for c in clips if os.path.getsize(c) > 100_000]
+        if clips: return clips[-1], 60.0
+        segs = sorted(os.path.join(d, "seg", f) for f in _ls(os.path.join(d, "seg")) if f.endswith(".ts"))
+        segs = segs[:-1] if len(segs) > 1 else segs          # the newest one is still being written
+        segs = [x for x in segs if os.path.getsize(x) > 100_000]
+        if segs: return segs[-1], 30.0
+    return None, None
+
+
+def _ls(d):
+    try:
+        return os.listdir(d)
+    except OSError:
+        return []
 
 
 # ---------------------------------------------------------------- jobs (frames, suggestions, calibration)
@@ -672,6 +737,7 @@ def find_source(ev_dir, sid, doc=None):
 def _source(data, ev, sid):
     s = find_source(_ev_dir(data, ev), sid)
     if s is None: raise ValueError(f"unknown source {sid}")
+    s = dict(s, _ev=ev)
     if s.get("kind") == "file" and not file_allowed(s["url"]):
         raise ValueError("file source outside the allowed directories")
     return s
@@ -687,6 +753,22 @@ def _times(LY, media, t, n, span=(0.25, 0.85)):
     return [float(t or 0.0)], dur
 
 
+def _live_url(LY, s, media):
+    return s.get("kind") == "livestream" and LY.is_remote(media)
+
+
+def _grab_many(LY, s, media, t0, n, step):
+    """n frames of a source -> (frames, times).  A live URL (nothing recorded yet) cannot be seeked: read it
+    forward once, one frame every `step` s (n x step s of real time)."""
+    if _live_url(LY, s, media):
+        got = LY.grab_dense(media, 0.0, seconds=n * step, hz=1.0 / step)[:n]
+        return [f for _, f in got], [t for t, _ in got]
+    ts, dur = _times(LY, media, t0, n)
+    if len(ts) == 1: ts = [ts[0] + k * step for k in range(n)]
+    got = LY.grab_frames(media, ts)
+    return [f for _, f in got], ts
+
+
 def job_frame(data, ev, p, log=print):
     """Grab one frame of a source (t seconds, default: the source's sample time / 60 s) -> frames/<sid>.jpg."""
     np, cv2, LY, CB = _live_imports()
@@ -694,7 +776,9 @@ def job_frame(data, ev, p, log=print):
     media, t0 = media_for(s, p.get("match"))
     if not media: raise ValueError("this source has no video yet (no per-match upload found)")
     t = p.get("t", t0)
-    if t is None:
+    if _live_url(LY, s, media):
+        t = None                                       # live URL (nothing recorded yet): the current frame
+    elif t is None:
         dur = LY.duration(media)
         t = 0.5 * dur if dur and dur > 5 else None
     im = LY.grab_frame(media, t)
@@ -712,11 +796,9 @@ def job_suggest(data, ev, p, log=print):
     s = _source(data, ev, p["source"])
     media, t0 = media_for(s, p.get("match"))
     if not media: raise ValueError("no video for this source yet")
-    ts, dur = _times(LY, media, t0, int(p.get("n", 10)))
-    if len(ts) == 1: ts = [ts[0] + k * 8.0 for k in range(int(p.get("n", 10)))]
-    fr = [f for _, f in LY.grab_frames(media, ts)]
+    fr, ts = _grab_many(LY, s, media, t0, int(p.get("n", 10)), 8.0)
     if len(fr) < 3: raise ValueError("could not read enough frames from the video")
-    dense = LY.grab_dense(media, ts[len(ts) // 2], seconds=12.0, hz=10.0)
+    dense = LY.grab_dense(media, 0.0 if _live_url(LY, s, media) else ts[len(ts) // 2], seconds=12.0, hz=10.0)
     other = None
     if p.get("other"):
         o = _source(data, ev, p["other"])
@@ -763,9 +845,7 @@ def job_detect(data, ev, p, log=print):
     s = _source(data, ev, p.get("source") or sid)
     media, t0 = media_for(s, p.get("match"))
     if not media: raise ValueError("no video for this source yet")
-    ts, dur = _times(LY, media, t0, int(p.get("n", 8)))
-    if len(ts) == 1: ts = [ts[0] + k * 6.0 for k in range(int(p.get("n", 8)))]
-    fr = [f for _, f in LY.grab_frames(media, ts)]
+    fr, ts = _grab_many(LY, s, media, t0, int(p.get("n", 8)), 6.0)
     if not fr: raise ValueError("could not read frames")
     FH, FW = fr[0].shape[:2]
     if crop: fr = [f[crop[1]:crop[3], crop[0]:crop[2]] for f in fr]

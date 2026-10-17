@@ -311,12 +311,13 @@ async function eventPage(ev, tab, arg) {
 function sessionStorageGet(k) { try { return sessionStorage.getItem(k); } catch (e) { return null; } }
 function sessionStorageSet(k, v) { try { sessionStorage.setItem(k, v); } catch (e) { } }
 
-const STATE_LABEL = { done: "tracked", pending: "waiting", no_video: "no video yet", processing: "processing", error: "retrying", failed: "failed", live: "stream result" };
+const STATE_LABEL = { done: "tracked", pending: "waiting", no_video: "no video yet", processing: "processing", error: "retrying", failed: "failed", live: "stream result",
+                      waiting_live: "waiting for stream clip" };
 function statusPill(m) {
   if (m.state === "done" && m.feed_ok != null && m.feed_ok < 0.9)
     return `<span class="pill no_video" title="the field camera was missing from the broadcast for part of this match">partial footage (${Math.round(m.feed_ok * 100)}%)</span>`;
   if (m.state === "live" && m.live) return `<span class="pill live" title="${esc(m.live.tracking_note || "")}">${CS.liveTracking(m.live, false).toLowerCase() || "stream result"}</span>`;
-  return `<span class="pill ${m.state}">${STATE_LABEL[m.state] || m.state}</span>`;
+  return `<span class="pill ${m.state}"${m.state_note ? ` title="${esc(m.state_note)}"` : ""}>${STATE_LABEL[m.state] || esc(m.state)}</span>`;
 }
 function matchesTable(el, d, ev) {
   const tl = (ts, al) => ts.map(t => `<a class="team ${al[0]}" href="#/${ev}/t/${t}">${num(t)}</a>`).join(" ");

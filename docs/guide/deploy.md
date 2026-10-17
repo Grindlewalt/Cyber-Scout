@@ -377,6 +377,31 @@ tail -f updater/update.log               # updater (if installed)
 
 The legacy way still works: `.env` `EVENTS=2026xxx`, used only while no events were ever managed in the app.
 
+### 8.2b Offseason event: livestream only (comp-day checklist)
+
+For an event with **no per-match uploads, only a livestream** (TBA lists the event, teams and matches). In order:
+
+1. **Unpause**: remove `PAUSE_PROCESSING=1` from `.env`, `docker compose up -d worker recorder`.
+2. **Admin → Events → add** the event key (e.g. `2026wagg`).
+3. **Video page → Match video → Livestream only.** Uploads are never looked up from now on; the checklist under it
+   says what is missing.
+4. **Add the stream** (the checklist's box): the YouTube `/live` or watch URL, or the Twitch channel. It is added as
+   the tracked, `wide` source. If TBA lists the webcast it is discovered too; use the checklist's button to make the
+   right one the tracked wide stream.
+5. **Recorder** must say *recording* (a few minutes after the stream goes live; *waiting* before). Check
+   `docker compose logs -f recorder` if it says error. It only records on the TBA event dates (±1 day);
+   `LIVE_ANY_DATE=1` overrides for a test.
+6. **Layout** (checklist → Draw boxes): grab a frame (it comes from the recorder's copy of the stream), draw the
+   **field** box, and the **clock** box if the overlay clock is not at the usual FIRST position. Save.
+7. **Calibration** (checklist → Calibrate): detect AprilTags, click field points, fit, check the overlay,
+   **accept**. Best on a frame with the whole field empty or a match clip. The checklist turns green.
+8. Matches are tracked as each one is cut from the stream (~20 s after the final buzzer). A match the analyser
+   could not read off the overlay is cut by TBA's start time (needs TBA `actual_time`, i.e. the event's FMS
+   syncs to TBA). Matches without a clip show **waiting for stream clip** (hover for why) on the Matches table.
+
+If the stream is a switching broadcast (cuts between cameras) rather than a fixed wide view, tracking will be
+limited: matches still get fast results (teams, score) from the overlay.
+
 ### 8.3 Rebuild the site JSON (without processing matches)
 
 The worker rebuilds the site after every processed match and, **when nothing was processed, once per poll**.

@@ -22,6 +22,12 @@ Livestream (live/liveingest.py; recorded by the `recorder` service = this file w
 in $MEDIA/live/<ev>/*/matches/ give fast results (site rows "live": teams, score, clip) before TBA posts, and --
 when the stream's layout has a field box and its camera is calibrated (camera_<source>.json) -- the match is
 tracked from the stream clip at once (process_match live=...), reconciled with TBA when it posts.
+
+Video mode "livestream" (sources.json video_mode; Video page "Livestream only"): offseason events without
+per-match uploads.  TBA gives the match list (+ lineups, results); no upload is ever looked up (no video plan,
+channel scan, TBA match videos or YouTube search).  Each match is tracked from its livestream clip; a match the
+stream analyser missed is cut from the recording by TBA's actual_time (liveingest.tba_cut).  Matches without a
+clip yet are "waiting_live" with a note saying why; a clip that fails LIVE_ONLY_FAILS times -> "failed".
 """
 import json, os, sys, time, traceback, shutil
 import numpy as np
@@ -47,6 +53,8 @@ HUBCAM = os.environ.get("HUBCAM", "0") == "1"   # optional station-camera pass (
 MAX_ATTEMPTS = 3
 VPLAN_S = float(os.environ.get("VPLAN_SECONDS", "60"))   # per poll: time for checking new candidate uploads (video plan)
 VPLAN_N = int(os.environ.get("VPLAN_MAX", "12"))         # ... and at most this many uploads
+LIVE_FAILS = 2                                           # uploads mode: livestream clip failures before the uploads
+LIVE_ONLY_FAILS = int(os.environ.get("LIVE_ONLY_FAILS", "3"))   # livestream-only mode: ... before "failed"
 
 
 def log(*a):
@@ -81,10 +89,14 @@ def process_match(ev, m, cfg, status, meta_cache, live=None):
     """live: livestream input (liveingest.LiveView.for_processing) -> its clip is tried first (copied: the
     finally below deletes the working copies), then the per-match uploads as before."""
     st = status.setdefault(m["key"], {})
+    only_live = cfg.get("video_mode") == "livestream"
+    if only_live and live is None:                     # livestream-only mode never looks for uploads
+        st.update(state="waiting_live", note=st.get("note") or "waiting for the livestream clip", at=time.time())
+        return False
     if live is None and st.get("state") == "no_video" and time.time() - st.get("at", 0) < RETRY_NO_VIDEO:
         return False
-    if live is not None and (not live["tba_posted"] or not os.path.exists(ev_file(ev, "camera.json"))):
-        cands = []                                     # nothing uploaded yet / no upload calibration
+    if only_live or (live is not None and (not live["tba_posted"] or not os.path.exists(ev_file(ev, "camera.json")))):
+        cands = []                                     # livestream only / nothing uploaded yet / no upload calibration
     else:
         cands = videos.candidates(m, cfg, meta_cache)
     tries = ([("live", live["video"])] if live is not None else []) + [("upload", v) for v in cands[:3]]
@@ -107,7 +119,8 @@ def process_match(ev, m, cfg, status, meta_cache, live=None):
                     shutil.copyfile(live["clip"], vpath)
                     cam_p = live["camera"]
                     pose_p = os.path.join(ev_dir(ev), f"pose_latest_{live['source']}.json")
-                    kw = dict(start_hint=live["start"], start_trusted=True, teams=live["teams"], layout=live["layout"],
+                    kw = dict(start_hint=live["start"], start_trusted=live.get("start_trusted", True),
+                              teams=live["teams"], layout=live["layout"],
                               event=None if m.get("livestream") else event_ctx(ev, m))
                 else:
                     log(f"{m['key']}: downloading {v['id']} ({v['title']}"
@@ -148,13 +161,28 @@ def process_match(ev, m, cfg, status, meta_cache, live=None):
         if best is not None and best.get("source") == "livestream" and best.get("wrong_video"):
             # the stream clip's bumpers say it is another match: never use this record again; uploads later
             st["live_rejected"] = live["info"]["record_path"]
+            if only_live: st["live_skip"] = sorted(set(st.get("live_skip") or []) | {live["info"]["record_path"]})
             log(f"{m['key']}: livestream clip rejected (bumper reads: {best['wrong_video'].get('likely_match')})")
-            st.update(state="no_video", at=time.time(), attempts=max(0, st.get("attempts", 1) - 1))
+            st.update(state="waiting_live" if only_live else "no_video", at=time.time(),
+                      attempts=max(0, st.get("attempts", 1) - 1))
+            if only_live:
+                st["note"] = (f"livestream clip rejected: bumper reads say it is "
+                              f"{best['wrong_video'].get('likely_match') or 'another match'}; waiting for another clip")
             return False
         if best is None and live is not None and not cands:
-            st["live_failed"] = st.get("live_failed", 0) + 1     # 2 failures -> wait for the uploads instead
-            st.update(state="no_video", at=time.time(), error="; ".join(errors)[-500:] or "livestream clip failed",
-                      attempts=max(0, st.get("attempts", 1) - 1))
+            st["live_failed"] = st.get("live_failed", 0) + 1     # uploads mode: 2 failures -> wait for the uploads
+            err = "; ".join(errors)[-500:] or "livestream clip failed"
+            st.update(state="no_video", at=time.time(), error=err, attempts=max(0, st.get("attempts", 1) - 1))
+            if only_live:
+                n_f, rp = st["live_failed"], live["info"]["record_path"]
+                fp = st.setdefault("live_fail_paths", {}); fp[rp] = fp.get(rp, 0) + 1
+                if fp[rp] >= 2:                        # this clip twice: next the TBA-time cut / another record
+                    st["live_skip"] = sorted(set(st.get("live_skip") or []) | {rp})
+                if n_f >= LIVE_ONLY_FAILS:
+                    st.update(state="failed", note=f"livestream clip could not be tracked ({n_f} tries); see the worker log")
+                    log(f"{m['key']}: livestream clip failed {n_f} times -> failed ({err[-200:]})")
+                else:
+                    st.update(state="waiting_live", note=f"livestream clip failed (try {n_f} of {LIVE_ONLY_FAILS}); retrying")
             return False
         if best is None:
             raise RuntimeError("; ".join(errors) or "no usable video")
@@ -186,6 +214,7 @@ def process_match(ev, m, cfg, status, meta_cache, live=None):
             except Exception:
                 traceback.print_exc()
         st.update(state="done", at=time.time(), error=None, video=best["video"]["id"], source=best.get("source", "upload"))
+        st.pop("note", None)
         log(f"{m['key']}: done ({best['video']['id']}, coverage {best['feed_ok']:.0%})")
         return True
     except Exception as e:
@@ -299,6 +328,8 @@ def build_site(ev, tba):
                    red=dict(teams=m["alliances"]["red"]["team_keys"], score=m["alliances"]["red"]["score"]),
                    blue=dict(teams=m["alliances"]["blue"]["team_keys"], score=m["alliances"]["blue"]["score"]),
                    winner=m.get("winning_alliance"), state="done" if r else st.get("state", "pending"))
+        if not r and st.get("note") and row["state"] in ("waiting_live", "failed"):
+            row["state_note"] = str(st["note"])[:200]  # livestream-only mode: why there is no clip yet
         if lv:
             lv.decorate_row(row, m)                    # row["live"]; stream teams/score until TBA posts
         if r:
@@ -481,7 +512,7 @@ def build_site(ev, tba):
         start=info.get("start_date"), end=info.get("end_date"), city=info.get("city"),
         state_prov=info.get("state_prov"), updated=now, n_done=n_done, n_total=len(match_rows),
         calibrated=calibrated, needs_setup=not calibrated, matches=match_rows, teams=team_rows,
-        livestream=live_summary(ev)))
+        livestream=live_summary(ev), video_mode=ev_video_mode(ev)))
     evs = jload(os.path.join(API, "events.json"), [])
     evs = [e for e in evs if e["key"] != ev] + [dict(key=ev, name=info.get("name"), short_name=info.get("short_name"),
                                                       year=info.get("year"),
@@ -527,6 +558,15 @@ def live_view(ev):
         traceback.print_exc(); return None
 
 
+def ev_video_mode(ev):
+    """sources.json video_mode: "auto" (uploads + livestream) | "livestream" (livestream only)."""
+    try:
+        import sources
+        return sources.video_mode(sources.load(ev_dir(ev)))
+    except Exception:
+        return "auto"
+
+
 def live_summary(ev):
     try:
         import liveingest
@@ -535,7 +575,7 @@ def live_summary(ev):
         return None
 
 
-def live_input(lv, m, played, status):
+def live_input(lv, m, played, status, max_fail=LIVE_FAILS):
     """Livestream clip input for process_match, unless this record was rejected / failed before."""
     if lv is None: return None
     try:
@@ -544,9 +584,68 @@ def live_input(lv, m, played, status):
         traceback.print_exc(); return None
     if live is None: return None
     st = status.get(m["key"], {})
-    if st.get("live_rejected") == live["info"]["record_path"] or st.get("live_failed", 0) >= 2:
+    if st.get("live_rejected") == live["info"]["record_path"] or st.get("live_failed", 0) >= max_fail:
         return None
     return live
+
+
+_TBA_OCR = {}
+
+
+def _cut_ocr(ev):
+    """Overlay OCR for measuring a TBA-time clip's auto start (loaded once; the event's clock box applied)."""
+    try:
+        import livestream as LS, layout as LY
+        if "o" not in _TBA_OCR:
+            _TBA_OCR["o"] = LS.OverlayOCR()
+        if _TBA_OCR.get("ev") != ev:
+            LS.apply_layout(LY.find(ev=ev), None, log=log); _TBA_OCR["ev"] = ev
+        return _TBA_OCR["o"]
+    except Exception as e:
+        log(f"{ev}: overlay OCR unavailable for TBA-time clips ({e!r:.120}): starts from TBA time")
+        _TBA_OCR["o"] = None
+        return None
+
+
+def _live_only(lv, m, played, skip):
+    if lv is None: return None
+    try:
+        return lv.for_processing(m, played, skip=skip)
+    except Exception:
+        traceback.print_exc(); return None
+
+
+def live_only_input(ev, lv, m, played, status):
+    """Livestream-only mode: the match's clip (a record not rejected / failed twice), else a cut by TBA time
+    (liveingest.tba_cut) when the stream analyser missed it.  -> (live input | None, LiveView, why-not note)."""
+    st = status.get(m["key"], {})
+    skip = set(st.get("live_skip") or [])
+    live = _live_only(lv, m, played, skip)
+    if live is not None: return live, lv, None
+    why = lv.wait_reason(m, skip) if lv else "nothing recorded from the livestream yet"
+    if why and (why.startswith("stream not trackable") or why.startswith("the stream's teams") or why.startswith("teams unknown")):
+        return None, lv, why                       # a cut by time would not help
+    try:
+        import liveingest
+        p, why2 = liveingest.tba_cut(ev, m, log=log, ocr=lambda: _cut_ocr(ev))
+    except Exception as e:
+        traceback.print_exc(); p, why2 = None, f"TBA-time cut failed: {e!r:.120}"
+    if p is None:
+        return None, lv, why if why2 in ("TBA has no start time for this match", "match not over yet") else \
+            (f"{why}; {why2}" if why else why2)
+    lv = live_view(ev)
+    live = _live_only(lv, m, played, skip)
+    return live, lv, None if live else (lv.wait_reason(m, skip) if lv else why2)
+
+
+def note_wait(status, key, why):
+    """livestream-only mode: mark a match as waiting for its clip (with the reason); True if status changed."""
+    st = status.setdefault(key, {})
+    if st.get("state") in ("done", "processing", "failed"): return False
+    why = why or "waiting for the livestream clip"
+    if st.get("state") == "waiting_live" and st.get("note") == why: return False
+    st.update(state="waiting_live", note=why, at=time.time())
+    return True
 
 
 def live_reconcile(ev, m, status):
@@ -584,16 +683,19 @@ def live_reconcile(ev, m, status):
 
 
 # ------------------------------------------------------------------ loop
-def video_plan(ev, tba, tba_ms, cfg):
+def video_plan(ev, tba, tba_ms, cfg, uploads=True):
     """TBA discovery on its own (webcasts -> livestream sources, upload families; throttled) + the per-match
     video plan (live/videoplan.py: a few new candidate uploads checked per poll, time-boxed) -> cfg["video_plan"]
-    for videos.candidates.  Never fails the sync: without a plan the title rules apply."""
+    for videos.candidates.  Never fails the sync: without a plan the title rules apply.  uploads=False
+    (livestream-only mode): the webcast discovery only, no plan."""
     try:
         import sources, videoplan
         try:
             sources.auto_discover(DATA, ev, tba.event(ev), tba_ms, log=log)
         except Exception:
             traceback.print_exc()
+        if not uploads:
+            return cfg
         md = os.path.join(ev_dir(ev), "matches")
         done = {f[:-5] for f in os.listdir(md) if f.endswith(".json")} if os.path.isdir(md) else set()
         plan = videoplan.refresh(DATA, ev, tba_ms, budget_s=VPLAN_S, max_n=VPLAN_N, log=log, done_keys=done)
@@ -625,10 +727,18 @@ def sync(ev, tba, max_new=None):
     cfg = jload(ev_file(ev, "event.json"), {}) or {}
     try:                                               # admin-configured video sources (Video page) -> which uploads to use
         import sources
-        cfg = sources.video_config(sources.load(ev_dir(ev)), cfg, jload(os.path.join(ev_dir(ev), "layout.json"), None))
+        doc = sources.load(ev_dir(ev))
+        cfg = sources.video_config(doc, cfg, jload(os.path.join(ev_dir(ev), "layout.json"), None))
+        cfg["video_mode"] = sources.video_mode(doc)
     except Exception:
         traceback.print_exc()
-    cfg = video_plan(ev, tba, tba_ms, cfg)
+    only_live = cfg.get("video_mode") == "livestream"
+    if only_live and ev not in _LIVE_ONLY_LOGGED:
+        _LIVE_ONLY_LOGGED.add(ev)
+        log(f"{ev}: video mode livestream only (TBA match list; no uploads looked up)")
+    elif not only_live:
+        _LIVE_ONLY_LOGGED.discard(ev)
+    cfg = video_plan(ev, tba, tba_ms, cfg, uploads=not only_live)
     meta_cache = jload(os.path.join(DATA, "cache", "ytmeta.json"), {}) or {}
     has_cam = os.path.exists(ev_file(ev, "camera.json"))
     if not has_cam and ev not in _NEEDS_SETUP_LOGGED:            # once per event: not an error, just not set up yet
@@ -636,10 +746,29 @@ def sync(ev, tba, max_new=None):
         log(f"{ev}: needs Video setup (no camera calibration): match tracking waits; results/rankings still published")
     elif has_cam:
         _NEEDS_SETUP_LOGGED.discard(ev)
-    done_any = False; n = 0; more = False
+    done_any = False; n = 0; more = False; dirty = False
     for m in ms:
         played = m["alliances"]["red"]["score"] is not None and m["alliances"]["red"]["score"] >= 0 \
             and not m.get("livestream")
+        if only_live:                                  # livestream only: the clip (or a TBA-time cut), never uploads
+            k = m["key"]
+            if played and status.get(k, {}).get("live_reconcile"):
+                live_reconcile(ev, m, status)
+            if os.path.exists(os.path.join(ev_dir(ev), "matches", f"{k}.json")): continue
+            if status.get(k, {}).get("state") == "failed": continue
+            started = bool(m.get("actual_time")) and time.time() > m["actual_time"] + MATCH_S_WAIT
+            if not (played or started or (lv and k in lv.fast)):
+                continue                               # not played yet: nothing to wait for
+            live, lv, why = live_only_input(ev, lv, m, played, status)
+            if live is None:
+                dirty = note_wait(status, k, why) or dirty
+                continue
+            if process_match(ev, m, cfg, status, meta_cache, live=live):
+                done_any = True; n += 1
+                build_site(ev, tba)
+                if max_new and n >= max_new:
+                    more = True; break
+            continue
         live = live_input(lv, m, played, status)       # trackable livestream clip: process now, TBA or not
         if not has_cam and live is None: continue
         if not played and live is None: continue
@@ -653,6 +782,8 @@ def sync(ev, tba, max_new=None):
             build_site(ev, tba)
             if max_new and n >= max_new:
                 more = True; break
+    if dirty:
+        jsave(os.path.join(ev_dir(ev), "status.json"), status)
     jsave(os.path.join(DATA, "cache", "ytmeta.json"), meta_cache)
     if not done_any:
         build_site(ev, tba)
@@ -660,6 +791,8 @@ def sync(ev, tba, max_new=None):
 
 
 _NEEDS_SETUP_LOGGED = set()
+_LIVE_ONLY_LOGGED = set()
+MATCH_S_WAIT = 163 + 180          # livestream only: a match TBA says started this long ago should have a clip
 
 
 # ------------------------------------------------------------------ several competitions
