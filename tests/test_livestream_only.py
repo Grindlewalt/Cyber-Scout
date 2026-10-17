@@ -224,3 +224,36 @@ def test_calibration_frames_keep_the_main_view():
     ts = list(range(len(fr)))
     kf, kt = SRC._main_view(np, cv2, fr, ts)
     assert kt == list(range(8))
+
+
+def test_tba_cut_before_calibration_and_without_model(env, monkeypatch):
+    """Not calibrated yet (no field box / camera): the match is still cut by TBA time (its video on the site,
+    kept past retention), and waits for calibration; trackable but no detector model: waits for the model."""
+    import worker as W
+    monkeypatch.setattr(W, "DATA", str(env["data"]))
+    monkeypatch.setattr(W, "build_site", lambda ev, tba: None)
+    (env["evd"] / "layout.json").unlink(); (env["evd"] / "camera.json").unlink()
+    T = T0 + 600.0
+    write_dir(env, "vidB", [], chunks=200, analysed_to=990.0)
+    cuts = []
+
+    def fake_cut(d, t0, t1, dst):
+        cuts.append((t0, t1)); open(dst, "wb").write(b"clip"); return 585.2
+    real = LI.tba_cut
+    monkeypatch.setattr(LI, "tba_cut", lambda ev, m, **kw: real(ev, m, now=T + 400, cut=fake_cut, measure=lambda c: None,
+                                                                 log=kw.get("log", print)))
+    calls = []
+    monkeypatch.setattr(W, "process_match", lambda ev, m, cfg, st, mc, live=None: calls.append(live) or False)
+    monkeypatch.setattr(W.time, "time", lambda: T + 400)
+    W.sync(EV, FakeTBA([tba(4, score=40, actual=T)]))
+    assert len(cuts) == 1 and calls == []
+    assert (env["live"] / EV / "vidB" / "matches" / "tba-qm4.json").exists()
+    st = json.loads((env["evd"] / "status.json").read_text())[f"{EV}_qm4"]
+    assert st["state"] == "waiting_live" and st["note"].startswith("stream not trackable")
+    # calibrated now, but no detector model: the clip waits for the model, no second cut, no tracking
+    (env["evd"] / "layout.json").write_text(json.dumps({"processing_source": "url-abc", "sources": {"url-abc": {
+        "W": 1920, "H": 1080, "role": "wide", "regions": [{"kind": "field", "box": [0, 150, 1920, 1080]}]}}}))
+    (env["evd"] / "camera.json").write_text(json.dumps({"source": "url-abc"}))
+    W.sync(EV, FakeTBA([tba(4, score=40, actual=T)]), track=False)
+    st = json.loads((env["evd"] / "status.json").read_text())[f"{EV}_qm4"]
+    assert len(cuts) == 1 and calls == [] and st["note"].startswith("clip ready")

@@ -764,6 +764,9 @@ def sync(ev, tba, max_new=None, track=True):
             if live is None:
                 dirty = note_wait(status, k, why) or dirty
                 continue
+            if not track:                              # no detector model: the clip waits for it
+                dirty = note_wait(status, k, "clip ready; robot tracking waits for the detector model") or dirty
+                continue
             if process_match(ev, m, cfg, status, meta_cache, live=live):
                 done_any = True; n += 1
                 build_site(ev, tba)

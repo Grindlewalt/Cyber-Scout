@@ -278,9 +278,8 @@ def tba_cut(ev, m, root=None, now=None, log=print, ocr=None, cut=None, measure=N
     plan, why = tba_cut_plan(ev, m, root, now)
     if plan is None: return None, why
     d, mid = plan["dir"], "tba-" + m["key"].split("_", 1)[1]
-    sid = (_jload(os.path.join(d, "meta.json"), {}) or {}).get("source")
-    tr = trackable(ev, sid)
-    if not tr["ok"]: return None, f"stream not trackable: {tr['reason']}"
+    # cut whether or not the stream is trackable yet: the clip is the match's video on the site, keeps the
+    # recording past retention, and is tracked once the stream is calibrated (LiveView.for_processing decides)
     clip = os.path.join(d, "clips", f"{mid}.mp4"); os.makedirs(os.path.dirname(clip), exist_ok=True)
     flags = ["cut_by_tba_time"]
     try:
