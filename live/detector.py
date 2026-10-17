@@ -39,6 +39,10 @@ class Detector:
             except Exception: pass
         dev = int(os.environ.get("GPU_DEVICE", "0"))
         want = [] if os.environ.get("FORCE_CPU") == "1" else [("CUDAExecutionProvider", {"device_id": dev})]
+        if os.environ.get("ORT_COREML") == "1":   # Mac server (deploy/macos): Apple GPU / Neural Engine via Core ML
+            want.append(("CoreMLExecutionProvider", {"ModelFormat": "MLProgram", "MLComputeUnits": "ALL",
+                                                     "ModelCacheDirectory": os.path.join(os.environ.get(
+                                                         "DATA", "/tmp"), "cache", "coreml")}))
         prov = [p for p in want if p[0] in ort.get_available_providers()] + ["CPUExecutionProvider"]
         self.sess = ort.InferenceSession(onnx_path, so, providers=prov)
         self.device = self.sess.get_providers()[0]
