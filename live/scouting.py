@@ -1721,6 +1721,7 @@ if __name__ == "__main__":
         for ts in times:
             build_asof(api_ev, a.ev, ts, out_dir=a.out, log=lambda *x: None)
         od = os.path.join(a.out or api_ev, "scout")
+        os.makedirs(od, exist_ok=True)                 # no snapshots yet (event without matches): empty index
         jsave(os.path.join(od, "index.json"), {"event": a.ev, "times": sorted(int(f.split(".")[0]) for f in os.listdir(od) if f.split(".")[0].isdigit())})
         print(f"scout snapshots: {len(times)}")
     else:
