@@ -554,12 +554,13 @@ def build(ctx, team=DEFAULT_TEAM, asof=None, sims_rank=2000, sims_match=6000, se
            "blend": blend_rating(M, team), "projection": proj.get(team)}
     # ---- event block
     allq = [m for m in E["tba"] if m["comp_level"] == "qm"]
-    times = [m["time"] for m in E["tba"]]
+    times = [m["time"] for m in E["tba"] if m.get("time") is not None]    # none yet / an offseason schedule without times
     info = E["info"]
     out = {
         "schema": SCHEMA, "generated": int(time.time()),
         "event": {"key": E["event"], "name": info.get("name"), "short_name": info.get("short_name"),
-                  "start": min(times), "end": max(times), "start_date": info.get("start_date"),
+                  "start": min(times) if times else None, "end": max(times) if times else None,
+                  "start_date": info.get("start_date"),
                   "end_date": info.get("end_date"), "timezone": info.get("timezone"),
                   "now": int(now), "asof": int(asof) if asof is not None else None,
                   "quals_played": len(qp), "quals_total": len(allq),

@@ -1491,7 +1491,7 @@ def build_truth(api_ev, ev, matches, specs, teams_meta, data_root=None, log=prin
     cov = COV.team_coverage([d for d in mds if "_qm" in str(d.get("key") or "")], played)
     dash = jload(os.path.join(api_ev, "dashboard.json")) or {}
     if asof is not None:                    # ratings as they stood: the latest dashboard snapshot <= asof
-        ts_ = sorted(int(f.split(".")[0]) for f in os.listdir(os.path.join(api_ev, "dash")) if f.split(".")[0].isdigit()) \
+        ts_ = sorted(int(f.split(".")[0]) for f in (os.listdir(os.path.join(api_ev, "dash")) if os.path.isdir(os.path.join(api_ev, "dash")) else []) if f.split(".")[0].isdigit()) \
             if os.path.isdir(os.path.join(api_ev, "dash")) else []
         ts_ = [t for t in ts_ if t <= asof]
         dash = (jload(os.path.join(api_ev, "dash", f"{ts_[-1]}.json")) or {}) if ts_ else {}
@@ -1716,7 +1716,7 @@ if __name__ == "__main__":
     a = ap.parse_args()
     api_ev = os.path.join(a.data, "site", "api", a.ev)
     if a.asof is not None or a.snapshots:
-        times = [a.asof] if a.asof is not None else sorted(int(f.split(".")[0]) for f in os.listdir(os.path.join(api_ev, "dash"))
+        times = [a.asof] if a.asof is not None else sorted(int(f.split(".")[0]) for f in (os.listdir(os.path.join(api_ev, "dash")) if os.path.isdir(os.path.join(api_ev, "dash")) else [])
                                                            if f.split(".")[0].isdigit())
         for ts in times:
             build_asof(api_ev, a.ev, ts, out_dir=a.out, log=lambda *x: None)
