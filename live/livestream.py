@@ -853,6 +853,7 @@ class Recorder:
                  keep_match_h=12.0, backfill_min=0.0, start_sq=None, end_sq=None, exit_on_new_video=False):
         self.url = url; self.out = out; self.log = log; self.seg_chunks = seg_chunks
         self.start_sq, self.end_sq = start_sq, end_sq
+        self._dvr_logged = False
         self.exit_on_new_video = exit_on_new_video      # managed (live/liveingest.py): one out dir per video id
         self.new_video = None
         self.max_s = max_hours * 3600; self.budget = budget_gb * 1e9; self.keep_h = keep_h
@@ -912,8 +913,14 @@ class Recorder:
                 pl, endlist = parse_playlist(_http(self.hls).decode())
                 fails = 0
                 lo = self.last_sq + 1 if self.last_sq is not None else (
-                    self.start_sq if self.start_sq is not None else pl[-1]["sq"] - int(self.backfill / 5))
+                    self.start_sq if self.start_sq is not None else pl[-1]["sq"] - int(self.backfill / (pl[-1]["dur"] or 5)))
                 todo = [c for c in pl if c["sq"] >= lo]
+                if pl and lo < pl[0]["sq"] and not can_synth(pl[0]):
+                    if not self._dvr_logged:
+                        self.log(f"recorder: chunks before sq {pl[0]['sq']} are not available from this stream (no "
+                                 f"older-than-DVR fetch, e.g. Twitch): recording from the playlist start")
+                        self._dvr_logged = True
+                    lo = pl[0]["sq"]
                 if pl and lo < pl[0]["sq"]:
                     # older than the playlist's DVR window: YouTube still serves those chunks by sq
                     # (same URL with /sq/N/ replaced); wall time extrapolated back from the head PDT
@@ -1054,6 +1061,12 @@ class Recorder:
             if analysed and ((not in_match and age_h > self.keep_h) or age_h > self.keep_match_h or total > self.budget):
                 sz = os.path.getsize(s); os.remove(s); total -= sz
                 self.log(f"retention: deleted {rel} ({'match' if in_match else 'no match'}, {age_h:.1f} h old)")
+
+
+def can_synth(ref):
+    """Can chunks older than the playlist be fetched by sequence number?  Only YouTube chunk URLs carry the
+    number (/sq/N/); Twitch's do not, and the same URL would be fetched again for every older chunk."""
+    return bool(re.search(r"/sq/\d+/", ref.get("url") or ""))
 
 
 def synth_chunk(ref, sq):
