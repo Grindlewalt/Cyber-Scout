@@ -13,7 +13,6 @@
                      dynamic: "switching broadcast program (cuts between cameras; may carry station-cam insets)",
                      "alliance-side": "fixed driver-station cameras" };
   const TARGETS = [["overhead", "Overhead camera"], ["station_red", "Red station cam"], ["station_blue", "Blue station cam"]];
-  const TABS = [["sources", "Videos"], ["layout", "Layout"], ["calib", "Calibration"]];
   const h = s => esc(s);
   const when = ts => ts ? new Date(ts * 1000).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : "–";
   // security audit: only http(s) URLs are links; file paths, javascript:, data: etc. are plain escaped text
@@ -124,13 +123,11 @@
   CS.route("sources", async (ev, tab, id) => {
     crumbs([[ev, `#/${ev}`], ["Video setup", `#/${ev}/sources`]]); $updated.textContent = "";
     if (CS.platform && !CS.can("admin")) { $app.innerHTML = `<div class="empty">Video setup is for admins.</div>`; return; }
-    tab = TABS.some(t => t[0] === tab) ? tab : "sources";
-    $app.innerHTML = `<style>${CSS}</style><h1>Video setup ${CS.help("Where the match video comes from, where things are in the frame, and where the cameras are. One-time per event; the pipeline reads it for every match.", "What video setup is for")}</h1>
-      <div class="tabs">${TABS.map(([k, t]) => `<a class="tab ${k === tab ? "on" : ""}" href="#/${ev}/sources/${k}">${t}</a>`).join("")}</div>
+    $app.innerHTML = `<style>${CSS}</style><h1>Video setup ${CS.help("The event's videos and streams: what each one is, what was found on it, and its field setup (a field box and a camera calibration, once per camera). The pipeline reads it for every match.", "What video setup is for")}</h1>
       <div id="vs"></div>`;
     const el = document.getElementById("vs");
     try {
-      await ({ sources: sourcesTab, layout: layoutTab, calib: calibTab })[tab](ev, el, id && decodeURIComponent(id));
+      await sourcesTab(ev, el, { tab, id: id && decodeURIComponent(id) });      // old tab links (layout / calib) open that video's Field setup
     } catch (e) {
       el.innerHTML = `<div class="empty">${e.status === 503 ? h(errMsg(e)) : e.status === 404 ? "No video-setup API on this server (static site)." : "Couldn't load: " + h(errMsg(e))}</div>`;
     }
@@ -192,54 +189,124 @@
   // ---------------------------------------------------------------- match video mode (sources.json video_mode)
   // auto = per-match uploads + the livestream clip when trackable; livestream = offseason, no uploads: TBA gives the match
   // list and every match is tracked from the recorded livestream (GET/PUT events/<ev>/video-mode, with a readiness checklist).
+  // The server suggests one (suggested / suggested_why): livestream only for an offseason event with no match videos on TBA.
   const VM_HELP = `<span class="hl"><b>Uploads + livestream</b> (normal events): each match is tracked from its per-match YouTube upload (a wide camera upload first). The livestream gives fast results and is tracked only when its camera is calibrated.</span>
-    <span class="hl"><b>Livestream only</b> (offseason events without uploads): TBA only gives the match list, lineups and results. Every match is tracked from the recorded livestream, which has to show a fixed, wide view of the field: add the stream, draw its field box and calibrate it once. No upload is ever looked up.</span>
+    <span class="hl"><b>Livestream only</b> (offseason events without uploads): TBA only gives the match list, lineups and results. Every match is tracked from the recorded livestream, which has to show a fixed, wide view of the field: add the stream, then its field box and calibration (Field setup on the stream's card). No upload is ever looked up.</span>
     <span class="hl">A match the stream analyser can't read off the broadcast overlay is cut from the recording by TBA's match start time instead.</span>`;
   const VM_ICON = { ok: ["check", "ok", "done"], warn: ["warn", "lim", "check this"], bad: ["ban", "bad", "missing"] };
-  function vmCard(ev, V) {
+  const VM_NAME = { auto: "Uploads + livestream", livestream: "Livestream only" };
+  function vmBar(V) {
     if (!V) return "";
-    const live = V.video_mode === "livestream", C = V.checks || [];
-    const nBad = C.filter(c => c.state === "bad").length, sid = V.stream_source;
-    const link = c => !c.tab || c.state === "ok" || c.tab === "sources" ? "" :
-      `<a class="vm-go" href="#/${ev}/sources/${c.tab}${c.tab === "layout" && sid ? "/" + encodeURIComponent(sid) : ""}">${c.tab === "layout" ? "Draw boxes" : "Calibrate"}</a>`;
-    const fix = c => c.key !== "source" || c.state === "ok" ? "" : c.state === "warn" && sid
-      ? `<button type="button" class="small" id="vmtrack">Use it as the tracked wide stream</button>`
-      : `<form class="vs-form vm-add" id="vmadd"><input name="u" required aria-label="Livestream URL" placeholder="Livestream URL: YouTube /live or watch link, Twitch channel…"><button>Add stream</button></form>`;
-    return `<section class="card vm-card ${live ? "vm-on" : ""}" aria-labelledby="vmh">
-      <div class="vm-head"><h2 id="vmh">Match video</h2>
-        <div class="vm-seg" role="group" aria-label="Match video mode">
-          <button type="button" class="chip ${!live ? "on" : ""}" data-vm="auto" aria-pressed="${!live}">Uploads + livestream</button>
-          <button type="button" class="chip ${live ? "on" : ""}" data-vm="livestream" aria-pressed="${live}">Livestream only <span class="muted">· TBA match list</span></button>
-        </div>${CS.help(VM_HELP, "About the match video mode")}<span id="vmst" class="muted small" role="status"></span></div>
-      ${live ? `<p class="vm-sub small">${nBad ? `<b>${nBad} step${nBad > 1 ? "s" : ""} left</b> before matches can be tracked from the stream.` : `<b>Ready.</b> Each match is tracked from its livestream clip as soon as it is cut.`}
-          <span class="muted">Uploads are not looked up for this event.</span></p>
-        <ol class="vm-chk">${C.map(c => { const [ic, cl, al] = VM_ICON[c.state] || VM_ICON.warn;
-          return `<li class="vm-${c.state}">${ico(ic, cl, al)}<div class="vm-t"><div><b>${h(c.label)}</b> <span class="muted small">${h(c.detail || "")}</span></div>${fix(c)}</div>${link(c)}</li>`; }).join("")}</ol>`
-        : `<p class="vm-sub muted small">Offseason event with only a livestream? Switch to <b>Livestream only</b>.</p>`}
-    </section>`;
-  }
-  function vmWire(ev, box, V, redraw) {
-    const say = t => { const s = box.querySelector("#vmst"); if (s) s.textContent = t; };
-    box.querySelectorAll("[data-vm]").forEach(b => b.onclick = async () => {
-      if (b.dataset.vm === V.video_mode) return;
-      say("saving…");
-      try { await A("PUT", `events/${ev}/video-mode`, { video_mode: b.dataset.vm }); route(false); } catch (x) { say(errMsg(x)); }
-    });
-    const tb = box.querySelector("#vmtrack");
-    if (tb) tb.onclick = async () => {
-      try { await A("PATCH", `events/${ev}/sources/${encodeURIComponent(V.stream_source)}`, { role: "wide", primary: true }); redraw(); } catch (x) { say(errMsg(x)); }
-    };
-    const f = box.querySelector("#vmadd");
-    if (f) f.onsubmit = async e => {
-      e.preventDefault(); say("adding…");
-      try { await A("POST", `events/${ev}/sources`, { url: f.u.value.trim(), role: "wide", label: "Event livestream", primary: true }); route(false); }
-      catch (x) { say(errMsg(x)); }
-    };
+    const sug = !V.chosen && V.suggested ? V.suggested : null;
+    const b = m => `<button type="button" class="chip ${V.video_mode === m ? "on" : ""}" data-vm="${m}" aria-pressed="${V.video_mode === m}">${VM_NAME[m]}${sug === m ? ` <span class="vw-sug">suggested</span>` : ""}</button>`;
+    return `<div class="vw-mode"><span class="vw-ml">Match video</span><div class="vm-seg" role="group" aria-label="Match video mode">${b("livestream")}${b("auto")}</div>
+      ${CS.help(VM_HELP, "About the match video mode")}<span id="vmst" class="muted small" role="status"></span>
+      ${sug ? `<span class="vw-sugw small">${sug !== V.video_mode ? `Suggested: <b>${VM_NAME[sug]}</b> · ${h(V.suggested_why || "")}` : `${h(V.suggested_why || "")}`}${V.chosen ? "" : " · <span class=\"muted\">not chosen yet</span>"}</span>` : ""}</div>`;
   }
 
-  async function sourcesTab(ev, el) {
-    const [P, d, V0] = await Promise.all([A("GET", `events/${ev}/video-plan`).catch(e => ({ error: e })), A("GET", `events/${ev}/sources`),
-                                          A("GET", `events/${ev}/video-mode`).catch(() => null)]);
+  // ---------------------------------------------------------------- the event's videos, in plain words
+  // One card per source: what it is (main / broadcast / station cam), its link, the recorder state, the matches found on it,
+  // Replace / Remove, and a collapsed "Field setup" holding the layout editor + calibration wizard for that video.
+  const WHAT = [["main", "Main / wide view"], ["broadcast", "Broadcast (cuts between cameras)"], ["red", "Red station cam"], ["blue", "Blue station cam"]];
+  const WHAT_SHORT = { main: "Main / wide", broadcast: "Broadcast", red: "Red station", blue: "Blue station", stations: "Station cams" };
+  const WHAT_TIP = { main: "the fixed, wide view of the whole field: what robots are tracked from",
+                     broadcast: "the program feed that cuts between cameras: results and clips, tracking only while the wide camera is on air",
+                     red: "fixed camera on the red driver stations", blue: "fixed camera on the blue driver stations" };
+  const whatOf = s => s.role === "alliance-side" ? (s.station === "red" || s.station === "blue" ? s.station : "stations") : s.role === "wide" ? "main" : "broadcast";
+  const whatBody = w => w === "main" ? { role: "wide", primary: true, station: "" } : w === "red" || w === "blue" ? { role: "alliance-side", station: w, primary: false }
+    : { role: "dynamic", primary: false, station: "" };
+  const whatOpts = cur => WHAT.concat(cur === "stations" ? [["stations", "Station cams (both)"]] : []).map(([k, t]) => `<option value="${k}" ${k === cur ? "selected" : ""}>${t}</option>`).join("");
+  const KIND_W = { livestream: "Live stream", video: "Recording", per_match: "Per-match uploads", file: "File" };
+  const ytVideo = u => /(?:youtu\.be\/|[?&]v=|\/live\/|\/shorts\/)[A-Za-z0-9_-]{11}/.test(u || "") || /^[A-Za-z0-9_-]{11}$/.test((u || "").trim());
+  const fitQ = c => c ? [c.tag_rms_px != null ? `tags ${c.tag_rms_px} px` : "", c.point_rms_px != null ? `points ${c.point_rms_px} px` : "",
+                         c.line_med_px != null ? `centre line ${c.line_med_px} px` : ""].filter(Boolean).join(", ") : "";
+  /** recorder status -> {c: on | warn | bad | "", t: plain state, why} */
+  function recPlain(st) {
+    if (!st) return { c: "", t: "No recorder status", why: "the recorder hasn't reported for this event yet" };
+    if (st.stale && LS_ACTIVE.includes(st.state)) return { c: "bad", t: "Recorder not reporting", why: `no update for ${dur(st.age_s)}: is the recorder service running?` };
+    const nx = st.next_check_in_s ? ` · checks again in ${dur(st.next_check_in_s)}` : "";
+    switch (st.state) {
+      case "recording": return { c: "on", t: "Recording", why: st.behind_live_s != null ? `${dur(st.behind_live_s)} behind live` : "" };
+      case "waiting": case "starting": return { c: "warn", t: "Waiting for the stream", why: (st.message || "not live yet") + nx };
+      case "stream_over": return { c: "warn", t: "Not live", why: (st.message || "the stream ended") + nx };
+      case "error": return { c: "bad", t: "Problem", why: st.message || "the recorder failed" };
+      case "not_running": return { c: "bad", t: "Recorder not running", why: st.message || "" };
+      case "no_source": return { c: "", t: "Nothing to record", why: "add a live stream link" };
+      default: return { c: "", t: LS_LABEL[st.state] || st.state, why: st.message || "" };
+    }
+  }
+  /** the matches the recorder found on a stream: processed (site match done) / cut (clip) / found */
+  function foundHtml(st, site) {
+    const M = st.matches || {}, R = (M.recent || []).filter(r => r.key || r.name), n = M.n_matches != null ? M.n_matches : R.length;
+    if (!R.length) return `<div class="vw-found muted small">No match found on this stream yet${st.state === "recording" ? ": each match is cut about 20 s after its final buzzer" : ""}.</div>`;
+    const stOf = r => site[r.key] === "done" ? ["done", "processed"] : r.clip ? ["cut", "cut, waiting to be processed"] : r.usable === false ? ["bad", "found, not usable"] : ["found", "found, no clip yet"];
+    const chips = R.map(r => { const [c, t] = stOf(r);
+      return `<span class="vw-m ${c}" title="${h(t)}">${h(r.key ? shortKey(r.key) : r.name)}${c === "done" ? CS.icon("check", "ico") : ""}<span class="vh"> ${h(t)}</span></span>`; }).join("");
+    const nd = R.filter(r => site[r.key] === "done").length, nc = R.filter(r => r.clip && site[r.key] !== "done").length;
+    return `<div class="vw-found"><div class="small"><b>${n} match${n === 1 ? "" : "es"} found on this stream</b>${nd ? ` · ${nd} processed` : ""}${nc ? ` · ${nc} cut, waiting to be processed` : ""}${M.n > n ? ` · ${M.n - n} skipped` : ""}
+      ${R.length < n ? ` <span class="muted">(latest ${R.length})</span>` : ""}</div><div class="vw-ms" aria-label="Matches found">${chips}</div>
+      <div class="vw-leg muted small"><span class="vw-m done">${CS.icon("check", "ico")}</span> processed · <span class="vw-m cut"></span> cut, waiting · <span class="vw-m found"></span> found, no clip</div></div>`;
+  }
+  /** overlay lines of a camera fit (job result "overlay") on a frame canvas */
+  function paintOverlay(ctx, overlay, s, show) {
+    if (!overlay) return;
+    const lw = 1.6 / s;
+    for (const L of overlay) {
+      const isG = L.kind === "grid", isT = L.kind === "tag";
+      if ((isG && !show.grid) || (isT && !show.tags) || (!isG && !isT && !show.lines)) continue;
+      ctx.strokeStyle = isG ? "rgba(255,255,255,.35)" : isT ? "#51cf66" : L.kind === "field" ? "#ffd43b" : L.kind === "hub_red" ? "#ff5a5f" : L.kind === "hub_blue" ? "#3e8bff" : "#fff";
+      ctx.lineWidth = isG ? lw * 0.7 : lw * 1.3; ctx.beginPath(); let pen = false;
+      for (const p of L.pts) { if (!p) { pen = false; continue; } if (!pen) { ctx.moveTo(p[0], p[1]); pen = true; } else ctx.lineTo(p[0], p[1]); }
+      ctx.stroke();
+    }
+  }
+  /** Auto-calibrate the overhead camera of a video: detect tags -> fit (auto lines) -> the admin checks the overlay -> accept,
+   * then the layout's field box from the fitted camera's field_roi (only when the video has none). done(saved, message). */
+  async function autoCal(ev, box, sid, done) {
+    const fail = t => { box.innerHTML = `<div class="vw-ac"><p class="small">${CS.icon("warn", "ico")} <b>Couldn't calibrate automatically.</b> ${h(t)}</p>
+        <div class="vs-row"><button type="button" data-sub="calib">Calibrate by hand</button><button type="button" id="acno">Close</button></div></div>`;
+      box.querySelector("#acno").onclick = () => done(false); };
+    box.innerHTML = `<div class="vw-ac"><p class="small" role="status"><b>Auto-calibrate</b> <span id="acst">reading frames and AprilTags from the video (about a minute)…</span></p></div>`;
+    const say = t => { const s = box.querySelector("#acst"); if (s) s.textContent = t; };
+    try {
+      const r = await job(ev, A("POST", `events/${ev}/calibration/overhead/detect`, { source: sid }), t => t && say("reading frames and AprilTags: " + t));
+      const n = Object.keys(r.tags || {}).length;
+      if (n < 2) return fail(`Found ${n} AprilTag${n === 1 ? "" : "s"} in view: an automatic fit needs at least 2.`);
+      say(`${n} AprilTags found; fitting the camera…`);
+      const f = await job(ev, A("POST", `events/${ev}/calibration/overhead/fit`, { points: {}, line_clicks: {}, drop_tags: [], auto_lines: true, more_tags: true }), t => t && say("fitting: " + t));
+      if (f.error) return fail(f.error);
+      const rp = f.report || {};
+      box.innerHTML = `<div class="vw-ac"><p class="small"><b>Check the fit.</b> Does the yellow outline sit on the carpet edges, the grid on the field and the hub boxes on the hubs? <span class="muted">${h(fitQ(rp))}${rp.n_tags ? ` · ${rp.n_tags} tags` : ""}</span></p>
+        ${(rp.warnings || []).map(w => `<div class="vs-warn small">${CS.icon("warn", "ico")} ${h(w)}</div>`).join("")}
+        <div class="vs-wrap" id="accv"></div>
+        <div class="vs-row vw-acb"><button type="button" class="primary" id="acok">Looks right: save</button><button type="button" data-sub="calib">Fix it by hand</button><button type="button" id="acno">Cancel</button><span id="acst" class="muted small" role="status"></span></div></div>`;
+      const FV = FrameView(box.querySelector("#accv"), { bin: box._bin });
+      FV.draw = ctx => paintOverlay(ctx, f.overlay, FV.s, { grid: true, lines: true, tags: true });
+      FV.empty = "frame not available";
+      try { FV.setImage(await loadImg(imgUrl(`events/${ev}/calibration/overhead/frame.jpg`)), f.W, f.H); } catch (e) { FV.W = f.W || 1920; FV.H = f.H || 1080; FV.size(); }
+      box.querySelector("#acno").onclick = () => done(false);
+      box.querySelector("#acok").onclick = async e => {
+        e.target.disabled = true; say("saving…");
+        try {
+          await A("POST", `events/${ev}/calibration/overhead/accept`);
+          let note = "";
+          if (f.field_roi) {
+            const L = await A("GET", `events/${ev}/layout`), cur = ((L.layout || {}).sources || {})[sid];
+            if (!cur || !(cur.regions || []).some(r => r.kind === "field" || r.kind === "overhead")) {
+              await A("PUT", `events/${ev}/layout/${encodeURIComponent(sid)}`, { W: cur ? cur.W : f.W, H: cur ? cur.H : f.H,
+                regions: [...((cur && cur.regions) || []), { kind: "field", label: "Field area", box: f.field_roi.map(Math.round) }] });
+              note = " The field box was set from it.";
+            } else note = " Your field box is kept.";
+          }
+          done(true, "Calibration saved." + note);
+        } catch (x) { say(errMsg(x)); e.target.disabled = false; }
+      };
+    } catch (x) { fail(errMsg(x)); }
+  }
+
+  async function sourcesTab(ev, el, focus) {
+    const [P, d, V0, cal, evj, LS0] = await Promise.all([A("GET", `events/${ev}/video-plan`).catch(e => ({ error: e })), A("GET", `events/${ev}/sources`),
+      A("GET", `events/${ev}/video-mode`).catch(() => null), A("GET", `events/${ev}/calibration`).catch(() => null), api(`${ev}/event.json`).catch(() => null), liveRec.load(ev).catch(() => null)]);
     let V = V0;
     const liveOnly = !!V && V.video_mode === "livestream";
     const S = d.sources || [];
@@ -250,18 +317,22 @@
     const help = `<span class="hl">Every upload linked to a match is checked once: a few small frames, no download. It is classified as <b>wide</b> (fixed overhead camera), <b>broadcast</b> (cuts between cameras) or <b>station cams</b> (overhead view with the two driver-station cameras inset).</span>
       <span class="hl">Per match the tracker uses the best wide video, else a station-cam or broadcast video (<b>limited tracking</b>: insets hide the near corners, or cuts hide the field). Station cams feed the driver-station pass. Identical uploads count once; a title naming another match is never used.</span>
       <span class="hl">Open a match to see its videos and, rarely, pin or exclude one. The worker rebuilds this every poll; <b>Check videos</b> checks everything now.</span>`;
-    el.innerHTML = `<div id="vmode">${vmCard(ev, V)}</div>
-      <section class="card vp-sum" aria-label="Video coverage" ${liveOnly ? "hidden" : ""}><div id="vpsum"></div>
+    el.innerHTML = `<div id="vmode">${vmBar(V)}</div>
+      <div id="vwflash" role="status"></div>
+      <section class="vw-list" id="vwlist" aria-label="Videos and streams"></section>
+      <section class="card vp-sum" aria-labelledby="vpsumh" ${liveOnly ? "hidden" : ""}><h2 class="vw-h2" id="vpsumh">Match uploads</h2><div id="vpsum"></div>
         <div class="vs-row vp-acts0"><button id="vpcheck" type="button">Check videos</button><button id="disc" type="button">Discover from TBA</button>
-          ${CS.help(help, "How match videos are chosen")}<span id="dst" class="muted small" role="status"></span></div></section>
-      <div id="lsrec"></div>
+          ${CS.help(help, "How match videos are chosen")}<span id="dst" class="muted small" role="status"></span></div>
+        <details class="vw-fs" data-sid="__uploads"><summary><span>Field setup for uploads</span> <span class="muted small">field boxes per video type · overhead calibration</span></summary><div class="vw-fsb">
+          <div class="vw-sub" role="group" aria-label="Field setup step"><button type="button" class="chip" data-sub="layout">Field boxes</button><button type="button" class="chip" data-sub="calib">Calibration</button></div>
+          <div class="vw-mount"></div></div></details></section>
       <section class="card vp-cov" aria-labelledby="vpcovh" ${liveOnly ? "hidden" : ""}><div class="vp-covh"><h2 id="vpcovh">Matches</h2><div class="vp-filt" role="group" aria-label="Show matches" id="vpfilt"></div></div>
         <div id="vpgrid"></div>
         <p class="vp-legend muted small">${ico("starOn", "on")} chosen · ${ico("check", "ok")} available · ${ico("warn", "lim")} limited tracking · <span class="vp-n">2<i>dup 1</i></span> uploads, duplicates · <span class="vp-pend">…</span> being checked</p></section>
       <details class="card vp-adv" id="vpadv"><summary>Advanced: sources <span class="muted small">${S.length} · title families, webcasts, pasted URLs</span></summary><div id="vpadvb"></div></details>
       <dialog class="vp-sheet" id="vpsheet" aria-labelledby="vpsh"></dialog>`;
     // ---- summary line (+ livestream state)
-    let lsSt = null;
+    let lsSt = LS0;
     const drawSum = () => {
       const c = planCounts(P), box = document.getElementById("vpsum"); if (!box) return;
       if (P.error) { box.innerHTML = `<div class="muted">${P.error.status === 503 ? h(errMsg(P.error)) : "Couldn't load the video plan: " + h(errMsg(P.error))}</div>`; return; }
@@ -297,17 +368,187 @@
     drawGrid();
     document.getElementById("vpfilt").onclick = e => { const b = e.target.closest("[data-f]"); if (!b) return; filt = b.dataset.f; try { sessionStorage.setItem("cs:vpfilt", filt); } catch (x) { } drawGrid(); };
     document.getElementById("vpgrid").onclick = e => { const tr = e.target.closest("tr[data-k]"); if (tr) openSheet(tr.dataset.k, e.target.closest("button")); };
-    // ---- livestream recorder (card + summary), refreshed while this tab is open
-    const lsEl = document.getElementById("lsrec"), vmEl = document.getElementById("vmode");
-    const vmDraw = async (fetch) => {
-      if (fetch) { try { V = await A("GET", `events/${ev}/video-mode`); } catch (x) { return; } }
-      if (!V || !vmEl.isConnected) return;
-      if (fetch && vmEl.contains(document.activeElement) && document.activeElement.tagName === "INPUT") return;   // don't eat a URL being typed
-      vmEl.innerHTML = vmCard(ev, V); vmWire(ev, vmEl, V, () => vmDraw(true));
+    // ---- the videos: one card each (what it is, link, recorder, matches found, Replace / Remove, Field setup)
+    const listEl = document.getElementById("vwlist"), vmEl = document.getElementById("vmode");
+    const site = {}; ((evj && evj.matches) || []).forEach(m => { if (m && m.key) site[m.key] = m.state; });
+    const calT = k => ((cal && cal.targets) || []).find(t => t.target === k) || {};
+    const chk = () => Object.fromEntries(((V && V.checks) || []).map(c => [c.key, c]));
+    const ORD = ["main", "red", "blue", "stations", "broadcast"], rank = s => [s.kind === "per_match", s.origin === "tba", ORD.indexOf(whatOf(s))];
+    const shown = S.filter(s => !s.dismissed).sort((a, b) => { const x = rank(a), y = rank(b); return x[0] - y[0] || x[1] - y[1] || x[2] - y[2]; }), gone = S.filter(s => s.dismissed);
+    const mainSrc = shown.find(s => s.id === (V && V.stream_source)) || shown.find(s => s.kind !== "per_match" && whatOf(s) === "main");
+    const recFor = s => !!(lsSt && lsSt.source && (lsSt.source.id === s.id || (s.url && lsSt.source.url === s.url)));
+    function fsOf(s) {                      // field setup of a video: field (or station) box + its camera calibration
+      const w = whatOf(s), stream = V && s.id === V.stream_source, c = chk();
+      const target = w === "main" ? "overhead" : w === "red" ? "station_red" : w === "blue" ? "station_blue" : null;
+      const box = stream && c.layout ? c.layout.state === "ok" : !!s.has_layout;
+      const calOk = !target ? null : stream && target === "overhead" && c.calibration ? c.calibration.state === "ok" : !!calT(target).saved;
+      return { w, target, box, calOk, need: [!box && (target && target !== "overhead" ? "station box" : "field box"), calOk === false && "calibration"].filter(Boolean) };
+    }
+    const fsNote = fs => fs.w === "main" ? `So robots can be tracked from this video: a field box and a camera calibration, once per camera. <b>Auto-calibrate</b> finds the AprilTags itself and sets the field box too; you check the result before it's saved.`
+      : fs.target ? `Draw the ${fs.w} station box on a frame of this video, then calibrate that camera.`
+      : "Optional: boxes for the clock, score bar and picture-in-picture insets of this feed.";
+    const liveChoice = () => `<span class="vw-live" hidden role="radiogroup" aria-label="Live stream or recording"><label class="small"><input type="radio" name="live" value="1" checked> Live / upcoming stream</label>
+      <label class="small"><input type="radio" name="live" value="0"> Recording (VOD)</label></span>`;
+    function dynHtml(s) {                  // the parts the 15 s refresh redraws: recorder state + matches found
+      const live = s.kind === "livestream", mine = live && recFor(s);
+      let out = "";
+      if (live) {
+        const r = mine || !(lsSt && lsSt.source) ? recPlain(lsSt) : { c: "", t: "Not being recorded", why: `the recorder records ${lsSt.source.label || lsSt.source.url || "another stream"} first` };
+        out += `<div class="vw-rec"><span class="ls-dot ${r.c}" aria-hidden="true"></span><span><b>${h(r.t)}</b>${r.why ? ` <span class="muted">· ${h(r.why)}</span>` : ""}</span></div>`;
+        const tr = mine && lsSt.tracking;
+        if (tr) out += `<div class="vw-tr small">${tr.ok ? `${CS.icon("check", "ico")} Robots are tracked from this stream` : `Robots aren't tracked from this stream yet <span class="muted">· ${h(tr.note || "")}</span>`}</div>`;
+        if (mine) out += foundHtml(lsSt, site) + `<details class="vw-recd"><summary class="small">Recorder details</summary>${liveRec.card(lsSt, ev)}</details>`;
+      } else if (s.kind === "per_match") {
+        out += `<div class="vw-found small">${s.n_videos ? `<b>${s.n_videos} match upload${s.n_videos === 1 ? "" : "s"} linked</b> <span class="muted">· the per-match plan below picks one per match</span>` : `<span class="muted">No match uploads found yet</span>`}</div>`;
+      } else {
+        out += `<div class="vw-found muted small">A recording: used for frame grabs, the field box and calibration. Matches are cut from live streams and found in per-match uploads.</div>`;
+      }
+      return out;
+    }
+    function card(s) {
+      const fs = fsOf(s), w = fs.w, tba = s.origin === "tba", per = s.kind === "per_match", nm = h(s.label || s.id);
+      const pill = !fs.target ? `<span class="pill">optional</span>` : fs.need.length ? `<span class="pill vw-need">needs ${h(fs.need.join(" + "))}</span>`
+        : `<span class="pill vw-ok">${CS.icon("check", "ico")} done</span>`;
+      return `<article class="card vw-card ${w}${s.enabled === false ? " off" : ""}" data-id="${h(s.id)}">
+        <div class="vw-hd"><span class="vw-ic ${w}" aria-hidden="true">${CS.icon("video")}</span>
+          <div class="vw-ti"><h2>${nm}</h2>
+            <div class="vw-meta"><span class="pill vw-what ${w}" title="${h(WHAT_TIP[w] || "")}">${h(WHAT_SHORT[w] || w)}</span><span class="pill">${h(KIND_W[s.kind] || s.kind)}</span>
+              ${tba ? `<span class="pill vw-tba" title="Listed on The Blue Alliance for this event: Cyber-Scout added it on its own. Remove it if it's wrong; it won't come back.">from TBA</span>` : ""}
+              ${s.enabled === false ? `<span class="pill">off</span>` : ""}</div>
+            <div class="vw-url small">${s.url ? urlHtml(s.url) : s.title_pattern ? `title ~ <code>${h(s.title_pattern)}</code>${s.example_title ? ` · e.g. “${h(s.example_title)}”` : ""}` : ""}</div></div>
+          <div class="vw-acts">${tba && per ? "" : `<button type="button" class="small" data-rep aria-label="Replace the link of ${nm}">Replace</button>`}<button type="button" class="small" data-rm aria-label="Remove ${nm}">Remove</button></div></div>
+        <form class="vw-repf vs-form" hidden><input name="u" required aria-label="New link for ${nm}" placeholder="New YouTube / Twitch link…" autocomplete="off" autocapitalize="none" spellcheck="false">
+          ${liveChoice()}<button class="primary">Save link</button><button type="button" data-cancel>Cancel</button>
+          <span class="muted small vw-repn">${tba ? "Adds your link and removes the TBA one." : "Keeps this video's field box and calibration: redo them if the camera moved."}</span></form>
+        <div class="vw-body"><label class="vw-wl small">What it is <select data-what aria-label="What ${nm} is">${whatOpts(w)}</select></label>
+          <div class="vw-dyn">${dynHtml(s)}</div></div>
+        ${per ? "" : `<details class="vw-fs" data-sid="${h(s.id)}"><summary><span>Field setup</span> ${pill}</summary><div class="vw-fsb">
+          <div class="vw-sub" role="group" aria-label="Field setup step">${fs.target === "overhead" ? `<button type="button" class="chip vw-auto" data-sub="auto">Auto-calibrate</button>` : ""}
+            <button type="button" class="chip" data-sub="layout">${fs.target && fs.target !== "overhead" ? "Station box" : "Field box"}${fs.box ? " ✓" : ""}</button>${fs.target ? `<button type="button" class="chip" data-sub="calib">Calibration${fs.calOk ? " ✓" : ""}</button>` : ""}</div>
+          <p class="vw-fsn muted small">${fsNote(fs)}</p><div class="vw-mount"></div></div></details>`}
+      </article>`;
+    }
+    const used = new Set(shown.filter(s => s.kind !== "per_match").map(whatOf));
+    const nextWhat = ["main", "red", "blue"].find(w => !used.has(w)) || "broadcast";
+    listEl.innerHTML = shown.map(card).join("") + `
+      <form class="card vw-add vs-form" id="vwadd"><h2 class="vw-h2">${shown.length ? "Add another video or stream" : "Add the event's video or stream"}</h2>
+        <input name="u" required aria-label="Video or stream link" placeholder="Paste a YouTube or Twitch link: live stream or recording" autocomplete="off" autocapitalize="none" spellcheck="false" inputmode="url">
+        <label class="small">What it is <select name="what">${whatOpts(nextWhat)}</select></label>${liveChoice()}
+        <button class="primary">Add</button><span id="vwst" class="muted small" role="status"></span>
+        <p class="muted small vw-tip">A channel's live link (youtube.com/@channel/live or twitch.tv/channel) follows each day's new stream; a watch link is one stream or one recording.</p></form>
+      ${gone.length ? `<p class="vw-gone small muted">Removed from TBA's list (kept off): ${gone.map(s => `<span>${h(s.label || s.id)} <button type="button" class="small" data-restore="${h(s.id)}">Restore</button></span>`).join(" · ")}</p>` : ""}`;
+    try { const f = sessionStorage.getItem("cs:vwflash"); if (f) { sessionStorage.removeItem("cs:vwflash"); document.getElementById("vwflash").innerHTML = `<div class="vw-flash">${CS.icon("check", "ico")} ${h(f)}</div>`; } } catch (e) { }
+    const flash = t => { try { sessionStorage.setItem("cs:vwflash", t); } catch (e) { } };
+    const say = t => { const s = document.getElementById("vwst"); if (s) s.textContent = t; };
+    const live = f => { const r = f.querySelector("input[name=live]:checked"); return ytVideo(f.u.value) && r ? r.value === "1" : null; };
+    listEl.querySelectorAll("form").forEach(f => { const lv = f.querySelector(".vw-live"); if (lv) f.u.addEventListener("input", () => { lv.hidden = !ytVideo(f.u.value); }); });
+    const addBody = (url, w, lv) => { const b = whatBody(w); return { url, role: b.role, primary: !!b.primary, station: b.station || null, live: lv }; };
+    async function afterMain(w) {          // the first main video: apply the suggested match video mode (visible + changeable at the top)
+      if (w !== "main" || !V || V.chosen || !V.suggested || V.suggested === V.video_mode) return "";
+      try { await A("PUT", `events/${ev}/video-mode`, { video_mode: V.suggested }); return ` Match video set to ${VM_NAME[V.suggested]} (suggested: ${V.suggested_why}).`; } catch (x) { return ""; }
+    }
+    document.getElementById("vwadd").onsubmit = async e => {
+      e.preventDefault(); const f = e.target, w = f.what.value; say("adding…");
+      try {
+        const s = await A("POST", `events/${ev}/sources`, addBody(f.u.value.trim(), w, live(f)));
+        if (s.job) { say("listing the playlist…"); await job(ev, Promise.resolve(s.job), say); }
+        flash(`Added ${s.label || s.url}.` + await afterMain(w) + (w === "main" ? " Next: Field setup on its card." : "")); route(false);
+      } catch (x) { say(errMsg(x)); }
     };
-    vmDraw(false);
-    const lsDraw = async () => { const st = await liveRec.load(ev); lsSt = st; if (lsEl.isConnected) { lsEl.innerHTML = liveRec.card(st, ev); drawSum(); } };
-    lsDraw(); const lsIv = setInterval(() => { lsDraw(); if (liveOnly) vmDraw(true); }, 15000); cleanup.push(() => clearInterval(lsIv));
+    listEl.querySelectorAll("[data-restore]").forEach(b => b.onclick = async () => {
+      try { await A("PATCH", `events/${ev}/sources/${encodeURIComponent(b.dataset.restore)}`, { dismissed: false, enabled: true }); route(false); } catch (x) { say(errMsg(x)); }
+    });
+    listEl.querySelectorAll(".vw-card").forEach(c => {
+      const s = S.find(x => x.id === c.dataset.id), sid = encodeURIComponent(s.id), rf = c.querySelector(".vw-repf");
+      const csay = t => { let m = c.querySelector(".vw-err"); if (!m) { m = document.createElement("div"); m.className = "vw-err small"; m.setAttribute("role", "status"); c.querySelector(".vw-body").prepend(m); } m.textContent = t; };
+      c.querySelector("[data-what]").onchange = async e => {
+        try { await A("PATCH", `events/${ev}/sources/${sid}`, whatBody(e.target.value)); route(false); } catch (x) { csay(errMsg(x)); }
+      };
+      c.querySelector("[data-rm]").onclick = async () => {
+        if (s.origin === "admin" && !confirm(`Remove ${s.label || s.url}? (its field box and calibration files are kept)`)) return;
+        try { await A("DELETE", `events/${ev}/sources/${sid}`); flash(s.origin === "admin" ? `Removed ${s.label || s.id}.` : `Removed ${s.label || s.id}: TBA discovery keeps it off (Restore below).`); route(false); }
+        catch (x) { csay(errMsg(x)); }
+      };
+      const rb = c.querySelector("[data-rep]");
+      if (rb) rb.onclick = () => { rf.hidden = !rf.hidden; if (!rf.hidden) rf.u.focus(); };
+      rf.querySelector("[data-cancel]").onclick = () => { rf.hidden = true; };
+      rf.onsubmit = async e => {
+        e.preventDefault(); csay("saving…");
+        try {
+          if (s.origin === "admin") await A("PATCH", `events/${ev}/sources/${sid}`, { url: rf.u.value.trim(), live: live(rf) });
+          else { await A("POST", `events/${ev}/sources`, addBody(rf.u.value.trim(), whatOf(s) === "stations" ? "red" : whatOf(s), live(rf))); await A("DELETE", `events/${ev}/sources/${sid}`); }
+          flash("Link replaced."); route(false);
+        } catch (x) { csay(errMsg(x)); }
+      };
+    });
+    // ---- match video mode (top)
+    const vmWire = () => vmEl.querySelectorAll("[data-vm]").forEach(b => b.onclick = async () => {
+      if (b.dataset.vm === V.video_mode && V.chosen) return;
+      const s = vmEl.querySelector("#vmst"); if (s) s.textContent = "saving…";
+      try { await A("PUT", `events/${ev}/video-mode`, { video_mode: b.dataset.vm }); route(false); } catch (x) { if (s) s.textContent = errMsg(x); }
+    });
+    vmWire();
+    // ---- Field setup dropdowns: one editor mounted at a time (layoutTab / calibTab / autoCal into the open <details>);
+    // each mount gets its own cleanup bin, emptied when it closes or the route changes
+    let cur = null;
+    const unmount = () => { if (!cur) return; cur.bin.dead = true; cur.bin.fns.forEach(f => { try { f(); } catch (e) { } }); cur.box.innerHTML = ""; cur = null; };
+    cleanup.push(unmount);
+    const dets = [...el.querySelectorAll("details.vw-fs")];
+    async function mount(det, sub, arg) {
+      const sid = det.dataset.sid, box = det.querySelector(".vw-mount"), s = S.find(x => x.id === sid);
+      dets.forEach(o => { if (o !== det && o.open) o.open = false; });
+      unmount();
+      det.querySelectorAll("[data-sub]").forEach(b => { b.classList.toggle("on", b.dataset.sub === sub); b.setAttribute("aria-pressed", String(b.dataset.sub === sub)); });
+      if (!sub) return;
+      const target = arg && sub === "calib" ? arg : sid === "__uploads" ? "overhead" : fsOf(s).target || "overhead";
+      const hash = sub === "calib" ? `#/${ev}/sources/calib/${target}` : sub === "layout" ? `#/${ev}/sources/layout${sid === "__uploads" ? (arg ? "/" + encodeURIComponent(arg) : "") : "/" + encodeURIComponent(sid)}` : null;
+      if (hash) try { history.replaceState(null, "", hash); } catch (e) { }
+      const bin = box._bin = { fns: [], dead: false, push(f) { if (this.dead) f(); else this.fns.push(f); } };
+      cur = { box, bin, det };
+      box.innerHTML = `<div class="loading small">Loading…</div>`;
+      try {
+        if (sub === "auto") await autoCal(ev, box, sid, (saved, msg) => {
+          if (saved) { flash(msg); try { history.replaceState(null, "", `#/${ev}/sources/calib/overhead`); } catch (e) { } route(false); } else mount(det, "calib");
+        });
+        else if (sub === "calib") await calibTab(ev, box, target);
+        else await layoutTab(ev, box, sid === "__uploads" ? arg : sid);
+      } catch (e) { if (!bin.dead) box.innerHTML = `<div class="empty small">Couldn't load: ${h(errMsg(e))}</div>`; }
+    }
+    dets.forEach(det => {
+      det.addEventListener("click", e => { const b = e.target.closest("[data-sub]"); if (b && det.contains(b)) { e.preventDefault(); mount(det, b.dataset.sub); } });
+      det.addEventListener("toggle", () => {
+        const box = det.querySelector(".vw-mount");
+        if (det.open) { if (cur && cur.box === box) return;
+          const s = S.find(x => x.id === det.dataset.sid), fs = s ? fsOf(s) : null;
+          mount(det, !fs ? null : fs.w === "main" && !fs.box && !fs.calOk ? null : !fs.box ? "layout" : fs.calOk === false ? "calib" : "layout"); }
+        else if (cur && cur.box === box) { unmount(); try { history.replaceState(null, "", `#/${ev}/sources`); } catch (e) { } }
+      });
+    });
+    // the old tab routes: #/<ev>/sources/layout[/<sid>] and /calib[/<target>] open that video's Field setup
+    if (focus && (focus.tab === "layout" || focus.tab === "calib")) {
+      const byId = sid => dets.find(x => x.dataset.sid === sid), up = byId("__uploads"), mainDet = mainSrc && byId(mainSrc.id);
+      let det = null, arg = null;
+      if (focus.tab === "layout") {
+        det = focus.id ? byId(focus.id) : mainDet;
+        if (!det) { det = up; arg = focus.id || null; }
+      } else {
+        const tg = TARGETS.some(t => t[0] === focus.id) ? focus.id : "overhead", side = tg.replace("station_", "");
+        const st = tg === "overhead" ? mainSrc : shown.find(x => x.kind !== "per_match" && whatOf(x) === side);
+        det = st ? byId(st.id) : null;
+        if (!det) { det = tg === "overhead" ? up : mainDet || up; }
+        arg = tg;
+      }
+      if (det) {
+        if (det === up && up.closest("[hidden]")) up.closest("section").hidden = false;
+        det.open = true; mount(det, focus.tab, arg);
+        requestAnimationFrame(() => det.scrollIntoView({ block: "start" }));
+      }
+    }
+    // ---- refreshed while the page is open: recorder state, matches found, mode checks
+    const redrawDyn = () => listEl.querySelectorAll(".vw-card").forEach(c => { const s = S.find(x => x.id === c.dataset.id), dy = c.querySelector(".vw-dyn");
+      if (s && dy && !dy.contains(document.activeElement)) { const o = dy.querySelector(".vw-recd"); const was = o && o.open; dy.innerHTML = dynHtml(s); const n = dy.querySelector(".vw-recd"); if (n && was) n.open = true; } });
+    const lsDraw = async () => { lsSt = await liveRec.load(ev, evj); if (listEl.isConnected) { redrawDyn(); drawSum(); } };
+    lsDraw(); const lsIv = setInterval(lsDraw, 15000); cleanup.push(() => clearInterval(lsIv));
     // ---- actions
     const dst = t => { const s = document.getElementById("dst"); if (s) s.textContent = t; };
     document.getElementById("vpcheck").onclick = async e => {
@@ -493,7 +734,7 @@
     };
     c.addEventListener("mousemove", e => { if (opts.lens) { V.mouse = V.toImg(e); V.render(); } });
     c.addEventListener("mouseleave", () => { V.mouse = null; V.render(); });
-    const onR = () => V.size(); window.addEventListener("resize", onR); cleanup.push(() => window.removeEventListener("resize", onR));
+    const onR = () => V.size(); window.addEventListener("resize", onR); (opts.bin || cleanup).push(() => window.removeEventListener("resize", onR));
     return V;
   }
 
@@ -507,7 +748,7 @@
       .sort((a, b) => ["wide", "stations", "broadcast"].indexOf(a.type) - ["wide", "stations", "broadcast"].indexOf(b.type) || b.n - a.n);
     const S0 = (d.sources || []).filter(s => !G.some(g => g.id === s.id));
     const S = [...G, ...S0];
-    if (!S.length) { el.innerHTML = `<div class="empty">No videos yet: discover them on the <a href="#/${ev}/sources/sources">Videos</a> tab.</div>`; return; }
+    if (!S.length) { el.innerHTML = `<div class="empty small">No videos yet: add one above, or discover the uploads from TBA.</div>`; return; }
     const src = S.find(s => s.id === sid) || G.find(g => !g.has_layout) || G[0] || S.find(s => s.primary) || S[0];
     const optList = (list, sel) => list.map(s => `<option value="${h(s.id)}" ${s.id === sel ? "selected" : ""}>${h(s.label || s.id)}${s.origin === "auto" ? "" : ` (${h(s.role)})`}</option>`).join("");
     const opts = sel => (G.length ? `<optgroup label="Detected video types">${optList(G, sel)}</optgroup>` : "") +
@@ -537,22 +778,22 @@
           <div class="small muted" id="savest">${saved ? `saved ${when(saved.updated_at)} by ${h(saved.updated_by || "?")}` : "not saved yet — the pipeline uses the 2026 FIRST defaults"}</div>
         </div>
       </div>`;
-    const st = t => document.getElementById("lst").textContent = t;
-    const V = FrameView(document.getElementById("cv"), { lens: true, zoom: 3 });
+    const st = t => el.querySelector("#lst").textContent = t;
+    const V = FrameView(el.querySelector("#cv"), { lens: true, zoom: 3, bin: el._bin });
     V.empty = "No frame yet: Grab frame"; V.W = W; V.H = H; V.size();
     try { V.setImage(await loadImg(imgUrl(`events/${ev}/sources/${encodeURIComponent(src.id)}/frame.jpg`))); W = V.W; H = V.H; }
     catch (e) { st("no frame yet: Grab frame"); }
-    document.getElementById("srcsel").onchange = e => { location.hash = `#/${ev}/sources/layout/${encodeURIComponent(e.target.value)}`; };
-    document.getElementById("kinds").onclick = e => { const k = e.target.closest("[data-k]"); if (!k) return; kind = k.dataset.k; el.querySelectorAll("#kinds .chip").forEach(c => c.classList.toggle("on", c === k)); };
-    document.getElementById("grab").onclick = async () => {
-      const t = document.getElementById("ft").value;
+    el.querySelector("#srcsel").onchange = e => { location.hash = `#/${ev}/sources/layout/${encodeURIComponent(e.target.value)}`; };
+    el.querySelector("#kinds").onclick = e => { const k = e.target.closest("[data-k]"); if (!k) return; kind = k.dataset.k; el.querySelectorAll("#kinds .chip").forEach(c => c.classList.toggle("on", c === k)); };
+    el.querySelector("#grab").onclick = async () => {
+      const t = el.querySelector("#ft").value;
       try {
         await job(ev, A("POST", `events/${ev}/sources/${encodeURIComponent(src.id)}/frame`, t !== "" ? { t: +t } : {}), st);
         V.setImage(await loadImg(imgUrl(`events/${ev}/sources/${encodeURIComponent(src.id)}/frame.jpg`))); W = V.W; H = V.H; st("");
       } catch (e) { st(errMsg(e)); }
     };
-    document.getElementById("sug").onclick = async () => {
-      const other = document.getElementById("other").value;
+    el.querySelector("#sug").onclick = async () => {
+      const other = el.querySelector("#other").value;
       try {
         const r = await job(ev, A("POST", `events/${ev}/layout/${encodeURIComponent(src.id)}/suggest`, other ? { other } : {}), st);
         const sx = W / r.W, sy = H / r.H;
@@ -560,19 +801,19 @@
         st(`${sugg.length} suggestions: accept the ones that fit`); paint();
       } catch (e) { st(errMsg(e)); }
     };
-    document.getElementById("dflt").onclick = () => {
+    el.querySelector("#dflt").onclick = () => {
       const hasInsets = regions.some(r => r.kind.startsWith("station_")) || src.role !== "wide";
       regions = (hasInsets ? L.defaults.program : L.defaults.wide).map(r => ({ ...r, box: [r.box[0] * W / L.defaults.W, r.box[1] * H / L.defaults.H, r.box[2] * W / L.defaults.W, r.box[3] * H / L.defaults.H] }));
       dirty = true; paint();
     };
-    document.getElementById("save").onclick = async () => {
+    el.querySelector("#save").onclick = async () => {
       try {
         await A("PUT", `events/${ev}/layout/${encodeURIComponent(src.id)}`, { W, H, regions: regions.map(r => ({ id: r.id, kind: r.kind, label: r.label, box: r.box.map(Math.round), light_on_dark: r.light_on_dark })) });
-        dirty = false; document.getElementById("savest").textContent = "saved just now"; paint();
+        dirty = false; el.querySelector("#savest").textContent = "saved just now"; paint();
       } catch (e) { alert(errMsg(e)); }
     };
     const leave = e => { if (dirty) { e.preventDefault(); e.returnValue = ""; } };
-    window.addEventListener("beforeunload", leave); cleanup.push(() => window.removeEventListener("beforeunload", leave));
+    window.addEventListener("beforeunload", leave); (el._bin || cleanup).push(() => window.removeEventListener("beforeunload", leave));
 
     function paint() { V.render(); list(); }
     V.draw = ctx => {
@@ -596,10 +837,10 @@
       }
     };
     function list() {
-      document.getElementById("sugbox").innerHTML = sugg.length ? `<div class="vs-sug"><b class="small">Suggestions</b> <button class="small" id="accall">accept all</button> <button class="small" id="dropall">dismiss</button>
+      el.querySelector("#sugbox").innerHTML = sugg.length ? `<div class="vs-sug"><b class="small">Suggestions</b> <button class="small" id="accall">accept all</button> <button class="small" id="dropall">dismiss</button>
         ${sugg.map((s, i) => `<div class="vs-ri"><i class="vs-sw" style="background:${KCOL[s.kind]}"></i>${KSHORT[s.kind] || s.kind} <span class="muted small">${h(s.label || "")} ${s.score != null ? Math.round(s.score * 100) + "%" : ""}</span>
           <button class="small" data-acc="${i}">accept</button></div>`).join("")}</div>` : "";
-      document.getElementById("rlist").innerHTML = regions.map((r, i) => `<div class="vs-ri ${i === sel ? "on" : ""}" data-i="${i}">
+      el.querySelector("#rlist").innerHTML = regions.map((r, i) => `<div class="vs-ri ${i === sel ? "on" : ""}" data-i="${i}">
         <i class="vs-sw" style="background:${KCOL[r.kind]}"></i>
         <select data-k="${i}">${Object.keys(L.kinds).map(k => `<option value="${k}" ${k === r.kind ? "selected" : ""}>${KSHORT[k] || k}</option>`).join("")}</select>
         <input data-l="${i}" value="${h(r.label || "")}" placeholder="Label…" aria-label="Box label" style="width:110px">
@@ -607,14 +848,14 @@
         ${r.kind === "clock" ? `<label class="small" title="digits lighter than their box"><input type="checkbox" data-ld="${i}" ${r.light_on_dark ? "checked" : ""}>light</label>` : ""}
         <button class="small icon" data-x="${i}" aria-label="Remove box">${CS.icon("close")}</button></div>`).join("") || `<div class="muted small" style="margin-top:8px">No boxes yet.</div>`;
       const acc = i => { const s = sugg[i]; regions.push({ id: "r" + Date.now().toString(36) + i, kind: s.kind, label: s.label, box: s.box.slice() }); dirty = true; };
-      document.querySelectorAll("[data-acc]").forEach(b => b.onclick = () => { acc(+b.dataset.acc); sugg.splice(+b.dataset.acc, 1); paint(); });
-      const aa = document.getElementById("accall"); if (aa) aa.onclick = () => { sugg.forEach((_, i) => acc(i)); sugg = []; paint(); };
-      const da = document.getElementById("dropall"); if (da) da.onclick = () => { sugg = []; paint(); };
-      document.querySelectorAll("[data-k]").forEach(s => s.onchange = () => { regions[+s.dataset.k].kind = s.value; dirty = true; paint(); });
-      document.querySelectorAll("[data-l]").forEach(s => s.oninput = () => { regions[+s.dataset.l].label = s.value; dirty = true; V.render(); });
-      document.querySelectorAll("[data-ld]").forEach(s => s.onchange = () => { regions[+s.dataset.ld].light_on_dark = s.checked; dirty = true; });
-      document.querySelectorAll("[data-x]").forEach(b => b.onclick = () => { regions.splice(+b.dataset.x, 1); sel = -1; dirty = true; paint(); });
-      document.querySelectorAll(".vs-ri[data-i]").forEach(d => d.onclick = e => { if (e.target.closest("select,input,button")) return; sel = +d.dataset.i; paint(); });
+      el.querySelectorAll("[data-acc]").forEach(b => b.onclick = () => { acc(+b.dataset.acc); sugg.splice(+b.dataset.acc, 1); paint(); });
+      const aa = el.querySelector("#accall"); if (aa) aa.onclick = () => { sugg.forEach((_, i) => acc(i)); sugg = []; paint(); };
+      const da = el.querySelector("#dropall"); if (da) da.onclick = () => { sugg = []; paint(); };
+      el.querySelectorAll("[data-k]").forEach(s => s.onchange = () => { regions[+s.dataset.k].kind = s.value; dirty = true; paint(); });
+      el.querySelectorAll("[data-l]").forEach(s => s.oninput = () => { regions[+s.dataset.l].label = s.value; dirty = true; V.render(); });
+      el.querySelectorAll("[data-ld]").forEach(s => s.onchange = () => { regions[+s.dataset.ld].light_on_dark = s.checked; dirty = true; });
+      el.querySelectorAll("[data-x]").forEach(b => b.onclick = () => { regions.splice(+b.dataset.x, 1); sel = -1; dirty = true; paint(); });
+      el.querySelectorAll(".vs-ri[data-i]").forEach(d => d.onclick = e => { if (e.target.closest("select,input,button")) return; sel = +d.dataset.i; paint(); });
     }
     // mouse: draw / move / resize
     let drag = null;
@@ -635,7 +876,7 @@
       paint();
     });
     window.addEventListener("mousemove", onMove); window.addEventListener("mouseup", onUp);
-    cleanup.push(() => { window.removeEventListener("mousemove", onMove); window.removeEventListener("mouseup", onUp); window.removeEventListener("keydown", onKey); });
+    (el._bin || cleanup).push(() => { window.removeEventListener("mousemove", onMove); window.removeEventListener("mouseup", onUp); window.removeEventListener("keydown", onKey); });
     function onMove(e) {
       if (!drag) { if (e.target === V.c) { const t = hit(...V.toImg(e)); V.c.style.cursor = t ? (t.mode === "move" ? "move" : "nwse-resize") : "crosshair"; } return; }
       let [x, y] = V.toImg(e); x = Math.max(0, Math.min(W, x)); y = Math.max(0, Math.min(H, y));
@@ -675,8 +916,7 @@
     const cal = await A("GET", `events/${ev}/calibration`);
     target = TARGETS.some(t => t[0] === target) ? target : "overhead";
     const stat = cal.targets.find(t => t.target === target) || {};
-    const fmt = c => c ? [c.tag_rms_px != null ? `tags ${c.tag_rms_px} px` : "", c.point_rms_px != null ? `points ${c.point_rms_px} px` : "",
-                         c.line_med_px != null ? `centre line ${c.line_med_px} px` : ""].filter(Boolean).join(", ") : "";
+    const fmt = fitQ;
     el.innerHTML = `
       <div class="vs-row">${TARGETS.map(([k, t]) => {
         const s = cal.targets.find(x => x.target === k) || {};
@@ -695,8 +935,8 @@
           <div id="plist"></div>
         </div>
       </div>`;
-    const st = t => document.getElementById("cst").textContent = t;
-    const V = FrameView(document.getElementById("ccv"), { lens: true, zoom: 4 });
+    const st = t => el.querySelector("#cst").textContent = t;
+    const V = FrameView(el.querySelector("#ccv"), { lens: true, zoom: 4, bin: el._bin });
     V.empty = "No frame yet: 1. Detect tags grabs one";
     let W = 1920, H = 1080, tags = {}, points = {}, NP = {}, NL = DEFAULT_LINES, lineClicks = {}, overlay = null, pick = null, report = null, drop = new Set();
     const show = { grid: true, lines: true, tags: true };
@@ -710,20 +950,13 @@
         W = w.W; H = w.H; tags = w.fit_tags || w.tags || {}; points = w.points || {}; NP = w.points_catalog || NP;
         NL = w.lines_catalog || NL; lineClicks = w.line_clicks || {};
         report = w.report || null; await loadFrame();
-        document.getElementById("fit").disabled = false; document.getElementById("acc").disabled = !w.camera;
+        el.querySelector("#fit").disabled = false; el.querySelector("#acc").disabled = !w.camera;
         if (w.camera) st(w.accepted_at && w.accepted_at > (w.fitted_at || 0) ? "this fit is saved" : "last fit not accepted yet: Fit again to see its overlay");
       } catch (e) { st("start with step 1"); await loadFrame(); V.size(); }
     }
     V.draw = ctx => {
       const lw = 1.6 / V.s;
-      if (overlay) for (const L of overlay) {
-        const isG = L.kind === "grid", isT = L.kind === "tag";
-        if ((isG && !show.grid) || (isT && !show.tags) || (!isG && !isT && !show.lines)) continue;
-        ctx.strokeStyle = isG ? "rgba(255,255,255,.35)" : isT ? "#51cf66" : L.kind === "field" ? "#ffd43b" : L.kind === "hub_red" ? "#ff5a5f" : L.kind === "hub_blue" ? "#3e8bff" : "#fff";
-        ctx.lineWidth = isG ? lw * 0.7 : lw * 1.3; ctx.beginPath(); let pen = false;
-        for (const p of L.pts) { if (!p) { pen = false; continue; } if (!pen) { ctx.moveTo(p[0], p[1]); pen = true; } else ctx.lineTo(p[0], p[1]); }
-        ctx.stroke();
-      }
+      paintOverlay(ctx, overlay, V.s, show);
       if (show.tags) for (const [id, t] of Object.entries(tags)) {
         const c = t.corners, off = drop.has(+id);
         ctx.strokeStyle = off ? "#888" : t.predicted ? "#22b8cf" : "#51cf66"; ctx.lineWidth = 2 / V.s;
@@ -751,24 +984,24 @@
       const groups = {};
       Object.entries(NP).forEach(([k, v]) => { if (v.group !== "tags") (groups[v.group] = groups[v.group] || []).push([k, v]); });
       const tagIds = Object.keys(tags);
-      document.getElementById("plist").innerHTML = `<div class="vs-pg"><b class="small">field lines — click 2+ points anywhere along one (easiest)</b>${Object.entries(NL).map(([k, v]) =>
+      el.querySelector("#plist").innerHTML = `<div class="vs-pg"><b class="small">field lines — click 2+ points anywhere along one (easiest)</b>${Object.entries(NL).map(([k, v]) =>
         `<div class="vs-pt ${"line:" + k === pick ? "on" : ""} ${(lineClicks[k] || []).length ? "set" : ""}" data-p="line:${k}">${(lineClicks[k] || []).length ? "●" + lineClicks[k].length : "○"} ${h(v.label)}</div>`).join("")}</div>` +
         Object.entries(groups).map(([g, l]) => `<div class="vs-pg"><b class="small">${h(g)}</b>${l.map(([k, v]) =>
         `<div class="vs-pt ${k === pick ? "on" : ""} ${points[k] ? "set" : ""}" data-p="${k}">${points[k] ? "●" : "○"} ${h(v.label)}</div>`).join("")}</div>`).join("") +
         `<div class="vs-pg"><b class="small">AprilTag centres (when not detected)</b><div class="chips">${Object.entries(NP).filter(([k, v]) => v.group === "tags" && !tagIds.includes(k.slice(4)))
           .map(([k]) => `<span class="chip ${k === pick ? "on" : ""} ${points[k] ? "set" : ""}" data-p="${k}">${k.slice(4)}${points[k] ? "●" : ""}</span>`).join("")}</div></div>`;
-      document.querySelectorAll("[data-p]").forEach(d => d.onclick = () => { pick = d.dataset.p === pick ? null : d.dataset.p; plist(); V.render(); });
+      el.querySelectorAll("[data-p]").forEach(d => d.onclick = () => { pick = d.dataset.p === pick ? null : d.dataset.p; plist(); V.render(); });
     }
     function rep() {
       const r = report;
       const tl = Object.entries(tags).map(([id, t]) => `<label class="chip ${drop.has(+id) ? "" : "on"}" title="${t.predicted ? "found from the fit" : "detected"}${t.n ? `, ${t.n} frames` : ""}"><input type="checkbox" data-t="${id}" ${drop.has(+id) ? "" : "checked"} style="display:none">${id}${t.predicted ? "*" : ""}</label>`).join("");
-      document.getElementById("rep").innerHTML = `<div class="small"><b>Tags</b> (click to ignore one): <div class="chips">${tl || `<span class="muted">none found — click field points</span>`}</div></div>` +
+      el.querySelector("#rep").innerHTML = `<div class="small"><b>Tags</b> (click to ignore one): <div class="chips">${tl || `<span class="muted">none found — click field points</span>`}</div></div>` +
         (r ? `<div class="vs-kv small"><b>Fit</b>: ${h(fmt(r)) || "–"}<br>focal ${r.f} px · k1 ${r.k1} · camera at (${r.C.map(v => v.toFixed(1)).join(", ")}) m
           ${(r.warnings || []).map(w => `<div class="vs-warn">${CS.icon("warn", "ico")} ${h(w)}</div>`).join("")}
           ${Object.entries(r.lines || {}).map(([k, v]) => `<div>${h((NL[k.replace(" (auto)", "")] || {}).label || k)}${/auto/.test(k) ? " (found automatically)" : ""}: <b style="color:${v > 3 ? "var(--warn)" : "var(--good)"}">${v} px</b></div>`).join("")}
           ${(r.items || []).filter(i => i.kind === "point").map(i => `<div>${h((NP[i.id] || {}).label || i.id)}: <b style="color:${i.err_px > 6 ? "var(--bad)" : i.err_px > 3 ? "var(--warn)" : "var(--good)"}">${i.err_px} px</b></div>`).join("")}
           <div class="muted">Does the yellow outline / grid sit on the carpet everywhere, and the hub boxes on the hubs? Then accept.</div></div>` : "");
-      document.querySelectorAll("[data-t]").forEach(c => c.onchange = () => { c.checked ? drop.delete(+c.dataset.t) : drop.add(+c.dataset.t); rep(); V.render(); });
+      el.querySelectorAll("[data-t]").forEach(c => c.onchange = () => { c.checked ? drop.delete(+c.dataset.t) : drop.add(+c.dataset.t); rep(); V.render(); });
     }
     // clicks: place / drag / clear named points
     let dragK = null;
@@ -800,30 +1033,30 @@
     };
     const up = () => { dragK = null; };
     window.addEventListener("mousemove", mv); window.addEventListener("mouseup", up);
-    cleanup.push(() => { window.removeEventListener("mousemove", mv); window.removeEventListener("mouseup", up); });
+    (el._bin || cleanup).push(() => { window.removeEventListener("mousemove", mv); window.removeEventListener("mouseup", up); });
 
-    document.getElementById("det").onclick = async () => {
+    el.querySelector("#det").onclick = async () => {
       try {
         const r = await job(ev, A("POST", `events/${ev}/calibration/${target}/detect`, {}), st);
         W = r.W; H = r.H; tags = r.tags; NP = r.points || NP; NL = r.lines || NL; report = r.report || null; overlay = r.overlay || null; drop = new Set();
-        await loadFrame(); document.getElementById("fit").disabled = false;
+        await loadFrame(); el.querySelector("#fit").disabled = false;
         st(`${Object.keys(tags).length} tags found${r.report ? " — a first fit is drawn; check it or add points" : " — click field points (≥ 4–6 spread over the field), then Fit"}`);
         plist(); rep(); V.render();
       } catch (e) { st(errMsg(e)); }
     };
-    document.getElementById("fit").onclick = async () => {
+    el.querySelector("#fit").onclick = async () => {
       try {
         const r = await job(ev, A("POST", `events/${ev}/calibration/${target}/fit`, { points, line_clicks: lineClicks, drop_tags: [...drop] }), st);
         if (r.error) { st(r.error); return; }
         report = r.report; overlay = r.overlay; tags = r.tags || tags; lineClicks = r.line_clicks || lineClicks;
-        document.getElementById("acc").disabled = false; st("fitted — check the overlay"); rep(); plist(); V.render();
+        el.querySelector("#acc").disabled = false; st("fitted — check the overlay"); rep(); plist(); V.render();
       } catch (e) { st(errMsg(e)); }
     };
-    document.getElementById("acc").onclick = async () => {
+    el.querySelector("#acc").onclick = async () => {
       if (!confirm("Save this calibration? The pipeline uses it for the next matches (the old file is kept as a backup).")) return;
       try { await A("POST", `events/${ev}/calibration/${target}/accept`); st("saved"); route(false); } catch (e) { st(errMsg(e)); }
     };
-    const sc = document.getElementById("showcur");
+    const sc = el.querySelector("#showcur");
     if (sc) sc.onclick = async () => {
       try { const r = await job(ev, A("POST", `events/${ev}/calibration/${target}/overlay`), st); overlay = r.overlay; await loadFrame(); V.render(); st(`showing the saved ${r.file}`); }
       catch (e) { st(errMsg(e)); }
