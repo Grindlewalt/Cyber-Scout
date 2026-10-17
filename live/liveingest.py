@@ -204,6 +204,8 @@ def posted(m):
 
 # ---------------------------------------------------------------- TBA-time cut (livestream-only mode)
 def _rows(d):
+    """chunks.jsonl rows of real video: rows sharing a pts are one chunk stored under several sequence numbers
+    with made-up wall times (Twitch older-than-DVR backfill before livestream.can_synth) and are dropped."""
     rows = []
     try:
         with open(os.path.join(d, "chunks.jsonl")) as f:
@@ -212,7 +214,10 @@ def _rows(d):
                 except ValueError: pass
     except OSError:
         pass
-    return rows
+    n = {}
+    for r in rows:
+        if r.get("pts") is not None: n[r["pts"]] = n.get(r["pts"], 0) + 1
+    return [r for r in rows if r.get("pts") is None or n[r["pts"]] == 1]
 
 
 def pts_at(rows, t_wall):

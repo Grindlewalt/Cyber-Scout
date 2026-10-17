@@ -59,3 +59,16 @@ def test_youtube_backfill_fetches_older_chunks_by_sq(tmp_path, monkeypatch):
     assert [r["sq"] for r in rows] == list(range(991, 1004))
     assert len(set(got)) == len(got) == 13
     assert rows[0]["wall"] < rows[-1]["wall"]
+
+
+def test_repeated_chunks_are_not_video(tmp_path):
+    """Recordings made before the fix: rows sharing a pts (one chunk under many sq) are skipped by the readers."""
+    import liveingest as LI
+    rows = [dict(sq=q, file="seg/a.ts", off=0, size=10, pts=4882.0, dur=2.0, wall=1000.0 + 2 * (q - 100)) for q in range(100, 110)]
+    rows += [dict(sq=q, file="seg/b.ts", off=0, size=10, pts=5000.0 + 2 * (q - 110), dur=2.0, wall=1020.0 + 2 * (q - 110))
+             for q in range(110, 115)]
+    (tmp_path / "chunks.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+    assert [r["sq"] for r in LI._rows(str(tmp_path))] == list(range(110, 115))
+    cs = LS.ChunkStore(str(tmp_path)); cs.refresh()
+    assert [r["sq"] for r in cs.rows if cs.real(r)] == list(range(110, 115))
+    assert cs.wall(5004.0) == 1024.0

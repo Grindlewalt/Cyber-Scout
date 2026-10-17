@@ -726,6 +726,12 @@ class ChunkStore:
 
     def __init__(self, out):
         self.out = out; self.idx_p = os.path.join(out, "chunks.jsonl"); self.rows = []; self._pos = 0
+        self._npts = {}         # pts -> rows with it: > 1 = one chunk stored under several sq (not real video)
+
+    def real(self, r):
+        """A row of real video: has a pts no other row has.  The Twitch older-than-DVR backfill (before the
+        can_synth fix) stored the playlist's first chunk under hundreds of sequence numbers with made-up wall times."""
+        return r.get("pts") is not None and self._npts.get(r["pts"], 0) == 1
 
     def refresh(self):
         if not os.path.exists(self.idx_p): return []
@@ -739,13 +745,15 @@ class ChunkStore:
                 try: new.append(json.loads(line))
                 except Exception: pass
         self.rows += new
+        for r in new:
+            if r.get("pts") is not None: self._npts[r["pts"]] = self._npts.get(r["pts"], 0) + 1
         return new
 
     def wall(self, pts):
         """stream pts -> unix time (from the playlist's PROGRAM-DATE-TIME)."""
         best = None
         for r in reversed(self.rows):
-            if r.get("wall") and r.get("pts") is not None:
+            if r.get("wall") and self.real(r):
                 best = r
                 if r["pts"] <= pts: break
         return best["wall"] + (pts - best["pts"]) if best else None
@@ -753,7 +761,7 @@ class ChunkStore:
     def cut(self, t0, t1, dst):
         """Clip [t0, t1] (stream pts) -> mp4, keyframe/chunk aligned at or before t0 (stream copy).
         Returns (path, pts of the clip's first frame)."""
-        rows = sorted((r for r in self.rows if r.get("pts") is not None and r["pts"] + r["dur"] > t0 and r["pts"] < t1
+        rows = sorted((r for r in self.rows if self.real(r) and r["pts"] + r["dur"] > t0 and r["pts"] < t1
                        and os.path.exists(os.path.join(self.out, r["file"]))), key=lambda r: r["sq"])
         if not rows: raise RuntimeError("no chunks for clip")
         gaps = [b["sq"] - a["sq"] - 1 for a, b in zip(rows, rows[1:]) if b["sq"] - a["sq"] != 1]
