@@ -56,7 +56,9 @@ rm -rf "$WEB.old"; [ -d "$WEB" ] && mv "$WEB" "$WEB.old"; mv "$WEB.new" "$WEB"; 
 
 # ---- run scripts
 PATHS="$H/bin:$H/venv/bin:/usr/bin:/bin:/usr/sbin:/sbin"
-COMMON="export PATH=\"$PATHS\" DATA=\"$DATA\" MEDIA=\"$MEDIA\" TZ=America/Los_Angeles PYTHONUNBUFFERED=1 HOME=\"$HOME\"
+# the static ffmpeg has no CA store ("certificate verify failed" on every https input): certifi's bundle
+CA="$("$H/venv/bin/python" -m certifi 2>/dev/null || true)"
+COMMON="export PATH=\"$PATHS\" DATA=\"$DATA\" MEDIA=\"$MEDIA\" TZ=America/Los_Angeles PYTHONUNBUFFERED=1 HOME=\"$HOME\"${CA:+ SSL_CERT_FILE=\"$CA\"}
 [ -f \"$H/server.env\" ] && set -a && . \"$H/server.env\" && set +a
 cd \"$APP\""
 cat > "$H/run-api.sh" <<EOF
