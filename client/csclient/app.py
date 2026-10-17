@@ -22,7 +22,8 @@ log = logging.getLogger("cyberscout")
 
 
 class App:
-    def __init__(self, data_dir=None, host="127.0.0.1", port=7600, server_url=None, bundled_web=None):
+    def __init__(self, data_dir=None, host="127.0.0.1", port=7600, server_url=None, bundled_web=None,
+                 alt_servers=None):
         self.data_dir = os.path.abspath(data_dir or default_data_dir())
         ensure_dir(self.data_dir, 0o700)
         try:
@@ -32,6 +33,8 @@ class App:
         self.config = Config(self.data_dir)
         if server_url:
             self.config.update(server=normalize_server(server_url))
+        if alt_servers is not None:
+            self.config.update(alt_servers=[normalize_server(s) for s in alt_servers if s])
         self.session = SessionStore(self.data_dir)
         if self.session.server != self.config["server"]:
             self.session.set_server(self.config["server"])
@@ -100,6 +103,8 @@ class App:
             self.db.cache_clear()
             self.server.configure(ch["server"])
             self.engine.set_online(False, "server changed")
+        elif "alt_servers" in ch and self.server.base not in self.server.addresses():
+            self.server.configure(self.config["server"])   # the alternate in use was removed
         self.engine.kick()
 
     def storage(self):
@@ -123,6 +128,7 @@ class App:
         info = e.server_info or {}
         return {
             "client": True, "version": VERSION, "server": self.config["server"],
+            "active_server": self.server.base, "alt_servers": self.config["alt_servers"] or [],
             "online": bool(e.online), "signed_in": bool(u),
             "user": {"display_name": u.get("display_name"), "role": u.get("role")} if u else None,
             "last_sync": e.last_sync, "syncing": bool(e.syncing), "progress": dict(e.progress) if e.progress else None,
@@ -155,6 +161,9 @@ def main(argv=None):
                     help="address to listen on (default 127.0.0.1: this computer only)")
     ap.add_argument("--data", default=os.environ.get("CYBERSCOUT_DATA"), help=f"data folder (default {default_data_dir()})")
     ap.add_argument("--server", help="server address, e.g. https://scout.example.dev (also settable in the app)")
+    ap.add_argument("--alt-server", action="append", metavar="URL",
+                    help="another address of the same server, used when the main one can't be reached (repeat for "
+                         "more; e.g. the Tailscale address next to the tunnel). Saved; --alt-server '' clears them")
     ap.add_argument("--no-browser", action="store_true", help="don't open the browser")
     ap.add_argument("--log-level", default=os.environ.get("CYBERSCOUT_LOG", "INFO"))
     ap.add_argument("--version", action="version", version=f"Cyber-Scout Client {VERSION}")
@@ -163,7 +172,7 @@ def main(argv=None):
     ensure_dir(data, 0o700)
     setup_logging(os.path.join(data, "logs"), a.log_level)
     try:
-        app = App(data, host=a.host, port=a.port, server_url=a.server)
+        app = App(data, host=a.host, port=a.port, server_url=a.server, alt_servers=a.alt_server)
     except OSError as e:
         if e.errno in (errno.EADDRINUSE, getattr(errno, "WSAEADDRINUSE", -1)) or "in use" in str(e).lower():
             if _already_running(a.port):

@@ -401,6 +401,69 @@ class TestOutbox(Base):
         self.assertTrue(d["offline"])
 
 
+class TestFailover(Base):
+    """The same server through a second address (tunnel + Tailscale): used when the main one fails, and left again
+    once the main one answers; the session, outbox and sync state carry over."""
+
+    def alt(self):
+        a = FakeServer()
+        a.state = a.httpd.state = self.fs.state            # same server, another address
+        self.addCleanup(a.stop)
+        return a.start()
+
+    def test_switch_to_alternate_and_back(self):
+        self.login()
+        alt = self.alt()
+        code, d = self.c.req("PUT", "/client/v1/config", {"alt_servers": [alt.url, alt.url]})
+        self.assertEqual(code, 200, d)
+        self.assertEqual(d["config"]["alt_servers"], [alt.url])
+        self.sync()
+        self.fs.httpd.down = True                          # the main address stops answering
+        e = self.app.engine
+        e.set_online(False, "test")
+        self.c.req("POST", "/client/v1/sync", {})
+        self.wait(lambda: e.online and self.app.server.base == alt.url, "failover")
+        s = self.status()
+        self.assertEqual(s["active_server"], alt.url)
+        self.assertEqual(s["server"], self.fs.url)
+        self.assertTrue(s["signed_in"])
+        # writes and syncs go through the alternate with the same session
+        code, d = self.c.req("POST", f"/app/v1/events/{EV}/notes", {"text": "via alt"})
+        self.assertEqual(code, 201, d)
+        self.fs.state.put(f"api/{EV}/m/qm3.json", b'{"m":3}')
+        n = len(self.bundle_requests())
+        self.sync()
+        self.assertEqual(self.local(f"api/{EV}/m/qm3.json"), b'{"m":3}')
+        self.assertEqual(len(self.bundle_requests()), n + 1)   # a delta: the cursor survived the switch
+        # the main address answers again -> back to it at the next check
+        self.fs.httpd.down = False
+        e.primary_check_at = 0
+        self.c.req("POST", "/client/v1/sync", {})
+        self.wait(lambda: self.app.server.base == self.fs.url, "back to the main address")
+
+    def test_no_alternates_stays_offline(self):
+        self.fs.httpd.down = True
+        e = self.app.engine
+        e.set_online(False, "test")
+        self.assertFalse(e.probe())
+        self.assertEqual(self.app.server.base, self.fs.url)
+
+    def test_alternate_of_another_server_not_used(self):
+        other = FakeServer().start()
+        self.addCleanup(other.stop)
+        other.state.version = self.fs.state.version
+        self.app.engine.server_info = {"name": "Team server"}     # what the main address said it is
+        self.app.config.update(alt_servers=[other.url])           # answers as "Fake": a different server
+        self.fs.httpd.down = True
+        self.assertFalse(self.app.engine.probe())
+        self.assertEqual(self.app.server.base, self.fs.url)
+
+    def test_bad_alt_servers_rejected(self):
+        for bad in ("nope", ["ftp://x"], ["http://a"] * 6, [5]):
+            code, d = self.c.req("PUT", "/client/v1/config", {"alt_servers": bad})
+            self.assertEqual(code, 422, (bad, d))
+
+
 class TestSecurity(Base):
     def test_session_never_reaches_the_page(self):
         code, hdrs, b = self.c.req("POST", "/app/v1/auth/login", {"username": "scout", "password": "pw-scout-1"},

@@ -609,6 +609,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     ch["server"] = normalize_server(s)
                 except ValueError as e:
                     return self.send_json(422, {"detail": f"server: {e}"})
+        if "alt_servers" in d:
+            al = d["alt_servers"]
+            if al is None:
+                al = []
+            if not isinstance(al, list) or len(al) > 5 or not all(isinstance(s, str) for s in al):
+                return self.send_json(422, {"detail": "alt_servers: a list of up to 5 server addresses"})
+            try:
+                ch["alt_servers"] = list(dict.fromkeys(normalize_server(s) for s in al if s.strip()))
+            except ValueError as e:
+                return self.send_json(422, {"detail": f"alt_servers: {e}"})
         if "media" in d:
             if d["media"] not in MEDIA_MODES:
                 return self.send_json(422, {"detail": "media: none, proxy or full"})

@@ -178,7 +178,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         path, q = unquote(u.path), parse_qs(u.query)
         with st.lock:
             st.requests.append((self.command, self.path, dict(self.headers.items())))
-        if st.down:
+        if st.down or getattr(self.server, "down", False):     # whole fake / just this listener (address)
             self.close_connection = True
             try:
                 self.connection.shutdown(socket.SHUT_RDWR)

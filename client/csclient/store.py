@@ -42,7 +42,7 @@ def normalize_server(url) -> str:
 class Config:
     """config.json (0600): server, media mode, followed events, intervals, per-install secrets."""
     DEFAULTS = {"server": None, "media": "none", "events": None, "interval": 60, "probe_interval": 15,
-                "ca_file": None}
+                "ca_file": None, "alt_servers": []}
 
     def __init__(self, data_dir: str):
         self.path = os.path.join(data_dir, "config.json")
@@ -77,7 +77,7 @@ class Config:
 
     def public(self) -> dict:
         with self.lock:
-            return {k: self.data.get(k) for k in ("server", "media", "events", "interval")}
+            return {k: self.data.get(k) for k in ("server", "alt_servers", "media", "events", "interval")}
 
 
 class SessionStore:

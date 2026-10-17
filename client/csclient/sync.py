@@ -63,6 +63,7 @@ class SyncEngine:
         self.next_sync = 0.0
         self.retry_at = None
         self.next_probe = 0.0
+        self.primary_check_at = 0.0
         self.events_list = read_json(os.path.join(self.state_dir, "_events.json"), []) or []
         sts = list_event_states(self.state_dir)
         self.last_sync = max([s.synced_at for s in sts if s.synced_at] or [0]) or None
@@ -204,14 +205,55 @@ class SyncEngine:
             finally:
                 self.cycles += 1
 
+    def _switch(self, base, why):
+        log.warning("using %s (%s)", base, why)
+        self.server.configure(base)
+
+    def _failover(self, err):
+        """The address in use failed: try the server's other addresses -> (info, latency_ms) or None."""
+        known = (self.server_info or {}).get("name")
+        for base in self.server.addresses():
+            if base == self.server.base:
+                continue
+            t0 = time.time()
+            try:
+                info = self.server.info_at(base, timeout=5)
+            except (NetError, HTTPError) as e:
+                log.debug("alternate %s: %s", base, e)
+                continue
+            if known and info.get("name") != known:
+                log.warning("alternate %s is a different server (%r, expected %r): not used", base,
+                            info.get("name"), known)
+                continue
+            ms = round((time.time() - t0) * 1000)
+            self._switch(base, f"{self.server.base} failed: {err}")
+            return info, ms
+        return None
+
     def probe(self):
         t0 = time.time()
         try:
             info = self.server.info(timeout=5)
+            ms = round((time.time() - t0) * 1000)
         except (NetError, HTTPError) as e:
-            self.set_online(False, str(e))
-            return False
-        self.server_info = dict(info, latency_ms=round((time.time() - t0) * 1000))
+            got = self._failover(e) if len(self.server.addresses()) > 1 else None
+            if got is None:
+                self.set_online(False, str(e))
+                return False
+            info, ms = got
+        primary = self.cfg["server"]
+        if self.server.base != primary and time.time() >= self.primary_check_at:
+            # on an alternate: go back to the configured address once it answers again (checked every 2 min)
+            self.primary_check_at = time.time() + 120
+            try:
+                t1 = time.time()
+                pinfo = self.server.info_at(primary, timeout=4)
+                if not info.get("name") or pinfo.get("name") == info.get("name"):
+                    self._switch(primary, "the configured address answers again")
+                    info, ms = pinfo, round((time.time() - t1) * 1000)
+            except (NetError, HTTPError):
+                pass
+        self.server_info = dict(info, latency_ms=ms)
         came_back = not self.online
         self.set_online(True)
         if came_back and self.session.cookie_header():
@@ -341,8 +383,8 @@ class SyncEngine:
 
     def sync_event(self, ev, name=None):
         st = EventState(self.state_dir, ev)
-        if st.server != self.server.base:
-            st.cursor, st.server = None, self.server.base
+        if st.server != self.cfg["server"]:
+            st.cursor, st.server = None, self.cfg["server"]
         if name:
             st.name = name
         q = {"ev": ev}
@@ -469,7 +511,7 @@ class SyncEngine:
         return failed
 
     def _part_paths(self, kind, key):
-        bid = hashlib.sha256(json.dumps([self.server.base, kind, key], sort_keys=True).encode()).hexdigest()[:24]
+        bid = hashlib.sha256(json.dumps([self.cfg["server"], kind, key], sort_keys=True).encode()).hexdigest()[:24]
         return os.path.join(self.parts_dir, bid + ".part"), os.path.join(self.parts_dir, bid + ".json")
 
     def _discard_part(self, ev, paths):

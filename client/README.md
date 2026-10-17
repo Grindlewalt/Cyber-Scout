@@ -59,6 +59,7 @@ time just opens the browser on the running one.
 | `--host` | `CYBERSCOUT_HOST` | 127.0.0.1 (this computer only; anything else is an explicit opt-in to LAN access) |
 | `--data` | `CYBERSCOUT_DATA` | see [Storage](#storage) |
 | `--server` | | (set it in the app instead) |
+| `--alt-server URL` | | other addresses of the **same** server (repeatable; saved), used automatically when the main one can't be reached, e.g. `--server https://scout.grantrindal.dev --alt-server http://100.86.234.25:7560` (tunnel + Tailscale). The session, outbox and sync cursors carry over; the client goes back to the main address once it answers again (checked every 2 min). An alternate that names itself differently (`/app/v1/info` `name`) is not used. `--alt-server ''` clears them |
 | `--log-level` | `CYBERSCOUT_LOG` | INFO |
 | `--no-browser` | | |
 
@@ -133,8 +134,8 @@ local `cs_csrf` cookie (the client's own token — the server's CSRF token and s
 
 | call | answer |
 |---|---|
-| `GET status` | `{client:true, version, server, online, signed_in, user:{display_name,role}\|null, last_sync, syncing, progress:{done,total,bytes,done_bytes,total_bytes,ev,phase}\|null, outbox, events:[{key,name,synced_at,files,bytes,media_bytes}], errors:[{time,kind,message,ev?,id?,response?}]}` plus `media, followed, available_events, offline_reason, server_info, web_version, storage`. `progress.done/total` count files; `bytes` is bytes received. `outbox` = changes not yet accepted. `errors[].kind`: `network`, `auth`, `sync`, `media`, `web`, `conflict`, `failed` |
-| `PUT config` `{server?, media?, events?, interval?}` | `200 {ok, config}`; `422 {detail}` on bad values. `events:null` = all followed events. Changing `server` signs out and resyncs |
+| `GET status` | `{client:true, version, server, online, signed_in, user:{display_name,role}\|null, last_sync, syncing, progress:{done,total,bytes,done_bytes,total_bytes,ev,phase}\|null, outbox, events:[{key,name,synced_at,files,bytes,media_bytes}], errors:[{time,kind,message,ev?,id?,response?}]}` plus `active_server` (the address in use: `server` or one of `alt_servers`), `alt_servers`, `media, followed, available_events, offline_reason, server_info, web_version, storage`. `progress.done/total` count files; `bytes` is bytes received. `outbox` = changes not yet accepted. `errors[].kind`: `network`, `auth`, `sync`, `media`, `web`, `conflict`, `failed` |
+| `PUT config` `{server?, alt_servers?, media?, events?, interval?}` | `200 {ok, config}`; `422 {detail}` on bad values. `events:null` = all followed events. Changing `server` signs out and resyncs |
 | `POST test` `{server?}` | always `200`: `{ok:true, server, latency_ms, version, name, api}` or `{ok:false, server, error}` |
 | `POST login` `{username,password}` | `200 {ok:true, user}`; server's status + `{ok:false, detail}` (401 bad password, 429 …); `503 {offline:true}` |
 | `POST logout` | `200 {ok:true}` |

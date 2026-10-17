@@ -250,14 +250,35 @@ class Server:
             self.session.absorb_set_cookies(r.headers.get_all("Set-Cookie") or [], gen=gen)
         return r
 
-    # ---- session
-    def info(self, timeout=5.0) -> dict:
-        r = self.call("GET", "/app/v1/info", timeout=timeout, auth=False)
+    # ---- addresses: the configured server first, then its alternates (same server through another route,
+    # e.g. the Cloudflare tunnel + the Tailscale address); the session is the server's, so it works on all of them
+    def addresses(self):
+        out = []
+        for b in [self.config["server"]] + list(self.config.get("alt_servers") or []):
+            if b and b not in out:
+                out.append(b)
+        return out
+
+    @staticmethod
+    def _info_of(r) -> dict:
         d = r.json()
         if r.status != 200 or not isinstance(d, dict) or d.get("app") != "cyber-scout":
             raise HTTPError(r.status, r.body, "this address answers, but it is not a Cyber-Scout server "
                             f"(GET /app/v1/info: HTTP {r.status})")
         return d
+
+    def info_at(self, base, timeout=5.0) -> dict:
+        """GET /app/v1/info from another address (no cookies sent)."""
+        c = Conn(base, ca_file=self.config.get("ca_file"), pool_size=0)
+        try:
+            return self._info_of(c.request("GET", "/app/v1/info", headers={"Accept": "application/json"},
+                                           timeout=timeout, max_body=64 * 1024))
+        finally:
+            c.close()
+
+    # ---- session
+    def info(self, timeout=5.0) -> dict:
+        return self._info_of(self.call("GET", "/app/v1/info", timeout=timeout, auth=False))
 
     def refresh_session(self, timeout=15.0):
         gen = self.session.gen
