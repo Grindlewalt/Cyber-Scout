@@ -201,7 +201,10 @@
     const b = m => `<button type="button" class="chip ${V.video_mode === m ? "on" : ""}" data-vm="${m}" aria-pressed="${V.video_mode === m}">${VM_NAME[m]}${sug === m ? ` <span class="vw-sug">suggested</span>` : ""}</button>`;
     return `<div class="vw-mode"><span class="vw-ml">Match video</span><div class="vm-seg" role="group" aria-label="Match video mode">${b("livestream")}${b("auto")}</div>
       ${CS.help(VM_HELP, "About the match video mode")}<span id="vmst" class="muted small" role="status"></span>
-      ${sug ? `<span class="vw-sugw small">${sug !== V.video_mode ? `Suggested: <b>${VM_NAME[sug]}</b> · ${h(V.suggested_why || "")}` : `${h(V.suggested_why || "")}`}${V.chosen ? "" : " · <span class=\"muted\">not chosen yet</span>"}</span>` : ""}</div>`;
+      ${V.video_mode === "livestream" ? (() => { const bad = (V.checks || []).filter(c => c.state === "bad");
+        return `<span class="vw-sugw small">${bad.length ? `<b>${bad.length} step${bad.length > 1 ? "s" : ""} left</b> before matches are tracked from the stream: ${h(bad.map(c => c.label.replace(/^Layout: /, "")).join(", ").toLowerCase())}`
+          : "<b>Ready:</b> each match is tracked from its livestream clip as it is cut"} · <span class="muted">uploads are not looked up</span></span>`; })() : ""}
+      ${sug && V.video_mode !== "livestream" ? `<span class="vw-sugw small">${sug !== V.video_mode ? `Suggested: <b>${VM_NAME[sug]}</b> · ${h(V.suggested_why || "")}` : `${h(V.suggested_why || "")}`}${V.chosen ? "" : " · <span class=\"muted\">not chosen yet</span>"}</span>` : ""}</div>`;
   }
 
   // ---------------------------------------------------------------- the event's videos, in plain words
@@ -263,7 +266,8 @@
   /** Auto-calibrate the overhead camera of a video: detect tags -> fit (auto lines) -> the admin checks the overlay -> accept,
    * then the layout's field box from the fitted camera's field_roi (only when the video has none). done(saved, message). */
   async function autoCal(ev, box, sid, done) {
-    const fail = t => { box.innerHTML = `<div class="vw-ac"><p class="small">${CS.icon("warn", "ico")} <b>Couldn't calibrate automatically.</b> ${h(t)}</p>
+    const fail = t => { const off = /not (currently )?live|offline|is_upcoming|no video/i.test(t || "");
+      box.innerHTML = `<div class="vw-ac"><p class="small">${CS.icon("warn", "ico")} <b>Couldn't calibrate automatically.</b> ${off ? "It needs a frame of the field: try again once the stream is live (or recorded). " : ""}<span class="muted">${h(t)}</span></p>
         <div class="vs-row"><button type="button" data-sub="calib">Calibrate by hand</button><button type="button" id="acno">Close</button></div></div>`;
       box.querySelector("#acno").onclick = () => done(false); };
     box.innerHTML = `<div class="vw-ac"><p class="small" role="status"><b>Auto-calibrate</b> <span id="acst">reading frames and AprilTags from the video (about a minute)…</span></p></div>`;
