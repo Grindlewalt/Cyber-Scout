@@ -257,3 +257,25 @@ def test_tba_cut_before_calibration_and_without_model(env, monkeypatch):
     W.sync(EV, FakeTBA([tba(4, score=40, actual=T)]), track=False)
     st = json.loads((env["evd"] / "status.json").read_text())[f"{EV}_qm4"]
     assert len(cuts) == 1 and calls == [] and st["note"].startswith("clip ready")
+
+
+def test_program_feed_view_check(env):
+    """A program feed cuts between cameras: only frames showing the calibrated view are tracked.  The view
+    reference is the calibration plate of the stream source (the wizard's median frame)."""
+    import numpy as np, cv2
+    import process as PR
+    rng = np.random.default_rng(3)
+    wide = cv2.resize(rng.integers(0, 255, (27, 48, 3), dtype=np.uint8), (1920, 1080), interpolation=cv2.INTER_CUBIC)
+    roi = (0, 100, 1920, 1000)
+    ref = PR.view_reference(wide, wide.shape, roi)
+    moved = wide.copy(); cv2.circle(moved, (900, 400), 60, (0, 255, 255), -1)           # robots / fuel moved
+    closeup = cv2.resize(wide[300:500, 700:1050], (1920, 1080), interpolation=cv2.INTER_CUBIC)
+    assert PR.on_air(moved, ref, roi) and not PR.on_air(closeup, ref, roi) and PR.on_air(closeup, None, roi)
+    # the stream source's calibration plate is the reference only when the wizard calibrated that source
+    assert LI.stream_view_ref(EV, "url-abc") is None
+    (env["evd"] / "frames").mkdir(); cv2.imwrite(str(env["evd"] / "frames" / "calib_overhead_plate.png"), wide)
+    (env["evd"] / "calib_wizard").mkdir(); (env["evd"] / "calib_wizard" / "overhead.json").write_text(json.dumps({"source": "url-x"}))
+    assert LI.stream_view_ref(EV, "url-abc") is None
+    (env["evd"] / "calib_wizard" / "overhead.json").write_text(json.dumps({"source": "url-abc"}))
+    assert LI.stream_view_ref(EV, "url-abc").endswith("calib_overhead_plate.png")
+    assert LI.trackable(EV, "url-abc")["view_ref"].endswith("calib_overhead_plate.png")

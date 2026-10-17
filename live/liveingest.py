@@ -356,7 +356,17 @@ def trackable(ev, sid):
     if not cam:
         return dict(ok=False, reason=f"no calibration for the stream camera (camera_{sid}.json)")
     lay = {"version": 1, "processing_source": sid, "sources": {sid: L.doc["sources"][sid]}}
-    return dict(ok=True, reason="trackable", camera=cam, layout=lay)
+    return dict(ok=True, reason="trackable", camera=cam, layout=lay, view_ref=stream_view_ref(ev, sid))
+
+
+def stream_view_ref(ev, sid):
+    """The calibrated view of a stream camera: the calibration wizard's plate (median of its frames, cut-aways
+    dropped) when it was calibrated on this source -> process.view_ref (a program feed is tracked only while that
+    camera is on air).  None = no check."""
+    d = os.path.join(data_dir(), "events", ev)
+    st = _jload(os.path.join(d, "calib_wizard", "overhead.json"), {}) or {}
+    p = os.path.join(d, "frames", "calib_overhead_plate.png")
+    return p if st.get("source") == sid and os.path.exists(p) else None
 
 
 class LiveView:
@@ -414,6 +424,7 @@ class LiveView:
                     teams=teams, teams_from=src, tba_posted=bool(is_posted), stream_score=r.get("score"),
                     stream_teams=r.get("teams"), flags=r.get("flags"))
         return dict(clip=clip_of(r), start=float(r["auto_start_in_clip"]), camera=tr["camera"], layout=tr["layout"],
+                    view_ref=tr.get("view_ref"),
                     start_trusted="start_from_tba_time" not in (r.get("flags") or []),
                     teams=teams, teams_from=src, source=sid, tba_posted=bool(is_posted), info=info,
                     video=dict(id=f"live-{re.sub(r'[^A-Za-z0-9_-]', '', vid)[:24]}-{r['id']}",

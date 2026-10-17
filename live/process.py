@@ -25,6 +25,7 @@ SCAN_T1 = float(os.environ.get("SCAN_T1", "190"))
 OUT_HZ = 10                                             # web export rate
 HB, SB = 12, 3
 NO_FEED_LEVEL = 20                                      # field mean below this = feed lost
+VIEW_NCC = float(os.environ.get("VIEW_NCC", "0.45"))     # program feed (view_ref): below = another camera on air
 CLOCK_BOX = tuple(int(v) for v in os.environ.get("CLOCK_BOX", "912,72,1008,116").split(","))   # x0,y0,x1,y1
 # Broadcast layout (live/layout.py, data/events/<ev>/layout.json drawn in the box editor): clock box,
 # picture-in-picture areas without robots, field area.  No layout = the hard-coded 2026 FIRST values above.
@@ -89,9 +90,35 @@ def hsv_desc(img, x0, y0, x1, y1):
 _TAGDET = None
 
 
-def check_pose(video, cam, tag_csv, log=print):
+def view_thumb(im, roi):
+    """Normalised grey thumbnail of the top 70% of the field ROI (a bottom score bar stays out of it): two frames
+    of the same camera view correlate 0.6-1.0 (robots / fuel move), another camera ~0.1 (2026wagg program feed)."""
+    x0, y0, x1, y1 = [int(v) for v in roi]
+    c = im[y0:y0 + max(8, int(0.7 * (y1 - y0))), x0:x1]
+    g = cv2.cvtColor(c, cv2.COLOR_BGR2GRAY) if c.ndim == 3 else c
+    t = cv2.resize(g, (128, 40), interpolation=cv2.INTER_AREA).astype(np.float32)
+    t -= t.mean()
+    return t / (t.std() + 1e-6)
+
+
+def view_reference(view_ref, shape, roi):
+    """view_ref (path / BGR image of the calibrated camera's view, e.g. the calibration plate) -> thumbnail at the
+    video's frame size, or None (no check)."""
+    if view_ref is None: return None
+    im = cv2.imread(view_ref) if isinstance(view_ref, str) else view_ref
+    if im is None: return None
+    if im.shape[:2] != tuple(shape[:2]): im = cv2.resize(im, (shape[1], shape[0]), interpolation=cv2.INTER_AREA)
+    return view_thumb(im, roi)
+
+
+def on_air(im, ref, roi):
+    """Is the calibrated camera on air in this frame (program feed cutting between cameras)?"""
+    return ref is None or float((view_thumb(im, roi) * ref).mean()) >= VIEW_NCC
+
+
+def check_pose(video, cam, tag_csv, log=print, view_ref=None):
     """AprilTags near their predicted pixels in ~28 frames -> re-solve pose
-    (intrinsics fixed) when the camera moved.  Returns (cam, info)."""
+    (intrinsics fixed) when the camera moved.  Returns (cam, info).  view_ref: only frames showing that view."""
     try:
         from pupil_apriltags import Detector as TagDet
     except ImportError:
@@ -101,11 +128,13 @@ def check_pose(video, cam, tag_csv, log=print):
     tags = {int(r["ID"]): np.array([float(r["X"]), float(r["Y"]), float(r["Z"])]) * IN
             for r in csv.DictReader(open(tag_csv, encoding="utf-8-sig"))}
     c = av.open(video); s = c.streams.video[0]; s.thread_type = "AUTO"
-    frames, nxt = [], 8.0
+    frames, nxt, vref, vdone = [], 8.0, None, view_ref is None
+    roi = cam.roi()
     for f in c.decode(s):
         if f.time is None or f.time < nxt: continue
         g = cv2.cvtColor(f.to_ndarray(format="bgr24"), cv2.COLOR_BGR2GRAY); nxt += 6.0
-        if g[::16, ::16].mean() > NO_FEED_LEVEL: frames.append(g)
+        if not vdone: vref, vdone = view_reference(view_ref, g.shape, roi), True
+        if g[::16, ::16].mean() > NO_FEED_LEVEL and on_air(g, vref, roi): frames.append(g)
         if nxt > 170: break
     c.close()
     if len(frames) < 5:
@@ -242,7 +271,7 @@ def bump_y(cam):
 
 
 def detect_video(video, cam, model, t1=SCAN_T1, log=print, hooks=(), ocr=None, clock_box=None, masks=(),
-                 field=None, light_clock=False):
+                 field=None, light_clock=False, view_ref=None):
     """Robot detection at FPS (30 Hz) over the field ROI.  `hooks` get EVERY decoded
     frame (full video rate, colour-swap fixed, no-feed frames skipped) via
     hook.push(video_frame_idx, t, bgr) -- the fuel tracker needs 60 fps.
@@ -250,7 +279,9 @@ def detect_video(video, cam, model, t1=SCAN_T1, log=print, hooks=(), ocr=None, c
     frames (its reads index the returned detection rows); the caller closes it.
     Layout (layout_params; defaults = hard-coded behaviour): clock_box (default CLOCK_BOX),
     masks = picture-in-picture boxes greyed out in the detection crop, field = box the ROI is
-    clipped to, light_clock = clock digits are light on a dark box (inverted for clock_start)."""
+    clipped to, light_clock = clock digits are light on a dark box (inverted for clock_start).
+    view_ref: image (or path) of the calibrated camera's view -- a program feed that cuts to other cameras: frames
+    not showing that view count as "feed missing" (nothing detected, no hooks), like a black feed."""
     x0, y0, x1, y1 = cam.roi()
     if field:
         x0, y0 = max(x0, int(field[0])), max(y0, int(field[1]))
@@ -264,7 +295,7 @@ def detect_video(video, cam, model, t1=SCAN_T1, log=print, hooks=(), ocr=None, c
     c = av.open(video); s = c.streams.video[0]; s.thread_type = "AUTO"
     rows, chas, body = [], [], []
     clock = []                      # (t, binarised clock digits) for the first 45 s
-    n = 0; nxt = 0.0; t0 = time.time(); k = -1
+    n = 0; nxt = 0.0; t0 = time.time(); k = -1; vref, vdone = None, view_ref is None
     for f in c.decode(s):
         k += 1
         if f.time is None: continue
@@ -273,6 +304,8 @@ def detect_video(video, cam, model, t1=SCAN_T1, log=print, hooks=(), ocr=None, c
         if not sample and not hooks: continue
         im = f.to_ndarray(format="bgr24")
         live = float(im[y0:y1:16, x0:x1:16].mean()) > NO_FEED_LEVEL
+        if not vdone: vref, vdone = view_reference(view_ref, im.shape, (x0, y0, x1, y1)), True
+        if live and vref is not None: live = on_air(im, vref, (x0, y0, x1, y1))
         if live and swapped(im):
             im = np.ascontiguousarray(im[:, :, ::-1]); n_swap += 1
         if live:
@@ -395,7 +428,8 @@ def track_stats(xy, obs, alliance_name, t_auto_end, LEN, live=None):
 
 # ---------------------------------------------------------------- main
 def process(video, cam_path, onnx, tag_csv=None, log=print, start_hint=None, pose_guess=None,
-            teams=None, hooks=(), dump=None, extra_reads=None, event=None, layout=None, start_trusted=False):
+            teams=None, hooks=(), dump=None, extra_reads=None, event=None, layout=None, start_trusted=False,
+            view_ref=None):
     """start_hint: typical match-start offset for this kind of upload, used only
     when neither the clock nor robot motion gives one.  start_trusted=True: start_hint is a measured
     auto start (a livestream clip's auto_start_in_clip, live/livestream.py) -> used when the clock check
@@ -420,14 +454,16 @@ def process(video, cam_path, onnx, tag_csv=None, log=print, start_hint=None, pos
     Identity uses the same reads as without it unless OCR_OPEN_REJECT=1 (measured: no gain).
     layout: the event's broadcast layout (live/layout.py): None = found next to cam_path / by the event
     key in the paths, False = hard-coded 2026 FIRST boxes, or a Layout / layout.json path / dict.
-    Without a layout.json the behaviour is unchanged."""
+    Without a layout.json the behaviour is unchanged.
+    view_ref: image / path of the calibrated camera's view (livestream program feed that cuts to close-ups): only
+    frames showing it are tracked (and used by the pose check); the rest count as feed gaps (feed_ok = on-air share)."""
     raw = json.load(open(cam_path))
     if pose_guess:
         raw = dict(raw, rvec=pose_guess["rvec"], tvec=pose_guess["tvec"])
     cam = CAMM.Camera(raw)
     pose = {"checked": False}
     if tag_csv:
-        cam, pose = check_pose(video, cam, tag_csv, log)
+        cam, pose = check_pose(video, cam, tag_csv, log, view_ref=view_ref)
     CAMM.install_geom_shim(cam)
 
     team_list = None
@@ -447,7 +483,7 @@ def process(video, cam_path, onnx, tag_csv=None, log=print, start_hint=None, pos
     t0 = time.time()
     det, chas, body, n, clock, feed = detect_video(video, cam, model, log=log, hooks=hooks, ocr=sampler,
                                                    clock_box=lp["clock_box"], masks=lp["masks"], field=lp["field"],
-                                                   light_clock=lp["light_clock"])
+                                                   light_clock=lp["light_clock"], view_ref=view_ref)
     reads = sampler.close() if sampler else np.zeros((0, 7))
     log(f"  detection: {n} frames, {len(det)} raw dets in {time.time() - t0:.0f}s")
     st = prepare(det, chas, body, n, clock, feed, reads, cam, log, start_hint,
@@ -659,6 +695,8 @@ def finish(st, log=print):
                t_auto_end=t_auto_end, t_teleop_start=0.5 + AUTO_S + PAUSE_S,
                pose=st["pose"], n_dets=int(len(d)), tracks=out_tracks,
                field=dict(length=CAMM.LEN, width=CAMM.WID))
+    if view_ref is not None:
+        res["view_check"] = dict(threshold=VIEW_NCC, on_air=res["feed_ok"])
     if identity is not None:
         res["identity"] = identity
     return res
