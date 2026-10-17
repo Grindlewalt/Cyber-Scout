@@ -214,6 +214,21 @@ def test_worker_sync_untrackable_stream_waits_for_uploads(env, monkeypatch):
     assert calls == [(f"{EV}_qm1", None)]                       # TBA posted: the upload path, as before
 
 
+def test_worker_sync_without_model_publishes_but_does_not_track(env, monkeypatch):
+    """No detector model yet (track=False): the site is still built from TBA + livestream records; no tracking."""
+    import worker as W
+    monkeypatch.setattr(W, "DATA", str(env["data"]))
+    _trackable_event(env)
+    write_dir(env, "vidA", [rec("qm1", T=100)])
+    calls, sites = [], []
+    monkeypatch.setattr(W, "process_match", lambda ev, m, *a, live=None: calls.append(m["key"]) or True)
+    monkeypatch.setattr(W, "build_site", lambda ev, tba: sites.append(ev))
+    W.sync(EV, FakeTBA([tba_match(1), tba_match(2, score=40)]), track=False)
+    assert calls == [] and sites == [EV]
+    W.sync(EV, FakeTBA([tba_match(1)]))                          # default: tracking as before
+    assert calls == [f"{EV}_qm1"]
+
+
 def test_service_status_files(env, monkeypatch):
     """The service writes a status for a followed event with a livestream source (no network: resolve fails)."""
     evd = env["data"] / "events" / EV

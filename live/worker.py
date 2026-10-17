@@ -716,7 +716,8 @@ def upload_layout(ev, v):
         traceback.print_exc(); return None
 
 
-def sync(ev, tba, max_new=None):
+def sync(ev, tba, max_new=None, track=True):
+    """track=False (no detector model yet): TBA results, livestream fast results and the site only."""
     tba_ms = tba.matches(ev)
     ms = sorted(tba_ms, key=lambda m: (m.get("actual_time") or m.get("time") or 0, sort_key(m)))
     lv = live_view(ev)                                 # livestream records (live/liveingest.py)
@@ -776,6 +777,7 @@ def sync(ev, tba, max_new=None):
             live_reconcile(ev, m, status)              # TBA posted a match tracked from the stream
         if os.path.exists(os.path.join(ev_dir(ev), "matches", f"{m['key']}.json")): continue
         if status.get(m["key"], {}).get("state") == "failed": continue
+        if not track: continue                         # no detector model: robot tracking waits, the rest publishes
         if process_match(ev, m, cfg, status, meta_cache, live=live):
             done_any = True; n += 1
             jsave(os.path.join(DATA, "cache", "ytmeta.json"), meta_cache)
@@ -828,7 +830,7 @@ def comp_order(events, tba, today=None):
 BACKLOG_BATCH = int(os.environ.get("COMP_BACKLOG_BATCH", "2"))
 
 
-def sync_all(events, tba, max_new=None):
+def sync_all(events, tba, max_new=None, track=True):
     """One pass over every followed competition (live first). True when work was left over (don't sleep long)."""
     order, live = comp_order(events, tba)
     more = False
@@ -837,7 +839,7 @@ def sync_all(events, tba, max_new=None):
         if live and ev not in live:
             cap = min(cap, BACKLOG_BATCH) if cap else BACKLOG_BATCH
         try:
-            more = bool(sync(ev, tba, cap)) or more
+            more = bool(sync(ev, tba, cap) if track else sync(ev, tba, cap, track=False)) or more
         except Exception:
             traceback.print_exc()
     return more
@@ -912,6 +914,9 @@ def _sleep(seconds, events=None):
         if events and _live_sig(events) != l0: return
 
 
+_TRACK_LOGGED = [None]
+
+
 def main():
     if "--recorder" in sys.argv[1:]:                  # compose service `recorder` (same image): live streams
         import liveingest
@@ -926,16 +931,20 @@ def main():
         key, events = load_config()
         why = ("match processing paused (PAUSE_PROCESSING=1)" if os.environ.get("PAUSE_PROCESSING") == "1" else
                "no TBA key (finish setup in the web app, or set TBA_KEY)" if not key else
-               "no events followed (add one in the web app, or set EVENTS)" if not events else
-               f"model not found: {MODEL}" if not os.path.exists(MODEL) else None)
+               "no events followed (add one in the web app, or set EVENTS)" if not events else None)
         if why:
             if os.environ.get("ONCE") == "1": sys.exit(why)
             if why != waiting: log("waiting:", why)
             waiting = why; _sleep(30); continue
         if waiting: log("configured: following", ", ".join(events)); waiting = None
+        track = os.path.exists(MODEL)                  # without the detector: results, schedule, livestream still publish
+        if track != _TRACK_LOGGED[0]:
+            _TRACK_LOGGED[0] = track
+            log("robot tracking on" if track else f"no detector model ({MODEL}): publishing TBA + livestream results; "
+                "robot tracking starts when the model file appears")
         if tba is None or tba.key != key:
             tba = TBA(key, os.path.join(DATA, "tba"))
-        more = sync_all(events, tba, int(os.environ["MAX_NEW"]) if os.environ.get("MAX_NEW") else None)
+        more = sync_all(events, tba, int(os.environ["MAX_NEW"]) if os.environ.get("MAX_NEW") else None, track=track)
         if os.environ.get("ONCE") == "1": break
         _sleep(5 if more and not os.environ.get("MAX_NEW") else POLL, events)   # backlog left: next pass soon
 
