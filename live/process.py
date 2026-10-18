@@ -505,6 +505,8 @@ def process(video, cam_path, onnx, tag_csv=None, log=print, start_hint=None, pos
     res = finish(st, log)
     if lp["info"]:
         res["layout"] = lp["info"]
+    if view_ref is not None:                    # program feed: feed_ok = the calibrated camera's on-air share
+        res["view_check"] = dict(threshold=VIEW_NCC, on_air=res["feed_ok"])
     return res
 
 
@@ -695,8 +697,6 @@ def finish(st, log=print):
                t_auto_end=t_auto_end, t_teleop_start=0.5 + AUTO_S + PAUSE_S,
                pose=st["pose"], n_dets=int(len(d)), tracks=out_tracks,
                field=dict(length=CAMM.LEN, width=CAMM.WID))
-    if view_ref is not None:
-        res["view_check"] = dict(threshold=VIEW_NCC, on_air=res["feed_ok"])
     if identity is not None:
         res["identity"] = identity
     return res
