@@ -1989,13 +1989,13 @@ Samples are exactly the tracker's (30 Hz, `detect_video`'s rule), so sample `n` 
 | dissolve / wipe / whip pan | *motion-compensated* NCC: the frame 10 samples (and 30 samples) ago, warped along the flow homographies, vs now; < 0.7 (< 0.5 over 1 s) = transition, no pose. 2026wagg dissolves last ≈ 0.8–1.2 s and never drop the plain frame-to-frame NCC below 0.96, so the plain cut test alone misses them |
 | fixed view | at a shot's first tag frame: tags searched (×4 windows) where `ref` predicts them; ≥ 3 tags within `DYN_FIXED_PX` 3 px (or ≤ 12 px and a rotation-only re-aim brings them < 1.5 px) → the shot is the fixed camera (kind `FIXED`, the calibration itself). It stays fixed while the frame matches the fixed view's thumbnail (`view_ref`, or learned from the first fixed frame) ≥ `VIEW_NCC` |
 | flow | LK on ≤ 300 corners of a 480×270 grey frame → RANSAC homography (full-res px), each sample |
-| tags | `DYN_TAG_HZ` 5 Hz (10 Hz while the flow drifts > 3 px): windows around the tags the current pose predicts (upscaled to ≈ 48 px), the whole frame at 1× when there is no pose (or < 3 tags, ≤ 1/s), tiled ×2 as a last resort. Close-up tags are 30–150 px; wide-shot tags 17–28 px |
+| tags | `DYN_TAG_HZ` 5 Hz (10 Hz while the flow drifts > 3 px; every 2nd sample at high zoom, f > 1.5 × frame width): windows around the tags the current pose predicts (upscaled to ≈ 48 px), the whole frame at 1× when there is no pose (or < 3 tags, ≤ 1/s), tiled ×2 as a last resort. Close-up tags are 30–150 px; wide-shot tags 17–28 px |
 | online pose | first frames: free solve (focal sweep + SQPnP, then least squares on rotation, centre, focal and — from ≥ 3 tags — radial k1); then the shot's centre is fixed and only rotation + focal are solved (works from one tag) |
 
 **Pass 2 (`_finalize`).**
 1. Transition runs are trimmed: frames that already/still look like the next/previous shot (flow-warped NCC ≥ 0.85) join it.
 2. Each moving shot: one camera centre + k1 (broadcast cameras pan/tilt/zoom on a fixed mount). The candidates are the shot's own online solves, the clip's other cameras (clusters of centres, 0.75 m), and the fixed camera's mount; each is tried with k1 and with k1 = 0 (high zoom). The best by the number of tag frames ≤ `DYN_MAX_RMS` 2.5 px wins, then a joint sparse least squares refines the centre + k1 + every frame's rotation/focal.
-3. Anchors = tag frames ≤ 2.5 px (kind `TAGS`). Between two anchors the pose is carried along the homographies from both sides and blended (kind `FLOW`): a rotating/zooming camera maps the image by H = K₂R₂R₁ᵀK₁⁻¹, so (R₂, f₂) follow in closed form (`from_homography`). The interval is trusted only if carrying the first anchor lands on the second one's tags within `DYN_FLOW_DRIFT` 6 px. Otherwise (a person filling a zoomed frame drags the flow), the interval is interpolated when the anchors are ≤ 0.7 s apart (kind `INTERP`), else carried only 0.1 s. Before the first or after the last anchor of a shot: ≤ `DYN_EDGE_AGE` 0.33 s. Every carried pose stays ≤ `DYN_MAX_AGE` 1 s from its anchor and passes `_sane` (≤ 2° + 20°/s, zoom 0.7–1.5×).
+3. Anchors = tag frames ≤ 2.5 px (kind `TAGS`). Between two anchors the pose is carried along the homographies from both sides and blended (kind `FLOW`): a rotating/zooming camera maps the image by H = K₂R₂R₁ᵀK₁⁻¹, so (R₂, f₂) follow in closed form (`from_homography`). The interval is trusted only if carrying the first anchor lands on the second one's tags within `DYN_FLOW_DRIFT` 6 px. Otherwise (a person filling a zoomed frame drags the flow), the interval is interpolated when the anchors are ≤ 0.7 s apart (kind `INTERP`), else carried only 0.1 s. Before the first or after the last anchor of a shot: ≤ `DYN_EDGE_AGE` 0.33 s (0.1 s at high zoom, where robots fill the frame and drag the flow). Every carried pose stays ≤ `DYN_MAX_AGE` 1 s from its anchor and passes `_sane` (≤ 2° + 20°/s, zoom 0.7–1.5×).
 4. The fixed camera is re-aimed over all its tag frames when they are > 1 px off (`_reaim_ref`). `PoseTrack.ref` is then the re-aimed dict (`dyn_reaim` block).
 
 Lens: the fixed camera keeps its calibrated lens. Other cameras are pinhole with the principal point at the centre and a radial k1 per shot (prior 0 ± 0.25; `DYN_K1` sets the prior). k1 matters: the 2026wagg close-up at f ≈ 1720 px has k1 ≈ −0.13. With k1 = 0 the 6–7-tag frames fit at 5 px RMS, with k1 at 0.4 px.
@@ -2051,10 +2051,13 @@ writes `camera_<sid>.json`, `layout.json`, `view_<sid>.png` and `auto_setup.json
    identical while the camera pictures change). Merged, and edge bands widened to the full frame. On qm20 it found
    the score bar (0, 824)–(1920, 1080) (the hand-drawn layout has y 826) and the top title banner.
 2. **Poses:** `estimate` with no reference.
-3. **Fixed camera:** static shots (anchor rotations within 0.05°, focal 0.5 %, ≥ 60 % of the carpet in view) are
-   grouped by pose; the group on air longest is re-fitted like the calibration wizard:
+3. **Fixed camera:** static shots are grouped by pose. A shot is static when the same tags stayed on the same pixels
+   (`info.shot_still_px` ≤ 1 px; the per-frame tag poses of a wide view scatter ≈ 1°, and the flow drifts 2–8 px/s,
+   so neither can tell) and ≥ 60 % of the carpet is in view. The group on air longest is re-fitted like the
+   calibration wizard:
    - `detect_tags_frames` over 10 of its frames;
    - `wizard_fit` from the dynpose pose;
+   - `detect_tags_predicted` and a refit;
    - `refine_with_lines` on the median plate.
 
    The result is a camera.json (`calib.method = "dynpose auto_setup"`). Its median plate is the view ref.
@@ -2068,10 +2071,55 @@ writes `camera_<sid>.json`, `layout.json`, `view_<sid>.png` and `auto_setup.json
 - **Video page:** a `job_*` in `live/sources.py` can run it and show `camera` + `overlay_lines` in the existing
   accept/reject overlay.
 
-### 15.4 Measured (2026wagg qm20, Twitch program feed, 1080p60; `.work/dynpose/`)
+### 15.4 Measured (2026wagg Twitch program feed, 1080p60; scripts and proof frames in `.work/dynpose/`)
 
-| | |
-|---|---|
+**Poses.** Held-out = tags re-detected on frames whose pose came from flow or interpolation, never solved from.
+Ground error = carpet points re-located through the pose, vs through a pose solved from those held-out tags.
+
+| | qm20 (M1) | qm35 (on the M2, unseen while tuning) |
+|---|---|---|
+| shots / cameras | 22 shots; fixed + one close-up mount | 74 shots; fixed + 2 corner mounts + a long lens (zoom to 21×) |
+| pose coverage | 96 % (fixed 66 %, moving 30 %) | 81 % (fixed 40 %, moving 41 %; none = transitions, whip pans, tag-less zooms) |
+| anchor tag RMS | 0.38 px median, 0.46 p90 | 0.43 px median, 1.19 p90 |
+| held-out `FLOW` frames | 0.43 px median, 1.1 px p90; ground 1.0 cm median, 3.4 cm p90 | 0.52 px, 7.5 px p90; ground 1.7 cm, 11 cm p90 |
+| held-out `INTERP` frames | 0.31 px, 0.41 p90 | 0.54 px, 3.0 p90 |
+| fixed camera | calibration 4.9 px off (camera moved since the accept); re-aimed 0.27° → 0.81 px; a free 4–5-tag solve per frame agrees to 1.2 px median, 1.7 p90 | 4.5 px off; re-aimed → 0.78 px; free solve agrees to 1.0 px median |
+| estimate wall time | 35 s for 190 s of video | 197 s (niced, beside the worker) |
+
+**Close-up mounts.** The red-corner camera sits at (16.7, 12.2, 1.9) m and the blue-corner one at (0.5, 11.9, 1.8)
+m. Each is re-found in every shot within ≈ 0.2 m.
+
+**Tracking (qm20, `process(dynamic=True)` vs the fixed-only `view_ref` path, same clip and teams).**
+- feed_ok: 0.98 vs 0.67. auto_feed_ok: 0.97 vs 0.72.
+- Detections in the match window: 20 583 vs 16 758 (4 297 from moving views).
+- Usable bumper reads: 653 vs 313 (close-ups read numbers well).
+- Red-team identity confidence: 0.93 / 0.91 / 0.93 vs 0.90 / 0.87 / 0.85.
+- Raw-detection jitter (second difference of chained detections): 22 mm median in the fixed view, 41 mm in moving
+  views (p90 115 / 137 mm).
+- Wall time on the M1: 438 s vs 306 s.
+
+**auto_setup.** Found the fixed camera on qm33 (on air 55 %, 4 shots) and qm35 (13 %, 2 shots).
+- Fit: 5–6 tags at 0.25 px RMS, centre line 0.3 px.
+- Against the accepted wizard calibration over the carpet grid: 5.5–5.7 px median, 14–19 px max. Both fit the tags
+  < 0.5 px and the centre line ≈ 1.6 px. They differ in the lens (k1 −0.11 to −0.20 vs −0.38 + k2/k3), which 5–6
+  hub/wall tags do not pin down.
+- Use it as a candidate to accept, not a replacement for a checked calibration.
+
+### 15.5 Switching the worker to dynamic mode (not done)
+
+1. **`worker.py:process_match`.** Pass `dynamic=True` to `PR.process(...)` for program-feed sources, beside
+   `view_ref=live.get("view_ref")`. Gate it with a per-source flag (e.g. sources.json `"dynamic": true` on the
+   livestream source) or an env var. The calibrated camera stays the fixed reference. Without one (a pasted stream),
+   pass `cam_path=None`, or run `auto_setup` first. `feed_ok` then means "a camera with a pose was on air", which is
+   what the video-choice and coverage rules want.
+2. **`shots.py:368`.** Use `(match.get("dynamic") or {}).get("fixed_gaps", match.get("feed_gaps"))`, so fuel tracks
+   are only used while the fixed camera is on air. `enrich` decodes again with `camera_pose` (the fixed camera's).
+3. **Site and analytics.** Optionally label positions from moving cameras (`res["dynamic"]["view"]`) and show
+   `fixed_feed_ok` next to "partial footage".
+4. **Cost.** One extra decode pass (35 s per match on an M1 alone, ≈ 3 min beside the worker on the M2), plus
+   detection and OCR on the close-up frames as well (+40 % detection time on qm20).
+
+---|---|
 | pose coverage | 97 % of samples (fixed 66 %, moving 31 %, none 3 % = transitions); 22 shots |
 | anchor tag RMS (moving views) | 0.37 px median, 0.45 px p90 |
 | held-out tags on `FLOW` frames (never solved from) | 0.45 px median; ground error of carpet points 1.0 cm median, 5 cm p90 |

@@ -801,11 +801,27 @@ def _finalize(scan, log=print):
         if not anchors: continue
         nshot_moving += 1
         _fill(pt, recs, idx, anchors)
+    pt.info["shot_still_px"] = _stillness(recs, shots)
     if scan.refpose is not None:
         _reaim_ref(pt, scan, recs, log)
     pt.info.update(n_cameras=len(clusters), shots_fixed=nshot_fixed, shots_moving=nshot_moving,
                    ms=dict((k, round(1000 * v / max(n, 1), 2)) for k, v in scan.ms.items()))
     return pt
+
+
+def _stillness(recs, shots):
+    """{shot id: px} -- how far the same tag's detected centre wandered within the shot (median over tags of the
+    90th-percentile distance from its median position; tags seen in >= 3 frames).  A locked-off camera: < 0.5 px;
+    a slow pan of 0.1 deg at f = 1700 px is already 3 px.  Shots without repeated tags are left out."""
+    out = {}
+    for sid, idx in shots.items():
+        cen = {}
+        for i in idx:
+            for k, c in (recs[i]["tags"] or {}).items():
+                cen.setdefault(k, []).append(np.asarray(c, float).mean(0))
+        sp = [float(np.percentile(np.linalg.norm(np.array(v) - np.median(v, 0), axis=1), 90)) for v in cen.values() if len(v) >= 3]
+        if sp: out[str(sid)] = round(float(np.median(sp)), 3)
+    return out
 
 
 def _join_transitions(scan, recs):
@@ -1060,16 +1076,16 @@ def auto_overlays(video, n=16, frames=None):
     return _merge_boxes(out)
 
 
-def _static_shots(pt, min_s=1.5, max_motion=0.6):
-    """Shots whose camera did not move -- the flow says so: the image corners moved < max_motion px per sample in
-    95 % of the samples -- and that show most of the field -> [(shot id, sample indices, Pose of the best anchor)]."""
+def _static_shots(pt, min_s=1.5, max_px=1.0):
+    """Shots whose camera did not move -- the same tags stayed on the same pixels (pt.info["shot_still_px"] <= max_px)
+    -- and that show most of the field -> [(shot id, sample indices, Pose of the best anchor)]."""
     out = []
+    still = pt.info.get("shot_still_px") or {}
     for sid in np.unique(pt.shot):
         idx = np.where((pt.shot == sid) & (pt.kind == TAGS))[0]
         allx = np.where((pt.shot == sid) & (pt.kind > 0))[0]
         if len(idx) < 2 or len(allx) < min_s * FPS: continue
-        mo = pt.motion[allx]; mo = mo[np.isfinite(mo)]
-        if len(mo) < 0.5 * len(allx) or np.percentile(mo, 95) > max_motion: continue
+        if still.get(str(int(sid)), 1e9) > max_px: continue
         best = idx[int(np.nanargmin(pt.rms[idx] / np.maximum(pt.ntag[idx], 1)))]
         p = pt.pose(best)
         if visible_field(p, pt.W, pt.H) < 0.6: continue
@@ -1124,6 +1140,12 @@ def auto_setup(video, t1=190.0, log=print, overlays=None, source_id=None):
         tags = {k: v for k, v in tags.items() if not _in_masks(v["center"], overlays)}
         vec = np.r_[p0.f, 1.0, p0.cx, p0.cy, p0.D[0], 0.0, p0.rv, p0.C, 0.0]
         pfit, rep = CAL.wizard_fit(W, H, tags, None, None, p_init=vec)
+        if pfit is not None:                    # the wizard's second pass: tags near where the first fit puts them
+            more = CAL.detect_tags_predicted(grays, pfit, W, H, have=set(tags))
+            more = {k: v for k, v in more.items() if not _in_masks(v["center"], overlays)}
+            if more:
+                p2, rep2 = CAL.wizard_fit(W, H, {**tags, **more}, None, None, p_init=pfit)
+                if p2 is not None: pfit, rep, tags = p2, rep2, {**tags, **more}
         if pfit is not None:
             plate = np.median(np.stack(frames), 0).astype(np.uint8)
             try:
