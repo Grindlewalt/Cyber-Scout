@@ -85,6 +85,7 @@ class App:
         log.info("signed in to %s as %s", self.server.base, (sess.get("user") or {}).get("username"))
         self.engine.clear_errors("auth")
         self.engine.kick()
+        self.processor.kick()
         return sess
 
     def logout(self):

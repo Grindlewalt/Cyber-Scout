@@ -124,6 +124,65 @@ The web app itself (39 files, 1.8 MB) mirrors in 14 s on the slow link, once per
   changes (`kind:"failed"`, e.g. 403 lockdown, 422) likewise. A `401` stops the flush until you sign in again.
 * Sign-in, sign-out, password change and setup are never queued (they need the server).
 
+## Help process matches (processor mode)
+
+Tracking one match takes the server about 3.5 minutes. Any computer running the client can share that work:
+**Help process matches** makes it claim the next match the server would track, download its livestream clip, run
+the server's own pipeline on it and upload the results. The server publishes them as if its worker had tracked the
+match (and keeps the clip in `MEDIA/<ev>/<key>.mp4`). Server side: `server/routers/processing.py`.
+
+* **Needs an admin account** (a processor's uploads become the event's tracking data) and a **processing Python**.
+* Open `http://127.0.0.1:7600/client/processing` (the switch, the status line, the Python and Set up), or start with
+  `--process on [--process-python /path/to/python]`. The status line is also in `GET /client/v1/status` →
+  `processing.line`, e.g. `processing qm12 at 40%, done 3`.
+* **Same claims as the server's worker** (`events/<ev>/claims/<key>.json`, `live/claims.py`), in the same order
+  (time order, `priority.json` first), so the server, `tools/helper.py` and any number of clients never track a
+  match twice. A heartbeat refreshes the claim every minute; a claim not refreshed for 30 min is handed to someone
+  else (a processor that disappears costs at most 30 min for that match). A match that fails here is released and
+  skipped here for 30 min; after 2 processor failures the server leaves it to its own worker.
+* Only **livestream clips** are handed out (the worker's livestream input: a trackable stream with a calibrated
+  camera). Per-match YouTube uploads stay with the server's worker.
+
+**Why a separate Python.** The pipeline (`live/` + `src/`: onnxruntime, PyAV, OpenCV, NumPy, SciPy,
+pupil-apriltags) is ~400 MB of native packages that can't be part of this stdlib client. The client runs it as a
+subprocess, `<python> -u <pipeline>/runner.py job.json` (`csclient/procrunner.py`, shipped by the server inside its
+code tarball so it always matches that code), which calls `live/worker.py`'s `process_match` on the clip and reports
+progress on stdout (`@@CS {json}` lines). The processing Python is, in order:
+
+1. Settings → **Processing Python** (`process_python` in `config.json`, `--process-python`): any Python with the
+   packages, e.g. a Cyber-Scout checkout's `.venv/bin/python` on a dev machine;
+2. `processing/venv/` made by **Set up processing** (one time, needs [uv](https://docs.astral.sh/uv/)):
+   `uv venv --python 3.12` + `uv pip install -r requirements.txt` (the pins the server sends, from the root
+   Dockerfile; CPU onnxruntime, which uses CoreML on a Mac). Without uv: install it, or make a venv by hand and
+   point setting 1 at it.
+
+The client checks that Python once per version (`import onnxruntime, av, cv2, numpy, scipy, pupil_apriltags`); the
+status says `needs_setup: …` until it works. On macOS the pipeline runs with `FORCE_CPU=1 ORT_COREML=1` (like
+`tools/helper.py`).
+
+**Code and model come from the server**, cached by version: `GET /app/v1/processing/pipeline` names the code
+version (content hash of `live/` + `src/` + the runner, e.g. `p-e46bb97a3587`) and the model's sha256; the client
+downloads `code.tar.gz` and `robot.onnx` (Range-resumable, checksum-verified) into `processing/pipelines/<version>/`
+and `processing/models/<sha256>.onnx`. Every claim carries the version; when the server's code changes, the claim is
+refused (409) and the client fetches the new code first.
+
+Per match (all resumable on a flaky link): `POST /app/v1/processing/claim` → `GET …/clip` (Range; `processing/parts/`
+survives restarts) → pipeline → `PUT …/results/{fuel,shots,analytics,matches}` (gzip) → `POST …/complete`
+(Idempotency-Key, so a lost answer is not a problem) — or `POST …/release` on failure / when turned off.
+
+| file | |
+|---|---|
+| `processing/pipelines/<version>/` | the server's pipeline code (`live/`, `src/`, `runner.py`, `requirements.txt`) |
+| `processing/models/<sha256>.onnx` | the detector |
+| `processing/venv/` | the Python made by Set up processing |
+| `processing/work/<ev>/<key>/` | the match being tracked (clip, job.json, runner.log); removed afterwards |
+| `processing/logs/<key>.log` | the pipeline's log of the last 30 matches |
+
+Control API: `GET /client/v1/processing` → `{enabled, state (off | waiting | checking | updating | needs_setup |
+idle | downloading | processing | uploading | error), line, message, key, match, pct, done, failed, last, processor,
+python, python_setting, pipeline, events, setup}`; `PUT /client/v1/processing {enabled?, python?: absolute path |
+null, events?: [keys] | null}`; `POST /client/v1/processing/setup` (202; progress in `setup`).
+
 ## Control API (`/client/v1/*`)
 
 Only for pages served by this client: requests need the per-install `cs_client` cookie (HttpOnly,
@@ -142,6 +201,7 @@ local `cs_csrf` cookie (the client's own token — the server's CSRF token and s
 | `POST sync` `{ev?, media?}` | `202 {started:true, online}` |
 | `GET outbox` | `[{id, key, method, path, created, updated, state:"queued"\|"sending"\|"conflict"\|"failed", attempts, status, error, body, response}]` |
 | `DELETE outbox/<id>` | `204`; `404` unknown; `409` while it is being sent |
+| `GET processing`, `PUT processing`, `POST processing/setup` | processor mode, see [Help process matches](#help-process-matches-processor-mode) |
 
 ## Storage
 
@@ -160,6 +220,7 @@ state/<ev>.json    per event: manifest cursor, last sync, verified file index
 web/v-<version>/   the server's web app; web/current.json names the one in use
 parts/             partial downloads being resumed (removed after 2 days)
 logs/client.log    rotating log (1 MB × 5)
+processing/…       processor mode: pipeline code, model, venv, work dir, logs (see Help process matches)
 ```
 
 Deleting the folder resets the client (queued changes are lost). Deleting `site/` and `state/` forces a full resync.
@@ -189,7 +250,8 @@ python3 -m unittest discover -s client/tests -v          # fake part-1 server; ~
 Code: `cyberscout_client.py` (entry) → `csclient/app.py` (wiring, CLI), `web.py` (local HTTP server, proxy,
 control API, security checks), `sync.py` (sync engine + outbox flush), `mirror.py` (safe bundle extraction, web
 mirror), `net.py` (keep-alive HTTP(S) to the server, session/CSRF), `store.py` (config, session, SQLite outbox,
-per-event state), `util.py`.
+per-event state), `util.py`, `processor.py` (processor mode), `procui.py` (its page), `procrunner.py` (the pipeline
+side; runs in the processing Python, shipped by the server).
 
 ## Building
 
