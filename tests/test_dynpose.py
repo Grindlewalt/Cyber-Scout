@@ -262,5 +262,6 @@ def test_static_shots_finds_the_locked_off_wide_view():
         pt.set(i, DP.TAGS if i % 6 == 0 else DP.FLOW, DP.blend(close, look_at([16.8, 12.2, 1.95], [10.9, 4.0, 0.0], 1700),
                                                                  (i - 60) / 60), rms=0.3 if i % 6 == 0 else np.nan)
         pt.motion[i] = 8.0
+    pt.info["shot_still_px"] = {"0": 0.2, "1": 6.0}                             # tags stayed put / wandered
     st = DP._static_shots(pt, min_s=1.0)
     assert [s[0] for s in st] == [0]
