@@ -165,6 +165,69 @@ class TestTurnOffMidJob(Base):
         self.assertTrue(wait_for(lambda: self.pstatus()["state"] == "off"))
 
 
+class TestMetered(Base):
+    def test_large_clip_asks_first_and_counts_data(self):
+        P = self.proc
+        P.clip = os.urandom(1_600_000)                 # 1.5 MB clip, warning at 1 MB
+        self.login()
+        code, d = self.c.req("PUT", "/client/v1/processing", {"warn_mb": 1})
+        self.assertEqual((code, d["warn_mb"]), (200, 1))
+        self.turn_on()
+        self.assertTrue(wait_for(lambda: self.pstatus()["state"] == "confirm"), self.pstatus())
+        s = self.pstatus()
+        self.assertEqual(s["large"], {"key": f"{EV}_qm1", "mb": 2, "warn_mb": 1})
+        self.assertIn("over your 1 MB warning", s["line"])
+        self.assertEqual(P.released, [(f"{EV}_qm1", False, "clip over the processor's size warning")])
+        self.assertFalse([r for r in self.fs.state.requests if "/clip?" in r[1]])      # nothing downloaded
+        down0 = s["data"]["down"]                                # code + model only
+        self.assertEqual(down0, len(P.code) + len(P.model))
+        code, d = self.c.req("PUT", "/client/v1/processing", {"allow_large": True})
+        self.assertTrue(d["large_ok"])
+        self.assertTrue(wait_for(lambda: P.completed == [f"{EV}_qm1"]), self.pstatus())
+        s = self.pstatus()
+        self.assertEqual((s["data"]["down"] - down0, s["data"]["clips"]), (len(P.clip), 1))
+        self.assertGreater(s["data"]["up"], 0)
+        for bad in ({"warn_mb": -1}, {"warn_mb": "10"}, {"warn_mb": True}, {"allow_large": False}):
+            self.assertEqual(self.c.req("PUT", "/client/v1/processing", bad)[0], 422, bad)
+
+    def test_page_shows_the_data_cost(self):
+        code, h, b = self.c.req("GET", "/client/processing", raw=True)
+        self.assertIn(b"Data cost:", b)
+        self.assertIn(b"150&ndash;250 MB", b)
+
+
+class TestInflight(Base):
+    def test_never_runs_a_match_twice(self):
+        self.login()
+        pr = self.app.processor
+        k = f"{EV}_qm1"
+        pr.inflight[k] = {"ev": EV, "at": time.time()}
+        job = self.proc.job(k, pr.pid)
+        self.assertIsNone(pr.run_job(job, {"heartbeat_s": 60}, sys.executable))
+        self.assertFalse([r for r in self.fs.state.requests if "/clip?" in r[1] or "/release" in r[1]])
+
+    def test_leftover_claims_are_released_after_a_restart(self):
+        self.login()
+        self.app.shutdown()
+        root = os.path.join(self.app.data_dir, "processing")
+        with open(os.path.join(root, "inflight.json"), "w") as f:
+            json.dump({f"{EV}_qm7": {"ev": EV, "at": 1}, "../bad": {"ev": EV}}, f)
+        self.app = App(self.app.data_dir, port=0, server_url=self.fs.url, bundled_web=os.path.join(HERE, "nonexistent"))
+        self.app.config.update(interval=3600, probe_interval=3600)
+        self.app.start()
+        self.c = Local(self.app)
+        self.assertTrue(wait_for(lambda: self.app.engine.online))
+        self.turn_on()
+        P = self.proc
+        self.assertTrue(wait_for(lambda: P.completed), self.pstatus())
+        self.assertEqual(P.released[0], (f"{EV}_qm7", False, "the processor restarted"))
+        self.assertEqual(len(P.released), 1)
+        def inflight():
+            with open(os.path.join(root, "inflight.json")) as f:
+                return json.load(f)
+        self.assertTrue(wait_for(lambda: inflight() == {}), inflight())   # the job's cleanup runs after complete
+
+
 class TestNeeds(Base):
     def test_non_admin_waits(self):
         self.login("scout", "pw-scout-1")

@@ -31,7 +31,7 @@ import uuid
 from urllib.parse import quote
 
 from .net import HTTPError, NetError, detail_text
-from .util import ensure_dir, safe_relpath, target_path, write_json
+from .util import ensure_dir, read_json, safe_relpath, target_path, write_json
 
 log = logging.getLogger("cyberscout.processor")
 
@@ -49,6 +49,7 @@ JOB_TIMEOUT_S = 45 * 60          # one match normally takes 2-5 min
 IDLE_S = 45                      # nothing to do: ask again after this long
 SKIP_S = 30 * 60                 # a match that failed here is not taken again for this long
 MIN_BEAT = 5.0                   # heartbeat interval floor (s)
+WARN_MB = 100                    # default "warn before a clip download over N MB" (config process_warn_mb; 0 = off)
 
 
 class Stopped(Exception):
@@ -165,8 +166,17 @@ class Processor:
         self._py_ok = {}                        # (python, mtime, version) -> error text | None
         self.pipe = None
         self.st = {"state": "off", "message": None, "ev": None, "key": None, "pct": None, "stage": None,
-                   "done": 0, "failed": 0, "last": None, "since": None, "counts": None}
+                   "done": 0, "failed": 0, "last": None, "since": None, "counts": None, "large": None}
+        self.data = {"down": 0, "up": 0, "clips": 0}   # bytes this session (data cost on a metered link)
+        self.large_ok = False                   # "Allow large clips" pressed (this session)
         self.setup_st = None                    # one-time setup progress {state, message, log[]}
+        # jobs in flight (never two of the same match); persisted, so after a crash / restart the claims this client
+        # still holds on the server are released before it asks for work again (instead of going stale)
+        self.inflight_p = os.path.join(self.root, "inflight.json")
+        self.inflight = {}
+        lo = read_json(self.inflight_p, {}) or {}
+        self.leftovers = {k: v for k, v in lo.items() if isinstance(v, dict) and MATCH_RE.match(k)
+                          and EVENT_RE.match(str(v.get("ev") or ""))} if isinstance(lo, dict) else {}
         for d in ("work",):                     # leftovers of a crash: the claims go stale on the server
             shutil.rmtree(os.path.join(self.root, d), ignore_errors=True)
 
@@ -198,6 +208,35 @@ class Processor:
     def kick(self):
         self.wake.set()
 
+    def allow_large(self):
+        self.large_ok = True
+        self._set(large=None)
+        self.wake.set()
+
+    def warn_mb(self):
+        v = self.cfg.get("process_warn_mb", WARN_MB)
+        return WARN_MB if v is None else int(v)
+
+    def _count(self, k, n):
+        with self.lock:
+            self.data[k] += n
+
+    def _save_inflight(self):
+        try:
+            write_json(self.inflight_p, {**self.leftovers, **self.inflight}, mode=0o600)
+        except OSError:
+            pass
+
+    def _release_leftovers(self):
+        """Claims a previous run of this client left on the server (crash / restart mid-job): give them back."""
+        for k, v in list(self.leftovers.items()):
+            if self._release(v["ev"], k, failed=False, reason="the processor restarted"):
+                log.info("%s: released the claim left by the last run", k)
+                self.leftovers.pop(k, None)
+                self._save_inflight()
+            else:
+                return
+
     def _set(self, **kv):
         with self.lock:
             self.st.update(kv)
@@ -227,7 +266,9 @@ class Processor:
         with self.lock:
             s = dict(self.st)
             s["setup"] = dict(self.setup_st, log=list(self.setup_st.get("log") or [])[-12:]) if self.setup_st else None
-        s.update(enabled=self.enabled, processor=self.pid, python=self.python(),
+            s["data"] = dict(self.data)
+        s.update(enabled=self.enabled, processor=self.pid, python=self.python(), warn_mb=self.warn_mb(),
+                 large_ok=self.large_ok,
                  python_setting=self.cfg.get("process_python"), events=self.cfg.get("process_events"),
                  pipeline=(self.pipe or {}).get("version"), match=_short(s.get("key")) or None)
         s["line"] = self.line(s)
@@ -273,11 +314,18 @@ class Processor:
                 self._set(state="checking", message=None)
                 pipe = self.ensure_pipeline()
                 py = self.check_python(pipe)
+                if self.leftovers:
+                    self._release_leftovers()
                 job, why, counts = self.claim(pipe)
                 if job is None:
                     self._set(state="idle", message=why, key=None, ev=None, pct=None, stage=None, counts=counts)
                     backoff = 0
                     self._wait(IDLE_S)
+                    continue
+                if self._too_large(job):                      # paused until the user allows it, changes the
+                    sig = self._large_sig()                   # warning or turns processing off
+                    while self._large_sig() == sig:
+                        self._wait(3600)
                     continue
                 self.run_job(job, pipe, py)
                 backoff = 0
@@ -310,6 +358,24 @@ class Processor:
                           stage=None)
                 self._safe_wait(60)
 
+    def _large_sig(self):
+        return self.warn_mb(), self.large_ok, self.enabled
+
+    def _too_large(self, job):
+        """A clip over the warning size (metered links): give the match back and ask the user first."""
+        size = int((job.get("clip") or {}).get("size") or 0)
+        warn = self.warn_mb()
+        if not warn or self.large_ok or size <= warn * 1048576:
+            return False
+        mb = round(size / 1048576)
+        self._release(job["ev"], job["key"], failed=False, reason="clip over the processor's size warning")
+        msg = (f"the next clip ({_short(job['key'])}) is {mb} MB, over your {warn} MB warning: allow large clips, "
+               "raise the warning, or turn processing off")
+        log.info("processing paused: %s", msg)
+        self._set(state="confirm", message=msg, large={"key": job["key"], "mb": mb, "warn_mb": warn},
+                  key=None, ev=None, pct=None, stage=None)
+        return True
+
     def _safe_wait(self, s):
         try:
             self._wait(s)
@@ -319,6 +385,9 @@ class Processor:
     # ------------------------------------------------------------------------------------------------ server
     def _json(self, method, path, body=None, timeout=60, headers=None):
         r = self.server.call(method, path, body, timeout=timeout, headers=headers)
+        if r.status == 403 and method != "GET" and "csrf" in detail_text(r.body).lower():
+            self.server.refresh_session()           # the server's CSRF token changed: fetch it, send once more
+            r = self.server.call(method, path, body, timeout=timeout, headers=headers)
         d = r.json()
         if not r.ok:
             raise HTTPError(r.status, d if d is not None else r.body)
@@ -368,6 +437,7 @@ class Processor:
                                     break
                                 f.write(b)
                                 have += len(b)
+                                self._count("down", len(b))
                                 if progress:
                                     progress(have / max(1, size))
                         r.close()
@@ -475,8 +545,14 @@ class Processor:
         mm = MATCH_RE.match(key or "")
         if not (EVENT_RE.match(ev or "") and mm and mm.group(1) == ev):
             raise HTTPError(502, None, "the server sent a bad match key")
+        if key in self.inflight:                    # never two jobs (or downloads) of the same match
+            log.warning("%s: already being processed here; not starting it twice", key)
+            return
         t0 = time.time()
-        self._set(state="downloading", key=key, ev=ev, pct=0, stage="downloading", message=None, since=t0)
+        self.inflight[key] = {"ev": ev, "at": t0}
+        self._save_inflight()
+        self._set(state="downloading", key=key, ev=ev, pct=0, stage="downloading", message=None, since=t0,
+                  large=None)
         log.info("%s: claimed; downloading the clip (%d MB)", key, (job["clip"]["size"] or 0) >> 20)
         work = os.path.join(self.root, "work", ev, key)
         shutil.rmtree(work, ignore_errors=True)
@@ -488,6 +564,7 @@ class Processor:
             clip = self._download(job["clip"]["url"], os.path.join(work, "clip.mp4"), int(job["clip"]["size"]),
                                   job["clip"]["sha256"], f"{key} clip",
                                   progress=lambda f: self._set(pct=int(5 * f)))
+            self._count("clips", 1)
             vref = None
             if job.get("view_ref"):
                 vr = job["view_ref"]
@@ -547,6 +624,8 @@ class Processor:
                 self._release(ev, key, failed=False, reason="stopped" if not self.enabled else "error here")
             self._keep_log(work, key)
             shutil.rmtree(work, ignore_errors=True)
+            self.inflight.pop(key, None)
+            self._save_inflight()
             self._set(key=None, ev=None, pct=None, stage=None, state="idle" if self.enabled else "off")
 
     def _process(self, job, pipe, py, work, clip, vref, beat):
@@ -605,6 +684,7 @@ class Processor:
         with open(path, "rb") as f:
             raw = f.read()
         body = gzip.compress(raw, 6)
+        self._count("up", len(body))
 
         def put():
             r = self.server.call("PUT", f"{API}/{ev}/{quote(key)}/results/{kind}?processor={quote(self.pid)}", body,
@@ -632,8 +712,10 @@ class Processor:
         try:
             self._json("POST", f"{API}/{ev}/{quote(key)}/release",
                        {"processor": self.pid, "failed": bool(failed), "reason": reason}, timeout=20)
+            return True
         except (NetError, HTTPError) as e:
             log.warning("%s: release failed (%s); the claim goes stale on the server", key, e)
+            return False
 
     def _keep_log(self, work, key):
         src = os.path.join(work, "runner.log")

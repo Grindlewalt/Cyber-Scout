@@ -648,7 +648,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         return self.send_json(200, {"ok": True, "config": app.config.public()})
 
     def ctl_processing(self, d):
-        """{enabled?: bool, python?: absolute path | null, events?: [event keys] | null} (processor mode)."""
+        """{enabled?: bool, python?: absolute path | null, events?: [event keys] | null, warn_mb?: int (0 = never),
+        allow_large?: true} (processor mode)."""
         app = self.app
         ch = {}
         if "python" in d:
@@ -667,11 +668,20 @@ class Handler(http.server.BaseHTTPRequestHandler):
                                     or not all(isinstance(e, str) and EVENT_RE.match(e) for e in evs)):
                 return self.send_json(422, {"detail": "events: null (all followed events) or a list of event keys"})
             ch["process_events"] = None if evs is None else list(dict.fromkeys(evs))
+        if "warn_mb" in d:
+            w = d["warn_mb"]
+            if not isinstance(w, int) or isinstance(w, bool) or not 0 <= w <= 100000:
+                return self.send_json(422, {"detail": "warn_mb: 0 (never warn) to 100000 MB"})
+            ch["process_warn_mb"] = w
+        if "allow_large" in d and d["allow_large"] is not True:
+            return self.send_json(422, {"detail": "allow_large: true (allows large clips until the client restarts)"})
         if "enabled" in d and not isinstance(d["enabled"], bool):
             return self.send_json(422, {"detail": "enabled: true or false"})
         if ch:
             app.config.update(**ch)
             app.processor.kick()
+        if d.get("allow_large") is True:
+            app.processor.allow_large()
         if "enabled" in d:
             app.processor.set_enabled(d["enabled"])
         return self.send_json(200, app.processor.status())

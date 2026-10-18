@@ -28,7 +28,9 @@ label{display:block;font-weight:600;margin:0 0 6px}input[type=text]{width:100%;p
 border:1px solid var(--line);background:var(--bg);color:var(--ink);font:13px ui-monospace,Menlo,monospace}
 button.b{border:1px solid var(--line);background:var(--bg);color:var(--ink);border-radius:9px;padding:8px 14px;
 font:inherit;cursor:pointer}button.b.p{background:var(--acc);border-color:var(--acc);color:#fff}
-.hint{color:var(--mute);font-size:13px;margin:6px 0 0}.btns{display:flex;gap:8px;margin-top:10px;flex-wrap:wrap}
+.hint{color:var(--mute);font-size:13px;margin:6px 0 0}.warn{background:color-mix(in srgb,var(--acc2) 14%,var(--card));
+border:1px solid var(--acc2);border-radius:10px;padding:10px 12px;margin:12px 0 0}input[type=number]{width:90px;
+padding:7px 8px;border-radius:9px;border:1px solid var(--line);background:var(--bg);color:var(--ink);font:inherit}.btns{display:flex;gap:8px;margin-top:10px;flex-wrap:wrap}
 pre{white-space:pre-wrap;font:12px/1.4 ui-monospace,Menlo,monospace;color:var(--mute);margin:10px 0 0;max-height:180px;
 overflow:auto}a{color:var(--acc)}code{font:12px ui-monospace,Menlo,monospace}
 </style></head><body><main>
@@ -41,7 +43,15 @@ Needs an admin account. <a href="/">Back to Cyber-Scout</a></p>
  <div class="line" id="line" role="status" aria-live="polite">&hellip;</div>
  <div class="bar" aria-hidden="true"><i id="pct"></i></div>
  <div class="stats"><span>Done <b id="done">0</b></span><span>Failed <b id="failed">0</b></span>
- <span>Last <b id="last">&ndash;</b></span></div>
+ <span>Last <b id="last">&ndash;</b></span><span>Data this session <b id="data">0 MB</b></span></div>
+ <div class="warn" id="large" hidden><div id="largemsg"></div>
+ <div class="btns"><button class="b p" id="allow">Allow large clips (until the client restarts)</button></div></div>
+ <p class="hint"><b>Data cost:</b> each match downloads its livestream clip (typically 150&ndash;250 MB) and uploads
+ 1&ndash;3 MB of results; the first run also downloads the code (~10 MB) and the detector model (~40 MB). On a metered
+ link (phone hotspot) leave this off.</p>
+ <p class="hint"><label for="warn" style="display:inline;font-weight:400">Ask before downloading a clip over</label>
+ <input type="number" id="warn" min="0" max="100000" step="10"> MB (0 = never ask)
+ <button class="b" id="savewarn">Save</button></p>
 </section>
 <section class="card">
  <label for="py">Processing Python</label>
@@ -76,11 +86,16 @@ SCRIPT = b"""\"use strict\";
     l.className = "line" + (/^(error|needs_setup)/.test(s.state) ? " bad" : "");
     $("pct").style.width = (s.pct == null ? 0 : s.pct) + "%";
     $("done").textContent = s.done || 0; $("failed").textContent = s.failed || 0;
+    const d = s.data || {}, mb = b => (b / 1048576).toFixed(b < 10485760 ? 1 : 0) + " MB";
+    $("data").textContent = mb(d.down || 0) + " down \\u00b7 " + mb(d.up || 0) + " up";
+    const lg = s.state === "confirm" && s.large;
+    $("large").hidden = !lg; if (lg) $("largemsg").textContent = s.message;
+    if (document.activeElement !== $("warn")) $("warn").value = s.warn_mb;
     const L = s.last; $("last").textContent = L ? (L.key.split("_").pop() + (L.ok ? " ok" : " failed")) : "\\u2013";
     $("who").textContent = "Processor " + s.processor + (s.pipeline ? " \\u00b7 pipeline " + s.pipeline : "");
     if (!typing && document.activeElement !== $("py")) $("py").value = s.python_setting || "";
-    const st = s.setup, lg = $("log");
-    if (st) { lg.hidden = false; lg.textContent = (st.log || []).join("\\n") + "\\n" + st.state + ": " + (st.message || ""); }
+    const st = s.setup, lgo = $("log");
+    if (st) { lgo.hidden = false; lgo.textContent = (st.log || []).join("\\n") + "\\n" + st.state + ": " + (st.message || ""); }
     $("setup").disabled = !!(st && st.state === "running");
   }
   async function refresh() { try { paint(await call("GET", "processing")); } catch (e) { $("line").textContent = e.message; } }
@@ -91,6 +106,13 @@ SCRIPT = b"""\"use strict\";
   $("save").addEventListener("click", async () => {
     typing = false;
     try { paint(await call("PUT", "processing", { python: $("py").value.trim() || null })); } catch (e) { alert(e.message); }
+  });
+  $("allow").addEventListener("click", async () => {
+    try { paint(await call("PUT", "processing", { allow_large: true })); } catch (e) { alert(e.message); }
+  });
+  $("savewarn").addEventListener("click", async () => {
+    const v = parseInt($("warn").value, 10);
+    try { paint(await call("PUT", "processing", { warn_mb: isNaN(v) ? 0 : v })); } catch (e) { alert(e.message); }
   });
   $("setup").addEventListener("click", async () => {
     try { await call("POST", "processing/setup", {}); refresh(); } catch (e) { alert(e.message); }

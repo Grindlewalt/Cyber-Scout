@@ -44,7 +44,8 @@ class Config:
     DEFAULTS = {"server": None, "media": "none", "events": None, "interval": 60, "probe_interval": 15,
                 "ca_file": None, "alt_servers": [],
                 # processor mode (csclient/processor.py): on/off, the processing Python, events, claim owner id
-                "process": False, "process_python": None, "process_events": None, "process_id": None}
+                "process": False, "process_python": None, "process_events": None, "process_id": None,
+                "process_warn_mb": 100}
 
     def __init__(self, data_dir: str):
         self.path = os.path.join(data_dir, "config.json")
@@ -160,6 +161,12 @@ class SessionStore:
             if body.get("csrf"):
                 self.d["csrf"] = body["csrf"]
             self.save()
+
+    def bump(self):
+        """A sign-in is about to start: answers to requests sent before it (e.g. an anonymous GET /session handing out
+        a fresh cs_csrf) must not touch the cookies it sets."""
+        with self.lock:
+            self.gen += 1
 
     def set_server(self, server):
         with self.lock:

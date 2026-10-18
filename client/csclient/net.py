@@ -292,9 +292,11 @@ class Server:
     def login(self, username, password) -> dict:
         if not self.session.csrf:
             self.refresh_session()
+        self.session.bump()
         r = self.call("POST", "/app/v1/auth/login", {"username": username, "password": password})
         if r.status == 403 and "csrf" in detail_text(r.body).lower():
             self.refresh_session()
+            self.session.bump()
             r = self.call("POST", "/app/v1/auth/login", {"username": username, "password": password})
         d = r.json()
         if r.status != 200 or not isinstance(d, dict):
