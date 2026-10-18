@@ -309,11 +309,18 @@ def test_pipeline_code_and_model(admin, setup):
     assert m["size"] == 400 and admin.tc.get(m["url"]).content == b"onnx" * 100
 
 
-def test_restarted_processor_gets_its_match_back(admin, setup):
-    assert claim(admin)["job"]["key"] == f"{EV}_qm1"
-    assert claim(admin, "lap2")["job"]["key"] == f"{EV}_qm2"
-    assert claim(admin)["job"]["key"] == f"{EV}_qm1"          # lap1 again (restarted): its old claim is released first
-    assert CL.read(str(setup["data"]), EV, f"{EV}_qm2")["by"] == "app-u1-lap2"
+def test_never_handed_a_match_it_already_holds(admin, setup):
+    k1 = f"{EV}_qm1"
+    assert claim(admin)["job"]["key"] == k1
+    r = claim(admin)                                          # asks again while holding qm1 (e.g. a prefetch)
+    assert r["job"]["key"] == f"{EV}_qm2" and r["counts"]["yours"] == 1
+    p = setup["evd"] / "claims" / f"{k1}.json"
+    p.write_text(json.dumps({"by": "app-u1-lap1", "at": time.time() - CL.CLAIM_S - 5}))
+    r = claim(admin)                                          # not even its own stale claim
+    assert r["job"]["key"] == f"{EV}_qm3" and r["counts"]["yours"] == 2
+    assert claim(admin, "lap2")["job"]["key"] == k1           # someone else takes the stale one over
+    assert admin.post(f"{P}/{EV}/{k1}/release", {"processor": "lap2", "reason": "restarted"}).json()["released"]
+    assert claim(admin, "lap2")["job"]["key"] == k1           # released, then a fresh claim: fine
 
 
 def test_clip_outside_media_is_not_handed_out(admin, setup):

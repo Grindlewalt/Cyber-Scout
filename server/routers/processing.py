@@ -363,7 +363,8 @@ class ClaimOut(BaseModel):
                                          "pose_guess, clip {url,size,sha256}, view_ref {url,size,sha256}|null, "
                                          "urls, claim_s, heartbeat_s, pipeline")
     why: str | None = None
-    counts: dict = Field(default_factory=dict, description="per state: tracked, claimed (by others), waiting "
+    counts: dict = Field(default_factory=dict, description="per state: tracked, claimed (by others), yours (held "
+                                                           "by this processor: never handed out twice), waiting "
                                                            "(no trackable clip), failed")
 
 
@@ -402,6 +403,9 @@ def _next(ev, key, by, skip, counts):
             counts["waiting"] = counts.get("waiting", 0) + 1; continue
         if k in skip:
             continue
+        c = CL.read(cfg.DATA, ev, k)
+        if c and c.get("by") == by:                # never hand a processor a match it holds (any age): it keeps
+            counts["yours"] = counts.get("yours", 0) + 1; continue   # it fresh with heartbeats or releases it
         if CL.claimed_elsewhere(cfg.DATA, ev, k, by):
             counts["claimed"] = counts.get("claimed", 0) + 1; continue
         try:
@@ -454,22 +458,6 @@ def _job_out(ev, m, live, cam, ms, key, user, processor, by, version):
     }
 
 
-def _drop_own(by, events):
-    """A processor asks for work: claims it still holds are leftovers (it restarted / lost a job) -> released now
-    instead of going stale in CLAIM_S (it is offered the same match again first, and resumes the download)."""
-    for ev in events:
-        d = os.path.join(_evd(ev), "claims")
-        try:
-            names = os.listdir(d)
-        except OSError:
-            continue
-        for f in names:
-            k = f[:-5]
-            if f.endswith(".json") and MATCH_RE.match(k) and (CL.read(cfg.DATA, ev, k) or {}).get("by") == by:
-                CL.release(cfg.DATA, ev, k, by)
-                shutil.rmtree(_stage(ev, k), ignore_errors=True)
-
-
 @router.post("/processing/claim", response_model=ClaimOut,
              summary="Claim the next match to track (admin; same claims + order as the worker)")
 def claim_next(body: ClaimIn, request: Request, user: User = Depends(require_role("admin")), db=Depends(DB.get_db)):
@@ -486,7 +474,6 @@ def claim_next(body: ClaimIn, request: Request, user: User = Depends(require_rol
             raise HTTPException(422, "events: event keys like 2026wasam")
         followed = [e for e in followed if e in set(body.events)]
     skip = {k for k in body.skip if isinstance(k, str) and MATCH_RE.match(k)}
-    _drop_own(by, followed)
     key = DB.get_setting(db, "tba_key")
     counts: dict = {}
     request.state.audited = True                   # nothing to log when nothing was claimed

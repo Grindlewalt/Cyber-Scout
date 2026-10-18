@@ -4184,7 +4184,7 @@
       "additionalProperties": true,
       "type": "object",
       "title": "Counts",
-      "description": "per state: tracked, claimed (by others), waiting (no trackable clip), failed"
+      "description": "per state: tracked, claimed (by others), yours (held by this processor: never handed out twice), waiting (no trackable clip), failed"
      }
     },
     "type": "object",
