@@ -307,3 +307,21 @@ def test_pipeline_code_and_model(admin, setup):
     (setup["data"] / "models" / "robot.onnx").write_bytes(b"onnx" * 100)
     m = admin.get(P + "/pipeline").json()["model"]
     assert m["size"] == 400 and admin.tc.get(m["url"]).content == b"onnx" * 100
+
+
+def test_restarted_processor_gets_its_match_back(admin, setup):
+    assert claim(admin)["job"]["key"] == f"{EV}_qm1"
+    assert claim(admin, "lap2")["job"]["key"] == f"{EV}_qm2"
+    assert claim(admin)["job"]["key"] == f"{EV}_qm1"          # lap1 again (restarted): its old claim is released first
+    assert CL.read(str(setup["data"]), EV, f"{EV}_qm2")["by"] == "app-u1-lap2"
+
+
+def test_clip_outside_media_is_not_handed_out(admin, setup):
+    rec = setup["media"] / "live" / EV / "vid1" / "matches" / "qm1.json"
+    r = json.loads(rec.read_text())
+    os.remove(setup["media"] / "live" / EV / "vid1" / "clips" / "qm1.mp4")
+    outside = setup["data"] / "secret.mp4"
+    outside.write_bytes(b"x" * 10)
+    r["clip"] = str(outside)
+    rec.write_text(json.dumps(r))
+    assert claim(admin)["job"]["key"] == f"{EV}_qm2"

@@ -454,6 +454,22 @@ def _job_out(ev, m, live, cam, ms, key, user, processor, by, version):
     }
 
 
+def _drop_own(by, events):
+    """A processor asks for work: claims it still holds are leftovers (it restarted / lost a job) -> released now
+    instead of going stale in CLAIM_S (it is offered the same match again first, and resumes the download)."""
+    for ev in events:
+        d = os.path.join(_evd(ev), "claims")
+        try:
+            names = os.listdir(d)
+        except OSError:
+            continue
+        for f in names:
+            k = f[:-5]
+            if f.endswith(".json") and MATCH_RE.match(k) and (CL.read(cfg.DATA, ev, k) or {}).get("by") == by:
+                CL.release(cfg.DATA, ev, k, by)
+                shutil.rmtree(_stage(ev, k), ignore_errors=True)
+
+
 @router.post("/processing/claim", response_model=ClaimOut,
              summary="Claim the next match to track (admin; same claims + order as the worker)")
 def claim_next(body: ClaimIn, request: Request, user: User = Depends(require_role("admin")), db=Depends(DB.get_db)):
@@ -470,6 +486,7 @@ def claim_next(body: ClaimIn, request: Request, user: User = Depends(require_rol
             raise HTTPException(422, "events: event keys like 2026wasam")
         followed = [e for e in followed if e in set(body.events)]
     skip = {k for k in body.skip if isinstance(k, str) and MATCH_RE.match(k)}
+    _drop_own(by, followed)
     key = DB.get_setting(db, "tba_key")
     counts: dict = {}
     request.state.audited = True                   # nothing to log when nothing was claimed
@@ -594,7 +611,10 @@ async def job_result(ev: str, key: str, kind: str, request: Request, processor: 
     if kind not in KINDS:
         raise HTTPException(404, f"kind: one of {', '.join(KINDS)}")
     await run_in_threadpool(_job, ev, key, user, processor)
-    n = int(request.headers.get("content-length") or 0)
+    try:
+        n = int(request.headers.get("content-length") or 0)
+    except ValueError:
+        raise HTTPException(400, "bad Content-Length")
     if n > MAX_BODY:
         raise HTTPException(413, f"upload too large (max {MAX_BODY >> 20} MB; send it gzip'd)")
     chunks, total = [], 0
