@@ -3502,6 +3502,518 @@
      }
     }
    }
+  },
+  "/app/v1/processing/pipeline": {
+   "get": {
+    "tags": [
+     "processing"
+    ],
+    "summary": "Processing code + model versions for client processors (admin)",
+    "operationId": "pipeline_app_v1_processing_pipeline_get",
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/PipelineOut"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/app/v1/processing/pipeline/code.tar.gz": {
+   "get": {
+    "tags": [
+     "processing"
+    ],
+    "summary": "The pipeline code tarball (admin; Range-resumable)",
+    "operationId": "pipeline_code_file_app_v1_processing_pipeline_code_tar_gz_get",
+    "parameters": [
+     {
+      "name": "v",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string",
+         "maxLength": 40
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "V"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/gzip": {}
+      }
+     },
+     "206": {
+      "description": "partial (Range)"
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/app/v1/processing/pipeline/model.onnx": {
+   "get": {
+    "tags": [
+     "processing"
+    ],
+    "summary": "The robot detector model (admin; Range-resumable)",
+    "operationId": "pipeline_model_app_v1_processing_pipeline_model_onnx_get",
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/octet-stream": {}
+      }
+     },
+     "206": {
+      "description": "partial (Range)"
+     }
+    }
+   }
+  },
+  "/app/v1/processing/claim": {
+   "post": {
+    "tags": [
+     "processing"
+    ],
+    "summary": "Claim the next match to track (admin; same claims + order as the worker)",
+    "operationId": "claim_next_app_v1_processing_claim_post",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/ClaimIn"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ClaimOut"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/app/v1/processing/{ev}/{key}/clip": {
+   "get": {
+    "tags": [
+     "processing"
+    ],
+    "summary": "The claimed match's livestream clip (admin; Range-resumable)",
+    "operationId": "job_clip_app_v1_processing__ev___key__clip_get",
+    "parameters": [
+     {
+      "name": "ev",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Ev"
+      }
+     },
+     {
+      "name": "key",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Key"
+      }
+     },
+     {
+      "name": "processor",
+      "in": "query",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "maxLength": 48,
+       "title": "Processor"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "video/mp4": {}
+      }
+     },
+     "206": {
+      "description": "partial (Range)"
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/app/v1/processing/{ev}/{key}/view.png": {
+   "get": {
+    "tags": [
+     "processing"
+    ],
+    "summary": "The stream camera's calibrated view (process.view_ref) for the claimed match (admin)",
+    "operationId": "job_view_app_v1_processing__ev___key__view_png_get",
+    "parameters": [
+     {
+      "name": "ev",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Ev"
+      }
+     },
+     {
+      "name": "key",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Key"
+      }
+     },
+     {
+      "name": "processor",
+      "in": "query",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "maxLength": 48,
+       "title": "Processor"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "image/png": {}
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/app/v1/processing/{ev}/{key}/heartbeat": {
+   "post": {
+    "tags": [
+     "processing"
+    ],
+    "summary": "Keep the claim fresh; report progress (admin)",
+    "operationId": "job_heartbeat_app_v1_processing__ev___key__heartbeat_post",
+    "parameters": [
+     {
+      "name": "ev",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Ev"
+      }
+     },
+     {
+      "name": "key",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Key"
+      }
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/BeatIn"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/app/v1/processing/{ev}/{key}/results/{kind}": {
+   "put": {
+    "tags": [
+     "processing"
+    ],
+    "summary": "Upload one result file of the claimed match (admin; JSON, optionally gzip; staged until complete)",
+    "operationId": "job_result_app_v1_processing__ev___key__results__kind__put",
+    "parameters": [
+     {
+      "name": "ev",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Ev"
+      }
+     },
+     {
+      "name": "key",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Key"
+      }
+     },
+     {
+      "name": "kind",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Kind"
+      }
+     },
+     {
+      "name": "processor",
+      "in": "query",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "maxLength": 48,
+       "title": "Processor"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/app/v1/processing/{ev}/{key}/complete": {
+   "post": {
+    "tags": [
+     "processing"
+    ],
+    "summary": "Publish the uploaded results (matches last), keep the clip, release the claim (admin)",
+    "operationId": "job_complete_app_v1_processing__ev___key__complete_post",
+    "parameters": [
+     {
+      "name": "ev",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Ev"
+      }
+     },
+     {
+      "name": "key",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Key"
+      }
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/DoneIn"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/app/v1/processing/{ev}/{key}/release": {
+   "post": {
+    "tags": [
+     "processing"
+    ],
+    "summary": "Give a claimed match back (admin)",
+    "operationId": "job_release_app_v1_processing__ev___key__release_post",
+    "parameters": [
+     {
+      "name": "ev",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Ev"
+      }
+     },
+     {
+      "name": "key",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Key"
+      }
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/ReleaseIn"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/app/v1/processing/status": {
+   "get": {
+    "tags": [
+     "processing"
+    ],
+    "summary": "Matches being tracked by processors right now (admin)",
+    "operationId": "processing_status_app_v1_processing_status_get",
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     }
+    }
+   }
   }
  },
  "components": {
@@ -3518,6 +4030,48 @@
     "additionalProperties": false,
     "type": "object",
     "title": "ApplyIn"
+   },
+   "BeatIn": {
+    "properties": {
+     "processor": {
+      "type": "string",
+      "maxLength": 48,
+      "minLength": 1,
+      "title": "Processor"
+     },
+     "progress": {
+      "anyOf": [
+       {
+        "type": "number",
+        "maximum": 1.0,
+        "minimum": 0.0
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Progress"
+     },
+     "stage": {
+      "anyOf": [
+       {
+        "type": "string",
+        "maxLength": 32
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Stage",
+      "description": "downloading | processing | uploading ..."
+     }
+    },
+    "additionalProperties": false,
+    "type": "object",
+    "required": [
+     "processor"
+    ],
+    "title": "BeatIn"
    },
    "BundleIn": {
     "properties": {
@@ -3544,6 +4098,130 @@
      "paths"
     ],
     "title": "BundleIn"
+   },
+   "ClaimIn": {
+    "properties": {
+     "processor": {
+      "type": "string",
+      "maxLength": 48,
+      "minLength": 1,
+      "title": "Processor",
+      "description": "this processor's id (per install)"
+     },
+     "pipeline": {
+      "anyOf": [
+       {
+        "type": "string",
+        "maxLength": 40
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Pipeline",
+      "description": "pipeline version it runs: 409 when outdated"
+     },
+     "events": {
+      "anyOf": [
+       {
+        "items": {
+         "type": "string"
+        },
+        "type": "array",
+        "maxItems": 50
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Events",
+      "description": "only these followed events (default: all)"
+     },
+     "skip": {
+      "items": {
+       "type": "string"
+      },
+      "type": "array",
+      "maxItems": 500,
+      "title": "Skip",
+      "description": "match keys it failed on recently"
+     }
+    },
+    "additionalProperties": false,
+    "type": "object",
+    "required": [
+     "processor"
+    ],
+    "title": "ClaimIn"
+   },
+   "ClaimOut": {
+    "properties": {
+     "job": {
+      "anyOf": [
+       {
+        "additionalProperties": true,
+        "type": "object"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Job",
+      "description": "null = nothing to do now; else ev, key, match, event, live, camera, pose_guess, clip {url,size,sha256}, view_ref {url,size,sha256}|null, urls, claim_s, heartbeat_s, pipeline"
+     },
+     "why": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Why"
+     },
+     "counts": {
+      "additionalProperties": true,
+      "type": "object",
+      "title": "Counts",
+      "description": "per state: tracked, claimed (by others), waiting (no trackable clip), failed"
+     }
+    },
+    "type": "object",
+    "required": [
+     "job"
+    ],
+    "title": "ClaimOut"
+   },
+   "DoneIn": {
+    "properties": {
+     "processor": {
+      "type": "string",
+      "maxLength": 48,
+      "minLength": 1,
+      "title": "Processor"
+     },
+     "seconds": {
+      "anyOf": [
+       {
+        "type": "number",
+        "maximum": 86400.0,
+        "minimum": 0.0
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Seconds",
+      "description": "processing time on the processor"
+     }
+    },
+    "additionalProperties": false,
+    "type": "object",
+    "required": [
+     "processor"
+    ],
+    "title": "DoneIn"
    },
    "EventHit": {
     "properties": {
@@ -3908,6 +4586,30 @@
      "results"
     ],
     "title": "EventSearchOut"
+   },
+   "FileRef": {
+    "properties": {
+     "url": {
+      "type": "string",
+      "title": "Url",
+      "description": "path on this server (prefix the server address)"
+     },
+     "size": {
+      "type": "integer",
+      "title": "Size"
+     },
+     "sha256": {
+      "type": "string",
+      "title": "Sha256"
+     }
+    },
+    "type": "object",
+    "required": [
+     "url",
+     "size",
+     "sha256"
+    ],
+    "title": "FileRef"
    },
    "FitIn": {
     "properties": {
@@ -4705,6 +5407,68 @@
     ],
     "title": "PicklistVersionOut"
    },
+   "PipelineOut": {
+    "properties": {
+     "version": {
+      "type": "string",
+      "title": "Version",
+      "description": "content hash of the pipeline code; claims carry it, a different one -> 409"
+     },
+     "code": {
+      "$ref": "#/components/schemas/FileRef",
+      "description": "gzip tar: live/, src/, runner.py, requirements.txt, PIPELINE.json"
+     },
+     "model": {
+      "anyOf": [
+       {
+        "$ref": "#/components/schemas/FileRef"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "description": "the robot detector (robot.onnx); null = none on the server yet"
+     },
+     "requirements": {
+      "items": {
+       "type": "string"
+      },
+      "type": "array",
+      "title": "Requirements",
+      "description": "pip requirements of the processing Python"
+     },
+     "python": {
+      "type": "string",
+      "title": "Python"
+     },
+     "claim_s": {
+      "type": "number",
+      "title": "Claim S",
+      "description": "a claim not refreshed for this long is stale and handed to someone else"
+     },
+     "heartbeat_s": {
+      "type": "integer",
+      "title": "Heartbeat S",
+      "description": "refresh the claim (POST .../heartbeat) this often"
+     },
+     "max_upload_bytes": {
+      "type": "integer",
+      "title": "Max Upload Bytes"
+     }
+    },
+    "type": "object",
+    "required": [
+     "version",
+     "code",
+     "model",
+     "requirements",
+     "python",
+     "claim_s",
+     "heartbeat_s",
+     "max_upload_bytes"
+    ],
+    "title": "PipelineOut"
+   },
    "PlanOverride": {
     "properties": {
      "pin": {
@@ -4846,6 +5610,40 @@
      "box"
     ],
     "title": "Region"
+   },
+   "ReleaseIn": {
+    "properties": {
+     "processor": {
+      "type": "string",
+      "maxLength": 48,
+      "minLength": 1,
+      "title": "Processor"
+     },
+     "failed": {
+      "type": "boolean",
+      "title": "Failed",
+      "description": "true: it failed on this processor (after MAX_FAILS the processors leave the match to the worker)",
+      "default": false
+     },
+     "reason": {
+      "anyOf": [
+       {
+        "type": "string",
+        "maxLength": 300
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Reason"
+     }
+    },
+    "additionalProperties": false,
+    "type": "object",
+    "required": [
+     "processor"
+    ],
+    "title": "ReleaseIn"
    },
    "RevertUserIn": {
     "properties": {
