@@ -365,7 +365,9 @@ class Reconstructor:
         self.tba = tba_match
         self.sched, self.first_inactive = hub_schedule(tba_match)
         self.t_start = float(match["t_start"])
-        gaps = match.get("feed_gaps") or []
+        # dynamic view (process(dynamic=True)): feed_gaps = frames without ANY camera pose; shots come from the
+        # fixed camera only, so its own gaps apply
+        gaps = (match.get("dynamic") or {}).get("fixed_gaps", match.get("feed_gaps")) or []
         self.feed_gaps = [(self.t_start - 0.5 + a, self.t_start - 0.5 + b) for a, b in gaps]
         ang = np.linspace(0, 2 * np.pi, 25)[:-1]
         self.hub_poly = {}

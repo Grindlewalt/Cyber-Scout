@@ -134,6 +134,7 @@ def process_match(ev, m, cfg, status, meta_cache, live=None):
                     pose_p = os.path.join(ev_dir(ev), f"pose_latest_{live['source']}.json")
                     kw = dict(start_hint=live["start"], start_trusted=live.get("start_trusted", True),
                               teams=live["teams"], layout=live["layout"], view_ref=live.get("view_ref"),
+                              dynamic=os.environ.get("DYNAMIC") == "1",     # program feed: robots from every camera
                               event=None if m.get("livestream") else event_ctx(ev, m))
                 else:
                     log(f"{m['key']}: downloading {v['id']} ({v['title']}"
