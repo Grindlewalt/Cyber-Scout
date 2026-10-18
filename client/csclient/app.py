@@ -13,6 +13,7 @@ import webbrowser
 from . import VERSION
 from .mirror import WebMirror, bundled_web_dir
 from .net import NetError, Server
+from .processor import Processor
 from .store import Config, LocalDB, SessionStore, normalize_server
 from .sync import SyncEngine
 from .util import default_data_dir, ensure_dir, setup_logging
@@ -43,6 +44,7 @@ class App:
         self.server = Server(self.config, self.session)
         self.mirror = WebMirror(os.path.join(self.data_dir, "web"), bundled_web or bundled_web_dir())
         self.engine = SyncEngine(self)
+        self.processor = Processor(self)
         self.httpd = LocalHTTPServer((host, port), Handler)
         self.httpd.app = self
         self.host = host
@@ -65,10 +67,12 @@ class App:
         t.start()
         self._threads.append(t)
         self.engine.start()
+        self.processor.start()
         log.info("Cyber-Scout Client %s at %s (data: %s, server: %s)", VERSION, self.url, self.data_dir,
                  self.config["server"] or "not set")
 
     def shutdown(self):
+        self.processor.stop()
         self.engine.stop()
         self.httpd.shutdown()
         self.httpd.server_close()
@@ -142,6 +146,7 @@ class App:
             "server_info": {k: info.get(k) for k in ("name", "version", "api", "latency_ms")} if info else None,
             "web_version": self.mirror.version,
             "storage": self.storage(),
+            "processing": self.processor.status(),       # processor mode ("Help process matches")
         }
 
 
@@ -165,6 +170,10 @@ def main(argv=None):
                     help="another address of the same server, used when the main one can't be reached (repeat for "
                          "more; e.g. the Tailscale address next to the tunnel). Saved; --alt-server '' clears them")
     ap.add_argument("--no-browser", action="store_true", help="don't open the browser")
+    ap.add_argument("--process", choices=("on", "off"), help="Help process matches: track match video for the "
+                    "server on this computer (saved; needs an admin account and a processing Python)")
+    ap.add_argument("--process-python", metavar="PATH", help="the processing Python (one with onnxruntime, av, "
+                    "opencv, numpy, scipy, pupil-apriltags; saved; '' = the one 'Set up processing' made)")
     ap.add_argument("--log-level", default=os.environ.get("CYBERSCOUT_LOG", "INFO"))
     ap.add_argument("--version", action="version", version=f"Cyber-Scout Client {VERSION}")
     a = ap.parse_args(argv)
@@ -186,10 +195,15 @@ def main(argv=None):
     except ValueError as e:
         log.error("%s", e)
         return 2
+    if a.process_python is not None:
+        app.config.update(process_python=os.path.abspath(a.process_python) if a.process_python else None)
+    if a.process is not None:
+        app.config.update(process=a.process == "on")
     app.start()
     if not a.no_browser:
         threading.Timer(0.6, lambda: webbrowser.open(app.url)).start()
-    print(f"\n  Cyber-Scout Client is running: {app.url}\n  Data: {data}\n  Press Ctrl+C to stop.\n", flush=True)
+    print(f"\n  Cyber-Scout Client is running: {app.url}\n  Data: {data}\n"
+          f"  Help process matches: {app.url}client/processing\n  Press Ctrl+C to stop.\n", flush=True)
     try:
         while True:
             time.sleep(3600)

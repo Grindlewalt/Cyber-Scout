@@ -37,7 +37,8 @@ class State:
         self.media = {}          # path -> (bytes, kind, match)
         self.web = dict(WEB)
         self.version = "v1"
-        self.users = {"scout": ("pw-scout-1", "scout", "Scout One")}
+        self.users = {"scout": ("pw-scout-1", "scout", "Scout One"), "coach": ("pw-admin-1", "admin", "Coach")}
+        self.proc = None         # fakeprocessing.FakeProcessing: the /app/v1/processing/* API (processor mode)
         self.sessions = {}       # token -> {"user":..., "csrf":...}
         self.idem = {}           # key -> (status, body)
         self.notes = []
@@ -216,6 +217,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if m in ("POST", "PUT", "PATCH", "DELETE") and path.startswith("/app/v1/") and path != "/app/v1/sync/bundle":
             if not self.csrf_ok(s):
                 return self.send(403, {"detail": "missing or bad CSRF token"})
+        if path.startswith("/app/v1/processing/") and st.proc is not None:
+            if s["user"]["role"] != "admin":
+                return self.send(403, {"detail": "needs role admin or higher"})
+            return st.proc.handle(self, m, path, q)
         if path == "/app/v1/sync/events":
             return self.send(200, st.events)
         if path == "/app/v1/sync/manifest":

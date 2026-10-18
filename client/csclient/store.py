@@ -42,7 +42,9 @@ def normalize_server(url) -> str:
 class Config:
     """config.json (0600): server, media mode, followed events, intervals, per-install secrets."""
     DEFAULTS = {"server": None, "media": "none", "events": None, "interval": 60, "probe_interval": 15,
-                "ca_file": None, "alt_servers": []}
+                "ca_file": None, "alt_servers": [],
+                # processor mode (csclient/processor.py): on/off, the processing Python, events, claim owner id
+                "process": False, "process_python": None, "process_events": None, "process_id": None}
 
     def __init__(self, data_dir: str):
         self.path = os.path.join(data_dir, "config.json")

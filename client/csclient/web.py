@@ -13,7 +13,7 @@ import socket
 import threading
 import time
 import uuid
-from urllib.parse import quote, unquote, urlsplit
+from urllib.parse import quote, unquote
 
 from . import VERSION
 from .net import MUTATING, Conn, HTTPError, NetError, detail_text
@@ -210,6 +210,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 return self.site(upath)
             if self.command not in ("GET", "HEAD"):
                 return self.send_json(405, {"detail": "method not allowed"})
+            if upath in ("/client/processing", "/client/processing.js"):
+                return self.proc_page(upath)
             return self.shell(upath)
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
             self.close_connection = True
@@ -582,6 +584,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     return self.send_json(422, {"detail": "media: true or false"})
                 app.engine.kick(ev, media)
                 return self.send_json(202, {"started": True, "online": app.engine.online})
+            if sub == "processing" and m in ("GET", "HEAD"):
+                return self.send_json(200, app.processor.status())
+            if sub == "processing" and m in ("PUT", "PATCH", "POST"):
+                return self.ctl_processing(self.json_body())
+            if sub == "processing/setup" and m == "POST":
+                started = app.processor.start_setup()
+                return self.send_json(202 if started else 409, {"started": started,
+                                                                "setup": app.processor.status()["setup"]})
             if sub == "outbox" and m == "GET":
                 return self.send_json(200, app.db.items())
             mm = re.match(r"^outbox/(\d+)$", sub)
@@ -636,6 +646,51 @@ class Handler(http.server.BaseHTTPRequestHandler):
             ch["interval"] = iv
         app.set_config(**ch)
         return self.send_json(200, {"ok": True, "config": app.config.public()})
+
+    def ctl_processing(self, d):
+        """{enabled?: bool, python?: absolute path | null, events?: [event keys] | null} (processor mode)."""
+        app = self.app
+        ch = {}
+        if "python" in d:
+            py = d["python"]
+            if py in (None, ""):
+                ch["process_python"] = None
+            else:
+                if not isinstance(py, str) or len(py) > 1024 or "\x00" in py or not os.path.isabs(py):
+                    return self.send_json(422, {"detail": "python: the full path of a Python executable"})
+                if not os.path.isfile(py) or not os.access(py, os.X_OK):
+                    return self.send_json(422, {"detail": f"python: {py} is not an executable file"})
+                ch["process_python"] = py
+        if "events" in d:
+            evs = d["events"]
+            if evs is not None and (not isinstance(evs, list) or len(evs) > 50
+                                    or not all(isinstance(e, str) and EVENT_RE.match(e) for e in evs)):
+                return self.send_json(422, {"detail": "events: null (all followed events) or a list of event keys"})
+            ch["process_events"] = None if evs is None else list(dict.fromkeys(evs))
+        if "enabled" in d and not isinstance(d["enabled"], bool):
+            return self.send_json(422, {"detail": "enabled: true or false"})
+        if ch:
+            app.config.update(**ch)
+            app.processor.kick()
+        if "enabled" in d:
+            app.processor.set_enabled(d["enabled"])
+        return self.send_json(200, app.processor.status())
+
+    def proc_page(self, upath):
+        from .procui import PAGE, SCRIPT
+        page = upath.endswith("processing")
+        body = PAGE if page else SCRIPT
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8" if page else "text/javascript; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-cache")
+        self._common(CSP)
+        if page:
+            for c in self.page_cookies():
+                self.send_header("Set-Cookie", c)
+        self.end_headers()
+        if self.command != "HEAD":
+            self._write(body)
 
     def ctl_test(self, d):
         app = self.app
