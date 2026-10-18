@@ -79,48 +79,16 @@ def ev_dir(ev): return os.path.join(DATA, "events", ev)
 
 
 # ------------------------------------------------------------------ order + claims (several processors per event)
+# live/claims.py: the same rules for this worker, tools/helper.py and the api (Client "Help process matches")
+import claims as CL
 WORKER_ID = os.environ.get("WORKER_ID") or socket.gethostname()
-CLAIM_S = float(os.environ.get("CLAIM_S", "1800"))       # a claim older than this is stale (processor gone)
+CLAIM_S = CL.CLAIM_S
 
 
-def prioritized(ev, ms):
-    """events/<ev>/priority.json {"order": [match keys]}: those first, in that order (e.g. the matches of the
-    teams in our next quals, tools/priority.py); the rest keep their order.  No file = unchanged."""
-    order = (jload(os.path.join(ev_dir(ev), "priority.json"), {}) or {}).get("order") or []
-    rank = {k: i for i, k in enumerate(order)}
-    return sorted(ms, key=lambda m: rank.get(m["key"], len(rank)))      # stable
-
-
-def _claim_p(ev, key): return os.path.join(ev_dir(ev), "claims", f"{key}.json")
-
-
-def claimed_elsewhere(ev, key, by=None):
-    c = jload(_claim_p(ev, key), None)
-    return bool(c) and c.get("by") != (by or WORKER_ID) and time.time() - (c.get("at") or 0) < CLAIM_S
-
-
-def claim(ev, key, by=None):
-    """events/<ev>/claims/<key>.json: one processor per match -- this worker and helpers (tools/helper.py on
-    another Mac claim through ssh the same way).  -> True if `by` holds the claim now."""
-    by = by or WORKER_ID
-    p = _claim_p(ev, key); os.makedirs(os.path.dirname(p), exist_ok=True)
-    for _ in range(2):
-        try:
-            fd = os.open(p, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
-            with os.fdopen(fd, "w") as f: json.dump(dict(by=by, at=time.time()), f)
-            return True
-        except FileExistsError:
-            if claimed_elsewhere(ev, key, by): return False
-            try: os.remove(p)                          # ours from before, or stale
-            except OSError: pass
-    return False
-
-
-def release(ev, key, by=None):
-    c = jload(_claim_p(ev, key), None)
-    if c is not None and c.get("by") in (None, by or WORKER_ID):
-        try: os.remove(_claim_p(ev, key))
-        except OSError: pass
+def prioritized(ev, ms): return CL.prioritized(DATA, ev, ms)
+def claimed_elsewhere(ev, key, by=None): return CL.claimed_elsewhere(DATA, ev, key, by or WORKER_ID)
+def claim(ev, key, by=None): return CL.claim(DATA, ev, key, by or WORKER_ID)
+def release(ev, key, by=None): return CL.release(DATA, ev, key, by or WORKER_ID)
 
 
 def ev_file(ev, name):
@@ -833,7 +801,12 @@ def sync(ev, tba, max_new=None, track=True):
         if os.path.exists(os.path.join(ev_dir(ev), "matches", f"{m['key']}.json")): continue
         if status.get(m["key"], {}).get("state") == "failed": continue
         if not track: continue                         # no detector model: robot tracking waits, the rest publishes
-        if process_match(ev, m, cfg, status, meta_cache, live=live):
+        if claimed_elsewhere(ev, m["key"]) or not claim(ev, m["key"]): continue     # a processor has it
+        try:
+            ok = process_match(ev, m, cfg, status, meta_cache, live=live)
+        finally:
+            release(ev, m["key"])
+        if ok:
             done_any = True; n += 1
             jsave(os.path.join(DATA, "cache", "ytmeta.json"), meta_cache)
             build_site(ev, tba)
