@@ -627,6 +627,10 @@ def process(video, cam_path, onnx, tag_csv=None, log=print, start_hint=None, pos
     dyn = None
     if dynamic:
         overlays = overlay_params(cam, cam_path, video, layout)
+        if overlays is None:                    # no layout: find the broadcast graphics (static pixels)
+            import dynpose as DP
+            overlays = DP.auto_overlays(video)
+            log(f"  dynamic view: no layout, graphics found {overlays}")
         dyn, cam = dyn_poses(video, cam, dynamic, view_ref, overlays, log)
     CAMM.install_geom_shim(cam)
 
@@ -686,7 +690,8 @@ def process(video, cam_path, onnx, tag_csv=None, log=print, start_hint=None, pos
 
 def overlay_params(cam, cam_path=None, video=None, layout=None):
     """Broadcast graphics boxes (score bar, clock, insets) of the event's layout in frame px, for the dynamic view
-    (kept out of its flow / tag search / moving-view detection).  None = no layout (dynpose finds them itself)."""
+    (kept out of its flow / tag search / moving-view detection).  None = no layout (process then uses
+    dynpose.auto_overlays)."""
     if layout is False: return None
     try:
         import layout as LY

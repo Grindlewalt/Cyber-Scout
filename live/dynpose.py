@@ -417,6 +417,7 @@ class PoseTrack:
         self.shot = np.zeros(n, int); self.rms = np.full(n, np.nan); self.ntag = np.zeros(n, int)
         self.age = np.full(n, np.nan); self.rv = np.full((n, 3), np.nan); self.C = np.full((n, 3), np.nan)
         self.f = np.full(n, np.nan); self.k1 = np.full(n, np.nan); self.cx, self.cy = W / 2, H / 2
+        self.motion = np.full(n, np.nan)        # px the image corners moved since the previous sample (flow)
         self.info = {}
         self._cache = {}
         self._refcam = None
@@ -477,7 +478,7 @@ class PoseTrack:
 
     def save(self, path):
         np.savez_compressed(path, t=self.t, k=self.k, kind=self.kind, shot=self.shot, rms=self.rms, ntag=self.ntag,
-                            age=self.age, rv=self.rv, C=self.C, f=self.f, k1=self.k1,
+                            age=self.age, rv=self.rv, C=self.C, f=self.f, k1=self.k1, motion=self.motion,
                             meta=json.dumps(dict(W=self.W, H=self.H, ref=self.ref, cx=self.cx, cy=self.cy, info=self.info)))
 
     @classmethod
@@ -485,8 +486,8 @@ class PoseTrack:
         z = np.load(path, allow_pickle=False)
         m = json.loads(str(z["meta"]))
         p = cls(len(z["t"]), m["W"], m["H"], m["ref"])
-        for k in ("t", "k", "kind", "shot", "rms", "ntag", "age", "rv", "C", "f", "k1"):
-            setattr(p, k, z[k].copy())
+        for k in ("t", "k", "kind", "shot", "rms", "ntag", "age", "rv", "C", "f", "k1", "motion"):
+            if k in z: setattr(p, k, z[k].copy())
         p.cx, p.cy, p.info = m["cx"], m["cy"], m.get("info", {})
         return p
 
@@ -625,7 +626,8 @@ class _Scan:
         elif self.state != "trans":
             if self.guess is not None and Hm is not None:
                 self.guess = from_homography(self.guess, Hm) or self.guess
-            step = max(2, self.step // 2) if self.fast else self.step
+            hi = self.guess is not None and self.guess.f > HIGH_ZOOM * self.W   # robots fill the frame: flow unreliable
+            step = 2 if hi else (max(2, self.step // 2) if self.fast else self.step)
             due = (self.state == "new" and (self.n_tries < 3 or n - self.last_tag >= 3)) or n - self.last_tag >= step
             if due:
                 self._tag_frame(rec, gray, refncc)
@@ -742,9 +744,13 @@ def _clusters(cams, radius=0.75):
 def _finalize(scan, log=print):
     recs = scan.recs; n = len(recs); W, H = scan.W, scan.H; lay = scan.lay
     pt = PoseTrack(n, W, H, scan.ref)
+    corners = np.array([[0, 0, 1], [W, 0, 1], [0, H, 1], [W, H, 1.0]]).T
     for i, r in enumerate(recs):
         pt.t[i], pt.k[i] = r["t"], r["k"]
         pt.ntag[i] = len(r["tags"] or {})
+        if r["H"] is not None:
+            q = r["H"] @ corners
+            pt.motion[i] = float(np.abs(q[:2] / q[2] - corners[:2]).max())
     _join_transitions(scan, recs)
     for i, r in enumerate(recs): pt.shot[i] = r["shot"] if r["shot"] is not None else -1
     clusters = [(C, k1) for C, k1, _ in _clusters(scan.freeC)]
@@ -888,6 +894,7 @@ def _carry(p, recs, idx, j0, j1):
 
 EDGE_AGE = float(os.environ.get("DYN_EDGE_AGE", "0.33"))      # s: one-sided flow before / after a shot's anchors
 INTERP_MAX = 0.7                                              # s: anchors this close bridge an untrusted interval
+HIGH_ZOOM = 1.5                                               # f > this x frame width: tags every 2nd sample, short edges
 
 
 def _sane(p, anchor, dt):
@@ -929,8 +936,9 @@ def _fill(pt, recs, idx, anchors):
     for k, a in enumerate(a_list):
         nxt = a_list[k + 1] if k + 1 < len(a_list) else None
         prv = a_list[k - 1] if k > 0 else None
-        hf = EDGE_AGE if nxt is None else (MAX_AGE if trusted[(a, nxt)] else 0.1)
-        hb = EDGE_AGE if prv is None else (MAX_AGE if trusted[(prv, a)] else 0.1)
+        edge = EDGE_AGE if anchors[a][0].f <= HIGH_ZOOM * pt.W else 0.1
+        hf = edge if nxt is None else (MAX_AGE if trusted[(a, nxt)] else 0.1)
+        hb = edge if prv is None else (MAX_AGE if trusted[(prv, a)] else 0.1)
         stop_f = pos[nxt] if nxt is not None else len(idx)
         stop_b = pos[prv] if prv is not None else -1
         for i, p in carry_side(a, stop_f, +1, hf).items(): fwd[i] = (p, a)
@@ -1052,20 +1060,20 @@ def auto_overlays(video, n=16, frames=None):
     return _merge_boxes(out)
 
 
-def _static_shots(pt, min_s=1.5):
-    """Shots whose camera did not move (anchor rotations within 0.05 deg, focal within 0.5 %) and shows most of the
-    field -> [(shot id, sample indices, Pose)]."""
+def _static_shots(pt, min_s=1.5, max_motion=0.6):
+    """Shots whose camera did not move -- the flow says so: the image corners moved < max_motion px per sample in
+    95 % of the samples -- and that show most of the field -> [(shot id, sample indices, Pose of the best anchor)]."""
     out = []
     for sid in np.unique(pt.shot):
         idx = np.where((pt.shot == sid) & (pt.kind == TAGS))[0]
         allx = np.where((pt.shot == sid) & (pt.kind > 0))[0]
-        if len(idx) < 3 or len(allx) < min_s * FPS: continue
-        ps = [pt.pose(i) for i in idx]
-        f = np.array([p.f for p in ps])
-        if f.std() / f.mean() > 0.005 or max(rot_deg(ps[0], p) for p in ps) > 0.05: continue
-        med = ps[int(np.argsort(f)[len(f) // 2])]
-        if visible_field(med, pt.W, pt.H) < 0.6: continue
-        out.append((int(sid), allx, med))
+        if len(idx) < 2 or len(allx) < min_s * FPS: continue
+        mo = pt.motion[allx]; mo = mo[np.isfinite(mo)]
+        if len(mo) < 0.5 * len(allx) or np.percentile(mo, 95) > max_motion: continue
+        best = idx[int(np.nanargmin(pt.rms[idx] / np.maximum(pt.ntag[idx], 1)))]
+        p = pt.pose(best)
+        if visible_field(p, pt.W, pt.H) < 0.6: continue
+        out.append((int(sid), allx, p))
     return out
 
 
@@ -1101,7 +1109,7 @@ def auto_setup(video, t1=190.0, log=print, overlays=None, source_id=None):
         for sid, idx, p in shots:
             for g in groups:
                 q = g[0][2]
-                if np.linalg.norm(p.C - q.C) < 0.5 and rot_deg(p, q) < 0.3 and abs(p.f / q.f - 1) < 0.02:
+                if np.linalg.norm(p.C - q.C) < 1.0 and rot_deg(p, q) < 2.0 and abs(p.f / q.f - 1) < 0.05:
                     g.append((sid, idx, p)); break
             else:
                 groups.append([(sid, idx, p)])

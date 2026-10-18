@@ -1,6 +1,6 @@
 """live/dynpose.py (dynamic view: a camera pose per frame from the field's AprilTags) and its process.py hooks.
 Synthetic geometry only: no video, no detector, no GPU."""
-import os, sys, json
+import os, sys
 import numpy as np
 import pytest
 
@@ -257,8 +257,10 @@ def test_static_shots_finds_the_locked_off_wide_view():
     pt.shot[:60] = 0; pt.shot[60:] = 1
     for i in range(60):
         pt.set(i, DP.TAGS if i % 6 == 0 else DP.FLOW, wide, rms=0.3 if i % 6 == 0 else np.nan)
+        pt.motion[i] = 0.1                                                     # flow: static
     for i in range(60, n):                                                     # panning close-up
         pt.set(i, DP.TAGS if i % 6 == 0 else DP.FLOW, DP.blend(close, look_at([16.8, 12.2, 1.95], [10.9, 4.0, 0.0], 1700),
                                                                  (i - 60) / 60), rms=0.3 if i % 6 == 0 else np.nan)
+        pt.motion[i] = 8.0
     st = DP._static_shots(pt, min_s=1.0)
     assert [s[0] for s in st] == [0]
