@@ -181,7 +181,7 @@ def main():
                     skip.add(k); continue
                 for sub in ("fuel", "shots", "analytics", "matches"):   # matches/ last: then the server sees it done
                     p = os.path.join(evd, sub, f"{k}.json")
-                    if os.path.exists(p): push(p, f"{R}/data/events/{EV}/{sub}/{k}.json")
+                    if os.path.exists(p): push(p, f"data/events/{EV}/{sub}/{k}.json")
                 ssh(f"cd $HOME/{R}/media && mkdir -p {EV} && [ -e {EV}/{k}.mp4 ] || cp {shlex.quote(job['clip'][len('media/'):])} {EV}/{k}.mp4")
                 log(f"{k}: done in {time.time() - t0:.0f}s, uploaded")
             except Exception as e:
