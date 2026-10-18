@@ -286,6 +286,9 @@ class Processor:
             return f"{st} {m}{at}, {done}"
         if st == "idle":
             return f"idle, {done}" + (f" ({s['message']})" if s.get("message") else "")
+        if st == "confirm" and s.get("large"):
+            lg = s["large"]
+            return f"paused: the next clip ({_short(lg.get('key'))}) is {lg.get('mb')} MB, over {lg.get('warn_mb')} MB, {done}"
         return f"{st}: {s.get('message') or ''}".rstrip(": ") + (f" ({done})" if s.get("done") or s.get("failed") else "")
 
     # ------------------------------------------------------------------------------------------------ loop

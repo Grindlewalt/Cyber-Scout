@@ -140,6 +140,14 @@ match (and keeps the clip in `MEDIA/<ev>/<key>.mp4`). Server side: `server/route
   match twice. A heartbeat refreshes the claim every minute; a claim not refreshed for 30 min is handed to someone
   else (a processor that disappears costs at most 30 min for that match). A match that fails here is released and
   skipped here for 30 min; after 2 processor failures the server leaves it to its own worker.
+* **Data cost** (phone hotspot / venue link): each match downloads its clip (typically 150–250 MB) and uploads
+  1–3 MB; the first run also fetches the code (~10 MB) and the model (~40 MB). Processing is off until you turn it
+  on, and **Ask before downloading a clip over N MB** (`process_warn_mb`, default 100, `0` = never ask) pauses it
+  before each large clip (the match goes back to the others) until you press **Allow large clips** (until the client
+  restarts), raise the size or turn processing off. The page and `processing.data` show the bytes used this session.
+* One match at a time, never the same one twice: the server never hands a processor a match it already holds, and
+  `processing/inflight.json` remembers the job in progress, so after a crash or restart the client releases that
+  claim before it asks for work (instead of leaving it to go stale for 30 min).
 * Only **livestream clips** are handed out (the worker's livestream input: a trackable stream with a calibrated
   camera). Per-match YouTube uploads stay with the server's worker.
 
@@ -177,11 +185,13 @@ survives restarts) → pipeline → `PUT …/results/{fuel,shots,analytics,match
 | `processing/venv/` | the Python made by Set up processing |
 | `processing/work/<ev>/<key>/` | the match being tracked (clip, job.json, runner.log); removed afterwards |
 | `processing/logs/<key>.log` | the pipeline's log of the last 30 matches |
+| `processing/inflight.json` | the job in progress (its claim is released after a crash / restart) |
 
 Control API: `GET /client/v1/processing` → `{enabled, state (off | waiting | checking | updating | needs_setup |
-idle | downloading | processing | uploading | error), line, message, key, match, pct, done, failed, last, processor,
-python, python_setting, pipeline, events, setup}`; `PUT /client/v1/processing {enabled?, python?: absolute path |
-null, events?: [keys] | null}`; `POST /client/v1/processing/setup` (202; progress in `setup`).
+idle | confirm | downloading | processing | uploading | error), line, message, key, match, pct, done, failed, last,
+large, data {down, up, clips}, warn_mb, large_ok, processor, python, python_setting, pipeline, events, setup}`;
+`PUT /client/v1/processing {enabled?, python?: absolute path | null, events?: [keys] | null, warn_mb?: 0-100000,
+allow_large?: true}`; `POST /client/v1/processing/setup` (202; progress in `setup`).
 
 ## Control API (`/client/v1/*`)
 

@@ -176,7 +176,8 @@ class TestMetered(Base):
         self.assertTrue(wait_for(lambda: self.pstatus()["state"] == "confirm"), self.pstatus())
         s = self.pstatus()
         self.assertEqual(s["large"], {"key": f"{EV}_qm1", "mb": 2, "warn_mb": 1})
-        self.assertIn("over your 1 MB warning", s["line"])
+        self.assertIn("over your 1 MB warning", s["message"])
+        self.assertEqual(s["line"], "paused: the next clip (qm1) is 2 MB, over 1 MB, done 0")
         self.assertEqual(P.released, [(f"{EV}_qm1", False, "clip over the processor's size warning")])
         self.assertFalse([r for r in self.fs.state.requests if "/clip?" in r[1]])      # nothing downloaded
         down0 = s["data"]["down"]                                # code + model only
