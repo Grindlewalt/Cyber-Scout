@@ -9,6 +9,7 @@ next clip downloads while the current one is tracked.
 
   .venv/bin/python tools/helper.py [--host m2] [--event 2026wagg] [--id macbook]
 Needs this repo's .venv (onnxruntime with CoreML, av, cv2, pupil_apriltags).  Local mirror: ~/CyberScout/helper/.
+Downloads ~190 MB per match (1080p60 clip): not for a metered / hotspot link.
 Stop with Ctrl-C (claims are released; a killed helper's claims go stale after the worker's CLAIM_S).
 """
 import argparse, json, os, queue, shlex, subprocess, sys, threading, time
@@ -131,11 +132,15 @@ def prepare(job):
     return job
 
 
+HELD = set()                                            # claimed by this helper and not finished: never re-pick
+
+
 def producer(q, stop, skip):
     while not stop.is_set():
         try:
             sync_setup()
-            job = pick(skip)
+            job = pick(skip | HELD)
+            if job is not None: HELD.add(job["key"])
             if job is None:
                 log("nothing to do; checking again in 60 s"); time.sleep(60); continue
             log(f"{job['key']}: claimed, downloading the clip")
@@ -145,6 +150,7 @@ def producer(q, stop, skip):
                 log(f"{job['key']}: download failed ({e!r:.200}); released"); skip.add(job["key"])
                 try: release(job["key"])
                 except Exception: pass
+                HELD.discard(job["key"])
                 continue
             q.put(job)
         except Exception as e:
@@ -183,6 +189,7 @@ def main():
             finally:
                 try: release(k)
                 except Exception as e: log(f"{k}: release failed ({e!r:.100}); the claim goes stale in 30 min")
+                HELD.discard(k)
                 try: os.remove(os.path.join(L, job["clip"]))
                 except OSError: pass
     except KeyboardInterrupt:
