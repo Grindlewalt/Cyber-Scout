@@ -29,7 +29,7 @@ channel scan, TBA match videos or YouTube search).  Each match is tracked from i
 stream analyser missed is cut from the recording by TBA's actual_time (liveingest.tba_cut).  Matches without a
 clip yet are "waiting_live" with a note saying why; a clip that fails LIVE_ONLY_FAILS times -> "failed".
 """
-import json, os, sys, time, traceback, shutil
+import json, os, socket, sys, time, traceback, shutil
 import numpy as np
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -76,6 +76,51 @@ def jsave(p, obj):
 
 
 def ev_dir(ev): return os.path.join(DATA, "events", ev)
+
+
+# ------------------------------------------------------------------ order + claims (several processors per event)
+WORKER_ID = os.environ.get("WORKER_ID") or socket.gethostname()
+CLAIM_S = float(os.environ.get("CLAIM_S", "1800"))       # a claim older than this is stale (processor gone)
+
+
+def prioritized(ev, ms):
+    """events/<ev>/priority.json {"order": [match keys]}: those first, in that order (e.g. the matches of the
+    teams in our next quals, tools/priority.py); the rest keep their order.  No file = unchanged."""
+    order = (jload(os.path.join(ev_dir(ev), "priority.json"), {}) or {}).get("order") or []
+    rank = {k: i for i, k in enumerate(order)}
+    return sorted(ms, key=lambda m: rank.get(m["key"], len(rank)))      # stable
+
+
+def _claim_p(ev, key): return os.path.join(ev_dir(ev), "claims", f"{key}.json")
+
+
+def claimed_elsewhere(ev, key, by=None):
+    c = jload(_claim_p(ev, key), None)
+    return bool(c) and c.get("by") != (by or WORKER_ID) and time.time() - (c.get("at") or 0) < CLAIM_S
+
+
+def claim(ev, key, by=None):
+    """events/<ev>/claims/<key>.json: one processor per match -- this worker and helpers (tools/helper.py on
+    another Mac claim through ssh the same way).  -> True if `by` holds the claim now."""
+    by = by or WORKER_ID
+    p = _claim_p(ev, key); os.makedirs(os.path.dirname(p), exist_ok=True)
+    for _ in range(2):
+        try:
+            fd = os.open(p, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+            with os.fdopen(fd, "w") as f: json.dump(dict(by=by, at=time.time()), f)
+            return True
+        except FileExistsError:
+            if claimed_elsewhere(ev, key, by): return False
+            try: os.remove(p)                          # ours from before, or stale
+            except OSError: pass
+    return False
+
+
+def release(ev, key, by=None):
+    c = jload(_claim_p(ev, key), None)
+    if c is not None and c.get("by") in (None, by or WORKER_ID):
+        try: os.remove(_claim_p(ev, key))
+        except OSError: pass
 
 
 def ev_file(ev, name):
@@ -724,6 +769,7 @@ def sync(ev, tba, max_new=None, track=True):
     if lv:
         ms = sorted(ms + lv.extra_matches({m["key"] for m in ms}),
                     key=lambda m: (m.get("actual_time") or m.get("time") or 0, sort_key(m)))
+    ms = prioritized(ev, ms)
     status = jload(os.path.join(ev_dir(ev), "status.json"), {})
     cfg = jload(ev_file(ev, "event.json"), {}) or {}
     try:                                               # admin-configured video sources (Video page) -> which uploads to use
@@ -760,6 +806,7 @@ def sync(ev, tba, max_new=None, track=True):
             started = bool(m.get("actual_time")) and time.time() > m["actual_time"] + MATCH_S_WAIT
             if not (played or started or (lv and k in lv.fast)):
                 continue                               # not played yet: nothing to wait for
+            if claimed_elsewhere(ev, k): continue          # a helper is processing it
             live, lv, why = live_only_input(ev, lv, m, played, status)
             if live is None:
                 dirty = note_wait(status, k, why) or dirty
@@ -767,7 +814,12 @@ def sync(ev, tba, max_new=None, track=True):
             if not track:                              # no detector model: the clip waits for it
                 dirty = note_wait(status, k, "clip ready; robot tracking waits for the detector model") or dirty
                 continue
-            if process_match(ev, m, cfg, status, meta_cache, live=live):
+            if not claim(ev, k): continue
+            try:
+                ok = process_match(ev, m, cfg, status, meta_cache, live=live)
+            finally:
+                release(ev, k)
+            if ok:
                 done_any = True; n += 1
                 build_site(ev, tba)
                 if max_new and n >= max_new:

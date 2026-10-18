@@ -360,13 +360,12 @@ def trackable(ev, sid):
 
 
 def stream_view_ref(ev, sid):
-    """The calibrated view of a stream camera: the calibration wizard's plate (median of its frames, cut-aways
-    dropped) when it was calibrated on this source -> process.view_ref (a program feed is tracked only while that
-    camera is on air).  None = no check."""
-    d = os.path.join(data_dir(), "events", ev)
-    st = _jload(os.path.join(d, "calib_wizard", "overhead.json"), {}) or {}
-    p = os.path.join(d, "frames", "calib_overhead_plate.png")
-    return p if st.get("source") == sid and os.path.exists(p) else None
+    """The calibrated view of a stream camera -> process.view_ref (a program feed is tracked only while that camera
+    is on air): events/<ev>/view_<sid>.png, the wizard's median frame saved when the calibration was ACCEPTED
+    (server calib_accept).  Never the wizard's working plate: a later Detect overwrites it (2026wagg day 2: every
+    frame became "off air").  None = no check."""
+    p = os.path.join(data_dir(), "events", ev, f"view_{sid}.png")
+    return p if os.path.exists(p) else None
 
 
 class LiveView:

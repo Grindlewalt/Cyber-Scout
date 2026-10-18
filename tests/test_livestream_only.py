@@ -271,11 +271,31 @@ def test_program_feed_view_check(env):
     moved = wide.copy(); cv2.circle(moved, (900, 400), 60, (0, 255, 255), -1)           # robots / fuel moved
     closeup = cv2.resize(wide[300:500, 700:1050], (1920, 1080), interpolation=cv2.INTER_CUBIC)
     assert PR.on_air(moved, ref, roi) and not PR.on_air(closeup, ref, roi) and PR.on_air(closeup, None, roi)
-    # the stream source's calibration plate is the reference only when the wizard calibrated that source
-    assert LI.stream_view_ref(EV, "url-abc") is None
+    # the reference is the view saved at ACCEPT time (view_<source>.png), never the wizard's working plate
     (env["evd"] / "frames").mkdir(); cv2.imwrite(str(env["evd"] / "frames" / "calib_overhead_plate.png"), wide)
-    (env["evd"] / "calib_wizard").mkdir(); (env["evd"] / "calib_wizard" / "overhead.json").write_text(json.dumps({"source": "url-x"}))
     assert LI.stream_view_ref(EV, "url-abc") is None
-    (env["evd"] / "calib_wizard" / "overhead.json").write_text(json.dumps({"source": "url-abc"}))
-    assert LI.stream_view_ref(EV, "url-abc").endswith("calib_overhead_plate.png")
-    assert LI.trackable(EV, "url-abc")["view_ref"].endswith("calib_overhead_plate.png")
+    cv2.imwrite(str(env["evd"] / "view_url-abc.png"), wide)
+    assert LI.stream_view_ref(EV, "url-abc").endswith("view_url-abc.png")
+    assert LI.trackable(EV, "url-abc")["view_ref"].endswith("view_url-abc.png")
+
+
+def test_priority_order_and_claims(env, monkeypatch):
+    """priority.json puts the chosen matches first (the rest keep their order); a claim by another processor
+    (a helper Mac) keeps this worker off that match until it is stale."""
+    import worker as W
+    monkeypatch.setattr(W, "DATA", str(env["data"]))
+    ms = [dict(key=f"{EV}_qm{i}") for i in range(1, 7)]
+    assert [m["key"] for m in W.prioritized(EV, ms)] == [m["key"] for m in ms]
+    (env["evd"] / "priority.json").write_text(json.dumps({"order": [f"{EV}_qm5", f"{EV}_qm2"]}))
+    assert [m["key"][-3:] for m in W.prioritized(EV, ms)] == ["qm5", "qm2", "qm1", "qm3", "qm4", "qm6"]
+    k = f"{EV}_qm5"
+    assert W.claim(EV, k, by="macbook") and not W.claimed_elsewhere(EV, k, by="macbook")
+    assert W.claimed_elsewhere(EV, k, by="m2") and not W.claim(EV, k, by="m2")
+    assert W.claim(EV, k, by="macbook")                      # re-claiming your own claim is fine
+    W.release(EV, k, by="m2")                                # someone else's claim: not released
+    assert W.claimed_elsewhere(EV, k, by="m2")
+    p = env["evd"] / "claims" / f"{k}.json"
+    p.write_text(json.dumps({"by": "macbook", "at": time.time() - W.CLAIM_S - 1}))   # stale
+    assert not W.claimed_elsewhere(EV, k, by="m2") and W.claim(EV, k, by="m2")
+    W.release(EV, k, by="m2")
+    assert not p.exists()

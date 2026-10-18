@@ -586,6 +586,12 @@ def calib_accept(target: str, ev: str = Depends(valid_event), user: User = Depen
         pl = os.path.join(_evd(ev), "pose_latest.json")
         if os.path.exists(pl):
             os.replace(pl, f"{pl}.bak-{int(time.time())}")
+    if target == "overhead" and st.get("source"):
+        # the accepted camera's view (the wizard's median frame) -> view_<source>.png: a program feed is tracked only
+        # while this view is on air (liveingest.stream_view_ref); the wizard's own plate changes with every Detect
+        plate = os.path.join(_evd(ev), "frames", "calib_overhead_plate.png")
+        if os.path.exists(plate):
+            shutil.copy2(plate, os.path.join(_evd(ev), f"view_{st['source']}.png"))
     st["accepted_at"] = time.time()
     atomic_write_json(w, st)
     return _calib_status(ev, target)
