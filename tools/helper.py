@@ -139,7 +139,14 @@ def producer(q, stop, skip):
             if job is None:
                 log("nothing to do; checking again in 60 s"); time.sleep(60); continue
             log(f"{job['key']}: claimed, downloading the clip")
-            q.put(prepare(job))
+            try:
+                job = prepare(job)
+            except Exception as e:                      # could not get the clip: give the match back right away
+                log(f"{job['key']}: download failed ({e!r:.200}); released"); skip.add(job["key"])
+                try: release(job["key"])
+                except Exception: pass
+                continue
+            q.put(job)
         except Exception as e:
             log(f"producer: {e!r:.300}"); time.sleep(20)
 
