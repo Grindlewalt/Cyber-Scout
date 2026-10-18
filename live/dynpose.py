@@ -58,6 +58,7 @@ MC_NCC = float(os.environ.get("DYN_MC_NCC", "0.7"))           # below = transiti
 MC_LAG2 = int(os.environ.get("DYN_MC_LAG2", "30"))            # samples: the same over 1 s (slow dissolves)
 MC_NCC2 = float(os.environ.get("DYN_MC_NCC2", "0.5"))
 JOIN_NCC = float(os.environ.get("DYN_JOIN_NCC", "0.85"))      # pass 2: a transition frame this like a shot joins it
+FLOW_DRIFT_PX = float(os.environ.get("DYN_FLOW_DRIFT", "6"))   # flow carried anchor->anchor this far off = not trusted
 NONE, FIXED, TAGS, FLOW, INTERP = 0, 1, 2, 3, 4
 KIND = {NONE: "none", FIXED: "fixed", TAGS: "tags", FLOW: "flow", INTERP: "interp"}
 
@@ -554,7 +555,7 @@ class _Scan:
         self.hist = []                      # (tiny, H from the previous sample) of the last MC_LAG samples
         self.shot = 0; self.state = "new"; self.guess = None; self.shotC = []; self.shotK1 = []; self.freeC = []
         self.prev_small = None; self.last_tag = -99; self.last_full = -99; self.last_tiled = -999; self.last_ref = -99
-        self.n_tries = 0
+        self.n_tries = 0; self.fast = False
         self.ms = dict(tags=0.0, flow=0.0, solve=0.0)
         self.keep_frames = keep_frames; self.kept = []          # (n, gray) of fixed-view frames (auto_setup)
 
@@ -624,7 +625,8 @@ class _Scan:
         elif self.state != "trans":
             if self.guess is not None and Hm is not None:
                 self.guess = from_homography(self.guess, Hm) or self.guess
-            due = (self.state == "new" and (self.n_tries < 3 or n - self.last_tag >= 3)) or n - self.last_tag >= self.step
+            step = max(2, self.step // 2) if self.fast else self.step
+            due = (self.state == "new" and (self.n_tries < 3 or n - self.last_tag >= 3)) or n - self.last_tag >= step
             if due:
                 self._tag_frame(rec, gray, refncc)
         rec["state"] = self.state
@@ -678,6 +680,12 @@ class _Scan:
         tags = {k_: v[0] for k_, v in found.items()}
         rec["tags"] = tags
         if not tags: return
+        if self.guess is not None:                     # how far the flow-carried pose drifted: sample tags faster
+            P, uv, _ = _points(tags, self.lay)
+            q = self.guess.project(P)
+            if np.isfinite(q).all():
+                rec["drift"] = float(np.median(np.linalg.norm(q - uv, axis=1)))
+                self.fast = rec["drift"] > FLOW_DRIFT_PX / 2
         t0 = time.time()
         p, e = self._solve_online(tags)
         self.ms["solve"] += time.time() - t0
@@ -783,7 +791,7 @@ def _finalize(scan, log=print):
                     good = [(g[0], g[1], g[2], p, e) for g, p, e in zip(good, ps, es)]; C, k1 = C2, k12
             except Exception as ex:                 # keep the per-frame solves
                 log(f"  dynpose: shot {sid} joint fit failed ({ex!r})")
-        anchors = {g[0]: (g[3], g[4]) for g in good if g[4] <= MAX_RMS}
+        anchors = {g[0]: (g[3], g[4], g[1], g[2]) for g in good if g[4] <= MAX_RMS}
         if not anchors: continue
         nshot_moving += 1
         _fill(pt, recs, idx, anchors)
@@ -858,53 +866,94 @@ def _reaim_ref(pt, scan, recs, log=print):
     pt.info.update(info)
 
 
-def _fill(pt, recs, idx, anchors):
-    """Anchors (sample -> (Pose, rms)) of one shot -> every sample of the shot within MAX_AGE of one:
-    flow propagation from both sides (blended), else interpolation between anchors."""
-    idx = sorted(idx); a_list = sorted(anchors)
-    pos = {i: j for j, i in enumerate(idx)}
-    fwd, bwd = {}, {}
-    # forward: from each anchor along H until the next anchor / MAX_AGE / a missing homography
-    for a in a_list:
-        p = anchors[a][0]; j = pos[a] + 1
-        while j < len(idx):
-            i = idx[j]
-            if i in anchors or pt.t[i] - pt.t[a] > MAX_AGE: break
-            Hm = recs[i]["H"]
-            if Hm is None: break
+def _carry(p, recs, idx, j0, j1):
+    """Pose p of sample idx[j0] carried along the homographies to idx[j1] (either direction); None if broken."""
+    if j1 >= j0:
+        for j in range(j0 + 1, j1 + 1):
+            Hm = recs[idx[j]]["H"]
+            if Hm is None: return None
             p = from_homography(p, Hm)
-            if p is None: break
-            fwd[i] = (p, a); j += 1
-    for b in a_list:
-        p = anchors[b][0]; j = pos[b] - 1
-        while j >= 0:
-            i = idx[j]
-            if i in anchors or pt.t[b] - pt.t[i] > MAX_AGE: break
-            Hm = recs[idx[j + 1]]["H"]                  # maps sample i -> i+1
-            if Hm is None: break
+            if p is None: return None
+    else:
+        for j in range(j0, j1, -1):
+            Hm = recs[idx[j]]["H"]                        # maps idx[j-1] -> idx[j]
+            if Hm is None: return None
             try:
                 p = from_homography(p, np.linalg.inv(Hm))
             except np.linalg.LinAlgError:
+                return None
+            if p is None: return None
+    return p
+
+
+EDGE_AGE = float(os.environ.get("DYN_EDGE_AGE", "0.33"))      # s: one-sided flow before / after a shot's anchors
+INTERP_MAX = 0.7                                              # s: anchors this close bridge an untrusted interval
+
+
+def _sane(p, anchor, dt):
+    """A carried pose that rotated / zoomed faster than a broadcast camera can is a flow failure."""
+    return p is not None and rot_deg(p, anchor) <= 2.0 + 20.0 * dt and 0.7 < p.f / anchor.f < 1.5
+
+
+def _fill(pt, recs, idx, anchors):
+    """Anchors (sample -> (Pose, rms, P, uv)) of one shot -> poses for the samples around them.
+    Between two anchors: the flow-carried poses from both sides, blended (kind FLOW) -- if carrying the first
+    anchor along the flow lands on the second one's tags within FLOW_DRIFT_PX; otherwise (a person / robot filling
+    a zoomed frame drags the flow) interpolation when they are <= INTERP_MAX apart (INTERP), else one-sided flow
+    within 0.1 s of each anchor.  Before the first / after the last anchor: one-sided flow up to EDGE_AGE.  Every carried
+    pose must stay within MAX_AGE of its anchor and pass _sane()."""
+    idx = sorted(idx); a_list = sorted(anchors)
+    pos = {i: j for j, i in enumerate(idx)}
+    trusted = {}
+    for a, b in zip(a_list, a_list[1:]):
+        q = _carry(anchors[a][0], recs, idx, pos[a], pos[b])
+        e = _rms(q, anchors[b][2], anchors[b][3]) if q is not None else float("inf")
+        trusted[(a, b)] = e <= FLOW_DRIFT_PX
+
+    def carry_side(a, j_to_stop, step, horizon):
+        out = {}
+        p = anchors[a][0]; j = pos[a] + step
+        while 0 <= j < len(idx) and j != j_to_stop:
+            i = idx[j]
+            if abs(pt.t[i] - pt.t[a]) > horizon: break
+            Hm = recs[i]["H"] if step > 0 else recs[idx[j + 1]]["H"]
+            if Hm is None: break
+            try:
+                p = from_homography(p, Hm if step > 0 else np.linalg.inv(Hm))
+            except np.linalg.LinAlgError:
                 p = None
-            if p is None: break
-            bwd[i] = (p, b); j -= 1
+            if not _sane(p, anchors[a][0], abs(pt.t[i] - pt.t[a])): break
+            out[i] = p; j += step
+        return out
+    fwd, bwd = {}, {}
+    for k, a in enumerate(a_list):
+        nxt = a_list[k + 1] if k + 1 < len(a_list) else None
+        prv = a_list[k - 1] if k > 0 else None
+        hf = EDGE_AGE if nxt is None else (MAX_AGE if trusted[(a, nxt)] else 0.1)
+        hb = EDGE_AGE if prv is None else (MAX_AGE if trusted[(prv, a)] else 0.1)
+        stop_f = pos[nxt] if nxt is not None else len(idx)
+        stop_b = pos[prv] if prv is not None else -1
+        for i, p in carry_side(a, stop_f, +1, hf).items(): fwd[i] = (p, a)
+        for i, p in carry_side(a, stop_b, -1, hb).items(): bwd[i] = (p, a)
     for i in idx:
         if i in anchors:
-            p, e = anchors[i]; pt.set(i, TAGS, p, rms=e, age=0.0); continue
+            p, e = anchors[i][:2]; pt.set(i, TAGS, p, rms=e, age=0.0); continue
+        prev = [a for a in a_list if a < i]; nxt = [b for b in a_list if b > i]
+        a = prev[-1] if prev else None; b = nxt[0] if nxt else None
+        if a is not None and b is not None and not trusted[(a, b)] and pt.t[b] - pt.t[a] <= INTERP_MAX:
+            w = (pt.t[i] - pt.t[a]) / (pt.t[b] - pt.t[a])
+            pt.set(i, INTERP, blend(anchors[a][0], anchors[b][0], w), age=min(pt.t[i] - pt.t[a], pt.t[b] - pt.t[i]))
+            continue
         F, B = fwd.get(i), bwd.get(i)
         if F and B:
             ta, tb = pt.t[F[1]], pt.t[B[1]]
             w = (pt.t[i] - ta) / max(tb - ta, 1e-6)
             pt.set(i, FLOW, blend(F[0], B[0], w), age=min(pt.t[i] - ta, tb - pt.t[i]))
         elif F or B:
-            p, a = F or B
-            pt.set(i, FLOW, p, age=abs(pt.t[i] - pt.t[a]))
-        else:
-            prev = [a for a in a_list if a < i]; nxt = [b for b in a_list if b > i]
-            if prev and nxt and pt.t[nxt[0]] - pt.t[prev[-1]] <= 2 * MAX_AGE:
-                a, b = prev[-1], nxt[0]
-                w = (pt.t[i] - pt.t[a]) / (pt.t[b] - pt.t[a])
-                pt.set(i, INTERP, blend(anchors[a][0], anchors[b][0], w), age=min(pt.t[i] - pt.t[a], pt.t[b] - pt.t[i]))
+            p, a_ = F or B
+            pt.set(i, FLOW, p, age=abs(pt.t[i] - pt.t[a_]))
+    nbad = sum(1 for v in trusted.values() if not v)
+    pt.info["flow_bad_intervals"] = pt.info.get("flow_bad_intervals", 0) + nbad
 
 
 # ---------------------------------------------------------------------------------------------- entry points
@@ -955,13 +1004,202 @@ def visible_field(cam_or_pose, W, H, step=0.5):
     return float(ok.mean())
 
 
+# ---------------------------------------------------------------------------------------------- auto set-up
+def _duration(video):
+    import av
+    c = av.open(video); s = c.streams.video[0]
+    d = float(s.duration * s.time_base) if s.duration else float(c.duration or 0) / 1e6
+    W, H = s.codec_context.width, s.codec_context.height
+    c.close()
+    return d, W, H
+
+
+def _merge_boxes(boxes, gap=12):
+    """Union boxes that overlap / touch (within gap px) until stable."""
+    b = [list(map(int, x)) for x in boxes]
+    changed = True
+    while changed:
+        changed = False
+        for i in range(len(b)):
+            for j in range(i + 1, len(b)):
+                p, q = b[i], b[j]
+                if p[0] - gap <= q[2] and q[0] - gap <= p[2] and p[1] - gap <= q[3] and q[1] - gap <= p[3]:
+                    b[i] = [min(p[0], q[0]), min(p[1], q[1]), max(p[2], q[2]), max(p[3], q[3])]
+                    del b[j]; changed = True; break
+            if changed: break
+    return b
+
+
+def auto_overlays(video, n=16, frames=None):
+    """Broadcast graphics of a program feed: pixels that stay identical while the pictures behind them change
+    (layout.suggest_overlays over frames spread over the middle of the clip, where the score bar is up and several
+    cameras were on air).  -> [[x0, y0, x1, y1], ...] full-frame px (score bar, logos, clock; merged)."""
+    import layout as LY
+    if frames is None:
+        dur, _, _ = _duration(video)
+        ts = np.linspace(0.3 * dur, 0.85 * dur, n)
+        frames = [f for _, f in LY.grab_frames(video, ts)]
+    if len(frames) < 6: return []
+    sug = LY.suggest_overlays(frames)
+    Hh, Ww = frames[0].shape[:2]
+    boxes = _merge_boxes([o["box"] for o in sug])
+    # a band of graphics along the top / bottom edge -> one full-width box (the score bar's gaps change too)
+    out = []
+    for b in boxes:
+        if b[3] >= 0.97 * Hh and b[1] > 0.6 * Hh and b[2] - b[0] > 0.3 * Ww: b = [0, b[1], Ww, Hh]
+        if b[1] <= 0.03 * Hh and b[3] < 0.4 * Hh and b[2] - b[0] > 0.3 * Ww: b = [b[0], 0, b[2], b[3]]
+        out.append(b)
+    return _merge_boxes(out)
+
+
+def _static_shots(pt, min_s=1.5):
+    """Shots whose camera did not move (anchor rotations within 0.05 deg, focal within 0.5 %) and shows most of the
+    field -> [(shot id, sample indices, Pose)]."""
+    out = []
+    for sid in np.unique(pt.shot):
+        idx = np.where((pt.shot == sid) & (pt.kind == TAGS))[0]
+        allx = np.where((pt.shot == sid) & (pt.kind > 0))[0]
+        if len(idx) < 3 or len(allx) < min_s * FPS: continue
+        ps = [pt.pose(i) for i in idx]
+        f = np.array([p.f for p in ps])
+        if f.std() / f.mean() > 0.005 or max(rot_deg(ps[0], p) for p in ps) > 0.05: continue
+        med = ps[int(np.argsort(f)[len(f) // 2])]
+        if visible_field(med, pt.W, pt.H) < 0.6: continue
+        out.append((int(sid), allx, med))
+    return out
+
+
+def auto_setup(video, t1=190.0, log=print, overlays=None, source_id=None):
+    """Everything the tracker needs for a stream nobody calibrated, from one recorded clip of it (a match):
+
+      overlays  broadcast graphics (auto_overlays) -> layout regions (scoreboard / mask) the tracker greys out
+      camera    the FIXED wide camera, if the feed has one: the static, field-wide view that is on air the longest,
+                re-fitted like the calibration wizard (tags of several frames, median; focal, k1..k3, principal
+                point; refined on the white centre line) -> camera.json content ("which": "overhead")
+      view_ref  that camera's median picture (BGR) -> view_<sid>.png (process(view_ref=...) / dynpose)
+      field     the projected field box (+ robot height) above the score bar -> the layout's "field" region
+      clock     the 1 Hz clock digits (layout.suggest_clock on 10 s of 10 Hz frames) if found
+
+    -> dict(camera, layout, view_ref, overlays, report).  camera / view_ref are None when no fixed view was found:
+    process(dynamic=True) then still locates robots from every camera, with no fuel / shots.
+    Callable from the worker (e.g. before the first match of a pasted stream: auto_setup(clip) -> write the files
+    as the event's candidate calibration) or from a Video-page job (live/sources.py job_* -> show the result in
+    the existing accept / reject overlay); nothing calls it yet."""
+    import layout as LY
+    tt = time.time()
+    dur, W, H = _duration(video)
+    if overlays is None:
+        overlays = auto_overlays(video)
+    log(f"  auto_setup: {len(overlays)} graphics boxes {overlays}")
+    pt = estimate(video, None, None, overlays, 0.0, min(t1, dur), log=log)
+    report = dict(pose=pt.summary(), overlays=overlays)
+    shots = _static_shots(pt)
+    camd, plate, field = None, None, None
+    if shots:
+        # cluster static shots by pose; the biggest cluster (samples on air) = the fixed camera
+        groups = []
+        for sid, idx, p in shots:
+            for g in groups:
+                q = g[0][2]
+                if np.linalg.norm(p.C - q.C) < 0.5 and rot_deg(p, q) < 0.3 and abs(p.f / q.f - 1) < 0.02:
+                    g.append((sid, idx, p)); break
+            else:
+                groups.append([(sid, idx, p)])
+        g = max(groups, key=lambda g: sum(len(x[1]) for x in g))
+        on_air = sum(len(x[1]) for x in g) / max(pt.n, 1)
+        idx = np.concatenate([x[1] for x in g])
+        p0 = g[int(np.argmax([len(x[1]) for x in g]))][2]
+        ts = pt.t[np.sort(idx)[np.linspace(0, len(idx) - 1, min(10, len(idx))).astype(int)]]
+        frames = [f for _, f in LY.grab_frames(video, ts)]
+        grays = [cv2.cvtColor(f, cv2.COLOR_BGR2GRAY) for f in frames]
+        tags = CAL.detect_tags_frames(grays)
+        tags = {k: v for k, v in tags.items() if not _in_masks(v["center"], overlays)}
+        vec = np.r_[p0.f, 1.0, p0.cx, p0.cy, p0.D[0], 0.0, p0.rv, p0.C, 0.0]
+        pfit, rep = CAL.wizard_fit(W, H, tags, None, None, p_init=vec)
+        if pfit is not None:
+            plate = np.median(np.stack(frames), 0).astype(np.uint8)
+            try:
+                p2, rep2 = CAL.refine_with_lines(pfit, cv2.cvtColor(plate, cv2.COLOR_BGR2GRAY), W, H, tags)
+                if rep2 is not None and (rep2.get("tag_rms_px") or 99) <= max(1.0, 1.5 * (rep.get("tag_rms_px") or 0)):
+                    pfit, rep = p2, rep2
+            except Exception as e:
+                log(f"  auto_setup: centre-line refinement failed ({e!r})")
+            camd = CAL.wizard_camera(pfit, W, H, event=None, which="overhead", model="wizard pinhole f,c,k1,k2,k3",
+                                     source=source_id, calib=dict(method="dynpose auto_setup", tag_rms_px=rep.get("tag_rms_px"),
+                                                                  line_med_px=rep.get("line_med_px"), n_tags=rep.get("n_tags"),
+                                                                  on_air=round(float(on_air), 3), shots=len(g),
+                                                                  warnings=rep.get("warnings"), at=time.time()))
+            camd.pop("event", None)
+            (px0, py0, px1, py1) = _picture(W, H, overlays)
+            x0, y0, x1, y1 = CAMM.Camera(camd).roi()
+            field = [max(x0, px0), max(y0, py0), min(x1, px1), min(y1, py1)]
+            camd["field_roi"] = field
+            report["fixed"] = dict(on_air=round(float(on_air), 3), shots=len(g), tags=len(tags),
+                                   tag_rms_px=rep.get("tag_rms_px"), line_med_px=rep.get("line_med_px"),
+                                   f=rep.get("f"), C=rep.get("C"), k1=rep.get("k1"), warnings=rep.get("warnings"))
+            log(f"  auto_setup: fixed camera on air {on_air:.0%} ({len(g)} shots), {len(tags)} tags, "
+                f"RMS {rep.get('tag_rms_px')} px, line {rep.get('line_med_px')} px")
+    if camd is None:
+        log("  auto_setup: no fixed wide camera found (moving views only: robots located, no fuel / shots)")
+    # clock: 10 s of 10 Hz frames in the middle of the clip, searched inside the graphics
+    clock = None
+    try:
+        dense = LY.grab_dense(video, 0.5 * dur, seconds=10.0, hz=10.0)
+        within = max(overlays, key=lambda b: (b[2] - b[0]) * (b[3] - b[1])) if overlays else None
+        clock = LY.suggest_clock(dense, tuple(within) if within else None)
+    except Exception as e:
+        log(f"  auto_setup: clock search failed ({e!r})")
+    sid = source_id or "auto"
+    regions = [dict(id=f"a{i}", kind="scoreboard" if i == 0 else "mask", label="Graphics (auto)", box=list(map(int, b)))
+               for i, b in enumerate(sorted(overlays, key=lambda b: -(b[2] - b[0]) * (b[3] - b[1])))]
+    if clock: regions.append(dict(id="aclock", kind="clock", label="Clock digits (auto)", box=clock["box"]))
+    if field: regions.append(dict(id="afield", kind="field", label="Field area (auto)", box=list(map(int, field))))
+    layout_doc = {"version": 1, "processing_source": sid,
+                  "sources": {sid: dict(W=W, H=H, role="dynamic", regions=regions, updated_by="dynpose auto_setup",
+                                        updated_at=time.time())}}
+    report.update(clock=clock["box"] if clock else None, seconds=round(time.time() - tt, 1))
+    return dict(camera=camd, layout=layout_doc, view_ref=plate, overlays=overlays, report=report, poses=pt)
+
+
+def _picture(W, H, overlays):
+    """Frame minus full-width graphics bands at the top / bottom (= process.picture_box)."""
+    x0, y0, x1, y1 = 0, 0, W, H
+    for a, b, c, d in overlays or []:
+        if c - a >= 0.6 * W and b <= 0.02 * H and d < 0.4 * H: y0 = max(y0, int(d))
+        elif c - a >= 0.6 * W and d >= 0.98 * H and b > 0.6 * H: y1 = min(y1, int(b))
+    return x0, y0, x1, y1
+
+
+def write_setup(setup, out_dir, source_id="auto"):
+    """auto_setup(...) -> files in out_dir: camera_<sid>.json, layout.json, view_<sid>.png, auto_setup.json (report).
+    A candidate: copy / accept it into the event dir like a wizard calibration."""
+    os.makedirs(out_dir, exist_ok=True)
+    out = {}
+    if setup["camera"] is not None:
+        out["camera"] = os.path.join(out_dir, f"camera_{source_id}.json")
+        json.dump(setup["camera"], open(out["camera"], "w"), indent=1)
+    if setup["view_ref"] is not None:
+        out["view_ref"] = os.path.join(out_dir, f"view_{source_id}.png")
+        cv2.imwrite(out["view_ref"], setup["view_ref"])
+    out["layout"] = os.path.join(out_dir, "layout.json")
+    json.dump(setup["layout"], open(out["layout"], "w"), indent=1)
+    out["report"] = os.path.join(out_dir, "auto_setup.json")
+    json.dump(setup["report"], open(out["report"], "w"), indent=1, default=float)
+    return out
+
+
 if __name__ == "__main__":
     import argparse
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("video"); ap.add_argument("--ref"); ap.add_argument("--view-ref"); ap.add_argument("--layout")
     ap.add_argument("--t0", type=float, default=0.0); ap.add_argument("--t1", type=float, default=190.0)
     ap.add_argument("--out"); ap.add_argument("--report")
+    ap.add_argument("--auto", metavar="DIR", help="auto set-up (no calibration): write camera / layout / view ref to DIR")
     g = ap.parse_args()
+    if g.auto:
+        su = auto_setup(g.video, t1=g.t1)
+        print(json.dumps(write_setup(su, g.auto), indent=1)); print(json.dumps(su["report"], indent=1, default=float))
+        sys.exit(0)
     ref = json.load(open(g.ref)) if g.ref else None
     masks = []
     if g.layout:

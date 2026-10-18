@@ -342,6 +342,160 @@ def detect_video(video, cam, model, t1=SCAN_T1, log=print, hooks=(), ocr=None, c
             np.array(body, np.float32).reshape(-1, HB * SB + 4), n, clock, np.array(feed, bool))
 
 
+# ---------------------------------------------------------------- dynamic view (live/dynpose.py)
+DYN_SIG_M = float(os.environ.get("DYN_SIG_M", "0.15"))   # m: pose-error floor of a moving-view position
+DYN_EDGE_PX = 6                                          # moving views: boxes this close to the picture edge are cut off
+
+
+def picture_box(W, H, overlays):
+    """Frame minus full-width graphics bands at the top / bottom edge (score bar); other graphics stay masks."""
+    x0, y0, x1, y1 = 0, 0, W, H
+    rest = []
+    for a, b, c, d in overlays or []:
+        if c - a >= 0.6 * W and b <= 0.02 * H and d < 0.4 * H: y0 = max(y0, int(d))
+        elif c - a >= 0.6 * W and d >= 0.98 * H and b > 0.6 * H: y1 = min(y1, int(b))
+        else: rest.append((int(a), int(b), int(c), int(d)))
+    return (x0, y0, x1, y1), rest
+
+
+def detect_video_dyn(video, dyn, ref, model, t1=SCAN_T1, log=print, hooks=(), ocr=None, clock_box=None, masks=(),
+                     field=None, light_clock=False, overlays=()):
+    """detect_video for a program feed with a camera per frame (dyn: dynpose.PoseTrack, same 30 Hz samples).
+    Fixed-view frames (the reference camera `ref`) are processed exactly like detect_video does (ROI, layout
+    masks, colour-swap fix, hooks = fuel); frames of other cameras with a pose: the whole picture (graphics
+    `overlays` cut off / greyed out), boxes cut by the picture edge dropped, each box located with ITS frame's
+    camera; frames without a pose = feed gaps.  -> detect_video's tuple + dict(xy, cov, h, view) per raw row."""
+    import dynpose as DP
+    fx0, fy0, fx1, fy1 = ref.roi()
+    if field:
+        fx0, fy0 = max(fx0, int(field[0])), max(fy0, int(field[1]))
+        fx1, fy1 = min(fx1, int(field[2])), min(fy1, int(field[3]))
+    fmasks = [(max(0, int(a) - fx0), max(0, int(b) - fy0), min(fx1 - fx0, int(c) - fx0), min(fy1 - fy0, int(d) - fy0))
+              for a, b, c, d in (masks or [])]
+    fmasks = [m for m in fmasks if m[2] > m[0] and m[3] > m[1]]
+    (mx0, my0, mx1, my1), rest = picture_box(ref.W, ref.H, list(overlays or []) + list(masks or []))
+    mmasks = [(max(0, a - mx0), max(0, b - my0), min(mx1 - mx0, c - mx0), min(my1 - my0, d - my0)) for a, b, c, d in rest]
+    mmasks = [m for m in mmasks if m[2] > m[0] and m[3] > m[1]]
+    clock_box = tuple(clock_box) if clock_box else CLOCK_BOX
+    swapped = swap_check(ref); n_swap = 0
+    feed = []
+    c = av.open(video); s = c.streams.video[0]; s.thread_type = "AUTO"
+    rows, chas, body, xyd, covd, hd, vd = [], [], [], [], [], [], []
+    clock = []
+    n = 0; nxt = 0.0; t0 = time.time(); k = -1; n_edge = 0
+    for f in c.decode(s):
+        k += 1
+        if f.time is None: continue
+        if f.time > t1: break
+        sample = f.time + 1e-6 >= nxt
+        if not sample and not hooks: continue
+        # the pose of a full-rate frame between samples = the last sample's (hooks only use fixed frames)
+        i = n if sample else n - 1
+        kind = int(dyn.kind[i]) if 0 <= i < dyn.n else DP.NONE
+        fixed = kind == DP.FIXED
+        im = f.to_ndarray(format="bgr24")
+        if fixed:
+            x0, y0, x1, y1, msk = fx0, fy0, fx1, fy1, fmasks
+        else:
+            x0, y0, x1, y1, msk = mx0, my0, mx1, my1, mmasks
+        live = kind != DP.NONE and float(im[y0:y1:16, x0:x1:16].mean()) > NO_FEED_LEVEL
+        if live and fixed and swapped(im):
+            im = np.ascontiguousarray(im[:, :, ::-1]); n_swap += 1
+        if live and fixed:
+            for h in hooks: h.push(k, float(f.time), im)
+        if not sample: continue
+        nxt = (n + 1) / FPS
+        feed.append(live)
+        if not live:
+            n += 1; continue
+        cam_n = dyn.camera(n)
+        if f.time < 45:
+            cx0, cy0, cx1, cy1 = clock_box
+            g = cv2.cvtColor(im[cy0:cy1, cx0:cx1], cv2.COLOR_BGR2GRAY)
+            clock.append((float(f.time), 255 - g if light_clock else g))
+        crop = im[y0:y1, x0:x1]
+        if msk:
+            crop = crop.copy()
+            for a, b, c_, d in msk: crop[b:d, a:c_] = 114
+        b, sc = model(crop, conf=CONF_KEEP)
+        if len(b) and not fixed:                 # a box cut by the picture edge has no ground contact point
+            cw, ch_ = x1 - x0, y1 - y0
+            keep = (b[:, 3] < ch_ - DYN_EDGE_PX) & (b[:, 0] > DYN_EDGE_PX) & (b[:, 2] < cw - DYN_EDGE_PX)
+            for a, bb, c_, d in msk:             # ... or by a graphic
+                cx_ = (b[:, 0] + b[:, 2]) / 2
+                keep &= ~((cx_ >= a) & (cx_ < c_) & (b[:, 3] >= bb - DYN_EDGE_PX) & (b[:, 3] < d))
+            n_edge += int((~keep).sum())
+            b, sc = b[keep], np.asarray(sc)[keep]
+        if ocr is not None and len(b):
+            ocr.cam = cam_n
+            ocr.frame(float(f.time), im, b + [x0, y0, x0, y0], np.asarray(sc), len(rows))
+        if len(b):
+            bx_all = b + [x0, y0, x0, y0]
+            xy = cam_n.box_to_field(bx_all)
+            hh = cam_n.heights(bx_all, xy)
+            okp = np.isfinite(xy).all(1)
+            cv_ = np.full((len(b), 2, 2), np.nan)
+            if okp.any():
+                cv_[okp] = cam_n.cov(xy[okp], su=2.0, sv=2.5)
+                if not fixed:
+                    sig = DYN_SIG_M * (1.0 + float(dyn.age[n] if np.isfinite(dyn.age[n]) else 1.0))
+                    cv_[okp] += (sig ** 2) * np.eye(2)
+        for j in range(len(b)):
+            bx = b[j] + [x0, y0, x0, y0]
+            rows.append([n, float(f.time), -1.0, *bx, float(sc[j]), alliance(im, bx)])
+            hgt = bx[3] - bx[1]
+            chas.append(hsv_desc(im, *bx))
+            body.append(hsv_desc(im, bx[0], bx[1], bx[2], bx[1] + 0.6 * hgt))
+            xyd.append(xy[j]); covd.append(cv_[j]); hd.append(hh[j]); vd.append(kind)
+        n += 1
+        if n % 900 == 0:
+            log(f"  {n} frames t={f.time:.0f}s {len(rows)} dets {n / (time.time() - t0):.1f} fps")
+    c.close()
+    if n_swap:
+        log(f"  fixed {n_swap} colour-swapped frames")
+    if n_edge:
+        log(f"  dynamic: {n_edge} boxes cut by the picture edge dropped")
+    extra = dict(xy=np.array(xyd, float).reshape(-1, 2), cov=np.array(covd, float).reshape(-1, 2, 2),
+                 h=np.array(hd, float).reshape(-1), view=np.array(vd, np.int8).reshape(-1))
+    return (np.array(rows, float).reshape(-1, 9), np.array(chas, np.float32).reshape(-1, HB * SB + 4),
+            np.array(body, np.float32).reshape(-1, HB * SB + 4), n, clock, np.array(feed, bool), extra)
+
+
+def dyn_poses(video, cam, dynamic, view_ref=None, overlays=(), log=print):
+    """process(dynamic=...) -> (dynpose.PoseTrack, fixed reference camera.Camera).  dynamic: True = estimate now
+    (cam = the event calibration with this match's pose, or None), a PoseTrack, or a saved PoseTrack .npz path."""
+    import dynpose as DP
+    if isinstance(dynamic, DP.PoseTrack):
+        pt = dynamic
+    elif isinstance(dynamic, str):
+        pt = DP.PoseTrack.load(dynamic)
+    else:
+        pt = DP.estimate(video, cam.raw if cam is not None else None, view_ref, overlays, 0.0, SCAN_T1, log=log)
+    if pt.ref is not None:
+        ref = CAMM.Camera(pt.ref)
+    elif cam is not None:
+        ref = cam
+    else:                                         # no fixed camera at all: the widest view stands in (geom shim)
+        ok = np.where(pt.kind > 0)[0]
+        if not len(ok): raise RuntimeError("dynamic view: no camera pose on any frame")
+        vis = [DP.visible_field(pt.pose(i), pt.W, pt.H) for i in ok[::max(1, len(ok) // 60)]]
+        ref = CAMM.Camera(pt.raw(int(ok[::max(1, len(ok) // 60)][int(np.argmax(vis))])))
+    return pt, ref
+
+
+def gaps_of(fw):
+    """Runs of False in a per-frame bool array -> [[t0, t1], ...] seconds (replay frame 0 = 0)."""
+    gaps, i, nf = [], 0, len(fw)
+    while i < nf:
+        if not fw[i]:
+            j = i
+            while j < nf and not fw[j]: j += 1
+            gaps.append([round(i / FPS, 2), round(j / FPS, 2)]); i = j
+        else:
+            i += 1
+    return gaps
+
+
 def clock_start(clock, log=print):
     """Auto start from the broadcast clock: once the match starts the clock digits
     change exactly once per second.  Find the first run of >= 4 changes spaced
@@ -429,7 +583,7 @@ def track_stats(xy, obs, alliance_name, t_auto_end, LEN, live=None):
 # ---------------------------------------------------------------- main
 def process(video, cam_path, onnx, tag_csv=None, log=print, start_hint=None, pose_guess=None,
             teams=None, hooks=(), dump=None, extra_reads=None, event=None, layout=None, start_trusted=False,
-            view_ref=None):
+            view_ref=None, dynamic=False):
     """start_hint: typical match-start offset for this kind of upload, used only
     when neither the clock nor robot motion gives one.  start_trusted=True: start_hint is a measured
     auto start (a livestream clip's auto_start_in_clip, live/livestream.py) -> used when the clock check
@@ -456,14 +610,24 @@ def process(video, cam_path, onnx, tag_csv=None, log=print, start_hint=None, pos
     key in the paths, False = hard-coded 2026 FIRST boxes, or a Layout / layout.json path / dict.
     Without a layout.json the behaviour is unchanged.
     view_ref: image / path of the calibrated camera's view (livestream program feed that cuts to close-ups): only
-    frames showing it are tracked (and used by the pose check); the rest count as feed gaps (feed_ok = on-air share)."""
-    raw = json.load(open(cam_path))
-    if pose_guess:
+    frames showing it are tracked (and used by the pose check); the rest count as feed gaps (feed_ok = on-air share).
+    dynamic: robots located from EVERY camera of a program feed, each frame with its own camera pose from the
+    field's AprilTags (live/dynpose.py).  True = estimate the poses here (cam_path = the fixed camera's calibration,
+    or None for a stream nobody calibrated), or a dynpose.PoseTrack / saved .npz of one.  feed_ok / feed_gaps then
+    mean "a camera with a pose was on air"; res["dynamic"] has the fixed camera's share (fixed_feed_ok /
+    fixed_gaps: fuel and shots come from the fixed camera only -- hooks get only its frames) and the pose coverage.
+    Default False = unchanged."""
+    raw = json.load(open(cam_path)) if cam_path or not dynamic else None
+    if pose_guess and raw is not None:
         raw = dict(raw, rvec=pose_guess["rvec"], tvec=pose_guess["tvec"])
-    cam = CAMM.Camera(raw)
+    cam = CAMM.Camera(raw) if raw is not None else None
     pose = {"checked": False}
-    if tag_csv:
+    if tag_csv and cam is not None:
         cam, pose = check_pose(video, cam, tag_csv, log, view_ref=view_ref)
+    dyn = None
+    if dynamic:
+        overlays = overlay_params(cam, cam_path, video, layout)
+        dyn, cam = dyn_poses(video, cam, dynamic, view_ref, overlays, log)
     CAMM.install_geom_shim(cam)
 
     team_list = None
@@ -481,14 +645,24 @@ def process(video, cam_path, onnx, tag_csv=None, log=print, start_hint=None, pos
             log(f"  bumper OCR unavailable ({e!r}): tracking without team identity")
     lp = layout_params(cam, cam_path, video, layout, log)
     t0 = time.time()
-    det, chas, body, n, clock, feed = detect_video(video, cam, model, log=log, hooks=hooks, ocr=sampler,
-                                                   clock_box=lp["clock_box"], masks=lp["masks"], field=lp["field"],
-                                                   light_clock=lp["light_clock"], view_ref=view_ref)
+    dx = None
+    if dyn is None:
+        det, chas, body, n, clock, feed = detect_video(video, cam, model, log=log, hooks=hooks, ocr=sampler,
+                                                       clock_box=lp["clock_box"], masks=lp["masks"], field=lp["field"],
+                                                       light_clock=lp["light_clock"], view_ref=view_ref)
+    else:
+        det, chas, body, n, clock, feed, dx = detect_video_dyn(
+            video, dyn, cam, model, log=log, hooks=hooks, ocr=sampler, clock_box=lp["clock_box"], masks=lp["masks"],
+            field=lp["field"], light_clock=lp["light_clock"], overlays=overlays)
+        dx["frame_kind"] = np.where(feed, dyn.kind[:len(feed)], 0).astype(np.int8)
     reads = sampler.close() if sampler else np.zeros((0, 7))
     log(f"  detection: {n} frames, {len(det)} raw dets in {time.time() - t0:.0f}s")
     st = prepare(det, chas, body, n, clock, feed, reads, cam, log, start_hint,
                  reads_open=sampler.open_rows() if sampler is not None and sampler.open_cands else None,
-                 start_trusted=start_trusted)
+                 start_trusted=start_trusted, dyn=dx)
+    if dyn is not None:
+        st["dyn_info"] = dict(dyn.summary(), ref_from=("event calibration" if raw is not None else "estimated")
+                              if dyn.ref is not None else None)
     st.update(camera_pose=dict(rvec=cam.rvec.tolist(), tvec=cam.tvec.tolist()), pose=pose,
               cam_raw=cam.raw, teams=team_list, ocr_ok=sampler is not None)
     if open_teams and sampler is not None:
@@ -505,9 +679,34 @@ def process(video, cam_path, onnx, tag_csv=None, log=print, start_hint=None, pos
     res = finish(st, log)
     if lp["info"]:
         res["layout"] = lp["info"]
-    if view_ref is not None:                    # program feed: feed_ok = the calibrated camera's on-air share
+    if view_ref is not None and dyn is None:    # program feed: feed_ok = the calibrated camera's on-air share
         res["view_check"] = dict(threshold=VIEW_NCC, on_air=res["feed_ok"])
     return res
+
+
+def overlay_params(cam, cam_path=None, video=None, layout=None):
+    """Broadcast graphics boxes (score bar, clock, insets) of the event's layout in frame px, for the dynamic view
+    (kept out of its flow / tag search / moving-view detection).  None = no layout (dynpose finds them itself)."""
+    if layout is False: return None
+    try:
+        import layout as LY
+        if layout is None:
+            L = LY.find(cam_path=cam_path, video_path=video, cam=cam)
+        elif isinstance(layout, str):
+            L = LY.load(layout)
+        elif isinstance(layout, dict):
+            L = LY.Layout(layout)
+        else:
+            L = layout
+        if L is None: return None
+        if cam is not None:
+            W, H = cam.W, cam.H
+        else:
+            c = av.open(video); W, H = c.streams.video[0].codec_context.width, c.streams.video[0].codec_context.height
+            c.close()
+        return LY.overlay_boxes(L, W, H)
+    except Exception:
+        return None
 
 
 def event_teams(event):
@@ -531,21 +730,27 @@ def _lineups(event):
 
 
 def prepare(det, chas, body, n, clock, feed, reads, cam, log=print, start_hint=None, reads_open=None,
-            start_trusted=False):
+            start_trusted=False, dyn=None):
     """Raw detections -> tracking inputs inside the match window (+ match start).
     reads_open: optional open-set read rows (ocr.OPEN_COLS, raw det row first) -> st["reads_open"].
-    start_trusted: start_hint is a measured start (livestream) -> preferred over robot motion."""
+    start_trusted: start_hint is a measured start (livestream) -> preferred over robot motion.
+    dyn: detect_video_dyn's per-raw-row field positions / covariances / heights / view kinds (+ frame_kind):
+    used instead of projecting every box with `cam` (dynamic view)."""
     idx = np.arange(len(det))
     keep = det[:, 7] >= CONF_TRACK
     d, ch, bo, idx = det[keep], chas[keep], body[keep], idx[keep]
-    xy = cam.box_to_field(d[:, 3:7])
+    if dyn is None:
+        xy = cam.box_to_field(d[:, 3:7])
+    else:
+        xy = dyn["xy"][keep]
     ok = np.isfinite(xy).all(1) & CAMM.in_field(xy)
     d, ch, bo, xy, idx = d[ok], ch[ok], bo[ok], xy[ok], idx[ok]
     nms = CAMM.field_nms(d[:, 0], xy, d[:, 7])
     d, ch, bo, xy, idx = d[nms], ch[nms], bo[nms], xy[nms], idx[nms]
 
     t_clock = clock_start(clock, log)
-    t_motion, found = match_start(d, xy, cam.cov(xy, su=2.0, sv=2.5), n, log, fallback=start_hint)
+    t_motion, found = match_start(d, xy, cam.cov(xy, su=2.0, sv=2.5) if dyn is None else dyn["cov"][idx], n, log,
+                                  fallback=start_hint)
     t_start, found, how = pick_start(t_clock, t_motion, found, start_hint, start_trusted)
     log(f"  match start {t_start:.2f}s from {how} (clock {t_clock}, motion {t_motion:.2f}, hint {start_hint})")
     f0 = max(0, int(round((t_start - 0.5) * FPS)))
@@ -568,7 +773,7 @@ def prepare(det, chas, body, n, clock, feed, reads, cam, log=print, start_hint=N
             if g < 0:
                 f = int(det[int(r[0]), 0]) - f0
                 if not (0 <= f < nf) or det[int(r[0]), 7] < 0.1: continue
-                p = cam.box_to_field(det[int(r[0]), 3:7][None])[0]
+                p = cam.box_to_field(det[int(r[0]), 3:7][None])[0] if dyn is None else dyn["xy"][int(r[0])]
                 ks = byf.get(f, [])
                 if not ks or not np.isfinite(p).all(): continue
                 dd = np.linalg.norm(xy[ks] - p, axis=1)
@@ -579,6 +784,9 @@ def prepare(det, chas, body, n, clock, feed, reads, cam, log=print, start_hint=N
     rd = remap(reads, 7)
     st = dict(d=d, ch=ch, bo=bo, xy=xy, reads=rd, nf=nf, fw=fw, f0=f0, t_start=t_start, found=found,
               how=how, n_raw_reads=len(reads))
+    if dyn is not None:
+        fk = np.zeros(nf, np.int8); seg = dyn["frame_kind"][f0:f0 + nf]; fk[:len(seg)] = seg
+        st.update(cov_d=dyn["cov"][idx], h_d=dyn["h"][idx], view_d=dyn["view"][idx], fwk=fk)
     if reads_open is not None:
         ro = np.asarray(reads_open, float)
         ro = ro.reshape(len(ro), -1) if ro.size else ro.reshape(0, ro.shape[-1] if ro.ndim == 2 else 14)
@@ -622,8 +830,11 @@ def finish(st, log=print):
     import fuse, track as T
     T.DT = 1 / FPS
     d, ch, bo, xy, nf, fw = st["d"], st["ch"], st["bo"], st["xy"], st["nf"], st["fw"]
-    cov = cam.cov(xy, su=2.0, sv=2.5)
-    hs = cam.heights(d[:, 3:7], xy)
+    if "cov_d" in st:                           # dynamic view: each detection located with its frame's camera
+        cov, hs = st["cov_d"], st["h_d"]
+    else:
+        cov = cam.cov(xy, su=2.0, sv=2.5)
+        hs = cam.heights(d[:, 3:7], xy)
     chn = ch / np.maximum(ch.sum(1, keepdims=True), 1e-9)
     team_list = st.get("teams")
     identity = None
@@ -699,7 +910,32 @@ def finish(st, log=print):
                field=dict(length=CAMM.LEN, width=CAMM.WID))
     if identity is not None:
         res["identity"] = identity
+    if "fwk" in st:
+        res["dynamic"] = dynamic_report(st, d)
     return res
+
+
+def dynamic_report(st, d):
+    """res["dynamic"]: what the dynamic view covered (honest labels: which positions come from moving cameras,
+    which time the fixed camera -- the only source of fuel / shots -- was on air)."""
+    import dynpose as DP
+    fk = st["fwk"]; step = int(FPS // OUT_HZ)
+    fixed = fk == DP.FIXED
+    vd = st.get("view_d")
+    nd = len(d)
+    info = dict(st.get("dyn_info") or {})
+    return dict(
+        method="dynpose: per-frame camera from AprilTags (fixed camera = event calibration; other cameras: per-shot "
+               "camera centre + per-frame rotation / zoom, carried along optical flow between tag frames)",
+        pose_ok=round(float((fk > 0).mean()), 3) if len(fk) else 0.0,
+        fixed_feed_ok=round(float(fixed.mean()), 3) if len(fk) else 0.0,
+        moving_ok=round(float(((fk > 0) & ~fixed).mean()), 3) if len(fk) else 0.0,
+        fixed_gaps=gaps_of(fixed),
+        view="".join(np.where(fk == DP.FIXED, "F", np.where(fk > 0, "M", "-"))[::step]),
+        dets=dict(fixed=int((vd == DP.FIXED).sum()) if vd is not None else nd,
+                  moving=int((vd != DP.FIXED).sum()) if vd is not None else 0),
+        fuel_shots="fixed camera only (frames of other cameras are not used for fuel / shots)",
+        estimate=info)
 
 
 if __name__ == "__main__":
