@@ -876,7 +876,8 @@ def finish(st, log=print):
             if (np.linalg.norm(others - xy[i], axis=1) < 1.5).sum() <= 1: iso.append(i)
         sel = np.array(iso if len(iso) >= 20 else di, int)
         hist = bo[sel].mean(0) if len(sel) else np.zeros(bo.shape[1])
-        wpx = np.median(d[sel, 5] - d[sel, 3]) if len(sel) else np.nan
+        wsel = sel if "view_d" not in st else sel[st["view_d"][sel] == 1]     # dynamic view: fixed-camera px only
+        wpx = np.median(d[wsel, 5] - d[wsel, 3]) if len(wsel) else np.nan
         row = dict(
             alliance=tr["alliance"], idx=k,
             xy=np.round(tr["xy"][::step] * 100).astype(int).tolist(),      # cm @ OUT_HZ

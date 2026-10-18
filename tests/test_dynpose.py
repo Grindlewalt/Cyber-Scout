@@ -240,3 +240,25 @@ def test_process_signature_default_is_not_dynamic():
     sig = inspect.signature(PR.process)
     assert sig.parameters["dynamic"].default is False
     assert "dyn" not in inspect.signature(PR.detect_video).parameters        # the default detection pass is untouched
+
+
+# ---------------------------------------------------------------- auto set-up helpers
+def test_merge_boxes_and_picture():
+    m = DP._merge_boxes([[0, 830, 600, 1080], [590, 828, 1300, 1080], [1310, 826, 1920, 1080], [900, 10, 1000, 60]])
+    assert sorted(m) == [[0, 826, 1920, 1080], [900, 10, 1000, 60]]
+    assert DP._picture(W, H, m) == (0, 0, 1920, 826)
+
+
+def test_static_shots_finds_the_locked_off_wide_view():
+    wide = look_at([7.42, 12.05, 6.59], [8.27, 3.5, 0.0], 1038)
+    close = look_at([16.8, 12.2, 1.95], [11.9, 4.0, 0.0], 1700)
+    n = 120
+    pt = DP.PoseTrack(n, W, H); pt.t[:] = np.arange(n) / 30.0
+    pt.shot[:60] = 0; pt.shot[60:] = 1
+    for i in range(60):
+        pt.set(i, DP.TAGS if i % 6 == 0 else DP.FLOW, wide, rms=0.3 if i % 6 == 0 else np.nan)
+    for i in range(60, n):                                                     # panning close-up
+        pt.set(i, DP.TAGS if i % 6 == 0 else DP.FLOW, DP.blend(close, look_at([16.8, 12.2, 1.95], [10.9, 4.0, 0.0], 1700),
+                                                                 (i - 60) / 60), rms=0.3 if i % 6 == 0 else np.nan)
+    st = DP._static_shots(pt, min_s=1.0)
+    assert [s[0] for s in st] == [0]

@@ -3,7 +3,8 @@
 How one played match becomes tracked robots, identities, shots and site JSON. Sections 0–6
 cover the worker loop, video selection, camera pose, detection, tracking and identity, the
 station cameras, and the offline tools. Sections 7–14 cover fuel tracking, shots, intakes,
-analytics, enrichment, site JSON and livestream ingest.
+analytics, enrichment, site JSON and livestream ingest. Section 15 covers the dynamic view: a camera
+pose for every frame of a program feed, and automatic set-up of an uncalibrated stream.
 
 Function references are `file.py:function`. All paths are relative to the repo unless they
 start with `DATA/` (the `data/` dir of the stack, `/data` in the containers) or `MEDIA/`
@@ -1966,6 +1967,120 @@ the record. `LiveView.wait_reason(m)` explains a missing live input for the stat
 * The livestream.py standalone `--budget-gb` default is 20 GB; under the service it is 60 GB (`LIVE_BUDGET_GB`).
 * `--tba-env` defaults to `/opt/stacks/cyber-scout/.env` (a host path) for standalone runs; the service passes
   `/nonexistent` and the key via env.
+
+## 15. Dynamic view — `live/dynpose.py` (+ `process(dynamic=True)`)
+
+**What.** A produced program feed (2026wagg: Twitch firstwa_red1) cuts between a fixed wide camera (on air ≈ 2/3 of
+qm20) and close-up cameras that pan and zoom. Without this, the tracker tracks only while the calibrated camera is on air
+(`view_ref`, §2.4/§3.3) and the rest is a feed gap. With it, every frame gets its own camera from the field's AprilTags,
+so robots are located from any view. Opt-in: nothing in the worker calls it yet. The default `process()` path is
+unchanged.
+
+### 15.1 `dynpose.estimate(video, ref, view_ref, masks, t0, t1)` → `PoseTrack`
+
+Samples are exactly the tracker's (30 Hz, `detect_video`'s rule), so sample `n` is detection frame `n`.
+
+**Pass 1 (`_Scan`, one decode at the sample rate).**
+
+| step | how |
+|---|---|
+| graphics | `masks` (layout scoreboard/clock/mask/inset boxes, or `auto_overlays`) are kept out of every test below |
+| hard cut | NCC of 96×54 thumbnails with the previous sample < `DYN_CUT_NCC` 0.5 |
+| dissolve / wipe / whip pan | *motion-compensated* NCC: the frame 10 samples (and 30 samples) ago, warped along the flow homographies, vs now; < 0.7 (< 0.5 over 1 s) = transition, no pose. 2026wagg dissolves last ≈ 0.8–1.2 s and never drop the plain frame-to-frame NCC below 0.96, so the plain cut test alone misses them |
+| fixed view | at a shot's first tag frame: tags searched (×4 windows) where `ref` predicts them; ≥ 3 tags within `DYN_FIXED_PX` 3 px (or ≤ 12 px and a rotation-only re-aim brings them < 1.5 px) → the shot is the fixed camera (kind `FIXED`, the calibration itself). It stays fixed while the frame matches the fixed view's thumbnail (`view_ref`, or learned from the first fixed frame) ≥ `VIEW_NCC` |
+| flow | LK on ≤ 300 corners of a 480×270 grey frame → RANSAC homography (full-res px), each sample |
+| tags | `DYN_TAG_HZ` 5 Hz (10 Hz while the flow drifts > 3 px): windows around the tags the current pose predicts (upscaled to ≈ 48 px), the whole frame at 1× when there is no pose (or < 3 tags, ≤ 1/s), tiled ×2 as a last resort. Close-up tags are 30–150 px; wide-shot tags 17–28 px |
+| online pose | first frames: free solve (focal sweep + SQPnP, then least squares on rotation, centre, focal and — from ≥ 3 tags — radial k1); then the shot's centre is fixed and only rotation + focal are solved (works from one tag) |
+
+**Pass 2 (`_finalize`).**
+1. Transition runs are trimmed: frames that already/still look like the next/previous shot (flow-warped NCC ≥ 0.85) join it.
+2. Each moving shot: one camera centre + k1 (broadcast cameras pan/tilt/zoom on a fixed mount). The candidates are the shot's own online solves, the clip's other cameras (clusters of centres, 0.75 m), and the fixed camera's mount; each is tried with k1 and with k1 = 0 (high zoom). The best by the number of tag frames ≤ `DYN_MAX_RMS` 2.5 px wins, then a joint sparse least squares refines the centre + k1 + every frame's rotation/focal.
+3. Anchors = tag frames ≤ 2.5 px (kind `TAGS`). Between two anchors the pose is carried along the homographies from both sides and blended (kind `FLOW`): a rotating/zooming camera maps the image by H = K₂R₂R₁ᵀK₁⁻¹, so (R₂, f₂) follow in closed form (`from_homography`). The interval is trusted only if carrying the first anchor lands on the second one's tags within `DYN_FLOW_DRIFT` 6 px. Otherwise (a person filling a zoomed frame drags the flow), the interval is interpolated when the anchors are ≤ 0.7 s apart (kind `INTERP`), else carried only 0.1 s. Before the first or after the last anchor of a shot: ≤ `DYN_EDGE_AGE` 0.33 s. Every carried pose stays ≤ `DYN_MAX_AGE` 1 s from its anchor and passes `_sane` (≤ 2° + 20°/s, zoom 0.7–1.5×).
+4. The fixed camera is re-aimed over all its tag frames when they are > 1 px off (`_reaim_ref`). `PoseTrack.ref` is then the re-aimed dict (`dyn_reaim` block).
+
+Lens: the fixed camera keeps its calibrated lens. Other cameras are pinhole with the principal point at the centre and a radial k1 per shot (prior 0 ± 0.25; `DYN_K1` sets the prior). k1 matters: the 2026wagg close-up at f ≈ 1720 px has k1 ≈ −0.13. With k1 = 0 the 6–7-tag frames fit at 5 px RMS, with k1 at 0.4 px.
+
+`PoseTrack`: arrays `t, k, kind` (0 none, 1 fixed, 2 tags, 3 flow, 4 interp), `shot, rms, ntag, age, rv, C, f, k1`.
+Methods: `camera(n)` → `camera.Camera` (one shared object for fixed frames) or None, `raw(n)`, `pose(n)`, `summary()`,
+`view_string()`, `save()/load()` (.npz). CLI: `python live/dynpose.py VIDEO --ref camera.json [--layout layout.json]
+[--view-ref view.png] --out pose.npz --report r.json`.
+
+### 15.2 `process(..., dynamic=True)`
+
+`dynamic` = True (estimate here, with the event calibration after `check_pose` as the reference; `cam_path=None` is
+allowed: no fixed camera), or a `PoseTrack` / `.npz` path.
+
+- `dyn_poses` → (PoseTrack, the reference `camera.Camera`). With no fixed camera, the widest view stands in for the
+  geom shim.
+- `detect_video_dyn` replaces `detect_video`:
+  - **Fixed frames:** handled exactly like `detect_video` (ROI ∩ layout field box, masks, colour-swap fix). Fuel
+    **hooks get only these frames**.
+  - **Moving frames:** the whole picture. Full-width graphics bands at the top or bottom are cut off
+    (`picture_box`), the other graphics greyed. Boxes within 6 px of the picture edge or a graphic are dropped
+    (no ground contact point).
+  - Every box is located with its frame's camera (`box_to_field`, `heights`, `cov`). Moving views add a pose-error
+    floor of `DYN_SIG_M` 0.15 m × (1 + age) to the covariance.
+  - The OCR sampler gets the frame's camera (`ocr.cam`).
+  - Frames without a pose are feed gaps.
+- `prepare(dyn=...)` / `finish` use the per-row positions, covariances and heights (`st["cov_d"], ["h_d"],
+  ["view_d"], ["fwk"]`) instead of projecting with one camera. `process(dump=)` keeps them, so `finish()` re-runs
+  work.
+- Result: `feed_ok` / `feed_gaps` = a camera with a pose was on air. `res["dynamic"]` holds:
+  - `pose_ok`, `fixed_feed_ok`, `moving_ok`;
+  - `fixed_gaps` (seconds from replay frame 0, like `feed_gaps`);
+  - `view` (one char per 10 Hz frame: `F` fixed, `M` moving, `-` none);
+  - `dets` {fixed, moving};
+  - `fuel_shots: "fixed camera only"`;
+  - `estimate` (the PoseTrack summary).
+  - `camera_pose` is the fixed camera's (re-aimed) pose.
+
+**Not yet (honest limits).**
+- Fuel and shots stay fixed-camera only. `enrich` decodes the video again with `camera_pose` and its own view gating.
+  For a dynamic match `shots.py` should take `res["dynamic"]["fixed_gaps"]` as its gaps, not `feed_gaps` (a one-line
+  change in `shots.py`, not made here).
+- The colour-swap fix runs only on fixed frames. `feat.box_w_px` comes from fixed-view boxes only.
+- Pre-match human-player close-ups at 4–5× zoom (a person fills the frame and drags the flow) are the worst frames:
+  held-out tag error up to 50–100 px (≈ 0.5–1°). They are pre-match, so no robot tracking is lost.
+
+### 15.3 `auto_setup(video)` — a stream nobody calibrated
+
+`auto_setup(clip)` → `dict(camera, layout, view_ref, overlays, report, poses)`. `write_setup(setup, dir, sid)`
+writes `camera_<sid>.json`, `layout.json`, `view_<sid>.png` and `auto_setup.json` as a candidate.
+
+1. **Graphics** (`auto_overlays`): `layout.suggest_overlays` over 16 frames from 30–85 % of the clip (pixels
+   identical while the camera pictures change). Merged, and edge bands widened to the full frame. On qm20 it found
+   the score bar (0, 824)–(1920, 1080) (the hand-drawn layout has y 826) and the top title banner.
+2. **Poses:** `estimate` with no reference.
+3. **Fixed camera:** static shots (anchor rotations within 0.05°, focal 0.5 %, ≥ 60 % of the carpet in view) are
+   grouped by pose; the group on air longest is re-fitted like the calibration wizard:
+   - `detect_tags_frames` over 10 of its frames;
+   - `wizard_fit` from the dynpose pose;
+   - `refine_with_lines` on the median plate.
+
+   The result is a camera.json (`calib.method = "dynpose auto_setup"`). Its median plate is the view ref.
+4. **Field box:** the projected field ROI above the score bar.
+5. **Clock:** `suggest_clock` on 10 s of 10 Hz frames from mid-clip, searched inside the biggest graphic.
+
+**How to call it.**
+- **Worker:** for a pasted stream with no `camera*.json`, `auto_setup(first recorded clip)` → `write_setup` into
+  the event dir as the candidate. Then process with `process(..., dynamic=True)`, or with the accepted camera and
+  `view_ref` for the fixed-only path.
+- **Video page:** a `job_*` in `live/sources.py` can run it and show `camera` + `overlay_lines` in the existing
+  accept/reject overlay.
+
+### 15.4 Measured (2026wagg qm20, Twitch program feed, 1080p60; `.work/dynpose/`)
+
+| | |
+|---|---|
+| pose coverage | 97 % of samples (fixed 66 %, moving 31 %, none 3 % = transitions); 22 shots |
+| anchor tag RMS (moving views) | 0.37 px median, 0.45 px p90 |
+| held-out tags on `FLOW` frames (never solved from) | 0.45 px median; ground error of carpet points 1.0 cm median, 5 cm p90 |
+| `INTERP` frames | 0.31 px median |
+| fixed camera | accepted calibration 4.9 px off for this match (camera moved since the accept). Re-aimed 0.27° → 0.81 px. A free per-frame solve from its 4–5 small tags agrees with the re-aimed camera to ≈ 1 px over the field grid |
+| close-up camera | one mount at (16.8, 12.2, 1.93) m (beyond the red wall corner, operator height), re-found in every shot within ≈ 0.2 m; zoom 1.6–4.6× the wide camera |
+| speed (M1, CPU) | 35 s for a 190 s clip (estimate only) |
+
+---
 
 ## Docs vs code: summary for sections 0–6
 
