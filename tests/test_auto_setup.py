@@ -337,3 +337,34 @@ def test_feed_summary_tells_a_program_feed_from_one_camera():
     assert cuts["program_feed"] is True and cuts["cuts"] == 5
     none = DP.feed_summary(_track([(0, 300, None)], {}))
     assert none["program_feed"] is None
+
+
+def test_fixed_camera_is_the_high_view_on_air_longest():
+    pytest.importorskip("cv2")
+    import dynpose as DP
+    wide = DP.Pose(np.array([0.0, -2.83, 1.22]), np.array([7.4, 12.0, 6.6]), 1038.0, 960, 540)
+    corner = DP.Pose(np.array([0.3, -2.5, 1.0]), np.array([16.7, 12.2, 1.9]), 1300.0, 960, 540)
+    idx = lambda n: np.arange(n)
+    # 2026wagg qm30: the red-corner camera is locked off and on air longer than the wide one in this clip
+    g, why, views = DP._fixed_group([(0, idx(700), corner), (1, idx(500), wide), (2, idx(300), corner)], 2000)
+    assert why is None and g[0][2] is wide and len(views) == 2 and views[0]["on_air"] == 0.5 and views[0]["C"][2] == 1.9
+    g, why, _ = DP._fixed_group([(0, idx(700), corner)], 2000)
+    assert g is None and "1.9 m above the carpet" in why
+
+
+def test_sweep_skips_old_recordings_and_duplicate_links(env):
+    data = str(env["data"])
+    d = recorder_dir(env, seconds=120, clip=True)
+    doc = SRC.load(env["evd"])                     # TBA lists the admin's stream again (same link)
+    doc["sources"].insert(0, dict(id="tba-webcast-1", origin="tba", kind="livestream", url="https://www.twitch.tv/firstwa_red1",
+                                  role="dynamic", enabled=True))
+    SRC.save(env["evd"], doc)
+    old = 10 * 86400
+    os.utime(d / "chunks.jsonl", (os.path.getmtime(d) - old, os.path.getmtime(d) - old))
+    assert SRC.auto_setup_sweep(data, log=lambda *a: None) is None                    # an old event
+    os.utime(d / "chunks.jsonl", None)
+    assert SRC.auto_setup_sweep(data, log=lambda *a: None) == SID                     # the admin's copy, once
+    jid = json.loads((env["evd"] / "auto_setup" / SID / "job.json").read_text())["id"]
+    j = SRC.get_job(data, jid); j.update(state="done"); SRC._jsave(os.path.join(SRC.jobs_dir(data), jid + ".json"), j)
+    (env["evd"] / "auto_setup" / SID / "state.json").write_text(json.dumps(dict(status="ok", at=1.0, media_kind="clip", clock=[1, 2, 3, 4])))
+    assert SRC.auto_setup_sweep(data, log=lambda *a: None) is None

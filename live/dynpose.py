@@ -50,6 +50,7 @@ MAX_AGE = float(os.environ.get("DYN_MAX_AGE", "1.0"))         # s: pose carried 
 CUT_NCC = float(os.environ.get("DYN_CUT_NCC", "0.5"))         # thumbnail correlation below = cut
 VIEW_NCC = float(os.environ.get("VIEW_NCC", "0.45"))          # = process.VIEW_NCC (fixed view still on air)
 FIXED_PX = float(os.environ.get("DYN_FIXED_PX", "3.0"))       # ref-predicted tags within this = the fixed view
+FIXED_MIN_Z = float(os.environ.get("DYN_FIXED_MIN_Z", "3.0"))  # m: auto_setup's fixed camera looks down from this high
 K1_PRIOR = float(os.environ.get("DYN_K1", "0.0"))
 NO_FEED_LEVEL = 20
 SMALL_W = 480                                                 # flow / thumbnail frame width
@@ -1132,6 +1133,30 @@ def feed_summary(pt, min_s=2.0, still_px=2.0):
                 moving_s=mov_s, shots=int(len(np.unique(sh))) if len(sh) else 0, cuts=cuts)
 
 
+def _fixed_group(shots, n):
+    """_static_shots -> the fixed camera: static shots clustered by pose; among the views that look down on the field
+    from >= FIXED_MIN_Z, the one on air longest (a low corner camera can be locked off and on air longest in a clip:
+    2026wagg qm30's red-corner camera at 1.9 m, 42 % -- the wide camera sits at 6.6 m).
+    -> (group [(shot, idx, Pose)] or None, why-not or None, [view summaries])."""
+    groups = []
+    for sid, idx, p in shots:
+        for g in groups:
+            q = g[0][2]
+            if np.linalg.norm(p.C - q.C) < 1.0 and rot_deg(p, q) < 2.0 and abs(p.f / q.f - 1) < 0.05:
+                g.append((sid, idx, p)); break
+        else:
+            groups.append([(sid, idx, p)])
+    n_of = lambda g: sum(len(x[1]) for x in g)
+    views = [dict(on_air=round(n_of(g) / max(n, 1), 3), shots=len(g), C=np.round(g[0][2].C, 2).tolist(), f=round(float(g[0][2].f), 1))
+             for g in sorted(groups, key=n_of, reverse=True)]
+    high = [g for g in groups if g[0][2].C[2] >= FIXED_MIN_Z]
+    if not high:
+        zs = ", ".join(f"{g[0][2].C[2]:.1f}" for g in groups)
+        return None, (f"the locked-off views are low (camera {zs} m above the carpet): the fixed tracking camera looks down "
+                      f"from {FIXED_MIN_Z:.0f} m or more; calibrate by hand if one of them should be used"), views
+    return max(high, key=n_of), None, views
+
+
 def _scaled(b, W, H):
     return [int(round(b[0] * W / 1920)), int(round(b[1] * H / 1080)), int(round(b[2] * W / 1920)), int(round(b[3] * H / 1080))]
 
@@ -1176,16 +1201,9 @@ def auto_setup(video, t1=190.0, log=print, overlays=None, source_id=None):
         fixed_why = ("no locked-off view of the whole field in this clip: the cameras pan / zoom, or show too few "
                      f"AprilTags ({n_tagf} frames with tags)")
     if shots:
-        # cluster static shots by pose; the biggest cluster (samples on air) = the fixed camera
-        groups = []
-        for sid, idx, p in shots:
-            for g in groups:
-                q = g[0][2]
-                if np.linalg.norm(p.C - q.C) < 1.0 and rot_deg(p, q) < 2.0 and abs(p.f / q.f - 1) < 0.05:
-                    g.append((sid, idx, p)); break
-            else:
-                groups.append([(sid, idx, p)])
-        g = max(groups, key=lambda g: sum(len(x[1]) for x in g))
+        g, fixed_why, report["static_views"] = _fixed_group(shots, pt.n)
+        if g is None: shots = []
+    if shots:
         on_air = sum(len(x[1]) for x in g) / max(pt.n, 1)
         idx = np.concatenate([x[1] for x in g])
         p0 = g[int(np.argmax([len(x[1]) for x in g]))][2]

@@ -1219,6 +1219,7 @@ AUTO_SETUP = os.environ.get("AUTO_SETUP", "1") != "0"           # 0 = no automat
 AUTO_SETUP_POLL = float(os.environ.get("AUTO_SETUP_POLL", "60"))
 AUTO_SETUP_MIN_S = float(os.environ.get("AUTO_SETUP_MIN_S", "90"))   # recorded seconds needed without a match clip
 AUTO_RETRY_S = 1800.0                                           # a failed automatic run is retried after this
+AUTO_SETUP_DAYS = float(os.environ.get("AUTO_SETUP_DAYS", "2"))   # the sweep only looks at recordings this recent
 SLOW_JOBS = {"auto_setup"}                                      # minutes of CPU: their own runner thread
 AUTO_KINDS = ("livestream", "file")
 _SID_RE = re.compile(r"^[A-Za-z0-9_-]{1,80}$")
@@ -1273,6 +1274,13 @@ def _stream_dirs(ev, s, root=None):
         if meta.get("source") != s.get("id") and meta.get("url") != s.get("url"): continue
         out.append((meta.get("started") or os.path.getmtime(d), d))
     return [d for _, d in sorted(out, reverse=True)]
+
+
+def _mtime(p):
+    try:
+        return os.path.getmtime(p)
+    except OSError:
+        return 0.0
 
 
 def _recorded_s(d, last=400):
@@ -1560,9 +1568,15 @@ def auto_setup_sweep(data, log=print, root=None):
     for ev in evs:
         evd = os.path.join(base, ev)
         if not os.path.exists(os.path.join(evd, "sources.json")): continue
-        for s in load(evd).get("sources", []):
+        seen = set()                                # one run per link (TBA can list the admin's stream again)
+        for s in sorted(load(evd).get("sources", []), key=lambda s: s.get("origin") != "admin"):
             if s.get("kind") not in AUTO_KINDS or not s.get("enabled", True) or s.get("dismissed"): continue
-            if not _SID_RE.match(s.get("id") or ""): continue
+            if not _SID_RE.match(s.get("id") or "") or s.get("url") in seen: continue
+            seen.add(s.get("url"))
+            if s.get("kind") == "livestream" and not any(
+                    time.time() - _mtime(os.path.join(d, "chunks.jsonl")) < AUTO_SETUP_DAYS * 86400
+                    for d in _stream_dirs(ev, s, root)):
+                continue                            # nothing recorded lately: an old event
             st = auto_state(evd, s["id"], data) or {}
             if st.get("running"): return None                     # one at a time
             if st.get("accepted_at"): continue
