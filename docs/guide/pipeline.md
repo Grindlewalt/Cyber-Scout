@@ -305,7 +305,8 @@ These were added in security round 2 (commit 74e84af).
    `livestream` / `file` source (any event dir with a sources.json) that has a recording and no result yet gets a job
    (`params.auto = true`). One job at a time. Again only when the last result came from a between-matches sample with
    no fixed camera / no clock and a match clip exists now, or `AUTO_RETRY_S` (30 min) after a failure; never after an
-   Accept. `AUTO_SETUP=0` stops the automatic runs (the card's button still works). The card's **Set up now / Run
+   Accept. Only recordings with chunks in the last `AUTO_SETUP_DAYS` (2) count, and a link listed twice (TBA's copy
+   of the admin's stream) runs once. `AUTO_SETUP=0` stops the automatic runs (the card's button still works). The card's **Set up now / Run
    again** = `POST …/sources/<sid>/auto-setup` (409 while one runs or with too little recording).
 2. **Media** (`setup_media` / `setup_ready`, which never builds anything — the API's media mount is read-only):
    the recorder's newest match clip of that source (`MEDIA/live/<ev>/<video>/clips/*.mp4`, analyser or TBA-time cut),
@@ -330,10 +331,18 @@ These were added in security round 2 (commit 74e84af).
    - `pose_latest_<sid>.json` (+ `pose_latest.json` for camera.json) moved aside.
 
    The stream is then trackable (`liveingest.trackable`: field box + calibration).
-5. **Measured** (qm33 clip of 2026wagg, the job end to end on the M1, 209 s): fixed camera on air 55 % (4 shots),
-   6 AprilTags, 0.25 px; program feed (3 views, 8 cuts); bottom score bar recognised in 16/16 frames → clock
-   (866, 988, 1052, 1064); field box (0, 142, 1920, 824); vs the accepted wizard calibration 4.8 px median / 18.0 px
-   max over the carpet (5.5 / 14.4 re-aimed: the two fits differ in the lens, see §15.4).
+5. **Measured** (the job end to end on 2026wagg match clips, M1 CPU, 3.5–6 min each beside other work):
+
+   | clip | fixed camera | feed | vs the accepted wizard calibration (carpet grid) |
+   |---|---|---|---|
+   | qm33 | on air 55 %, 6 tags, 0.25 px | program feed: 3 views, 8 cuts | 4.8 px median, 18.0 max (re-aimed 5.5 / 14.4) |
+   | qm35 | on air 32 %, 6 tags, 0.28 px | program feed: 7 views, 69 cuts | 4.9 / 18.4 (5.6 / 14.5) |
+   | qm30 | on air 34 %, 6 tags, 0.26 px | program feed: 4 views, 11 cuts | 4.9 / 19.0 (5.9 / 15.1) |
+
+   All three: the bottom score bar in 16/16 frames → clock (866, 988, 1052, 1064), field box (0, 141–142, 1920, 824).
+   The ~5 px is the lens: 6 hub / wall tags do not pin k1..k3 (§15.4); accept it as a starting calibration, check the
+   proof image. On qm30 the locked-off red-corner camera (1.9 m up, on air 42 %) was taken for the fixed camera
+   (452 px off) until the height rule (`DYN_FIXED_MIN_Z`, §15.3).
 
 ### 1.2b Per-match video plan — `live/videoplan.py`
 
@@ -2135,8 +2144,9 @@ fixed camera, `report.fixed_why` says why). `write_setup(setup, dir, sid)` write
 2. **Poses:** `estimate` with no reference.
 3. **Fixed camera:** static shots are grouped by pose. A shot is static when the same tags stayed on the same pixels
    (`info.shot_still_px` ≤ 1 px; the per-frame tag poses of a wide view scatter ≈ 1°, and the flow drifts 2–8 px/s,
-   so neither can tell) and ≥ 60 % of the carpet is in view. The group on air longest is re-fitted like the
-   calibration wizard:
+   so neither can tell) and ≥ 60 % of the carpet is in view. Of the groups whose camera is ≥ `DYN_FIXED_MIN_Z`
+   (3 m) above the carpet (`_fixed_group`; a low corner camera can be locked off and on air longest), the one on air
+   longest is re-fitted like the calibration wizard:
    - `detect_tags_frames` over 10 of its frames;
    - `wizard_fit` from the dynpose pose;
    - `detect_tags_predicted` and a refit;
