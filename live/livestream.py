@@ -46,7 +46,7 @@ Record: {id, match_name, comp_level, set, number, teams {red, blue} (station ord
   score_source, score_scoreboard, breakdown, alliance_names, t_start_stream (s, stream pts), t_start_utc,
   clip, auto_start_in_clip, confidence {match, name, teams, score}, flags, evidence, tba (optional cross-check)}
 """
-import argparse, glob, io, json, os, re, shutil, socket, subprocess, sys, threading, time, traceback
+import argparse, glob, io, json, os, re, socket, subprocess, sys, threading, time
 import urllib.request, urllib.error
 from collections import Counter, deque
 from datetime import datetime, timezone
@@ -107,27 +107,130 @@ RS_COLOUR_L, RS_COLOUR_R, RS_TABLE = (606, 120, 636, 300), (966, 120, 996, 300),
 DIGITS = "0123456789"
 
 
+class Geometry:
+    """One known scoreboard layout (1920x1080 px).  clock_box: the clock digits (tick detection; the white digit box
+    whose presence, between opposite red / blue side boxes colour_l / colour_r, says this layout is on air);
+    sb: OCR boxes (title, clock, shift, score_l/r, name_l/r, team_l0..2 / team_r0..2); sb_qual: team boxes of the
+    qualification variant, picked when the coloured playoff team row `teamrow` is absent (None: one variant, teams
+    always in sb, alliance names always read); strip: the overlay band kept as evidence thumbnails."""
+
+    def __init__(self, name, clock_box, sb, colour_l, colour_r, sb_qual=None, teamrow=None, strip=None):
+        self.name, self.clock_box, self.sb = name, tuple(clock_box), dict(sb)
+        self.colour_l, self.colour_r = tuple(colour_l), tuple(colour_r)
+        self.sb_qual = dict(sb_qual) if sb_qual else None
+        self.teamrow = tuple(teamrow) if teamrow else None
+        self.strip = tuple(strip or (0, 0, 1920, 1080))
+        self.base = name
+
+    def moved(self, b):
+        """This layout with every box mapped by the offset / scale that takes clock_box onto b (an event layout's
+        clock box: the same overlay drawn moved or scaled)."""
+        d0 = self.clock_box
+        sx, sy = (b[2] - b[0]) / (d0[2] - d0[0]), (b[3] - b[1]) / (d0[3] - d0[1])
+        f = lambda q: (int(round(b[0] + (q[0] - d0[0]) * sx)), int(round(b[1] + (q[1] - d0[1]) * sy)),
+                       int(round(b[0] + (q[2] - d0[0]) * sx)), int(round(b[1] + (q[3] - d0[1]) * sy)))
+        sv = lambda q: (max(0, q[0]), max(0, q[1]), min(1920, q[2]), min(1080, q[3]))
+        g = Geometry(f"{self.name}@layout", tuple(b), {k: sv(f(v)) for k, v in self.sb.items()}, sv(f(self.colour_l)),
+                     sv(f(self.colour_r)), {k: sv(f(v)) for k, v in self.sb_qual.items()} if self.sb_qual else None,
+                     sv(f(self.teamrow)) if self.teamrow else None, sv(f(self.strip)))
+        g.base = self.base
+        return g
+
+    def present(self, im):
+        """-> the left side's colour ('red' / 'blue') when this scoreboard is on air in `im` (1920x1080 BGR), else None."""
+        x0, y0, x1, y1 = self.clock_box
+        if cv2.cvtColor(im[y0:y1, x0:x1], cv2.COLOR_BGR2GRAY).mean() <= 150: return None
+        cl, cr = colour_of(im, self.colour_l), colour_of(im, self.colour_r)
+        return cl if cl and cr and cl != cr else None
+
+    def __repr__(self):
+        return f"Geometry({self.name}, clock {self.clock_box})"
+
+
+# The 2026 FIRST top-centre scoreboard (FIRST Washington district events, YouTube): the boxes above.
+TOP = Geometry("top", CLOCK_BOX, SB, SB_COLOUR_L, SB_COLOUR_R, SB_QUAL, SB_TEAMROW, strip=(440, 0, 1480, 170))
+# The 2026 FIRST full-width bottom bar (2026wagg Twitch program feed, measured on qm33 / playoffs): title bar
+# y 826-900 ("Qualification 33 of 54"), below it blue | white clock panel | red; team numbers in the outer cells
+# (avatar, then the number), the shift box "n / 6" over the clock in teleop.  Side colours are read, never assumed.
+BOTTOM = Geometry("bottom", (866, 988, 1052, 1064), dict(
+    title=(320, 836, 1600, 896),
+    clock=(856, 982, 1064, 1070),
+    score_l=(612, 984, 842, 1070), score_r=(1077, 984, 1307, 1070),
+    name_l=(612, 928, 842, 962), name_r=(1077, 928, 1307, 962),
+    shift=(856, 914, 974, 966),
+    team_l0=(86, 926, 190, 962), team_l1=(288, 926, 392, 962), team_l2=(491, 926, 595, 962),
+    team_r0=(1398, 926, 1502, 962), team_r1=(1601, 926, 1705, 962), team_r2=(1804, 926, 1908, 962),
+), colour_l=(615, 904, 840, 928), colour_r=(1080, 904, 1305, 928), strip=(0, 826, 1920, 1080))
+KNOWN = (TOP, BOTTOM)
+GEOMETRIES = list(KNOWN)            # what new Scanners try per frame (apply_layout puts an event's moved one first)
+SIDE_WORDS = {"RED", "BLUE", "REDALLIANCE", "BLUEALLIANCE"}
+
+
+def _iou(a, b):
+    ix = max(0, min(a[2], b[2]) - max(a[0], b[0])); iy = max(0, min(a[3], b[3]) - max(a[1], b[1]))
+    u = (a[2] - a[0]) * (a[3] - a[1]) + (b[2] - b[0]) * (b[3] - b[1]) - ix * iy
+    return ix * iy / u if u > 0 else 0.0
+
+
+def geometry_for_clock(b):
+    """The known layout an event's clock box belongs to: the one whose clock box is nearest (centre distance,
+    < 1/4 of the frame height) -> Geometry or None."""
+    cb = ((b[0] + b[2]) / 2, (b[1] + b[3]) / 2)
+    best, bd = None, 1e9
+    for g in KNOWN:
+        c = g.clock_box
+        d = np.hypot((c[0] + c[2]) / 2 - cb[0], (c[1] + c[3]) / 2 - cb[1])
+        if d < bd: best, bd = g, d
+    return best if bd < 270 else None
+
+
 def apply_layout(L, source_id=None, log=print):
-    """Move the scoreboard boxes to an event's layout (live/layout.py): the clock box of the livestream's
-    source (else the processing source) anchors the whole top-centre scoreboard -- every SB box is mapped
-    by the offset/scale that takes the default CLOCK_BOX onto it.  The full-frame results screen is not
-    moved.  No layout / no clock box / same box -> the 2026 FIRST defaults (unchanged)."""
-    global CLOCK_BOX, SB, SB_QUAL, SB_COLOUR_L, SB_COLOUR_R, SB_TEAMROW
+    """An event's layout (live/layout.py): the clock box of the livestream's source (else the processing source)
+    anchors the known scoreboard layout it belongs to (top-centre or bottom bar, by position) -- every box of that
+    layout is mapped by the offset/scale that takes its default clock box onto it, and the moved layout is tried
+    first; the defaults stay in the list, so a box drawn around the wrong digits cannot hide the scoreboard (each
+    frame takes the first layout whose clock box is a white digit box between red and blue).  The full-frame
+    results screen is not moved.  No layout / no clock box / a default box -> the defaults (both layouts, auto-
+    detected per frame).  The module's SB / CLOCK_BOX / ... names keep the top layout (moved, when it was)."""
+    global CLOCK_BOX, SB, SB_QUAL, SB_COLOUR_L, SB_COLOUR_R, SB_TEAMROW, GEOMETRIES
+    GEOMETRIES = list(KNOWN)
+    CLOCK_BOX, SB, SB_QUAL = TOP.clock_box, dict(TOP.sb), dict(TOP.sb_qual)
+    SB_COLOUR_L, SB_COLOUR_R, SB_TEAMROW = TOP.colour_l, TOP.colour_r, TOP.teamrow
     if L is None: return False
     sl = L.sources.get(source_id) if source_id else None
     if sl is None or not sl.has("clock"): sl = L.processing()
     b = sl.box("clock", 1920, 1080) if sl is not None else None
-    if not b or tuple(b) == tuple(CLOCK_BOX): return False
-    d0 = CLOCK_BOX
-    sx, sy = (b[2] - b[0]) / (d0[2] - d0[0]), (b[3] - b[1]) / (d0[3] - d0[1])
-    f = lambda q: (int(round(b[0] + (q[0] - d0[0]) * sx)), int(round(b[1] + (q[1] - d0[1]) * sy)),
-                   int(round(b[0] + (q[2] - d0[0]) * sx)), int(round(b[1] + (q[3] - d0[1]) * sy)))
-    SB = {k: f(v) for k, v in SB.items()}
-    SB_QUAL = {k: f(v) for k, v in SB_QUAL.items()}
-    SB_COLOUR_L, SB_COLOUR_R, SB_TEAMROW = f(SB_COLOUR_L), f(SB_COLOUR_R), f(SB_TEAMROW)
-    CLOCK_BOX = tuple(b)
-    log(f"layout {L.path}: clock box {tuple(b)} (source {sl.id}) -> scoreboard boxes moved ({sx:.2f}x{sy:.2f})")
+    if not b: return False
+    b = tuple(int(round(v)) for v in b)
+    g = geometry_for_clock(b)
+    if g is None:
+        log(f"layout {L.path}: clock box {b} (source {sl.id}) matches no known scoreboard: layouts auto-detected")
+        return False
+    if b == g.clock_box: return False
+    m = g.moved(b)
+    GEOMETRIES = [m] + list(KNOWN)
+    if g is TOP:
+        CLOCK_BOX, SB, SB_QUAL, SB_COLOUR_L, SB_COLOUR_R, SB_TEAMROW = m.clock_box, m.sb, m.sb_qual, m.colour_l, m.colour_r, m.teamrow
+    log(f"layout {L.path}: clock box {b} (source {sl.id}) -> {g.name} scoreboard moved "
+        f"({(b[2] - b[0]) / (g.clock_box[2] - g.clock_box[0]):.2f}x{(b[3] - b[1]) / (g.clock_box[3] - g.clock_box[1]):.2f})")
     return True
+
+
+def detect_geometry(frames, min_share=0.2):
+    """Which known scoreboard layout these BGR frames show (any size; resized to 1920x1080) -> (Geometry, share of
+    frames) or (None, best share).  Video-page auto set-up uses it for the clock box."""
+    hits = {}
+    for im in frames:
+        if im is None: continue
+        if im.shape[1] != 1920 or im.shape[0] != 1080:
+            im = cv2.resize(im, (1920, 1080), interpolation=cv2.INTER_AREA)
+        for g in KNOWN:
+            if g.present(im): hits[g.name] = hits.get(g.name, 0) + 1; break
+    n = max(1, sum(1 for f in frames if f is not None))
+    if not hits: return None, 0.0
+    name = max(hits, key=hits.get)
+    share = hits[name] / n
+    return (next(g for g in KNOWN if g.name == name) if share >= min_share else None), round(share, 3)
 
 
 def event_setup(ev, data=None, log=print, source=None):
@@ -294,10 +397,13 @@ def vote(vals, min_n=1):
 class Scanner:
     """Per-frame overlay features.  push(t, bgr) at any rate; it subsamples itself."""
 
-    def __init__(self, ocr, log=print, ev_dir=None, hz=SAMPLE_HZ):
+    def __init__(self, ocr, log=print, ev_dir=None, hz=SAMPLE_HZ, geometries=None):
         self.ocr = ocr; self.log = log; self.ev_dir = ev_dir; self.hz = hz; self.prev_bin_t = None
         self.next_s = -1e9; self.next_ocr = -1e9; self.next_rs = -1e9; self.next_full = -1e9
-        self.prev_bin = None
+        self.prev_bin = None; self.prev_geo = None
+        self.geos = list(geometries or GEOMETRIES)   # known scoreboard layouts, tried per frame (last one on air first)
+        self.geo = None                             # the layout on air at the last sample with a scoreboard
+        self.geo_n = Counter()                      # samples per layout (base name): which overlay this stream uses
         self.samples = deque()      # (t, sb_present, left_colour, rs_present, motion)
         self.ticks = []             # clock digit change times
         self.reads = []             # scoreboard OCR dicts
@@ -305,6 +411,17 @@ class Scanner:
         self.prev_small = None
         self.last_t = None
         self.thumbs = deque(maxlen=4000)   # (t, small jpeg of the overlay strip) for evidence
+
+    def detect(self, im):
+        """-> (Geometry, left colour) of the scoreboard on air in im (1920x1080), or (None, None).  The layout seen
+        last is tried first, so a stream pays for one check per sample."""
+        order = ([self.geo] if self.geo is not None else []) + [g for g in self.geos if g is not self.geo]
+        for g in order:
+            left = g.present(im)
+            if left:
+                self.geo = g; self.geo_n[g.base] += 1
+                return g, left
+        return None, None
 
     def push(self, t, im):
         if t < self.next_s: return
@@ -314,30 +431,37 @@ class Scanner:
         self.next_s = t + 1.0 / self.hz - 1e-3
         if im.shape[1] != 1920 or im.shape[0] != 1080:
             im = cv2.resize(im, (1920, 1080), interpolation=cv2.INTER_AREA)
-        x0, y0, x1, y1 = CLOCK_BOX
-        g = cv2.cvtColor(im[y0:y1, x0:x1], cv2.COLOR_BGR2GRAY)
-        white = g.mean() > 150
-        cl, cr = colour_of(im, SB_COLOUR_L), colour_of(im, SB_COLOUR_R)
-        sb = bool(white and cl and cr and cl != cr)
+        geo, cl = self.detect(im)
+        sb = geo is not None
         rl, rr = colour_of(im, RS_COLOUR_L), colour_of(im, RS_COLOUR_R)
         tb = im[RS_TABLE[1]:RS_TABLE[3], RS_TABLE[0]:RS_TABLE[2]]
         rs = bool(rl and rr and rl != rr and tb.mean() > 170 and (tb.max(2).astype(int) - tb.min(2)).mean() < 30)
-        small = im[204:1080:20, 0:1920:20, 1]                       # field-camera motion (green channel, 1/20)
+        small = im[204:816:20, 0:1920:20, 1]                        # field-camera motion (green channel, 1/20): the
         mot = float(np.abs(small.astype(np.int16) - self.prev_small).mean()) if self.prev_small is not None else 0.0
-        self.prev_small = small
+        self.prev_small = small                                     # rows no known scoreboard covers
         self.samples.append((t, sb, cl if sb else None, rs, mot))
-        b = g < 110
-        if sb and self.prev_bin is not None and int((b ^ self.prev_bin).sum()) > 25:
-            tc = 0.5 * (t + self.prev_bin_t)            # the change happened between the two samples
-            if not self.ticks or tc - self.ticks[-1] > 0.2:
-                self.ticks.append(tc)
-        self.prev_bin = b if sb else None; self.prev_bin_t = t
+        if sb:
+            x0, y0, x1, y1 = geo.clock_box
+            b = cv2.cvtColor(im[y0:y1, x0:x1], cv2.COLOR_BGR2GRAY) < 110
+            # a digit change: > 25 px of a 96x44 clock box flip (scaled with the box)
+            thr = 25 * b.size / (96 * 44)
+            if self.prev_bin is not None and self.prev_geo is geo and int((b ^ self.prev_bin).sum()) > thr:
+                tc = 0.5 * (t + self.prev_bin_t)            # the change happened between the two samples
+                if not self.ticks or tc - self.ticks[-1] > 0.2:
+                    self.ticks.append(tc)
+            self.prev_bin, self.prev_geo = b, geo
+        else:
+            self.prev_bin, self.prev_geo = None, None
+        self.prev_bin_t = t
         if sb and t >= self.next_ocr:
             self.next_ocr = t + 1.0 / OCR_HZ - 1e-3
             full = t >= self.next_full
             if full: self.next_full = t + FULL_EVERY_S - 1e-3
-            self.reads.append(self.read_scoreboard(t, im, cl, full))
-            self.thumbs.append((t, cv2.imencode(".jpg", im[0:170, 440:1480], [cv2.IMWRITE_JPEG_QUALITY, 60])[1]))
+            self.reads.append(self.read_scoreboard(t, im, cl, full, geo))
+            x0, y0, x1, y1 = geo.strip
+            th = im[y0:y1, x0:x1]
+            th = cv2.resize(th, (1040, max(20, int(round(th.shape[0] * 1040 / th.shape[1])))), interpolation=cv2.INTER_AREA)
+            self.thumbs.append((t, cv2.imencode(".jpg", th, [cv2.IMWRITE_JPEG_QUALITY, 60])[1]))
         if rs and t >= self.next_rs:
             self.next_rs = t + 1.0
             r = self.read_results(t, im, rl)
@@ -346,16 +470,23 @@ class Scanner:
                 p = os.path.join(self.ev_dir, f"results_{t:.0f}.jpg")
                 cv2.imwrite(p, cv2.resize(im, (960, 540)), [cv2.IMWRITE_JPEG_QUALITY, 75]); r["img"] = p
 
-    def read_scoreboard(self, t, im, left, full=True):
-        """Clock, hub shift and scores every call; title, alliance names and team numbers when full."""
+    def read_scoreboard(self, t, im, left, full=True, g=None):
+        """Clock, hub shift and scores every call; title, alliance names and team numbers when full.
+        g: the scoreboard layout on air (Geometry; default the first known one)."""
+        g = g or self.geos[0]
         keys = ["clock", "shift", "score_l", "score_r"]
         al = [DIGITS + ":", DIGITS + "/:", DIGITS, DIGITS]
-        geo = SB
+        geo = g.sb
+        lay = g.base
         if full:
-            qual = colour_of(im, SB_TEAMROW) is None
-            geo = dict(SB, **SB_QUAL) if qual else SB
             keys += ["title", "team_l0", "team_l1", "team_l2", "team_r0", "team_r1", "team_r2"]
             al += [None] + [DIGITS] * 6
+            if g.teamrow is not None:              # top layout: teams in the main bar (quals) or a team row (playoffs)
+                qual = colour_of(im, g.teamrow) is None
+                geo = dict(g.sb, **g.sb_qual) if qual and g.sb_qual else g.sb
+                lay = "qual" if qual else "playoff"
+            else:
+                qual = False                       # one variant: the name boxes say BLUE / RED or the alliance
             if not qual:
                 keys += ["name_l", "name_r"]; al += [None, None]
         res = dict(zip(keys, self.ocr.read(im, [geo[k] for k in keys], al, trim=[k == "title" for k in keys],
@@ -367,11 +498,13 @@ class Scanner:
                  teleop=bool(sh), shift=int(sh.group(1)) if sh else None,
                  score={left: parse_int(res["score_l"][0]), right: parse_int(res["score_r"][0])},
                  score_conf=min(res["score_l"][1], res["score_r"][1]),
-                 title=None, match=None, name={}, teams={}, full=full)
+                 title=None, match=None, name={}, teams={}, full=full, geo=g.base)
         if full:
+            nm = lambda s: None if re.sub(r"[^A-Z]", "", s.upper()) in SIDE_WORDS or not s.strip() else \
+                re.sub(r"(?i)^\s*alliance\s*(\d{1,2})\s*$", r"Alliance \1", s)
             d.update(title=res["title"][0], match=parse_title(res["title"][0]),
-                     name={left: res["name_l"][0], right: res["name_r"][0]} if "name_l" in res else {},
-                     layout="qual" if "name_l" not in res else "playoff",
+                     name={left: nm(res["name_l"][0]), right: nm(res["name_r"][0])} if "name_l" in res else {},
+                     layout=lay,
                      teams={left: [parse_team(res[f"team_l{i}"][0]) for i in range(3)],
                             right: [parse_team(res[f"team_r{i}"][0]) for i in range(3)]},
                      team_conf=[res[f"team_{s}{i}"][1] for s in "lr" for i in range(3)])
@@ -607,6 +740,7 @@ class Assembler:
                             teams=round(float(np.mean(tconf)), 2), score=round(float(min(sconf)), 2)),
             flags=flags,
             evidence=dict(n_clock_reads=m["n"], n_clock_values=m["n_values"], n_ticks=len(ticks),
+                          overlay=vote([r.get("geo") for r in allr])[0],
                           overlay_coverage=round(cov, 3), teams=tevid,
                           end_reads=[dict(t=round(r["t"], 1), clock=r["clock_txt"], score=r["score"]) for r in endr[-4:]],
                           motion_pre=round(float(np.mean(mot_pre)), 2) if mot_pre else None,
@@ -631,7 +765,7 @@ class Assembler:
             near = [x for x in self.sc.thumbs if abs(x[0] - tt) < 1.0]
             if near:
                 im = cv2.imdecode(min(near, key=lambda x: abs(x[0] - tt))[1], cv2.IMREAD_COLOR)
-                cv2.putText(im, f"T{tt - T:+.0f}s", (5, 160), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+                cv2.putText(im, f"T{tt - T:+.0f}s", (5, im.shape[0] - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
                 ims.append(im)
         if ims:
             p = os.path.join(ev, f"{mid}_overlay.jpg"); cv2.imwrite(p, np.vstack(ims)); rec["evidence"]["overlay_img"] = p
@@ -946,7 +1080,7 @@ class Recorder:
                             if e.code in (404, 410) and k >= 1: break       # chunk gone: skip it
                             if k == 3: raise
                             time.sleep(1 + 2 * k)
-                        except Exception as e:
+                        except Exception:
                             if k == 3: raise
                             time.sleep(1 + 2 * k)
                     if data is None:
@@ -1136,7 +1270,7 @@ def analyse_live(out, log, ocr_dev, tba=None, stop=None, idle_exit_s=1800):
     last_new = time.time(); t_last = None
     log(f"analyser: OCR on {sc.ocr.device}; resume after sq {done_sq}")
     while True:
-        new = store.refresh()
+        store.refresh()
         todo = [r for r in store.rows if r["sq"] > done_sq]
         # re-scan a few chunks before the resume point so ticks/reads for an in-progress match exist
         if done_sq >= 0 and t_last is None and todo:
@@ -1148,7 +1282,6 @@ def analyse_live(out, log, ocr_dev, tba=None, stop=None, idle_exit_s=1800):
             with open(p, "rb") as f:
                 f.seek(r["off"]); data = f.read(r["size"])
             if len(data) < r["size"]: break
-            t0 = time.time()
             try:
                 t_last = decode_into(sc, data) or t_last
             except Exception as e:
