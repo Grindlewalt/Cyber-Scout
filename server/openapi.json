@@ -2083,6 +2083,203 @@
     }
    }
   },
+  "/app/v1/events/{ev}/sources/{sid}/auto-setup": {
+   "get": {
+    "tags": [
+     "sources"
+    ],
+    "summary": "Automatic set-up of a stream: candidate + state (admin)",
+    "description": "The latest automatic set-up of a livestream / file source (dynpose.auto_setup on its recording, run by the\nworker once the stream is recorded, or by POST): status ok (a fixed wide camera was found and fitted) |\nno_camera (message says why: calibrate by hand) | error; program_feed (cuts / several cameras); the fixed camera's\nfit; scoreboard layout + clock box; field box; vs_saved (px difference to the saved calibration); accepted_at;\nrunning + job.  null when it never ran.",
+    "operationId": "auto_setup_state_app_v1_events__ev__sources__sid__auto_setup_get",
+    "parameters": [
+     {
+      "name": "sid",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Sid"
+      }
+     },
+     {
+      "name": "ev",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Ev"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   },
+   "post": {
+    "tags": [
+     "sources"
+    ],
+    "summary": "Run the automatic set-up of a stream now (admin; job)",
+    "description": "Queues dynpose.auto_setup on the stream's newest recorded match clip (else its last few recorded minutes):\nminutes of CPU, so it runs in the worker's slow-job thread (sources.slow_job_loop), never here.",
+    "operationId": "auto_setup_run_app_v1_events__ev__sources__sid__auto_setup_post",
+    "parameters": [
+     {
+      "name": "sid",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Sid"
+      }
+     },
+     {
+      "name": "ev",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Ev"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/app/v1/events/{ev}/sources/{sid}/auto-setup/overlay.jpg": {
+   "get": {
+    "tags": [
+     "sources"
+    ],
+    "summary": "The automatic set-up's proof image (admin)",
+    "operationId": "auto_setup_overlay_app_v1_events__ev__sources__sid__auto_setup_overlay_jpg_get",
+    "parameters": [
+     {
+      "name": "sid",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Sid"
+      }
+     },
+     {
+      "name": "ev",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Ev"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/app/v1/events/{ev}/sources/{sid}/auto-setup/accept": {
+   "post": {
+    "tags": [
+     "sources"
+    ],
+    "summary": "Accept the automatic set-up: camera + layout + view (admin)",
+    "description": "Like the wizard's accept: the candidate camera -> camera.json (with \"source\", when camera.json is free or\nthis stream's) or camera_<sid>.json (old file kept as .bak-<ts>), its graphics / clock / field boxes -> this source\nin layout.json (station / inset boxes kept), its view -> view_<sid>.png (a program feed is tracked on the fixed\nview only while it is on air), the carried pose reset.  The stream is then trackable.",
+    "operationId": "auto_setup_accept_app_v1_events__ev__sources__sid__auto_setup_accept_post",
+    "parameters": [
+     {
+      "name": "sid",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Sid"
+      }
+     },
+     {
+      "name": "ev",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Ev"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
   "/app/v1/events/{ev}/layout": {
    "get": {
     "tags": [
@@ -6809,6 +7006,18 @@
       ],
       "title": "Url",
       "description": "replace the link (admin-added sources only; keeps the id, so its layout boxes and calibration stay)"
+     },
+     "dynamic": {
+      "anyOf": [
+       {
+        "type": "boolean"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Dynamic",
+      "description": "track from every camera (dynpose): true / false forces it; an explicit null = auto (on for a detected program feed). Left out = unchanged"
      },
      "live": {
       "anyOf": [

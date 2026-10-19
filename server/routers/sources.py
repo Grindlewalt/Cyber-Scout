@@ -96,6 +96,8 @@ class SourceIn(BaseModel):
 class SourcePatch(BaseModel):
     url: str | None = Field(None, max_length=2000, description="replace the link (admin-added sources only; keeps the id, "
                                                                "so its layout boxes and calibration stay)")
+    dynamic: bool | None = Field(None, description="track from every camera (dynpose): true / false forces it; an explicit "
+                                                   "null = auto (on for a detected program feed). Left out = unchanged")
     live: bool | None = Field(None, description="with url: see SourceIn.live")
     station: str | None = Field(None, description="red | blue | '' (none)")
     dismissed: bool | None = Field(None, description="false: restore a removed TBA source (with enabled: true)")
@@ -117,6 +119,19 @@ def list_sources(ev: str = Depends(valid_event), user: User = Depends(require_ro
         s["has_layout"] = s["id"] in (lay.get("sources") or {})
         s["n_videos"] = len(s.get("videos") or {})
         s["has_frame"] = os.path.exists(os.path.join(_evd(ev), "frames", f"{s['id']}.jpg"))
+        s["dynamic_on"] = S.dynamic_on(s)
+        if s.get("kind") in S.AUTO_KINDS:
+            s["auto_setup_ok"] = True
+            try:
+                a = S.auto_state(_evd(ev), s["id"], cfg.DATA)
+            except Exception:
+                a = None
+            if a: s["auto_setup"] = _auto_brief(a)
+            if not a or not (a.get("running") or a.get("status") in ("ok", "no_camera")):
+                k, why = S.setup_ready(ev, s)
+                s["auto_ready"] = dict(media=k, why=why)
+            c = S.stream_calibration(_evd(ev), s["id"])
+            s["calibration"] = os.path.basename(c) if c else None
     st = _stream_source(doc)
     return dict(event=ev, sources=doc.get("sources", []), discovered_at=doc.get("discovered_at"),
                 stream_source=st["id"] if st else None, stations=list(S.STATIONS),
@@ -200,8 +215,17 @@ def _readiness(ev, doc):
             add("calibration", "Calibration", "ok", f"stream camera calibrated ({cam})")
         else:
             other = os.path.exists(os.path.join(_evd(ev), "camera.json"))
-            add("calibration", "Calibration", "bad", "calibrate the stream camera (Calibration tab)" +
-                (" · camera.json was made on another video" if other else ""), "calib")
+            S, _ = _mods()
+            a = S.auto_state(_evd(ev), sid, cfg.DATA) if src.get("kind") in S.AUTO_KINDS else None
+            if a and a.get("running"):
+                hint = "being set up automatically from the recording"
+            elif a and a.get("status") == "ok":
+                hint = "an automatic set-up is ready: check it and Accept it on the stream's card"
+            elif a and a.get("status") == "no_camera":
+                hint = f"automatic set-up: {a.get('message') or 'no fixed camera found'} · calibrate by hand (Field setup)"
+            else:
+                hint = "calibrate the stream camera (Field setup on its card)"
+            add("calibration", "Calibration", "bad", hint + (" · camera.json was made on another video" if other else ""), "calib")
     try:
         sj = json.load(open(os.path.join(cfg.DATA, "site", "api", ev, "event.json")))
         ms = sj.get("matches") or []
@@ -328,22 +352,30 @@ def _index_job(ev, s, user, db):
 
 
 @router.patch("/events/{ev}/sources/{sid}", summary="Edit a source: link, role, station, primary, coverage, ... (admin)")
-def patch_source(sid: str, body: SourcePatch, ev: str = Depends(valid_event), user: User = Depends(require_role("admin")),
-                 db=Depends(DB.get_db)):
+def patch_source(sid: str, body: SourcePatch, request: Request, ev: str = Depends(valid_event),
+                 user: User = Depends(require_role("admin")), db=Depends(DB.get_db)):
     S, _ = _mods()
     doc = _doc(ev)
     by = user.display_name or f"Teammate #{user.id}"
     patch = body.model_dump(exclude_none=True)
     url, live = patch.pop("url", None), patch.pop("live", None)
+    patch.pop("dynamic", None)
+    before = (S.get(doc, sid) or {}).get("dynamic")
     try:
         if url is not None:
             S.set_url(doc, sid, url, by, live=live)
+        if "dynamic" in body.model_fields_set:          # explicit null = back to auto
+            S.set_dynamic(doc, sid, body.dynamic, by)
         s = S.update(doc, sid, patch, by)
     except KeyError:
         raise HTTPException(404, "no such source")
     except ValueError as e:
         raise HTTPException(422, str(e))
     _save(ev, doc)
+    if "dynamic" in body.model_fields_set and before != body.dynamic:
+        with DB.tx(db):
+            audit.record(db, request, user, "sources.dynamic", sid, ev, {"dynamic": before}, {"dynamic": body.dynamic})
+    s["dynamic_on"] = S.dynamic_on(s)
     if url is not None and s["kind"] == "per_match":
         s["job"] = _index_job(ev, s, user, db)
     lay = _layout_doc(ev)
@@ -391,6 +423,99 @@ def frame_jpg(sid: str, ev: str = Depends(valid_event), user: User = Depends(req
     if not sid.replace("-", "").replace("_", "").isalnum():
         raise HTTPException(404, "no frame yet")
     return _safe_file(ev, f"{sid}.jpg")
+
+
+# ------------------------------------------------------------------ automatic set-up of a stream (live/sources.py)
+AUTO_BRIEF = ("status", "at", "message", "media", "media_kind", "program_feed", "feed", "fixed", "scoreboard", "clock",
+              "field", "graphics", "vs_saved", "accepted_at", "accepted_by", "accepted_file", "running", "job", "W", "H",
+              "seconds", "auto", "last_error")
+
+
+def _auto_brief(a):
+    out = {k: a.get(k) for k in AUTO_BRIEF if k in a}
+    j = out.get("job")
+    if isinstance(j, dict):
+        out["job"] = {k: j.get(k) for k in ("id", "state", "created", "started", "error", "auto")}
+    out["has_overlay"] = a.get("status") in ("ok", "no_camera")
+    return out
+
+
+def _auto_source(ev, sid):
+    S, _ = _mods()
+    s = S.get(_doc(ev), sid)
+    if s is None:
+        raise HTTPException(404, "no such source")
+    if s.get("kind") not in S.AUTO_KINDS:
+        raise HTTPException(422, "automatic set-up works on live streams (recorded) and files: use Auto-calibrate")
+    return s
+
+
+@router.get("/events/{ev}/sources/{sid}/auto-setup", summary="Automatic set-up of a stream: candidate + state (admin)")
+def auto_setup_state(sid: str, ev: str = Depends(valid_event), user: User = Depends(require_role("admin"))):
+    """The latest automatic set-up of a livestream / file source (dynpose.auto_setup on its recording, run by the
+    worker once the stream is recorded, or by POST): status ok (a fixed wide camera was found and fitted) |
+    no_camera (message says why: calibrate by hand) | error; program_feed (cuts / several cameras); the fixed camera's
+    fit; scoreboard layout + clock box; field box; vs_saved (px difference to the saved calibration); accepted_at;
+    running + job.  null when it never ran."""
+    S, _ = _mods()
+    _auto_source(ev, sid)
+    a = S.auto_state(_evd(ev), sid, cfg.DATA)
+    kind, why = S.setup_ready(ev, S.get(_doc(ev), sid))
+    return dict(event=ev, source=sid, auto_setup=_auto_brief(a) if a else None, ready=dict(media=kind, why=why))
+
+
+@router.post("/events/{ev}/sources/{sid}/auto-setup", summary="Run the automatic set-up of a stream now (admin; job)")
+def auto_setup_run(sid: str, ev: str = Depends(valid_event), user: User = Depends(require_role("admin"))):
+    """Queues dynpose.auto_setup on the stream's newest recorded match clip (else its last few recorded minutes):
+    minutes of CPU, so it runs in the worker's slow-job thread (sources.slow_job_loop), never here."""
+    S, _ = _mods()
+    s = _auto_source(ev, sid)
+    a = S.auto_state(_evd(ev), sid, cfg.DATA)
+    if a and a.get("running"):
+        raise HTTPException(409, "an automatic set-up of this stream is already running")
+    kind, why = S.setup_ready(ev, s)
+    if kind is None:
+        raise HTTPException(409, f"{why}: the stream sets itself up once the recorder has a few minutes of it")
+    j = S.submit_auto_setup(cfg.DATA, ev, sid, by=user.display_name or f"Teammate #{user.id}", inline=False)
+    return {k: j[k] for k in ("id", "kind", "state", "created")}
+
+
+@router.get("/events/{ev}/sources/{sid}/auto-setup/overlay.jpg", summary="The automatic set-up's proof image (admin)")
+def auto_setup_overlay(sid: str, ev: str = Depends(valid_event), user: User = Depends(require_role("admin"))):
+    S, _ = _mods()
+    try:
+        p = os.path.join(S.auto_dir(_evd(ev), sid), "overlay.jpg")
+    except ValueError:
+        raise HTTPException(404, "no such source")
+    if not os.path.exists(p):
+        raise HTTPException(404, "no automatic set-up yet")
+    return FileResponse(p, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
+
+
+@router.post("/events/{ev}/sources/{sid}/auto-setup/accept", summary="Accept the automatic set-up: camera + layout + view (admin)")
+def auto_setup_accept(sid: str, request: Request, ev: str = Depends(valid_event), user: User = Depends(require_role("admin")),
+                      db=Depends(DB.get_db)):
+    """Like the wizard's accept: the candidate camera -> camera.json (with "source", when camera.json is free or
+    this stream's) or camera_<sid>.json (old file kept as .bak-<ts>), its graphics / clock / field boxes -> this source
+    in layout.json (station / inset boxes kept), its view -> view_<sid>.png (a program feed is tracked on the fixed
+    view only while it is on air), the carried pose reset.  The stream is then trackable."""
+    S, _ = _mods()
+    _auto_source(ev, sid)
+    a = S.auto_state(_evd(ev), sid, cfg.DATA) or {}
+    if a.get("running"):
+        raise HTTPException(409, "an automatic set-up of this stream is running: wait for its result")
+    if a.get("status") != "ok":
+        raise HTTPException(409, a.get("message") or "no automatic set-up with a camera to accept: calibrate by hand")
+    by = user.display_name or f"Teammate #{user.id}"
+    before = S.stream_calibration(_evd(ev), sid)
+    try:
+        out = S.accept_auto(_evd(ev), sid, by)
+    except ValueError as e:
+        raise HTTPException(409, str(e))
+    with DB.tx(db):
+        audit.record(db, request, user, "sources.auto_setup_accept", sid, ev,
+                     {"camera": os.path.basename(before) if before else None}, out)
+    return dict(out, auto_setup=_auto_brief(S.auto_state(_evd(ev), sid, cfg.DATA) or {}))
 
 
 # ------------------------------------------------------------------ layout
