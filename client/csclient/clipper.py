@@ -244,7 +244,13 @@ class ClipJob:
         if not r.ok:
             raise HTTPError(r.status, d)
         self.view = d
-        write_json(self.want_p, {"matches": d.get("matches") or [], "want": d.get("want") or [], "at": time.time()})
+        for k in range(3):                  # Windows: replacing a file the runner has open fails; try again
+            try:
+                write_json(self.want_p, {"matches": d.get("matches") or [], "want": d.get("want") or [],
+                                         "at": time.time()})
+                break
+            except OSError:
+                time.sleep(0.5)
         skipped = set(d.get("skipped") or []) | set(d.get("have") or [])
         for k in skipped:                   # the server has a clip of it: the local copy isn't needed
             self._drop_local(k)

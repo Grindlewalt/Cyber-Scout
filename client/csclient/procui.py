@@ -157,8 +157,9 @@ SCRIPT = b"""\"use strict\";
     const g = s.gpu, sp = s.speed || {}, b = sp.bench, n = s.net || {}, run = sp.running;
     if (!g) { $("gv").textContent = "\\u2026"; $("gs").textContent = "Checking"; verdict("gj", "", ""); }
     else {
-      $("gv").textContent = g.ok ? g.name.replace(/ \\(.*\\)$/, "") : (g.kind ? g.name : "No GPU");
-      $("gs").textContent = g.ok ? (g.name.match(/\\((.*)\\)$/) ? g.name.match(/\\((.*)\\)$/)[1] + ", " : "") + g.detail : g.why;
+      $("gv").textContent = g.ok ? g.name.replace(/ \\(.*\\)$/, "") : "No GPU";
+      $("gs").textContent = g.ok ? (g.name.match(/\\((.*)\\)$/) ? g.name.match(/\\((.*)\\)$/)[1] + ", " : "") + g.detail
+        : (g.name && !/^no /i.test(g.name) ? "Found " + g.name + (g.detail ? " (" + g.detail + ")" : "") + ": the tracker can't use it." : "The tracker needs an NVIDIA GPU or Apple silicon.");
       if (g.ok && b && b.v && !b.ok) verdict("gj", "stop", "GPU failed in the benchmark");
       else verdict("gj", g.ok ? "go" : "warn", g.ok ? "Can track" : "Clip only");
     }
@@ -182,7 +183,7 @@ SCRIPT = b"""\"use strict\";
       const other = clipUp ? mbs(n.down_bps) + " MB/s down" : n.up_bps ? mbs(n.up_bps) + " MB/s up" : "";
       const t = clipUp ? "a " + Math.round(n.clip_bytes / 1e6) + " MB clip uploads in " + mins(n.clip_up_min)
         : "a " + Math.round(n.clip_bytes / 1e6) + " MB clip downloads in " + mins(n.clip_down_min);
-      $("ns").textContent = (other ? other + "; " : "") + t + ".";
+      $("ns").textContent = other ? other + "; " + t + "." : t[0].toUpperCase() + t.slice(1) + ".";
       verdict("nj", n.slow ? "warn" : "go", n.slow ? "Slow Wi-Fi" : "Good");
     }
   }
@@ -223,8 +224,8 @@ SCRIPT = b"""\"use strict\";
     const pl = s.plan, st = s.setup, lg = $("log");
     let t = "";
     if (pl) {
-      const what = pl.label + (pl.runtime === "clip" ? " (this computer can't track, so only what Clip only needs)" : "");
-      t = pl.up_to_date ? "Installed: " + what + "." : (pl.installed ? "Update " : "Installs ") + what + ": about " + gb(pl.download) + " to download, " + gb(pl.disk) + " on disk (" + gb(pl.free) + " free).";
+      const what = pl.runtime === "clip" ? "the " + pl.label + " (this computer can't track)" : "the " + pl.label;
+      t = pl.up_to_date ? "Installed: " + what + "." : (pl.installed ? "Updates " : "Installs ") + what + ": about " + gb(pl.download) + " to download, " + gb(pl.disk) + " on disk (" + gb(pl.free) + " free).";
       if (!pl.ok) t += " " + pl.why;
     }
     if (s.python_setting) t = "Using the Processing Python set under Advanced (" + s.python_setting + "). " + (pl && !pl.installed ? "Set up would install its own instead: " + t.replace(/^Installs /, "") : "");

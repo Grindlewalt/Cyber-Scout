@@ -16,6 +16,39 @@
 set -euo pipefail
 SITE="${1:-http://10.0.0.58:8790}"; HOST="${2:-atomosserver}"; RDIR="${3:-/mnt/nas/autoscout-scratch/demo-site}"; PORT="${4:-8790}"
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"; DL="$ROOT/site/downloads"
+
+# README.txt: what is in the folder (only the files that are there), first-start steps for the unsigned client
+# builds, and what "Help process matches" needs (client/README.md has the details)
+write_listing() {
+  local d="$1" sha="${2:-}" f desc
+  {
+    echo "Cyber-Scout downloads${sha:+ (code $sha)}. Install notes: client/README.md and deploy/README.md in the source."
+    echo
+    for f in cyberscout-client-windows-x64.exe cyberscout-client-macos-arm64 cyberscout-client-macos-x64 \
+             cyberscout-client-linux-x64 cyberscout-android.apk install.sh install.ps1 get.sh get.ps1 cyberscout-src.tar.gz; do
+      case "$f" in
+        *windows*) desc="Cyber-Scout Client, Windows 10/11 x64 (unsigned: SmartScreen > More info > Run anyway)" ;;
+        *macos-arm64) desc="Cyber-Scout Client, macOS Apple silicon (unsigned: chmod +x, then right-click > Open once)" ;;
+        *macos-x64) desc="Cyber-Scout Client, macOS Intel (unsigned: chmod +x, then right-click > Open once)" ;;
+        *linux-x64) desc="Cyber-Scout Client, Linux x86_64 (chmod +x)" ;;
+        *.apk) desc="Android app" ;;
+        install.sh) desc="server installer, Linux and macOS" ;;
+        install.ps1) desc="server installer, Windows" ;;
+        get.sh|get.ps1) desc="one-line server install from this site" ;;
+        *) desc="the source code at this version" ;;
+      esac
+      [ -z "$sha" ] || [ -f "$d/$f" ] && printf '  %-36s%s\n' "$f" "$desc"
+    done
+    echo
+    echo "Help process matches (in the client: http://127.0.0.1:7600/client/processing, admins): tracking needs an"
+    echo "NVIDIA GPU (Windows / Linux; GTX 16xx / RTX 20xx or newer, driver 580+) or Apple silicon (macOS 14+)."
+    echo "\"Set up processing\" downloads its runtime once into the client's data folder: about 1.8 GB for NVIDIA,"
+    echo "0.25 GB on a Mac. Any computer can run Clip only (record the stream, send the server match clips)."
+    echo
+    echo "download.html links to exactly these names; SHA256SUMS has their checksums."
+  } > "$d/README.txt"
+}
+if [ "${1:-}" = "--listing-only" ]; then write_listing "$DL"; echo "wrote $DL/README.txt"; exit 0; fi
 cd "$ROOT"
 SHA="$(git rev-parse --short HEAD)"
 rm -rf "$DL"; mkdir -p "$DL"
@@ -27,6 +60,7 @@ for f in client/dist/cyberscout-client-* client/dist/ci/cyberscout-client-*; do
 done
 [ -f android/build/cyberscout-android.apk ] && cp android/build/cyberscout-android.apk "$DL/"
 echo "$SHA" > "$DL/VERSION"
+write_listing "$DL" "$SHA"
 
 # model checksum comes from the server copy (the model itself is copied server-side below)
 MODEL_SHA="$(ssh "$HOST" 'sha256sum /opt/stacks/cyber-scout/data/models/robot.onnx' | cut -d' ' -f1)"

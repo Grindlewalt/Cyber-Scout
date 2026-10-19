@@ -345,7 +345,7 @@ class Processor:
     def _slow_text(self):
         m, how = self.per_match_min()
         return (f"This computer needs about {m:.0f} min per match ({'real matches' if how == 'measured' else 'benchmark'}"
-                f"; the server needs about {SERVER_MIN:.0f}): tracking here would slow the event down. Clip only helps "
+                f"; the server needs about {SERVER_MIN:g}): tracking here would slow the event down. Clip only helps "
                 "more, or track anyway.")
 
     def notices(self, s):

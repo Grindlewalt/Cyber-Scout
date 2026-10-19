@@ -56,8 +56,8 @@ process matches → the link). The page checks the GPU first:
 
 Then: **Set up processing** (one click; it downloads uv, Python 3.12 and the packages into the client's data folder,
 then runs a 20-second benchmark), turn **Help process matches** on, and leave the client running. Nothing else is
-installed on the computer and no admin rights are needed. Windows may ask once to let `uv.exe` / `python.exe` through
-the firewall: they only make outgoing connections, so "Cancel" is fine.
+installed on the computer and no admin rights are needed; the files uv downloads aren't quarantined, so Gatekeeper /
+SmartScreen don't ask again (only the client executable itself needs the first-start step above).
 
 **From source** (any OS with Python 3.9+):
 
@@ -228,7 +228,7 @@ the pipeline, fuel tracker / OCR / shots / identity, is CPU work that scales wit
 
 After the first real matches the page shows the measured time (median of the last 3) instead. A computer that needs
 more than **25 min per match** pauses (state `slow`): "This computer needs about 34 min per match (benchmark; the
-server needs about 4): tracking here would slow the event down. Clip only helps more, or track anyway." with
+server needs about 3.5): tracking here would slow the event down. Clip only helps more, or track anyway." with
 **Switch to Clip only** and **Track anyway** (`allow_slow`, saved).
 
 ### Slow connection and data cost

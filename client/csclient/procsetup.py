@@ -55,7 +55,7 @@ MB = 1 << 20
 SIZES = {
     "cuda": {"download": int(1.8 * GB), "disk": int(3.2 * GB), "label": "NVIDIA CUDA runtime"},
     "coreml": {"download": 240 * MB, "disk": 620 * MB, "label": "Apple silicon (Core ML) runtime"},
-    "clip": {"download": 230 * MB, "disk": 480 * MB, "label": "Clip only tools (no tracking)"},
+    "clip": {"download": 230 * MB, "disk": 480 * MB, "label": "Clip only tools"},
 }
 HEADROOM = 3 * GB          # work space next to the install: a match clip, results, model, partial downloads
 TRACK_IMPORTS = ("onnxruntime", "av", "cv2", "numpy", "scipy", "pupil_apriltags")

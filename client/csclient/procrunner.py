@@ -368,9 +368,12 @@ def clip_main(path):
             an = {"last_sq": lr.get("sq"), "cursor_wall": lr.get("got"), "t_last": lr["pts"] + (lr.get("dur") or 5.0),
                   "at": now, "client": True}
             tmp = os.path.join(d, "analyzer.json.tmp")
-            with open(tmp, "w") as f:
-                json.dump(an, f)
-            os.replace(tmp, os.path.join(d, "analyzer.json"))
+            try:
+                with open(tmp, "w") as f:
+                    json.dump(an, f)
+                os.replace(tmp, os.path.join(d, "analyzer.json"))
+            except OSError:                     # Windows: the recorder has it open right now; next round
+                pass
         if now - t_status >= 10:
             t_status = now
             behind = round(now - (lr["wall"] + (lr.get("dur") or 5.0)), 1) if lr and lr.get("wall") else None

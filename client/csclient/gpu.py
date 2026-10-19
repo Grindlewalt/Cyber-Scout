@@ -64,7 +64,7 @@ def _result(ok, kind, name, detail="", why=None, **kw):
 
 def _mac(run):
     if not apple_silicon(run):
-        return _result(False, None, "Intel Mac", why="Intel Macs have no GPU the tracker can use (it needs an "
+        return _result(False, None, "Intel Mac graphics", why="Intel Macs have no GPU the tracker can use (it needs an "
                        "NVIDIA GPU or Apple silicon). Clip only works here.")
     code, chip, _ = run(["sysctl", "-n", "machdep.cpu.brand_string"], 5)
     chip = chip.strip() if code == 0 and chip.strip() and not chip.startswith("VirtualApple") else "Apple silicon"
