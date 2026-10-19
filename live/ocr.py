@@ -89,9 +89,12 @@ def _find_models():
 
 
 def _why(e):
-    """An ORT/CUDA exception -> one short line (its last non-empty line, e.g. 'CUDA failure 2: out of memory ...')."""
-    lines = [x.strip() for x in str(e).splitlines() if x.strip()]
-    return f"{type(e).__name__}: {lines[-1][:240]}" if lines else repr(e)
+    """An ORT/CUDA exception -> one short line: the CUDA/arena failure in it if there is one (e.g. 'Failed to
+    allocate memory for requested buffer of size 6291456', 'CUDA failure 2: out of memory'), else its tail."""
+    import re
+    s = " ".join(str(e).split())
+    m = re.search(r"Failed to allocate memory[^;]*?size \d+|CUDA failure \d+: [^;]*|CU(?:DNN|BLAS)_STATUS_\w+", s)
+    return f"{type(e).__name__}: {(m.group(0).strip() if m else s[-240:]) or repr(e)}"
 
 
 def cuda_device(device=None):
@@ -135,7 +138,8 @@ class BumperOCR:
         """Both sessions on CUDA device `cuda` (None: CPU).  CUDA that fails to start (no room for the
         context, ...) means CPU, with the reason in self.fallback instead of ORT's printed EP Error."""
         import onnxruntime as ort
-        so = ort.SessionOptions(); so.log_severity_level = 3; so.intra_op_num_threads = self._threads
+        so = ort.SessionOptions(); so.intra_op_num_threads = self._threads
+        so.log_severity_level = 3 if cuda is None else 4     # CUDA errors: one line in self.fallback, not ORT's log
         path = lambda n: os.path.join(self._dir, f"ch_PP-OCRv3_{n}_infer.onnx")
         if cuda is not None:
             prov = [("CUDAExecutionProvider", {"device_id": int(cuda), "cudnn_conv_algo_search": "HEURISTIC"}),
@@ -147,6 +151,7 @@ class BumperOCR:
                 return
             except Exception as e:
                 self.fallback = _why(e)
+        so.log_severity_level = 3
         self.det = ort.InferenceSession(path("det"), so, providers=["CPUExecutionProvider"])
         self.rec = ort.InferenceSession(path("rec"), so, providers=["CPUExecutionProvider"])
         self.device = "CPUExecutionProvider"
@@ -443,6 +448,13 @@ class OcrSampler:
     """Runs inside process.detect_video: every frame it picks the robot detections whose
     position hasn't been read for OCR_PERIOD seconds (most stale first, at most
     OCR_MAX_PER_FRAME), crops their bumpers and reads them in a worker process (OCR_PROC=0: thread).
+
+    Device (cuda_device): the OCR_WORKERS processes read on the CPU.  OCR_PROC=0 reads in a thread
+    on the detector's CUDA context instead.  Measured on atomosserver GPU 1 (2026wagg qm20, FP16 detector, dynamic):
+    processes 428 s per match / 728 reads; thread on CUDA 312 s / 730 reads (all 728 + 2 just above MIN_LP),
+    but 528 instead of 267 MiB of VRAM.  With the LLMs loaded the card has ~355 MiB free: the OCR
+    then runs out of GPU memory at its first crop and continues on the CPU in that one thread (no reads lost, but
+    a single 2-thread CPU OCR takes ~540 s for qm20's crops, vs 4 processes).  OCR_PROC=0 only with ~0.6 GB free.
 
     Each read is attributed to the detection whose bumper region holds the text box
     (a crop often contains a neighbour's bumper too); reads that fall in two robots'
