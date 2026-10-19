@@ -332,3 +332,223 @@ def test_clip_outside_media_is_not_handed_out(admin, setup):
     r["clip"] = str(outside)
     rec.write_text(json.dumps(r))
     assert claim(admin)["job"]["key"] == f"{EV}_qm2"
+
+
+# ------------------------------------------------------------------ runtimes, speed test, benchmark sample
+def test_pipeline_runtimes(admin, setup):
+    p = admin.get(P + "/pipeline").json()
+    rt = p["runtimes"]
+    assert rt["cuda"][0].startswith("onnxruntime-gpu[cuda,cudnn]==") and not any(r.startswith("onnxruntime==") for r in rt["cuda"])
+    assert rt["coreml"] == p["requirements"] and any(r.startswith("onnxruntime==") for r in rt["coreml"])
+    assert {r.split("==")[0] for r in rt["clip"]} == {"numpy", "opencv-python-headless", "av"}
+    assert any(r.startswith("imageio-ffmpeg==") for r in p["clip_extras"]) and p["ytdlp_requirements"]
+    r = admin.tc.get(p["code"]["url"])
+    with tarfile.open(fileobj=io.BytesIO(r.content), mode="r:gz") as t:
+        meta = json.load(t.extractfile("PIPELINE.json"))
+        assert "live/requirements-ytdlp.txt" in t.getnames()
+    assert meta["runtimes"] == rt and meta["version"] == p["version"]
+
+
+def test_speedtest(team, admin, setup):
+    r = admin.tc.get(f"/app/v1{P}/speedtest?bytes=300000")
+    assert r.status_code == 200 and len(r.content) == 300000 and r.headers["cache-control"] == "no-store"
+    assert len(gzip.compress(r.content)) > 290000                         # incompressible
+    assert admin.get(P + "/speedtest?bytes=99999999").status_code == 422
+    h = {"X-CSRF-Token": admin.tc.cookies.get("cs_csrf")}
+    r = admin.tc.post(f"/app/v1{P}/speedtest", content=b"x" * 200000, headers=h)
+    assert r.status_code == 200 and r.json()["bytes"] == 200000
+    assert admin.tc.post(f"/app/v1{P}/speedtest", content=b"x" * (9 << 20), headers=h).status_code == 413
+    assert team["scout"].get(P + "/speedtest").status_code == 403
+    assert not admin.get("/audit?action=http").json()["entries"]          # not logged
+
+
+def _mp4(n, faststart=True):
+    box = lambda k, b: (8 + len(b)).to_bytes(4, "big") + k + b
+    head = box(b"ftyp", b"isom" + b"\0" * 8)
+    body = box(b"mdat", bytes(range(256)) * (n // 256))
+    return head + (box(b"moov", b"\0" * 64) + body if faststart else body + box(b"moov", b"\0" * 64))
+
+
+def test_benchmark_sample(admin, setup, monkeypatch):
+    from server.routers import processing as PR
+    monkeypatch.setattr(PR, "SAMPLE_BYTES", 4096)
+    assert admin.get(P + "/sample").json()["clip"] is None                 # the fixture's clips are tiny
+    clips = setup["media"] / "live" / EV / "vid1" / "clips"
+    (clips / "old.mp4").write_bytes(_mp4(20000, faststart=False))          # index at the end: not decodable
+    assert admin.get(P + "/sample").json()["clip"] is None
+    big = _mp4(30000)
+    (clips / "qm9.mp4").write_bytes(big)
+    s = admin.get(P + "/sample").json()
+    assert s["clip"]["size"] == 4096 and s["full_bytes"] == len(big) and s["of"] == f"{EV}/qm9.mp4"
+    r = admin.tc.get(s["clip"]["url"])
+    assert r.status_code == 200 and r.content == big[:4096]
+    import hashlib
+    assert hashlib.sha256(r.content).hexdigest() == s["clip"]["sha256"]
+    r = admin.tc.get(s["clip"]["url"], headers={"Range": "bytes=1000-"})
+    assert r.status_code == 206 and r.content == big[1000:4096] and r.headers["content-range"] == "bytes 1000-4095/4096"
+    assert admin.get(f"{P}/sample.mp4?ev={EV}&name=..%2Fx.mp4").status_code == 422
+    assert admin.get(f"{P}/sample.mp4?ev={EV}&name=nope.mp4").status_code == 404
+
+
+# ------------------------------------------------------------------ Clip only: streams + chunked upload
+@pytest.fixture
+def streams(setup):
+    """Two livestream sources (yt1 = the calibrated wide stream, cam2 = a second view) and 3 recent matches."""
+    evd = setup["evd"]
+    (evd / "sources.json").write_text(json.dumps({"version": 1, "event": EV, "sources": [
+        {"id": "yt1", "kind": "livestream", "url": "https://www.youtube.com/watch?v=aaaaaaaaaaa", "role": "wide",
+         "primary": True, "enabled": True, "label": "Main stream"},
+        {"id": "cam2", "kind": "livestream", "url": "https://www.twitch.tv/somecam", "role": "dynamic",
+         "enabled": True, "label": "Station cam"}]}))
+    now = time.time()
+    ms = setup["ms"] + [_match(n, now - t) for n, t in ((4, 800), (5, 400), (6, 100))]
+    p = setup["data"] / "tba" / f"event__{EV}__matches.json"
+    p.write_text(json.dumps({"etag": None, "fetched": time.time(), "data": ms}))
+    return dict(setup, now=now)
+
+
+def sclaim(c, pid="lap1", **kw):
+    r = c.post(P + "/streams/claim", {"processor": pid, **kw})
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+def test_stream_claim_prefers_a_stream_the_server_does_not_record(admin, streams):
+    (streams["evd"] / "livestream.json").write_text(json.dumps(
+        {"event": EV, "updated": time.time(), "state": "recording", "source": {"id": "yt1"}}))
+    a1 = sclaim(admin)["assignment"]
+    assert (a1["source"], a1["role"], a1["ev"]) == ("cam2", "secondary", EV) and a1["aid"].startswith("cs")
+    assert a1["chunk_bytes"] <= a1["chunk_max"] <= 16 << 20 and a1["max_clip_bytes"] >= 500 << 20
+    a2 = sclaim(admin, "lap2")["assignment"]
+    assert (a2["source"], a2["role"]) == ("yt1", "backup")
+    r = sclaim(admin, "lap3")
+    assert r["assignment"] is None and "another processor" in r["why"]
+    assert sclaim(admin)["assignment"]["aid"] == a1["aid"]                # the same processor resumes it
+    assert sclaim(admin, "lap9", source="yt1")["assignment"] is None
+    assert sclaim(admin, "lap9", events=["2026other"])["assignment"] is None
+    e = admin.get("/audit?action=processing.stream").json()["entries"][0]
+    assert e["after"]["source"] in ("yt1", "cam2")
+
+
+def test_stream_claim_stale_is_handed_over_and_old_holder_stops(admin, streams):
+    a1 = sclaim(admin)["assignment"]
+    assert a1["source"] == "yt1"                                         # the server records nothing: best first
+    p = streams["data"] / "processing" / "streams" / EV / f"{a1['aid']}.json"
+    d = json.loads(p.read_text()); d["at"] = time.time() - CL.CLAIM_S - 5; p.write_text(json.dumps(d))
+    a2 = sclaim(admin, "lap2")["assignment"]
+    assert a2["source"] == "yt1" and a2["aid"] != a1["aid"]
+    r = admin.post(f"{P}/streams/{EV}/{a1['aid']}/heartbeat", {"processor": "lap1"}).json()
+    assert r["stop"] is True and "another processor" in r["why"]
+
+
+def test_stream_heartbeat_says_which_clips_to_send(admin, streams):
+    a = sclaim(admin)["assignment"]
+    url = f"{P}/streams/{EV}/{a['aid']}/heartbeat"
+    r = admin.post(url, {"processor": "lap1", "state": "recording", "rec": {"chunks": 12, "bytes": 1e7, "x": "y"}})
+    assert r.status_code == 200, r.text
+    d = r.json()
+    keys = [m["key"] for m in d["matches"]]
+    assert keys == [f"{EV}_qm4", f"{EV}_qm5", f"{EV}_qm6"]               # recent ones only (this recording)
+    assert d["matches"][0]["alliances"]["red"]["team_keys"] == ["frc40", "frc41", "frc42"]
+    assert d["want"] == [f"{EV}_qm4", f"{EV}_qm5"] and d["grace_s"] == 0  # qm6 is not over yet
+    st = json.loads((streams["data"] / "processing" / "streams" / EV / f"{a['aid']}.json").read_text())
+    assert st["state"] == "recording" and st["rec"] == {"chunks": 12, "bytes": 1e7}
+    (streams["evd"] / "livestream.json").write_text(json.dumps(
+        {"event": EV, "updated": time.time(), "state": "recording", "source": {"id": "cam2"}}))
+    d = admin.post(url, {"processor": "lap1"}).json()
+    assert d["want"] == [f"{EV}_qm4"] and d["grace_s"] > 0               # the server records too: waits for its clip
+    assert admin.post(url, {"processor": "lap2"}).status_code == 409
+    assert admin.post(url, {"processor": "lap1", "state": "<b>"}).status_code == 422
+    assert admin.post(f"{P}/streams/{EV}/csffffffffff/heartbeat", {"processor": "lap1"}).status_code == 409
+    assert admin.post(f"{P}/streams/{EV}/..%2Fx/heartbeat", {"processor": "lap1"}).status_code in (404, 422)
+    assert admin.post(f"{P}/streams/{EV}/{a['aid']}/release", {"processor": "lap1"}).json() == {"released": True}
+    assert admin.post(url, {"processor": "lap1"}).json()["stop"] is True
+
+
+def _record(n, **kw):
+    return dict({"id": f"tba-qm{n}", "match_name": f"Qualification {n}", "comp_level": "qm", "set": 1, "number": n,
+                 "teams": {"red": [10 * n, 10 * n + 1, 10 * n + 2], "blue": [10 * n + 3, 10 * n + 4, 10 * n + 5]},
+                 "score": {"red": 50, "blue": 40}, "score_source": "tba", "t_start_stream": 1234.5,
+                 "t_start_utc": "2026-10-18T18:00:00.00Z", "auto_start_in_clip": 15.0,
+                 "confidence": {"match": 0.5, "name": 1.0, "teams": 1.0, "score": 1.0},
+                 "flags": ["cut_by_tba_time", "start_from_tba_time"],
+                 "cut_from": {"actual_time": 1792000000.0, "lead": 15.0, "at": 1792000300.0}}, **kw)
+
+
+def upload(c, ev, aid, mid, data, pid="lap1", chunk=4096, record=None):
+    import hashlib
+    base = f"{P}/streams/{ev}/{aid}/clips/{mid}"
+    r = c.post(base, {"processor": pid, "size": len(data), "sha256": hashlib.sha256(data).hexdigest()})
+    assert r.status_code == 200, r.text
+    off = r.json()["offset"]
+    h = {"X-CSRF-Token": c.tc.cookies.get("cs_csrf"), "Content-Type": "application/octet-stream"}
+    while off < len(data):
+        r = c.tc.put(f"/app/v1{base}/data?processor={pid}&offset={off}", content=data[off:off + chunk], headers=h)
+        assert r.status_code == 200, r.text
+        off = r.json()["offset"]
+    return c.post(base + "/finish", {"processor": pid, "record": record or _record(int(mid.split("qm")[1]))})
+
+
+def test_clip_upload_registers_a_livestream_record_that_is_then_tracked(admin, streams):
+    a = sclaim(admin)["assignment"]
+    aid = a["aid"]
+    data = _mp4(50000)
+    base = f"{P}/streams/{EV}/{aid}/clips/tba-qm4"
+    import hashlib
+    sha = hashlib.sha256(data).hexdigest()
+    assert admin.post(base, {"processor": "lap1", "size": len(data), "sha256": sha}).json()["offset"] == 0
+    h = {"X-CSRF-Token": admin.tc.cookies.get("cs_csrf")}
+    put_ = lambda off, b, pid="lap1": admin.tc.put(f"/app/v1{base}/data?processor={pid}&offset={off}", content=b, headers=h)
+    assert put_(0, data[:10000]).json() == {"offset": 10000}
+    assert put_(5000, data[5000:6000]).status_code == 409                    # wrong offset
+    assert put_(10000, data[10000:20000], pid="lap2").status_code == 409     # not this processor's stream
+    assert put_(10000, b"x" * (17 << 20)).status_code == 413
+    # resume: the begin call answers where to go on
+    assert admin.post(base, {"processor": "lap1", "size": len(data), "sha256": sha}).json()["offset"] == 10000
+    assert admin.post(base + "/finish", {"processor": "lap1", "record": _record(4)}).status_code == 409   # incomplete
+    r = upload(admin, EV, aid, "tba-qm4", data)
+    assert r.status_code == 200, r.text
+    assert r.json()["key"] == f"{EV}_qm4" and r.json()["media"] == f"media/live/{EV}/{aid}/clips/tba-qm4.mp4"
+    sd = streams["media"] / "live" / EV / aid
+    assert (sd / "clips" / "tba-qm4.mp4").read_bytes() == data
+    rec = json.loads((sd / "matches" / "tba-qm4.json").read_text())
+    assert rec["clip"] == str(sd / "clips" / "tba-qm4.mp4") and rec["uploaded"]["sha256"] == sha
+    assert "uploaded_by_client" in rec["flags"] and rec["teams"]["red"] == [40, 41, 42]
+    meta = json.loads((sd / "meta.json").read_text())
+    assert (meta["source"], meta["video_id"], meta["mode"]) == ("yt1", aid, "client")
+    assert not list((sd / ".uploads").iterdir())
+    # retries are fine; the heartbeat no longer asks for it
+    assert admin.post(base + "/finish", {"processor": "lap1", "record": _record(4)}).json()["already"] is True
+    assert admin.post(base, {"processor": "lap1", "size": len(data), "sha256": sha}).json()["done"] is True
+    d = admin.post(f"{P}/streams/{EV}/{aid}/heartbeat", {"processor": "lap1"}).json()
+    assert d["have"] == [f"{EV}_qm4"] and d["want"] == [f"{EV}_qm5"]
+    # the stream (yt1) is calibrated: a GPU processor is handed this clip like any livestream clip
+    seen = [claim(admin, f"gpu{i}")["job"]["key"] for i in range(4)]
+    assert f"{EV}_qm4" in seen
+    j = json.loads((streams["data"] / "processing" / EV / f"{EV}_qm4" / "job.json").read_text())
+    assert j["clip"] == str(sd / "clips" / "tba-qm4.mp4")
+    e = admin.get("/audit?action=processing.clip").json()["entries"][0]
+    assert e["target"] == f"{EV}/{aid}/tba-qm4" and e["after"]["bytes"] == len(data)
+
+
+def test_clip_upload_validation(team, admin, streams, monkeypatch):
+    aid = sclaim(admin)["assignment"]["aid"]
+    data = _mp4(20000)
+    base = f"{P}/streams/{EV}/{aid}/clips"
+    import hashlib
+    sha = hashlib.sha256(data).hexdigest()
+    ok = {"processor": "lap1", "size": len(data), "sha256": sha}
+    assert admin.post(f"{base}/qm4", ok).status_code == 422                       # not a tba-<match> id
+    assert admin.post(f"{base}/tba-qm4", dict(ok, size=2 << 30)).status_code == 422
+    assert admin.post(f"{base}/tba-qm4", dict(ok, sha256="x")).status_code == 422
+    assert team["strategist"].post(f"{base}/tba-qm4", ok).status_code == 403
+    for bad in (_record(5), _record(4, comp_level="sf"), _record(4, flags=["<script>"]), _record(4, teams={"red": [0]}),
+                _record(4, auto_start_in_clip=99), _record(4, t_start_utc="yesterday"), _record(4, clip="/etc/passwd")):
+        assert upload(admin, EV, aid, "tba-qm4", data, record=bad).status_code == 422, bad
+    assert upload(admin, EV, aid, "tba-qm4", b"\0" * 5000).status_code == 422          # not an mp4
+    from server.routers import processing as PR
+    import collections
+    monkeypatch.setattr(PR.shutil, "disk_usage", lambda p: collections.namedtuple("u", "total used free")(1, 1, 1 << 20))
+    r = admin.post(f"{base}/tba-qm5", dict(ok, size=len(data)))
+    assert r.status_code == 507 and "nearly full" in r.json()["detail"]
+    assert not (streams["media"] / "live" / EV / aid / "matches" / "tba-qm4.json").exists()

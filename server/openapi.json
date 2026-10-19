@@ -4014,6 +4014,507 @@
      }
     }
    }
+  },
+  "/app/v1/processing/speedtest": {
+   "get": {
+    "tags": [
+     "processing"
+    ],
+    "summary": "N random bytes: download speed to this server (admin; processors)",
+    "operationId": "speedtest_get_app_v1_processing_speedtest_get",
+    "parameters": [
+     {
+      "name": "bytes",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer",
+       "maximum": 8388608,
+       "minimum": 1,
+       "default": 1048576,
+       "title": "Bytes"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/octet-stream": {}
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   },
+   "post": {
+    "tags": [
+     "processing"
+    ],
+    "summary": "Upload speed check: the body is read and dropped (admin; processors)",
+    "operationId": "speedtest_post_app_v1_processing_speedtest_post",
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     }
+    }
+   }
+  },
+  "/app/v1/processing/sample": {
+   "get": {
+    "tags": [
+     "processing"
+    ],
+    "summary": "A short sample of a recent livestream clip for the benchmark (admin)",
+    "operationId": "sample_info_app_v1_processing_sample_get",
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     }
+    }
+   }
+  },
+  "/app/v1/processing/sample.mp4": {
+   "get": {
+    "tags": [
+     "processing"
+    ],
+    "summary": "The first bytes of that clip (admin; Range-resumable)",
+    "operationId": "sample_file_app_v1_processing_sample_mp4_get",
+    "parameters": [
+     {
+      "name": "ev",
+      "in": "query",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "maxLength": 24,
+       "title": "Ev"
+      }
+     },
+     {
+      "name": "name",
+      "in": "query",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "maxLength": 84,
+       "title": "Name"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "video/mp4": {}
+      }
+     },
+     "206": {
+      "description": "partial (Range)"
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/app/v1/processing/streams/claim": {
+   "post": {
+    "tags": [
+     "processing"
+    ],
+    "summary": "Clip only: get a livestream to record and cut (admin)",
+    "operationId": "stream_claim_app_v1_processing_streams_claim_post",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/StreamClaimIn"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/app/v1/processing/streams/{ev}/{aid}/heartbeat": {
+   "post": {
+    "tags": [
+     "processing"
+    ],
+    "summary": "Clip only: keep the stream; -> TBA match start times and which clips to upload (admin)",
+    "operationId": "stream_heartbeat_app_v1_processing_streams__ev___aid__heartbeat_post",
+    "parameters": [
+     {
+      "name": "ev",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Ev"
+      }
+     },
+     {
+      "name": "aid",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Aid"
+      }
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/StreamBeatIn"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/app/v1/processing/streams/{ev}/{aid}/release": {
+   "post": {
+    "tags": [
+     "processing"
+    ],
+    "summary": "Clip only: stop recording this stream (admin)",
+    "operationId": "stream_release_app_v1_processing_streams__ev___aid__release_post",
+    "parameters": [
+     {
+      "name": "ev",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Ev"
+      }
+     },
+     {
+      "name": "aid",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Aid"
+      }
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/StreamReleaseIn"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/app/v1/processing/streams/{ev}/{aid}/clips/{mid}": {
+   "post": {
+    "tags": [
+     "processing"
+    ],
+    "summary": "Clip only: start or resume a chunked clip upload -> the offset to send from (admin)",
+    "operationId": "clip_begin_app_v1_processing_streams__ev___aid__clips__mid__post",
+    "parameters": [
+     {
+      "name": "ev",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Ev"
+      }
+     },
+     {
+      "name": "aid",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Aid"
+      }
+     },
+     {
+      "name": "mid",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Mid"
+      }
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/UploadIn"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/app/v1/processing/streams/{ev}/{aid}/clips/{mid}/data": {
+   "put": {
+    "tags": [
+     "processing"
+    ],
+    "summary": "Clip only: one chunk of the clip at ?offset= (admin; at most chunk_max bytes)",
+    "operationId": "clip_chunk_app_v1_processing_streams__ev___aid__clips__mid__data_put",
+    "parameters": [
+     {
+      "name": "ev",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Ev"
+      }
+     },
+     {
+      "name": "aid",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Aid"
+      }
+     },
+     {
+      "name": "mid",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Mid"
+      }
+     },
+     {
+      "name": "processor",
+      "in": "query",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "maxLength": 48,
+       "title": "Processor"
+      }
+     },
+     {
+      "name": "offset",
+      "in": "query",
+      "required": true,
+      "schema": {
+       "type": "integer",
+       "maximum": 1073741824,
+       "minimum": 0,
+       "title": "Offset"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/app/v1/processing/streams/{ev}/{aid}/clips/{mid}/finish": {
+   "post": {
+    "tags": [
+     "processing"
+    ],
+    "summary": "Clip only: check the uploaded clip and register it as a livestream match record (admin)",
+    "operationId": "clip_finish_app_v1_processing_streams__ev___aid__clips__mid__finish_post",
+    "parameters": [
+     {
+      "name": "ev",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Ev"
+      }
+     },
+     {
+      "name": "aid",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Aid"
+      }
+     },
+     {
+      "name": "mid",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Mid"
+      }
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/FinishIn"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
   }
  },
  "components": {
@@ -4192,6 +4693,168 @@
      "job"
     ],
     "title": "ClaimOut"
+   },
+   "ClipRecord": {
+    "properties": {
+     "id": {
+      "type": "string",
+      "maxLength": 24,
+      "title": "Id"
+     },
+     "match_name": {
+      "anyOf": [
+       {
+        "type": "string",
+        "maxLength": 100
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Match Name"
+     },
+     "comp_level": {
+      "type": "string",
+      "pattern": "^(qm|sf|f)$",
+      "title": "Comp Level"
+     },
+     "set": {
+      "anyOf": [
+       {
+        "type": "integer",
+        "maximum": 999.0,
+        "minimum": 0.0
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Set"
+     },
+     "number": {
+      "anyOf": [
+       {
+        "type": "integer",
+        "maximum": 999.0,
+        "minimum": 0.0
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Number"
+     },
+     "teams": {
+      "additionalProperties": {
+       "items": {
+        "type": "integer"
+       },
+       "type": "array"
+      },
+      "type": "object",
+      "title": "Teams"
+     },
+     "score": {
+      "anyOf": [
+       {
+        "additionalProperties": {
+         "anyOf": [
+          {
+           "type": "integer"
+          },
+          {
+           "type": "null"
+          }
+         ]
+        },
+        "type": "object"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Score"
+     },
+     "score_source": {
+      "anyOf": [
+       {
+        "type": "string",
+        "pattern": "^(tba|stream|results_screen)$"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Score Source"
+     },
+     "t_start_stream": {
+      "anyOf": [
+       {
+        "type": "number"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "T Start Stream"
+     },
+     "t_start_utc": {
+      "anyOf": [
+       {
+        "type": "string",
+        "maxLength": 40
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "T Start Utc"
+     },
+     "auto_start_in_clip": {
+      "type": "number",
+      "maximum": 60.0,
+      "minimum": 0.0,
+      "title": "Auto Start In Clip"
+     },
+     "confidence": {
+      "additionalProperties": {
+       "type": "number"
+      },
+      "type": "object",
+      "title": "Confidence"
+     },
+     "flags": {
+      "items": {
+       "type": "string"
+      },
+      "type": "array",
+      "maxItems": 20,
+      "title": "Flags"
+     },
+     "cut_from": {
+      "anyOf": [
+       {
+        "additionalProperties": {
+         "type": "number"
+        },
+        "type": "object"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Cut From"
+     }
+    },
+    "additionalProperties": false,
+    "type": "object",
+    "required": [
+     "id",
+     "comp_level",
+     "auto_start_in_clip"
+    ],
+    "title": "ClipRecord",
+    "description": "The match record a client cut (live/liveingest.py tba_cut): only these fields; the server sets the clip path."
    },
    "DoneIn": {
     "properties": {
@@ -4610,6 +5273,26 @@
      "sha256"
     ],
     "title": "FileRef"
+   },
+   "FinishIn": {
+    "properties": {
+     "processor": {
+      "type": "string",
+      "maxLength": 48,
+      "minLength": 1,
+      "title": "Processor"
+     },
+     "record": {
+      "$ref": "#/components/schemas/ClipRecord"
+     }
+    },
+    "additionalProperties": false,
+    "type": "object",
+    "required": [
+     "processor",
+     "record"
+    ],
+    "title": "FinishIn"
    },
    "FitIn": {
     "properties": {
@@ -5437,6 +6120,37 @@
       "title": "Requirements",
       "description": "pip requirements of the processing Python"
      },
+     "runtimes": {
+      "additionalProperties": {
+       "items": {
+        "type": "string"
+       },
+       "type": "array"
+      },
+      "type": "object",
+      "title": "Runtimes",
+      "description": "requirements per runtime: cuda (NVIDIA), coreml (Apple silicon), clip (Clip only, no GPU)"
+     },
+     "clip_extras": {
+      "items": {
+       "type": "string"
+      },
+      "type": "array",
+      "title": "Clip Extras",
+      "description": "added to every runtime (Clip only tools)"
+     },
+     "ytdlp_requirements": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Ytdlp Requirements",
+      "description": "hash-pinned yt-dlp requirements file in the code tarball (uv pip install --require-hashes --no-deps)"
+     },
      "python": {
       "type": "string",
       "title": "Python"
@@ -6217,6 +6931,134 @@
     "type": "object",
     "title": "SourcePatch"
    },
+   "StreamBeatIn": {
+    "properties": {
+     "processor": {
+      "type": "string",
+      "maxLength": 48,
+      "minLength": 1,
+      "title": "Processor"
+     },
+     "state": {
+      "anyOf": [
+       {
+        "type": "string",
+        "maxLength": 32
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "State",
+      "description": "recording | waiting | ... (shown in the status)"
+     },
+     "rec": {
+      "anyOf": [
+       {
+        "additionalProperties": true,
+        "type": "object"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Rec",
+      "description": "recorder progress {chunks, bytes, behind_s, last_wall, video}"
+     }
+    },
+    "additionalProperties": false,
+    "type": "object",
+    "required": [
+     "processor"
+    ],
+    "title": "StreamBeatIn"
+   },
+   "StreamClaimIn": {
+    "properties": {
+     "processor": {
+      "type": "string",
+      "maxLength": 48,
+      "minLength": 1,
+      "title": "Processor"
+     },
+     "events": {
+      "anyOf": [
+       {
+        "items": {
+         "type": "string"
+        },
+        "type": "array",
+        "maxItems": 50
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Events",
+      "description": "only these followed events (default: all)"
+     },
+     "ev": {
+      "anyOf": [
+       {
+        "type": "string",
+        "maxLength": 24
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Ev",
+      "description": "this event only"
+     },
+     "source": {
+      "anyOf": [
+       {
+        "type": "string",
+        "maxLength": 64
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Source",
+      "description": "this livestream source (sources.json id) only"
+     }
+    },
+    "additionalProperties": false,
+    "type": "object",
+    "required": [
+     "processor"
+    ],
+    "title": "StreamClaimIn"
+   },
+   "StreamReleaseIn": {
+    "properties": {
+     "processor": {
+      "type": "string",
+      "maxLength": 48,
+      "minLength": 1,
+      "title": "Processor"
+     },
+     "reason": {
+      "anyOf": [
+       {
+        "type": "string",
+        "maxLength": 300
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Reason"
+     }
+    },
+    "additionalProperties": false,
+    "type": "object",
+    "required": [
+     "processor"
+    ],
+    "title": "StreamReleaseIn"
+   },
    "SyncEventOut": {
     "properties": {
      "key": {
@@ -6316,6 +7158,35 @@
      "state"
     ],
     "title": "UpdateStatus"
+   },
+   "UploadIn": {
+    "properties": {
+     "processor": {
+      "type": "string",
+      "maxLength": 48,
+      "minLength": 1,
+      "title": "Processor"
+     },
+     "size": {
+      "type": "integer",
+      "maximum": 1073741824.0,
+      "minimum": 1024.0,
+      "title": "Size"
+     },
+     "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Sha256"
+     }
+    },
+    "additionalProperties": false,
+    "type": "object",
+    "required": [
+     "processor",
+     "size",
+     "sha256"
+    ],
+    "title": "UploadIn"
    },
    "UserCreate": {
     "properties": {
