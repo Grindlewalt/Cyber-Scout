@@ -940,6 +940,32 @@ html[data-net="off"] .timectl.live .tc-tag i { background: var(--ink-3); box-sha
 .vw-add input:not([type=radio]) { flex: 1 1 320px; }
 .vw-tip { flex: 1 1 100%; margin: 0; }
 .vw-gone { margin: 0; display: flex; flex-wrap: wrap; gap: 4px var(--sp-2); align-items: center; }
+/* the card's settings row (what it is + which cameras robots are tracked from) and the automatic set-up block */
+.vw-sets { display: flex; flex-wrap: wrap; gap: 6px var(--sp-4); align-items: center; }
+.vw-as { display: grid; gap: var(--sp-2); min-width: 0; margin-top: 2px; padding: var(--sp-2) var(--sp-3) var(--sp-3);
+  border-radius: var(--r-p); background: color-mix(in srgb, var(--accent-tint) 55%, transparent); border: 1px solid var(--accent-line); }
+.vw-ash { display: flex; flex-wrap: wrap; align-items: center; gap: 4px var(--sp-2); font-size: var(--fs-foot); }
+.vw-asi { display: grid; place-items: center; width: 22px; height: 22px; border-radius: 50%; background: var(--accent-fill, var(--accent)); color: var(--on-accent, #fff); flex: none; }
+.vw-asi svg { width: 13px; height: 13px; }
+.vw-asn { margin: 0; overflow-wrap: anywhere; } .vw-asn .ico { width: 14px; height: 14px; vertical-align: -2px; color: var(--caution); }
+.vw-asb { gap: 6px; } .vw-asb button { min-height: 32px; }
+.vw-asf { margin: 0; display: grid; gap: 4px; min-width: 0; }
+.vw-asf img { display: block; width: 100%; max-width: 860px; height: auto; border-radius: var(--r-s); background: #1b2330; box-shadow: 0 1px 0 var(--line); }
+.vw-k { display: inline-flex; align-items: center; gap: 4px; margin-right: 8px; white-space: nowrap; }
+.vw-k::before { content: ""; width: 14px; height: 4px; border-radius: 2px; background: currentColor; }
+.vw-k.y::before { background: #ffd43b; } .vw-k.w::before { background: #c9ced6; } .vw-k.r::before { background: linear-gradient(90deg, #ff5a5f 50%, #3e8bff 50%); }
+.vw-k.o::before { background: #ff922b; } .vw-k.g::before { background: #51cf66; } .vw-k.c::before { background: #2dd4ee; }
+.vw-askv { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 3px var(--sp-3); margin: 0; }
+.vw-askv div { display: contents; } .vw-askv dt { color: var(--ink-2); } .vw-askv dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.vw-asd > summary { cursor: pointer; color: var(--ink-2); } .vw-asd[open] { display: grid; gap: var(--sp-2); }
+.pill.vw-ready { color: var(--ink); border-color: var(--accent-line); background: var(--surface); font-weight: 600; }
+.vw-spin { display: inline-block; width: 12px; height: 12px; margin-right: 6px; vertical-align: -1px; border-radius: 50%;
+  border: 2px solid var(--accent-line); border-top-color: var(--accent); animation: vw-spin .9s linear infinite; }
+@keyframes vw-spin { to { transform: rotate(360deg); } }
+@media (max-width: 560px) {
+  .vw-as { padding: var(--sp-2); }
+  .vw-askv { grid-template-columns: minmax(0, 1fr); } .vw-askv dt { margin-top: 4px; }
+}
 @media (max-width: 560px) {
   .vw-card { padding: var(--sp-3); }
   .vw-hd { grid-template-columns: auto minmax(0, 1fr); }

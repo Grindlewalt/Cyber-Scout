@@ -383,12 +383,16 @@
     const recFor = s => !!(lsSt && lsSt.source && (lsSt.source.id === s.id || (s.url && lsSt.source.url === s.url)));
     function fsOf(s) {                      // field setup of a video: field (or station) box + its camera calibration
       const w = whatOf(s), stream = V && s.id === V.stream_source, c = chk();
-      const target = w === "main" ? "overhead" : w === "red" ? "station_red" : w === "blue" ? "station_blue" : null;
+      // a broadcast stream can carry a fixed wide camera too (program feed: tracked from every camera): optional setup
+      const optional = w === "broadcast" && s.kind !== "per_match";
+      const target = w === "main" || optional ? "overhead" : w === "red" ? "station_red" : w === "blue" ? "station_blue" : null;
       const box = stream && c.layout ? c.layout.state === "ok" : !!s.has_layout;
-      const calOk = !target ? null : stream && target === "overhead" && c.calibration ? c.calibration.state === "ok" : !!calT(target).saved;
-      return { w, target, box, calOk, need: [!box && (target && target !== "overhead" ? "station box" : "field box"), calOk === false && "calibration"].filter(Boolean) };
+      const calOk = !target ? null : target === "overhead" && s.calibration !== undefined ? !!s.calibration
+        : stream && target === "overhead" && c.calibration ? c.calibration.state === "ok" : !!calT(target).saved;
+      return { w, target, box, calOk, optional, need: [!box && (target && target !== "overhead" ? "station box" : "field box"), calOk === false && "calibration"].filter(Boolean) };
     }
-    const fsNote = fs => fs.w === "main" ? `So robots can be tracked from this video: a field box and a camera calibration, once per camera. <b>Auto-calibrate</b> finds the AprilTags itself and sets the field box too; you check the result before it's saved.`
+    const fsNote = fs => fs.optional ? `For tracking from this broadcast: the field box and the calibration of its fixed wide camera (the automatic set-up above does both). <b>Auto-calibrate</b> finds the AprilTags itself; you check the result before it's saved.`
+      : fs.w === "main" ? `So robots can be tracked from this video: a field box and a camera calibration, once per camera. <b>Auto-calibrate</b> finds the AprilTags itself and sets the field box too; you check the result before it's saved.`
       : fs.target ? `Draw the ${fs.w} station box on a frame of this video, then calibrate that camera.`
       : "Optional: boxes for the clock, score bar and picture-in-picture insets of this feed.";
     const liveChoice = () => `<span class="vw-live" hidden role="radiogroup" aria-label="Live stream or recording"><label class="small"><input type="radio" name="live" value="1" checked> Live / upcoming stream</label>
@@ -409,9 +413,73 @@
       }
       return out;
     }
+    // ---- automatic set-up of a stream (GET/POST events/<ev>/sources/<sid>/auto-setup[/accept], live/sources.py):
+    // the worker runs dynpose.auto_setup on the recording; the card shows the projected field and one-click Accept
+    const AS_HELP = `<span class="hl">Once a stream is recorded, Cyber-Scout looks at a few minutes of it: the broadcast graphics (the tracker ignores them), the match clock, and the <b>fixed wide camera</b> if the broadcast has one. That camera is found from the field's AprilTags and fitted like the calibration wizard.</span>
+      <span class="hl">Nothing is used until you <b>Accept</b>: check that the yellow outline sits on the carpet edges and the hub squares on the hubs.</span>
+      <span class="hl">A <b>program feed</b> (cuts between cameras) is tracked from every camera: each frame gets its own camera position from the AprilTags. Fuel and shots are measured only while the fixed camera is on air.</span>`;
+    const pct = x => x == null ? "–" : `${Math.round(x * 100)}%`;
+    const LAYOUT_W = { top: "2026 FIRST scoreboard (top)", bottom: "2026 FIRST score bar (bottom)" };
+    function feedLine(a, s) {
+      const f = (a && a.feed) || {}, pf = s.program_feed != null ? s.program_feed : a && a.program_feed;
+      if (pf == null) return f.why ? `<span class="muted">Feed: not decided · ${h(f.why)}</span>` : "";
+      return pf ? `<b>Program feed</b> <span class="muted">· ${h(f.why || s.program_feed_why || "cuts between cameras")}</span>`
+        : `<b>One fixed camera</b> <span class="muted">· ${h(f.why || s.program_feed_why || "")}</span>`;
+    }
+    function autoHtml(s) {
+      const a = s.auto_setup, rd = s.auto_ready || {}, sid = encodeURIComponent(s.id);
+      const btn = (act, t, cls) => `<button type="button" class="small ${cls || ""}" data-as-act="${act}">${t}</button>`;
+      const hand = btn("hand", "Calibrate by hand");
+      const head = t => `<div class="vw-ash"><span class="vw-asi" aria-hidden="true">${CS.icon("starOn")}</span><b>Automatic set-up</b> ${t || ""}${CS.help(AS_HELP, "About the automatic set-up")}</div>`;
+      if (a && a.running) {
+        const q = a.job && a.job.state === "queued", t0 = (a.job && (q ? a.job.created : a.job.started || a.job.created)) || a.at;
+        return head(`<span class="muted small" role="status">· ${q ? "queued" : "working"}${t0 ? ` ${dur(Date.now() / 1000 - t0)} ago` : ""}${q ? ", waiting for the worker's video job runner" : ""}</span>`) +
+          `<p class="small vw-asn"><span class="vw-spin" aria-hidden="true"></span>Looking at the recording: graphics, clock, the cameras and their AprilTags. This takes a few minutes.</p>`;
+      }
+      if (!a || !a.status) {
+        return head() + `<p class="small vw-asn muted">${rd.media ? "Ready to run on the recording: it starts on its own within a minute." : h(rd.why ? `Waiting: ${rd.why}.` : "Waiting for the first minutes of the recording.")} It sets itself up once the recorder has a match (or a few minutes) of this stream.</p>
+          <div class="vs-row vw-asb">${rd.media ? btn("run", "Set up now", "primary") : ""}${hand}</div>`;
+      }
+      const isrc = `app/v1/events/${h(ev)}/sources/${h(sid)}/auto-setup/overlay.jpg?v=${h(Math.round(a.at || 0))}`;
+      const img = a.has_overlay ? `<figure class="vw-asf"><a href="${isrc}" target="_blank" rel="noopener" title="Open full size"><img src="${isrc}" alt="${h(`The ${a.status === "ok" ? "found camera's view with the projected field" : "recorded frame with the graphics found"} (${s.label || s.id})`)}" width="${h(a.W || 1920)}" height="${h(a.H || 1080)}" loading="lazy" decoding="async"></a>
+        <figcaption class="muted small">${a.status === "ok" ? `<span class="vw-k y">carpet edge</span> <span class="vw-k w">grid · lines</span> <span class="vw-k r">hubs</span> ` : ""}<span class="vw-k o">graphics (ignored)</span>${a.clock ? ` <span class="vw-k g">clock</span>` : ""}${a.field ? ` <span class="vw-k c">field box</span>` : ""}</figcaption></figure>` : "";
+      const fx = a.fixed || {}, vs = a.vs_saved, sb = a.scoreboard || {};
+      const facts = `<dl class="vw-askv small">
+          ${a.status === "ok" ? `<div><dt>Fixed camera</dt><dd>on air ${pct(fx.on_air)} of the clip · ${h(fx.tags)} AprilTags · fit ${h(fx.tag_rms_px)} px${fx.line_med_px != null ? ` · centre line ${h(fx.line_med_px)} px` : ""}${(fx.warnings || []).length ? ` <span class="ls-warn">${h(fx.warnings.join("; "))}</span>` : ""}</dd></div>` : ""}
+          <div><dt>Feed</dt><dd>${feedLine(a, s) || "–"}</dd></div>
+          <div><dt>Scoreboard</dt><dd>${sb.layout ? h(LAYOUT_W[sb.layout] || sb.layout) + (a.clock ? " · clock found" : "") : a.clock ? "clock found (layout not recognised)" : "<span class=\"muted\">not recognised: the stream analyser still tries both 2026 FIRST layouts</span>"}</dd></div>
+          ${vs && vs.median_px != null ? `<div><dt>vs saved</dt><dd>${h(vs.median_px)} px median, ${h(vs.max_px)} px max from ${h(vs.file)}${vs.reaimed_median_px != null ? ` <span class="muted">(${h(vs.reaimed_median_px)} px once re-aimed: the lens fits differ)</span>` : ""}</dd></div>` : ""}
+          <div><dt>From</dt><dd class="muted">${a.media_kind === "clip" ? "a recorded match" : a.media_kind === "sample" ? "the last minutes recorded" : "the file"} · ${h(when(a.at))}${a.seconds ? ` · ${dur(a.seconds)}` : ""}</dd></div></dl>`;
+      if (a.status === "ok" && a.accepted_at) {
+        return head(`<span class="pill vw-ok">${CS.icon("check", "ico")} accepted</span>`) +
+          `<p class="small vw-asn muted">Accepted by ${h(a.accepted_by || "an admin")} ${h(when(a.accepted_at))}${a.accepted_file ? ` → ${h(a.accepted_file)}` : ""}.</p>
+          <details class="vw-asd"><summary class="small">What was found</summary>${img}${facts}</details>
+          <div class="vs-row vw-asb">${btn("run", "Run again")}${hand}</div>`;
+      }
+      if (a.status === "ok") {
+        return head(`<span class="pill vw-ready">ready to accept</span>`) +
+          `<p class="small vw-asn">Found the fixed wide camera. Does the yellow outline sit on the carpet edges and the hub squares on the hubs?</p>${img}${facts}
+          <div class="vs-row vw-asb">${btn("accept", "Looks right: accept", "primary")}${btn("run", "Run again")}${hand}<span class="muted small" data-as-st role="status"></span></div>`;
+      }
+      const bad = a.status === "error";
+      return head(`<span class="pill vw-need">${bad ? "failed" : "no fixed camera"}</span>`) +
+        `<p class="small vw-asn">${CS.icon("warn", "ico")} ${bad ? "The automatic set-up failed" : "Couldn't find the fixed wide camera"}: <span class="muted">${h(a.message || "")}</span></p>
+        <p class="small vw-asn muted">${bad ? "" : "Robots can still be located from every camera, but fuel and shots need the fixed camera: "}Calibrate the camera by hand (pick frames where it is on air), or run it again on a later match.</p>
+        ${a.has_overlay ? `<details class="vw-asd"><summary class="small">What was found</summary>${img}${facts}</details>` : ""}
+        <div class="vs-row vw-asb">${hand}${btn("run", "Run again")}<span class="muted small" data-as-st role="status"></span></div>`;
+    }
+    const DYN_OPTS = [["auto", null], ["on", true], ["off", false]];
+    function dynSelect(s) {
+      if (s.kind === "per_match" || s.role === "alliance-side") return "";
+      const cur = s.dynamic === true ? "on" : s.dynamic === false ? "off" : "auto", pf = s.program_feed;
+      const autoT = pf === true ? "Automatic: every camera (program feed)" : pf === false ? "Automatic: the fixed camera (one camera)" : "Automatic (decided by the set-up)";
+      const t = { auto: autoT, on: "Every camera", off: "The fixed camera only" };
+      return `<label class="vw-wl small">Track robots from <select data-dyn aria-label="Which cameras robots are tracked from (${h(s.label || s.id)})">${DYN_OPTS.map(([k]) => `<option value="${k}" ${k === cur ? "selected" : ""}>${t[k]}</option>`).join("")}</select>
+        ${CS.help(`<span class="hl"><b>Every camera</b>: each frame gets its own camera position from the field's AprilTags, so robots are tracked through the close-ups too (a program feed). <b>The fixed camera only</b>: robots are tracked while the calibrated wide camera is on air; other shots are gaps.</span><span class="hl"><b>Automatic</b> follows what the set-up detected: a program feed (cuts between cameras) is tracked from every camera.</span>`, "About tracking from every camera")}</label>`;
+    }
     function card(s) {
       const fs = fsOf(s), w = fs.w, tba = s.origin === "tba", per = s.kind === "per_match", nm = h(s.label || s.id);
-      const pill = !fs.target ? `<span class="pill">optional</span>` : fs.need.length ? `<span class="pill vw-need">needs ${h(fs.need.join(" + "))}</span>`
+      const pill = !fs.target || (fs.optional && fs.need.length) ? `<span class="pill">optional</span>` : fs.need.length ? `<span class="pill vw-need">needs ${h(fs.need.join(" + "))}</span>`
         : `<span class="pill vw-ok">${CS.icon("check", "ico")} done</span>`;
       return `<article class="card vw-card ${w}${s.enabled === false ? " off" : ""}" data-id="${h(s.id)}">
         <div class="vw-hd"><span class="vw-ic ${w}" aria-hidden="true">${CS.icon("video")}</span>
@@ -424,8 +492,9 @@
         <form class="vw-repf vs-form" hidden><input name="u" required aria-label="New link for ${nm}" placeholder="New YouTube / Twitch link…" autocomplete="off" autocapitalize="none" spellcheck="false">
           ${liveChoice()}<button class="primary">Save link</button><button type="button" data-cancel>Cancel</button>
           <span class="muted small vw-repn">${tba ? "Adds your link and removes the TBA one." : "Keeps this video's field box and calibration: redo them if the camera moved."}</span></form>
-        <div class="vw-body"><label class="vw-wl small">What it is <select data-what aria-label="What ${nm} is">${whatOpts(w)}</select></label>
-          <div class="vw-dyn">${dynHtml(s)}</div></div>
+        <div class="vw-body"><div class="vw-sets"><label class="vw-wl small">What it is <select data-what aria-label="What ${nm} is">${whatOpts(w)}</select></label>${dynSelect(s)}</div>
+          <div class="vw-dyn">${dynHtml(s)}</div>
+          ${s.auto_setup_ok && s.enabled !== false ? `<section class="vw-as" data-as aria-label="Automatic set-up of ${nm}">${autoHtml(s)}</section>` : ""}</div>
         ${per ? "" : `<details class="vw-fs" data-sid="${h(s.id)}"><summary><span>Field setup</span> ${pill}</summary><div class="vw-fsb">
           <div class="vw-sub" role="group" aria-label="Field setup step">${fs.target === "overhead" ? `<button type="button" class="chip vw-auto" data-sub="auto">Auto-calibrate</button>` : ""}
             <button type="button" class="chip" data-sub="layout">${fs.target && fs.target !== "overhead" ? "Station box" : "Field box"}${fs.box ? " ✓" : ""}</button>${fs.target ? `<button type="button" class="chip" data-sub="calib">Calibration${fs.calOk ? " ✓" : ""}</button>` : ""}</div>
@@ -473,6 +542,13 @@
         try { await A("DELETE", `events/${ev}/sources/${sid}`); flash(s.origin === "admin" ? `Removed ${s.label || s.id}.` : `Removed ${s.label || s.id}: TBA discovery keeps it off (Restore below).`); route(false); }
         catch (x) { csay(errMsg(x)); }
       };
+      const dy = c.querySelector("[data-dyn]");
+      if (dy) dy.onchange = async e => {
+        const v = { auto: null, on: true, off: false }[e.target.value];
+        try { const r = await A("PATCH", `events/${ev}/sources/${sid}`, { dynamic: v }); s.dynamic = r.dynamic; s.dynamic_on = r.dynamic_on; csay(""); }
+        catch (x) { csay(errMsg(x)); }
+      };
+      wireAuto(c, s);
       const rb = c.querySelector("[data-rep]");
       if (rb) rb.onclick = () => { rf.hidden = !rf.hidden; if (!rf.hidden) rf.u.focus(); };
       rf.querySelector("[data-cancel]").onclick = () => { rf.hidden = true; };
@@ -485,6 +561,65 @@
         } catch (x) { csay(errMsg(x)); }
       };
     });
+    // ---- automatic set-up: actions + a poll while one runs
+    function drawAuto(c, s) {
+      const box = c.querySelector("[data-as]"); if (!box) return;
+      const op = [...box.querySelectorAll("details")].map(d => d.open);
+      box.innerHTML = autoHtml(s);
+      box.querySelectorAll("details").forEach((d, i) => { if (op[i]) d.open = true; });
+      const ds = c.querySelector("[data-dyn]");
+      if (ds && !ds.matches(":focus")) { const o = document.createElement("div"); o.innerHTML = dynSelect(s); const n = o.querySelector("[data-dyn]"); if (n) ds.querySelector("option[value=auto]").textContent = n.querySelector("option[value=auto]").textContent; }
+    }
+    function wireAuto(c, s) {
+      const box = c.querySelector("[data-as]"); if (!box) return;
+      box.addEventListener("click", async e => {
+        const b = e.target.closest("[data-as-act]"); if (!b || !box.contains(b)) return;
+        const st = t => { const x = box.querySelector("[data-as-st]"); if (x) x.textContent = t; };
+        const act = b.dataset.asAct, sid = encodeURIComponent(s.id);
+        if (act === "hand") {
+          const det = dets.find(x => x.dataset.sid === s.id);
+          if (det) { det.open = true; mount(det, "calib"); requestAnimationFrame(() => det.scrollIntoView({ block: "start", behavior: "smooth" })); }
+          return;
+        }
+        b.disabled = true;
+        try {
+          if (act === "run") {
+            const j = await A("POST", `events/${ev}/sources/${sid}/auto-setup`);
+            s.auto_setup = Object.assign({}, s.auto_setup || {}, { running: true, job: { id: j.id, state: j.state, created: j.created } });
+            drawAuto(c, s); pollAuto();
+          } else if (act === "accept") {
+            st("saving…");
+            const r = await A("POST", `events/${ev}/sources/${sid}/auto-setup/accept`);
+            flash(`Automatic set-up of ${s.label || s.id} accepted: camera saved to ${r.camera}${r.layout ? ", field box, graphics and clock boxes set" : ""}.`);
+            route(false);
+          }
+        } catch (x) {
+          if (act === "run" && x.status === 409 && /already running/.test(errMsg(x))) {      // started elsewhere: follow it
+            s.auto_setup = Object.assign({}, s.auto_setup || {}, { running: true }); drawAuto(c, s); pollAuto(); return;
+          }
+          b.disabled = false; st(errMsg(x)); if (!box.querySelector("[data-as-st]")) csayIn(c, errMsg(x));
+        }
+      });
+    }
+    const csayIn = (c, t) => { let m = c.querySelector(".vw-err"); if (!m) { m = document.createElement("div"); m.className = "vw-err small"; m.setAttribute("role", "status"); c.querySelector(".vw-body").prepend(m); } m.textContent = t; };
+    let asIv = null;
+    function pollAuto() {
+      if (asIv) return;
+      asIv = setInterval(async () => {
+        const run = S.filter(s => s.auto_setup && s.auto_setup.running);
+        if (!run.length || !listEl.isConnected) { clearInterval(asIv); asIv = null; return; }
+        for (const s of run) {
+          try {
+            const r = await A("GET", `events/${ev}/sources/${encodeURIComponent(s.id)}/auto-setup`);
+            s.auto_setup = r.auto_setup; s.auto_ready = r.ready;
+            if (r.auto_setup && !r.auto_setup.running && r.auto_setup.program_feed != null) s.program_feed = r.auto_setup.program_feed;
+            const c = listEl.querySelector(`.vw-card[data-id="${window.CSS.escape(s.id)}"]`); if (c) drawAuto(c, s);
+          } catch (x) { }
+        }
+      }, 4000);
+      cleanup.push(() => { if (asIv) { clearInterval(asIv); asIv = null; } });
+    }
+    if (S.some(s => s.auto_setup && s.auto_setup.running)) pollAuto();
     // ---- match video mode (top)
     const vmWire = () => vmEl.querySelectorAll("[data-vm]").forEach(b => b.onclick = async () => {
       if (b.dataset.vm === V.video_mode && V.chosen) return;
@@ -514,7 +649,7 @@
         if (sub === "auto") await autoCal(ev, box, sid, (saved, msg) => {
           if (saved) { flash(msg); try { history.replaceState(null, "", `#/${ev}/sources/calib/overhead`); } catch (e) { } route(false); } else mount(det, "calib");
         });
-        else if (sub === "calib") await calibTab(ev, box, target);
+        else if (sub === "calib") await calibTab(ev, box, target, sid !== "__uploads" ? sid : null);
         else await layoutTab(ev, box, sid === "__uploads" ? arg : sid);
       } catch (e) { if (!bin.dead) box.innerHTML = `<div class="empty small">Couldn't load: ${h(errMsg(e))}</div>`; }
     }
@@ -916,7 +1051,7 @@
   }
 
   // ---------------------------------------------------------------- 3. calibration wizard
-  async function calibTab(ev, el, target) {
+  async function calibTab(ev, el, target, srcId) {
     const cal = await A("GET", `events/${ev}/calibration`);
     target = TARGETS.some(t => t[0] === target) ? target : "overhead";
     const stat = cal.targets.find(t => t.target === target) || {};
@@ -1041,7 +1176,7 @@
 
     el.querySelector("#det").onclick = async () => {
       try {
-        const r = await job(ev, A("POST", `events/${ev}/calibration/${target}/detect`, {}), st);
+        const r = await job(ev, A("POST", `events/${ev}/calibration/${target}/detect`, srcId ? { source: srcId } : {}), st);
         W = r.W; H = r.H; tags = r.tags; NP = r.points || NP; NL = r.lines || NL; report = r.report || null; overlay = r.overlay || null; drop = new Set();
         await loadFrame(); el.querySelector("#fit").disabled = false;
         st(`${Object.keys(tags).length} tags found${r.report ? " — a first fit is drawn; check it or add points" : " — click field points (≥ 4–6 spread over the field), then Fit"}`);
