@@ -489,6 +489,28 @@ until `done` / `error`. Frames are loaded as images from `app/v1/…/frame.jpg?t
    `live/calibrate.py`) → 3 Fit (job; residual report + overlay of grid, field lines, hubs, tags) → 4 Accept & save
    (old file kept as backup). "Show the saved calibration" overlays the current file.
 
+**Per-video cards** (the page today; the tabs above survive as Field setup sub-views and old links): one card per
+source with what it is (main / broadcast / station cam), its link, Replace / Remove, the recorder state and matches
+found (redrawn every 15 s), and a collapsed **Field setup** (Auto-calibrate · Field box · Calibration, mounted one at a
+time; the wizard detects on that card's video: `detect {source}`). A broadcast stream gets the overhead calibration as
+*optional* field setup (its fixed wide camera, for tracking a program feed).
+
+**Automatic set-up** (block in the card body of every livestream / file source; `GET/POST
+events/<ev>/sources/<sid>/auto-setup`, `…/overlay.jpg`, `…/accept`; data from `GET sources`: `auto_setup`,
+`auto_ready`, `calibration`, `program_feed`, `dynamic_on`). The worker runs `dynpose.auto_setup` on the stream's
+recording on its own (pipeline.md §1.2 "Automatic set-up"); the card shows, by state:
+* *waiting*: why (`auto_ready.why`: nothing / too little recorded), "Set up now" once there is enough;
+* *queued / working*: spinner, polled every 4 s (`pollAuto`) until it finishes, then only that block is redrawn;
+* *ready*: the proof image (projected carpet edge, grid, hubs and tags on the found camera's median view; graphics,
+  clock and field boxes; tap opens it full size) with a colour key, the fit (on air %, AprilTags, px), the feed
+  (program feed or one camera, and why), the scoreboard layout, the difference to a saved calibration, and
+  **Looks right: accept** (one click; flash + reload) / Run again / Calibrate by hand (opens Field setup → Calibration);
+* *accepted*: who / when / which file, "What was found" collapsed, Run again;
+* *no fixed camera* / *failed*: the reason, Calibrate by hand first.
+
+**Track robots from** (select next to "What it is", not for station cams / upload families): Automatic (the label says
+what the set-up detected) / Every camera / The fixed camera only → `PATCH sources/<sid> {dynamic: null | true | false}`.
+
 `CS.liveRecorder` (exported here, used by dash.js): `load(ev, evj)` (`GET events/<ev>/livestream`, else the
 `livestream` summary in `event.json`, flagged stale after 10 min), `line()` (one quiet Dashboard line while
 recording/waiting/error), `card()` (state, behind-live, analyser lag, last match + clip, tracking from stream or
@@ -586,7 +608,8 @@ Platform API (`app/v1/…`), by file: setup.js `session`, `setup`, `auth/login|l
 `events/<ev>/override-requests/<id>/approve|reject`; notes.js `events/<ev>/notes`, `notes/<id>`,
 `notes/<id>/restore`, `events/<ev>/overrides[/<match>]`, `events/<ev>/override-requests/<id>/approve|reject`;
 event.js `events/<ev>/picklists/main`; sources.js
-`events/<ev>/sources[/discover|/<id>|/<id>/frame|/<id>/frame.jpg]`, `events/<ev>/layout[/<id>[/suggest]]`,
+`events/<ev>/sources[/discover|/<id>|/<id>/frame|/<id>/frame.jpg|/<id>/auto-setup[/accept|/overlay.jpg]]`,
+`events/<ev>/video-mode`, `events/<ev>/video-plan[/check|/matches/<key>]`, `events/<ev>/layout[/<id>[/suggest]]`,
 `events/<ev>/calibration[/<target>/wizard|detect|fit|accept|overlay|frame.jpg]`, `events/<ev>/jobs/<id>`,
 `events/<ev>/livestream`. Full list and roles: `server.md`.
 

@@ -209,8 +209,17 @@ UI: `web/sources.js`). Schema (module docstring):
              "role": "wide"|"dynamic"|"alliance-side", "primary": bool,
              "coverage": {"mode": "all"|"matches"|"range", "matches", "from", "to"},
              "videos": {"<match key>": "<yt id>"}, "sample": {"video","match","t"},
+             "program_feed": bool, "program_feed_why", "program_feed_at",   # detected by the auto set-up
+             "dynamic": true | false,                # admin's override; absent / null = auto (= program_feed)
              "label", "enabled", "updated_at", "updated_by"}]}
 ```
+
+- **`program_feed` / `dynamic`.** `program_feed` is what the automatic set-up detected (cuts between cameras, or
+  cameras that pan / zoom: `dynpose.feed_summary`); an undecided run never overwrites it. `dynamic` is the admin's
+  "Track robots from" choice on the card (`PATCH … {dynamic: true | false | null}`, audited `sources.dynamic`).
+  `sources.dynamic_on(s)` = `dynamic` if set, else `program_feed`; `liveingest.trackable(…)["dynamic"]` and
+  `LiveView.for_processing(…)["dynamic"]` carry it to the worker (which switches `process(dynamic=…)`; §15.5).
+  `merge()` keeps both through TBA re-discovery.
 
 - **Roles.** `wide` is a fixed overhead or wide camera, which is what the tracker needs.
   `dynamic` is a switching program feed, possibly with picture-in-picture station insets.
@@ -278,12 +287,53 @@ These were added in security round 2 (commit 74e84af).
 | `detect` | `job_detect` | calibration step 1 |
 | `fit` | `job_fit` | calibration step 2 |
 | `overlay` | `job_overlay` | overlay of the saved calibration |
+| `auto_setup` | `job_auto_setup` | automatic set-up of a recorded stream (below); minutes of CPU |
 
 - `discover` is the only light job (`LIGHT_JOBS`) and runs in the API process.
 - Vision jobs run in the API process only when numpy and cv2 import there. The API image is
   slim, so in practice they run in the worker's `job_loop` thread (0.7 s poll).
+- `SLOW_JOBS` (`auto_setup`) never run in the API (`submit_auto_setup(inline=False)` from the router) and have their
+  own runner thread, `slow_job_loop`, started by `job_loop`, so a Grab frame never waits behind one.
 - A job still queued after 1 h is marked "expired".
 - CLI: `python live/sources.py jobs DATA [--watch]`.
+
+#### Automatic set-up of a stream (`job_auto_setup`, `accept_auto`, `auto_setup_sweep`)
+
+"Paste any stream and it sets itself up": the admin adds a livestream (or TBA discovers the webcast); nothing else.
+
+1. **Trigger.** `slow_job_loop` calls `auto_setup_sweep(DATA)` every `AUTO_SETUP_POLL` (60 s): the first enabled
+   `livestream` / `file` source (any event dir with a sources.json) that has a recording and no result yet gets a job
+   (`params.auto = true`). One job at a time. Again only when the last result came from a between-matches sample with
+   no fixed camera / no clock and a match clip exists now, or `AUTO_RETRY_S` (30 min) after a failure; never after an
+   Accept. `AUTO_SETUP=0` stops the automatic runs (the card's button still works). The card's **Set up now / Run
+   again** = `POST …/sources/<sid>/auto-setup` (409 while one runs or with too little recording).
+2. **Media** (`setup_media` / `setup_ready`, which never builds anything — the API's media mount is read-only):
+   the recorder's newest match clip of that source (`MEDIA/live/<ev>/<video>/clips/*.mp4`, analyser or TBA-time cut),
+   else `recent_sample` (the last ~3 min) once `AUTO_SETUP_MIN_S` (90 s) are recorded. A `file` source: the file.
+   Other kinds (YouTube VOD, per-match uploads): use Auto-calibrate.
+3. **Run.** `dynpose.auto_setup(media)` (§15.3) → `DATA/events/<ev>/auto_setup/<sid>/`: `camera_<sid>.json`,
+   `layout.json`, `view_<sid>.png`, `auto_setup.json` (report), `overlay.jpg` (the card's proof image, `_draw_setup`:
+   `calibrate.overlay_lines` of the fit on the median view, graphics / clock / field boxes; ≤ 1280 px), `state.json`
+   (`status: ok | no_camera | error`, `message`, `media_kind: clip | sample | file`, `fixed {on_air, tags,
+   tag_rms_px}`, `feed`, `scoreboard {layout, share}`, `clock`, `field`, `vs_saved` = px over the carpet grid vs the
+   saved calibration of this source, as saved and re-aimed on the candidate's view), `job.json` (latest job). Written
+   to `<dir>.new` and swapped in; a failed run keeps the last good candidate (`last_error`). The detected feed goes
+   to the source at once (`set_program_feed`).
+4. **Accept** (`POST …/auto-setup/accept`, admin, audited `sources.auto_setup_accept`; `accept_auto`, stdlib):
+   - camera → `accept_target()`: `camera_<sid>.json` if it exists or `camera.json` belongs to another video (the
+     uploads' camera is never overwritten), else `camera.json` with `"source": <sid>` (the wizard's convention);
+     old file kept as `.bak-<ts>`; `calib.accepted_by` (display name) / `accepted_at`;
+   - its `scoreboard`, `mask`, `clock`, `field` boxes replace those kinds of this source in `layout.json` (station /
+     inset / overhead boxes kept, rescaled to the candidate's W×H; `.bak-<ts>`); `processing_source` set when the
+     source is primary or none is set;
+   - `view_<sid>.png` (the program-feed view reference, `liveingest.stream_view_ref`);
+   - `pose_latest_<sid>.json` (+ `pose_latest.json` for camera.json) moved aside.
+
+   The stream is then trackable (`liveingest.trackable`: field box + calibration).
+5. **Measured** (qm33 clip of 2026wagg, the job end to end on the M1, 209 s): fixed camera on air 55 % (4 shots),
+   6 AprilTags, 0.25 px; program feed (3 views, 8 cuts); bottom score bar recognised in 16/16 frames → clock
+   (866, 988, 1052, 1064); field box (0, 142, 1920, 824); vs the accepted wizard calibration 4.8 px median / 18.0 px
+   max over the carpet (5.5 / 14.4 re-aimed: the two fits differ in the lens, see §15.4).
 
 ### 1.2b Per-match video plan — `live/videoplan.py`
 
@@ -1816,11 +1866,29 @@ worker container (`live/worker.py`)
   present; field-camera motion; **clock ticks** (binarised clock digits change between samples). Scoreboard OCR at
   `OCR_HZ = 2` Hz (clock, hub-shift box, scores); title, alliance names and team numbers every `FULL_EVERY_S = 4` s.
   Qualification vs playoff layout is picked per frame (`SB_QUAL` vs `SB` team boxes).
+* **Scoreboard layouts** (`Geometry`, `KNOWN = (TOP, BOTTOM)`), tried per sample, the last one on air first
+  (`Scanner.detect`; a layout is on air when its clock box is a white digit box, mean grey > 150, between opposite
+  red / blue side boxes):
+  - `TOP`: the 2026 FIRST top-centre scoreboard (FIRST Washington district streams): the `SB` / `SB_QUAL` boxes,
+    qualification vs playoff by the coloured team row.
+  - `BOTTOM`: the 2026 FIRST full-width bottom bar (2026wagg Twitch program feed): title bar y 826–900
+    ("Qualification 33 of 54"), then blue | white clock panel (x 848–1071) | red; clock digits (866, 988, 1052, 1064),
+    shift "n / 6" above them in teleop, big scores in the side panels, "BLUE" / "RED" or "ALLIANCE n" above them
+    (read as the alliance name; the colour words are dropped, "ALLIANCE1" → "Alliance 1"), the three team cells per
+    side outside (avatar, then the number; station order left to right). Red can be on the left (2026wagg playoffs).
+  - Ticks: a digit change = more than 25 px of a 96×44 box flipping, scaled with the clock box. Evidence thumbnails
+    are the layout's overlay strip at 1040 px wide; the record's `evidence.overlay` says which layout was read.
+  - `detect_geometry(frames)` → (layout, share of frames): the auto set-up's clock box.
 * OCR (`OverlayOCR`): the PP-OCRv3 recogniser in `live/models/ocr`, greedy CTC restricted to a per-field alphabet;
   digit crops are stretched so repeated digits ("9988") survive. GPU from `--gpu` (service passes
   `options.gpu_device` / `GPU_DEVICE`; standalone default env `OCR_GPU` = 1). `FORCE_CPU=1` with `cpu_only`.
-* Layout: `apply_layout` moves every scoreboard box by the offset/scale that maps the default `CLOCK_BOX
-  (912,72,1008,116)` onto the event layout's clock box for this source. The results-screen boxes are not moved.
+* Layout: `apply_layout` (event layout's clock box of the stream source, else the processing source) picks the known
+  layout whose default clock box is nearest (centre < 270 px) and moves all its boxes by the offset/scale that maps
+  its clock box onto the drawn one; the moved layout is tried first and the defaults stay as fallbacks, so a box drawn
+  around the wrong digits (the small shift timer above the bottom clock ticks at 1 Hz too) cannot hide the
+  scoreboard. A clock box near no known layout is ignored (both defaults, auto-detected). The module names
+  `SB` / `CLOCK_BOX` / … keep the top layout (moved when it was). The full-frame results-screen boxes are not
+  moved (2026wagg's results screen is the standard one).
 * **Start detection** (`t_votes`, `find_matches`, `refine_T`): every clock reading votes for an auto-start time T
   (auto: `T = t - (20 - c)`; teleop, recognised by the "n / 6" hub-shift box: `T = t - 23 - (140 - c)`; a reading
   <= 0:20 without the shift box votes both ways). Readings agreeing within 0.9 s cluster; a match needs >= 6
@@ -1845,6 +1913,17 @@ worker container (`live/worker.py`)
   (a second match with the same name gets id `<id>_2`).
 * `confidence = {match, name, teams, score}`; `match` = OCR read density x overlay coverage, x0.6 if auto or end
   not seen, x0.3 if aborted.
+* **Measured on 2026wagg** (Twitch firstwa_red1, bottom bar; recorded segments replayed with `analyse_replay`, CPU
+  OCR; scripts and logs in `.work/autodyn/`). The live analyser had found no match on either day (top layout only;
+  matches were cut by TBA time). Now: qm30–qm36 (58 min of day 1, contiguous) and sf12m1, sf13m1, f1m1, f1m2 (day 2
+  playoffs, red on the left): 11 of 11 cut, no spurious record; match names (incl. "Lower Bracket - Round 4 - Match
+  12"), all 66 team slots in station order, and the results-screen scores equal TBA's in every match (scoreboard
+  scores are the pre-penalty ones: 476 vs 488 in qm33); overlay coverage 1.00; T 0.15–0.95 s after TBA's
+  integer-second `actual_time`; auto start re-measured on each clip within 0.05 s of the prediction.
+  `measure_auto_start` now also finds the start on 2026wagg's TBA-time clips (qm33 16.75 s, qm35 16.65 s, where the
+  records had `start_from_tba_time` 16.18 s). Replay speed ≈ 2.7× real time per process on the M1.
+* Tests: `tests/test_overlay_layouts.py` (real overlay strips in `tests/fixtures/scorebar_*.jpg`: layout detection,
+  OCR of both layouts, `apply_layout`, ticks).
 
 **Match record** `DIR/matches/<id>.json` (id `qm12`, `sf3m1`, `f1m2`, `unknown`, `+_2`...):
 `{id, match_name, comp_level, set, number, teams {red, blue} (station order), score {red, blue}, score_source,
@@ -1973,8 +2052,9 @@ the record. `LiveView.wait_reason(m)` explains a missing live input for the stat
 **What.** A produced program feed (2026wagg: Twitch firstwa_red1) cuts between a fixed wide camera (on air ≈ 2/3 of
 qm20) and close-up cameras that pan and zoom. Without this, the tracker tracks only while the calibrated camera is on air
 (`view_ref`, §2.4/§3.3) and the rest is a feed gap. With it, every frame gets its own camera from the field's AprilTags,
-so robots are located from any view. Opt-in: nothing in the worker calls it yet. The default `process()` path is
-unchanged.
+so robots are located from any view. Opt-in per stream (`dynamic` / detected `program_feed`, §1.2, §15.5); the
+default `process()` path is unchanged. A stream nobody calibrated sets itself up with `auto_setup` (§15.3, the Video
+page's automatic set-up).
 
 ### 15.1 `dynpose.estimate(video, ref, view_ref, masks, t0, t1)` → `PoseTrack`
 
@@ -2044,8 +2124,10 @@ allowed: no fixed camera), or a `PoseTrack` / `.npz` path.
 
 ### 15.3 `auto_setup(video)` — a stream nobody calibrated
 
-`auto_setup(clip)` → `dict(camera, layout, view_ref, overlays, report, poses)`. `write_setup(setup, dir, sid)`
-writes `camera_<sid>.json`, `layout.json`, `view_<sid>.png` and `auto_setup.json` as a candidate.
+`auto_setup(clip)` → `dict(camera, layout, view_ref, overlays, report, poses, p, frame)` (`p` = the fit's wizard
+parameter vector for `calibrate.overlay_lines`, `frame` = a mid-clip frame; `camera` / `view_ref` / `p` None without a
+fixed camera, `report.fixed_why` says why). `write_setup(setup, dir, sid)` writes `camera_<sid>.json`, `layout.json`,
+`view_<sid>.png` and `auto_setup.json` as a candidate. The Video page runs it as a job (§1.2 "Automatic set-up").
 
 1. **Graphics** (`auto_overlays`): `layout.suggest_overlays` over 16 frames from 30–85 % of the clip (pixels
    identical while the camera pictures change). Merged, and edge bands widened to the full frame. On qm20 it found
@@ -2061,15 +2143,17 @@ writes `camera_<sid>.json`, `layout.json`, `view_<sid>.png` and `auto_setup.json
    - `refine_with_lines` on the median plate.
 
    The result is a camera.json (`calib.method = "dynpose auto_setup"`). Its median plate is the view ref.
+   No fixed camera: `fixed_why` = "no locked-off view of the whole field …" (no static field-wide shot) or "the fixed
+   wide camera … shows N AprilTags: too few for a fit" (`wizard_fit` needs ≥ 4 correspondences from ≥ 2 tags).
 4. **Field box:** the projected field ROI above the score bar.
-5. **Clock:** `suggest_clock` on 10 s of 10 Hz frames from mid-clip, searched inside the biggest graphic.
-
-**How to call it.**
-- **Worker:** for a pasted stream with no `camera*.json`, `auto_setup(first recorded clip)` → `write_setup` into
-  the event dir as the candidate. Then process with `process(..., dynamic=True)`, or with the accepted camera and
-  `view_ref` for the fixed-only path.
-- **Video page:** a `job_*` in `live/sources.py` can run it and show `camera` + `overlay_lines` in the existing
-  accept/reject overlay.
+5. **Clock:** the clock box of the 2026 FIRST scoreboard layout on air (`livestream.detect_geometry` over the 16
+   frames, ≥ 20 %: top-centre or bottom bar, scaled to W×H); else `suggest_clock` on 10 s of 10 Hz frames from
+   mid-clip, inside the biggest graphic. (On the bottom bar `suggest_clock` used to pick the small shift timer above
+   the clock: it ticks at 1 Hz too.)
+6. **Feed** (`feed_summary(pt)`): views = shots with ≥ 2 s of pose, locked-off ones (`shot_still_px` ≤ 2 px)
+   grouped by pose, plus each shot whose camera moved; ≥ 2 views → `program_feed: true`. Without poses ≥ 4 cuts
+   decide; else `None` (unknown). qm33: 3 views, 8 cuts → true. A fixed wide stream (cuts only to the results
+   screen, which has no pose) → one view → false.
 
 ### 15.4 Measured (2026wagg Twitch program feed, 1080p60; scripts and proof frames in `.work/dynpose/`)
 
@@ -2105,28 +2189,20 @@ m. Each is re-found in every shot within ≈ 0.2 m.
   hub/wall tags do not pin down.
 - Use it as a candidate to accept, not a replacement for a checked calibration.
 
-### 15.5 Switching the worker to dynamic mode (not done)
+### 15.5 Switching the worker to dynamic mode
 
-1. **`worker.py:process_match`.** Pass `dynamic=True` to `PR.process(...)` for program-feed sources, beside
-   `view_ref=live.get("view_ref")`. Gate it with a per-source flag (e.g. sources.json `"dynamic": true` on the
-   livestream source) or an env var. The calibrated camera stays the fixed reference. Without one (a pasted stream),
-   pass `cam_path=None`, or run `auto_setup` first. `feed_ok` then means "a camera with a pose was on air", which is
-   what the video-choice and coverage rules want.
+1. **`worker.py:process_match`.** Passes `dynamic=…` to `PR.process(...)` for livestream clips, beside
+   `view_ref=live.get("view_ref")` (commit 9dd75d4: env `DYNAMIC=1`). The per-source switch is
+   `live["dynamic"]` from `LiveView.for_processing` (= `sources.dynamic_on`: the admin's `dynamic`, else the detected
+   `program_feed`). The calibrated (or accepted auto set-up) camera stays the fixed reference; a stream is trackable
+   only with one (`liveingest.trackable`). `feed_ok` then means "a camera with a pose was on air", which is what the
+   video-choice and coverage rules want.
 2. **`shots.py:368`.** Use `(match.get("dynamic") or {}).get("fixed_gaps", match.get("feed_gaps"))`, so fuel tracks
    are only used while the fixed camera is on air. `enrich` decodes again with `camera_pose` (the fixed camera's).
 3. **Site and analytics.** Optionally label positions from moving cameras (`res["dynamic"]["view"]`) and show
    `fixed_feed_ok` next to "partial footage".
 4. **Cost.** One extra decode pass (35 s per match on an M1 alone, ≈ 3 min beside the worker on the M2), plus
    detection and OCR on the close-up frames as well (+40 % detection time on qm20).
-
----|---|
-| pose coverage | 97 % of samples (fixed 66 %, moving 31 %, none 3 % = transitions); 22 shots |
-| anchor tag RMS (moving views) | 0.37 px median, 0.45 px p90 |
-| held-out tags on `FLOW` frames (never solved from) | 0.45 px median; ground error of carpet points 1.0 cm median, 5 cm p90 |
-| `INTERP` frames | 0.31 px median |
-| fixed camera | accepted calibration 4.9 px off for this match (camera moved since the accept). Re-aimed 0.27° → 0.81 px. A free per-frame solve from its 4–5 small tags agrees with the re-aimed camera to ≈ 1 px over the field grid |
-| close-up camera | one mount at (16.8, 12.2, 1.93) m (beyond the red wall corner, operator height), re-found in every shot within ≈ 0.2 m; zoom 1.6–4.6× the wide camera |
-| speed (M1, CPU) | 35 s for a 190 s clip (estimate only) |
 
 ---
 

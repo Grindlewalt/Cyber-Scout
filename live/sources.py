@@ -22,7 +22,12 @@ data/events/<ev>/sources.json
       "sample": {"video": "<youtube id | url | path>", "match": "2026wasam_qm17", "t": 60},
       "station": "red" | "blue",          # alliance-side: which driver-station camera (Video page "Red station cam")
       "dismissed": true,                  # a TBA source the admin removed: kept disabled so discovery doesn't re-add it
+      "program_feed": true,               # detected by the auto set-up (cuts / several cameras); + program_feed_why, _at
+      "dynamic": true | false,            # admin: track from every camera; absent / null = auto (= program_feed)
       "label": "...", "enabled": true, "updated_at": ..., "updated_by": "..."}]}
+
+Auto set-up of a stream (job_auto_setup / accept_auto / auto_setup_sweep, below): candidate in
+DATA/events/<ev>/auto_setup/<sid>/, Accept on the Video page.
 
 Roles: wide = fixed overhead / wide field camera (what the tracker needs); dynamic = switching broadcast
 program feed (cuts between cameras; may carry picture-in-picture station cams); alliance-side = fixed
