@@ -139,6 +139,7 @@ class Geometry:
     def present(self, im):
         """-> the left side's colour ('red' / 'blue') when this scoreboard is on air in `im` (1920x1080 BGR), else None."""
         x0, y0, x1, y1 = self.clock_box
+        if any(b[2] - b[0] < 2 or b[3] - b[1] < 2 for b in (self.clock_box, self.colour_l, self.colour_r)): return None
         if cv2.cvtColor(im[y0:y1, x0:x1], cv2.COLOR_BGR2GRAY).mean() <= 150: return None
         cl, cr = colour_of(im, self.colour_l), colour_of(im, self.colour_r)
         return cl if cl and cr and cl != cr else None

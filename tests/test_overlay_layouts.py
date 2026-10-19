@@ -147,6 +147,14 @@ def test_a_wrong_clock_box_cannot_hide_the_scoreboard():
     assert g is LS.BOTTOM and left == "blue"
 
 
+def test_a_layout_moved_off_the_frame_is_never_on_air():
+    LS.apply_layout(_layout((958, 1024, 961, 1027)), "s1", log=lambda *a: None)      # every box shrinks to ~0 px
+    m = LS.GEOMETRIES[0]
+    assert m.base == "bottom" and m.present(QM33()) is None
+    sc = LS.Scanner(StubOCR(), log=lambda *a: None)
+    assert sc.detect(QM33())[0] is LS.BOTTOM
+
+
 def test_ticks_of_the_bottom_clock():
     sc = LS.Scanner(StubOCR(), log=lambda *a: None)
     base = QM33()

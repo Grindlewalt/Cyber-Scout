@@ -1535,6 +1535,7 @@ def job_auto_setup(data, ev, p, log=print):
         return st
     except Exception as e:
         st = dict(status="error", at=time.time(), message=str(e)[-300:], seconds=round(time.time() - t0, 1), auto=bool(p.get("auto")))
+        os.makedirs(d, exist_ok=True)
         prev = _jread(os.path.join(d, "state.json")) or {}
         if prev.get("status") in ("ok", "no_camera"):
             prev.update(last_error=st); st = prev                  # keep the last good candidate
