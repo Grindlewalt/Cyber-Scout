@@ -306,7 +306,7 @@ def process_match(ev, m, cfg, status, meta_cache, live=None):
                     pose_p = os.path.join(ev_dir(ev), f"pose_latest_{live['source']}.json")
                     kw = dict(start_hint=live["start"], start_trusted=live.get("start_trusted", True),
                               teams=live["teams"], layout=live["layout"], view_ref=live.get("view_ref"),
-                              dynamic=dynamic_for(ev, live.get("source")),  # program feed: robots from every camera
+                              dynamic=dynamic_for(live),    # program feed: robots from every camera
                               event=None if m.get("livestream") else event_ctx(ev, m))
                 else:
                     log(f"{m['key']}: downloading {v['id']} ({v['title']}"
@@ -451,24 +451,14 @@ def event_ctx(ev, m):
         return None
 
 
-def dynamic_for(ev, sid):
-    """process(dynamic=...) for a livestream clip of source `sid` (live/dynpose.py: robots from every camera of a
-    program feed).  Env DYNAMIC=1 / 0 forces it on / off; else the source's sources.json "dynamic": true / false;
-    null or missing = auto: on for a program feed ("program_feed": true, set by the stream auto-setup)."""
+def dynamic_for(live):
+    """process(dynamic=...) for a livestream clip (live/dynpose.py: robots from every camera of a program feed).
+    Env DYNAMIC=1 / 0 forces it on / off; unset: live["dynamic"], resolved by liveingest (trackable /
+    for_processing: the source's sources.json "dynamic" true / false, null = the detected "program_feed")."""
     env = os.environ.get("DYNAMIC")
     if env in ("1", "0"):
         return env == "1"
-    try:
-        import sources
-        s = sources.get(sources.load(ev_dir(ev)), sid) if sid else None
-    except Exception:
-        traceback.print_exc(); s = None
-    if not s:
-        return False
-    d = s.get("dynamic")
-    if isinstance(d, bool):
-        return d
-    return s.get("program_feed") is True
+    return bool((live or {}).get("dynamic"))
 
 
 TBA_STALE_S = float(os.environ.get("PROC_TBA_STALE_S", "600"))

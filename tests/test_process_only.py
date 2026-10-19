@@ -208,26 +208,26 @@ def test_proxy_backfill_for_videos_kept_by_processors(env, monkeypatch):
 
 
 def test_dynamic_mode_per_source(env, monkeypatch):
+    """liveingest resolves the source's choice (sources.json dynamic, null = program_feed) into live["dynamic"];
+    env DYNAMIC=1 / 0 overrides it."""
+    import liveingest as LI
     doc = json.loads((env["evd"] / "sources.json").read_text())
     s = doc["sources"][0]
 
-    def put(**kw):
+    def live_dyn(**kw):
         s.update(kw); (env["evd"] / "sources.json").write_text(json.dumps(doc))
-    assert W.dynamic_for(EV, "url-abc") is False                             # no flags: fixed view
-    put(program_feed=True)
-    assert W.dynamic_for(EV, "url-abc") is True                              # auto: a program feed
-    put(dynamic=False)
-    assert W.dynamic_for(EV, "url-abc") is False                             # the source says no
-    put(dynamic=None, program_feed=False)
-    assert W.dynamic_for(EV, "url-abc") is False
-    put(dynamic=True)
-    assert W.dynamic_for(EV, "url-abc") is True
+        return W.dynamic_for(LI.LiveView(EV).for_processing(tba(1), True))
+    assert live_dyn() is False                                               # no flags: fixed view
+    assert live_dyn(program_feed=True) is True                               # auto: a program feed
+    assert live_dyn(dynamic=False) is False                                  # the admin says no
+    assert live_dyn(dynamic=None, program_feed=False) is False
+    assert live_dyn(dynamic=True) is True
     monkeypatch.setenv("DYNAMIC", "0")
-    assert W.dynamic_for(EV, "url-abc") is False                             # env forces off
+    assert live_dyn() is False                                               # env forces off
     monkeypatch.setenv("DYNAMIC", "1")
-    assert W.dynamic_for(EV, "nope") is True and W.dynamic_for(EV, None) is True   # ... and on
+    assert live_dyn(dynamic=False) is True and W.dynamic_for(None) is True   # ... and on
     monkeypatch.delenv("DYNAMIC")
-    assert W.dynamic_for(EV, "nope") is False
+    assert W.dynamic_for(None) is False and W.dynamic_for({"dynamic": True}) is True
 
 
 def test_process_match_passes_dynamic_and_writes_the_match_file_last(env, monkeypatch):
