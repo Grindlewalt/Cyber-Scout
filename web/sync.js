@@ -847,7 +847,7 @@
     const cfgEvents = () => { const f = (S.status || {}).followed; return Array.isArray(f) ? f : null; };     // null = every followed competition
     const D = { events: null, media: null, evErr: null };
     el.innerHTML = `<fieldset class="st-sec cx-conn" id="connection"><legend><h2>Connection</h2></legend>
-      <p class="st-why">This computer keeps its own copy of your team's data, so every page works without a connection. Robot tracking still runs on the server.</p>
+      <p class="st-why">This computer keeps its own copy of your team's data, so every page works without a connection. Robot tracking runs on the server, or on this computer if you turn on Settings → Help process matches.</p>
       <div class="cx-grid">
         <div class="cx-row"><div class="cx-k" id="cxk-srv">Server</div><div class="cx-v">
           <form class="cx-srv" novalidate><input id="cxsrv" class="csin" aria-labelledby="cxk-srv" value="${esc(st0.server || "")}" placeholder="scout.example.org or 10.0.0.58:7560" autocomplete="url" inputmode="url" spellcheck="false" autocapitalize="none">
