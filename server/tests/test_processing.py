@@ -134,6 +134,15 @@ def test_claim_job_contents(admin, setup):
     assert "k" * 60 not in s and "tba_key" not in s       # no secrets
 
 
+def test_job_carries_the_dynamic_view_flag(admin, setup):
+    """worker.dynamic_for(live) reads live["dynamic"] (liveingest: the source's dynamic / detected program feed)."""
+    assert claim(admin)["job"]["live"]["dynamic"] is False
+    (setup["evd"] / "sources.json").write_text(json.dumps({"version": 1, "event": EV, "sources": [
+        {"id": "yt1", "kind": "livestream", "url": "https://www.youtube.com/watch?v=aaaaaaaaaaa", "role": "wide",
+         "enabled": True, "dynamic": True}]}))
+    assert claim(admin, "lap2")["job"]["live"]["dynamic"] is True
+
+
 def test_live_claim_elsewhere_is_skipped(admin, setup):
     CL.claim(str(setup["data"]), EV, f"{EV}_qm1", "m2")        # the server's own worker
     r = claim(admin)

@@ -491,7 +491,7 @@ def _job_out(ev, m, live, cam, ms, key, user, processor, by, version):
         "match": m,                                          # the TBA match (score_breakdown for shots.reconcile)
         "event": None if m.get("livestream") else dict(_event_ctx(ev, key, ms), key=k),
         "live": {x: live.get(x) for x in ("start", "start_trusted", "teams", "teams_from", "source", "tba_posted",
-                                         "layout", "info", "video")},
+                                         "layout", "info", "video", "dynamic")},   # dynamic: worker.dynamic_for
         "camera": {"name": os.path.basename(live["camera"]), "data": cam},
         "pose_guess": pose if isinstance(pose, dict) else None,
         "clip": {"url": f"{base}/clip{q}", "size": size, "sha256": sha},
