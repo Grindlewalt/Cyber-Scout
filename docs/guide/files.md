@@ -205,6 +205,8 @@ package is the exception: it is run as `python -m live.strategy.*` from the repo
 | `live/scouting.py` | Spec sheets, the defense library (placebo-controlled), `scout.json` (scouting truth), and replay snapshots. |
 | `live/livestream.py` | Livestream → match clips + records. Gap-free HLS recorder, overlay OCR of clock/teams/score, match assembly, clipping. Run as a child process per event. |
 | `live/liveingest.py` | Recorder service (`Service`, supervises `livestream.py` children) plus the worker's view of the recordings (`LiveView`: fast results, trackable clips). |
+| `live/claims.py` | Per-match processing claims and processing order shared by the worker, `tools/helper.py` and the api. Stdlib only (the api image has no numpy). |
+| `live/dynpose.py` | Dynamic view: a camera pose for every frame of a program feed from the field's AprilTags, plus the stream auto-setup. |
 | `live/overlay.py` | CLI: renders the baked accuracy-check MP4 (robots, labels, arcs, minimap, traced-vs-TBA) on the broadcast video. Not called by the worker. |
 | `live/verify_ids.py` | CLI: contact sheet of bumper crops per track, for checking robot→team labels by eye. Not called by any code. |
 | `live/make_labels.py` | CLI: builds a domain training set (field-ROI crops + YOLO labels) from event videos, using `bglabel` and the current detector. |
@@ -518,6 +520,7 @@ edited** when this was written (see top note).
 | `admin.py` | `GET`/`PATCH /admin/security` (lockdown, passwordless policy, scout review mode), `POST /admin/sessions/revoke`, `GET /audit`, `POST /audit/{id}/revert`, `POST /audit/revert-user`. `_revert` dispatches to each family's `apply_*_state`. |
 | `sources.py` | Sources: `GET /events/{ev}/sources`, `POST .../sources/discover`, `POST .../sources`, `PATCH`/`DELETE .../sources/{sid}`, `POST .../sources/{sid}/frame`, `GET .../frame.jpg`. Layout: `GET /events/{ev}/layout`, `PUT`/`DELETE .../layout/{sid}`, `POST .../layout/{sid}/suggest`. Calibration: `GET /events/{ev}/calibration`; for each `{target}`: `POST detect`, `POST fit`, `GET frame.jpg`, `GET wizard`, `POST overlay`, `POST accept`. Also `GET /events/{ev}/livestream` (recorder status) and `GET /events/{ev}/jobs/{jid}`. Heavy steps are jobs in `DATA/jobs/sources/`, run by the worker's `sources.job_loop` (the API image has no vision stack). |
 | `update.py` | `GET /admin/update` (status from `DATA/config/update-status.json`; whitelist / type checks in `parse_status`), `POST /admin/update/check\|apply\|rollback` (write `update-request.json`; 6/min; allowed during lockdown). |
+| `processing.py` | Distributed processing (admin): claims, clip download, result upload, pipeline code tarball, speed test (`/processing/*`). |
 
 ### `server/tests/`
 
@@ -534,6 +537,8 @@ edited** when this was written (see top note).
 | `test_roles.py` | Role matrix: who may call what. |
 | `test_sources_api.py` | Pasted source URLs are normalised and validated (audit findings 2 and 4). |
 | `test_update.py` | Update endpoints: permissions, request-file schema (round trip through `cs-updater.validate_request`), status parsing, lockdown, CSRF, rate limit, the updater's pure helpers. |
+| `test_processing.py` | Processing API: claims shared with the worker, order, clip Range download, uploads, complete / release, auth. |
+| `test_auto_setup_api.py` | Stream auto-setup endpoints (`auto-setup`, `overlay.jpg`, `accept`, `dynamic`) and what `/sources` reports. |
 
 ---
 
@@ -627,6 +632,23 @@ from when the lab was made** and are not kept in sync; for example, `lab/admin.j
 
 ---
 
+## `client/` (Cyber-Scout Client, processing parts)
+
+| file | purpose |
+|---|---|
+| `client/csclient/processor.py` | Processor mode ("Help process matches"): claim, download clip, run the runner, upload results. |
+| `client/csclient/procrunner.py` | Tracks one claimed match with the server's own code; shipped by the server as `runner.py` in its code tarball. |
+| `client/csclient/procui.py` | The client's `/client/processing` page. |
+| `client/csclient/gpu.py` | GPU check: can this computer track matches (CUDA / DirectML / CoreML)? |
+| `client/csclient/procsetup.py` | One-time "Set up processing": a uv-made Python 3.12 environment for the pipeline. |
+| `client/csclient/procnet.py` | Link speed to the server (speed test and real transfers). |
+| `client/csclient/clipper.py` | Clip only mode: records a stream and cuts matches for a computer that can't track. |
+| `client/build/runtime_check.py` | CI / by-hand check that the processing runtime installs and works. |
+| `client/tests/fakeprocessing.py` | Fake of the processing API for the client tests. |
+| `client/tests/test_processor.py` | Processor mode against the fake server and fake processing API. |
+
+---
+
 ## `tests/` (pipeline tests)
 
 Run with `python -m pytest tests` from the repo root. They need no GPU, video or network.
@@ -639,6 +661,12 @@ Run with `python -m pytest tests` from the repo root. They need no GPU, video or
 | `tests/test_matchday.py` | Pure helpers of `live/strategy/matchday.py`; defense "measured" only when the library says `significant` (queue card and preview factors). |
 | `tests/test_goals_scale.py` | `goals.py` passes the dashboard blend to the season sim unscaled (per robot). |
 | `tests/test_source_urls.py` | Audit findings 2 and 4: URL normalisation, `--` before URLs, SSRF guard in `live/sources.py`. |
+| `tests/test_auto_setup.py` | Stream auto-setup in `live/sources.py` and the per-source `program_feed` / `dynamic` flags. |
+| `tests/test_dynpose.py` | `live/dynpose.py` (a camera pose per frame from AprilTags) and its `process.py` hooks; synthetic geometry only. |
+| `tests/test_overlay_layouts.py` | Scoreboard layouts in `live/livestream.py` (top-centre scoreboard, bottom score bar). Uses `tests/fixtures/scorebar_*.jpg`. |
+| `tests/test_process_only.py` | `live/worker.py --process-only`: claim + track only, per-match state files, delegation, dynamic per source. |
+| `tests/test_undefined_names.py` | pyflakes check for undefined names in the pipeline modules (skipped without pyflakes). |
+| `tests/fixtures/scorebar_bottom_f1m1.jpg`, `scorebar_bottom_qm33.jpg`, `scorebar_top_qm12.jpg` | Real score-bar frames for `test_overlay_layouts.py`. |
 
 ---
 
@@ -655,6 +683,8 @@ wizard in `web/sources.js` replaced them for new events.
 | `tools/pair.html` | Cross-view point pairing between panels. |
 | `tools/label.html` | Robot box labelling for the validation set. |
 | `tools/trace.html` | Hand tracing of robot paths (ground truth for `eval_trace.py`). |
+| `tools/helper.py` | Processing helper: tracks livestream clips on this machine for a Mac server (`deploy/macos`), alongside the server's worker. |
+| `tools/priority.py` | Processing order for the worker (`events/<ev>/priority.json`): matches showing our next quals' teams first. |
 
 ---
 
