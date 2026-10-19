@@ -402,8 +402,38 @@ def _order(m):
     return ({"qm": 0, "ef": 1, "qf": 2, "sf": 3, "f": 4}.get(lv, 5), nums)
 
 
-USER_FIELDS = ("role", "primary", "coverage", "enabled", "label", "sample", "notes", "updated_by", "station", "dismissed")
+USER_FIELDS = ("role", "primary", "coverage", "enabled", "label", "sample", "notes", "updated_by", "station", "dismissed",
+               "dynamic")
+DETECTED_FIELDS = ("program_feed", "program_feed_why", "program_feed_at")     # set by the auto set-up, kept by merge()
 STATIONS = ("red", "blue")
+
+
+def dynamic_on(s):
+    """Track this source with a camera per frame (dynpose, process(dynamic=True))?  `dynamic` true / false is the
+    admin's choice; null / absent = auto: on for a detected program feed (`program_feed`, auto set-up)."""
+    d = (s or {}).get("dynamic")
+    return bool((s or {}).get("program_feed")) if d is None else bool(d)
+
+
+def set_dynamic(doc, sid, v, by=None):
+    """Video page "Track from every camera": True / False forces it, None = auto (program feed)."""
+    s = get(doc, sid)
+    if s is None: raise KeyError(sid)
+    if v not in (True, False, None): raise ValueError("dynamic must be true, false or null (auto)")
+    if v is None: s.pop("dynamic", None)
+    else: s["dynamic"] = v
+    s["updated_at"] = time.time(); s["updated_by"] = by
+    return s
+
+
+def set_program_feed(doc, sid, feed):
+    """Store what the auto set-up detected (dynpose.feed_summary): program_feed true / false (+ why).  An
+    undecided result (None) never overwrites a known one."""
+    s = get(doc, sid)
+    if s is None or not isinstance(feed, dict) or feed.get("program_feed") is None: return s
+    s.update(program_feed=bool(feed["program_feed"]), program_feed_why=str(feed.get("why") or "")[:200],
+             program_feed_at=time.time())
+    return s
 
 
 def merge(doc, found):
@@ -413,7 +443,7 @@ def merge(doc, found):
     for s in found:
         if s["id"] in have:
             old = have[s["id"]]
-            keep = {k: old[k] for k in USER_FIELDS if k in old}
+            keep = {k: old[k] for k in USER_FIELDS + DETECTED_FIELDS if k in old}
             vids = dict(old.get("videos") or {}); vids.update(s.get("videos") or {})
             old.update(s); old.update(keep)
             if vids: old["videos"] = vids
@@ -555,6 +585,7 @@ def update(doc, sid, patch, by=None):
         if k == "dismissed":
             v = bool(v)
             if not v: s.pop("dismissed", None); continue
+        if k == "dynamic" and not isinstance(v, bool): raise ValueError("dynamic must be true, false or null (auto)")
         if k == "primary" and v:
             for o in doc.get("sources", []): o["primary"] = False
         s[k] = v
@@ -750,7 +781,7 @@ def _claim(data, jid):
 
 def vision_available():
     try:
-        import numpy, cv2  # noqa: F401
+        __import__("numpy"); __import__("cv2")
         return True
     except Exception:
         return False
@@ -772,8 +803,8 @@ def run_job(data, j, log=print):
     return j
 
 
-def run_pending(data, kinds=None, log=print, max_age=3600):
-    """Run every queued job once (oldest first).  Returns the number run."""
+def run_pending(data, kinds=None, log=print, max_age=3600, exclude=()):
+    """Run every queued job once (oldest first; kinds: only these, exclude: not these).  Returns the number run."""
     d = jobs_dir(data)
     if not os.path.isdir(d): return 0
     n = 0
@@ -783,7 +814,7 @@ def run_pending(data, kinds=None, log=print, max_age=3600):
             j = json.load(open(os.path.join(d, f)))
         except (OSError, ValueError):
             continue
-        if j.get("state") != "queued" or (kinds and j["kind"] not in kinds): continue
+        if j.get("state") != "queued" or (kinds and j["kind"] not in kinds) or j.get("kind") in exclude: continue
         if time.time() - j.get("created", 0) > max_age:
             j.update(state="error", error="expired (no job runner picked it up)"); _jsave(os.path.join(d, f), j); continue
         if not _claim(data, j["id"]): continue
@@ -792,12 +823,28 @@ def run_pending(data, kinds=None, log=print, max_age=3600):
 
 
 def job_loop(data, poll=0.7, log=print, stop=None):
-    """For the worker: `threading.Thread(target=sources.job_loop, args=(DATA,), daemon=True).start()`."""
+    """For the worker: `threading.Thread(target=sources.job_loop, args=(DATA,), daemon=True).start()`.
+    Quick jobs (frames, suggestions, calibration) here; minutes-long ones (SLOW_JOBS: the auto set-up) and the
+    auto set-up sweep in a second thread, so a Grab frame never waits behind them."""
+    threading.Thread(target=slow_job_loop, args=(data,), kwargs=dict(log=log, stop=stop), daemon=True).start()
     while not (stop and stop.is_set()):
         try:
-            if not run_pending(data, log=log): time.sleep(poll)
+            if not run_pending(data, log=log, exclude=SLOW_JOBS): time.sleep(poll)
         except Exception:
             traceback.print_exc(); time.sleep(5)
+
+
+def slow_job_loop(data, poll=2.0, log=print, stop=None):
+    """SLOW_JOBS one at a time + every AUTO_SETUP_POLL s the auto set-up sweep (auto_setup_sweep)."""
+    last = 0.0
+    while not (stop and stop.is_set()):
+        try:
+            if AUTO_SETUP and time.time() - last > AUTO_SETUP_POLL:
+                last = time.time()
+                auto_setup_sweep(data, log=log)
+            if not run_pending(data, kinds=SLOW_JOBS, log=log): time.sleep(poll)
+        except Exception:
+            traceback.print_exc(); time.sleep(10)
 
 
 def submit(data, ev, kind, params, by=None, inline=None):
@@ -1154,8 +1201,383 @@ def job_index_playlist(data, ev, p, log=print):
     return dict(n=len(vids))
 
 
+# ---------------------------------------------------------------- automatic set-up of a stream (dynpose.auto_setup)
+# A pasted / discovered livestream sets itself up: once the recorder has a match clip (or a few minutes) of it, the
+# worker's job thread runs dynpose.auto_setup on that local copy (graphics, the fixed wide camera re-fitted like the
+# wizard, field box, clock box, view reference, program feed or not) and keeps the result as a CANDIDATE:
+#   DATA/events/<ev>/auto_setup/<sid>/  state.json  camera_<sid>.json  layout.json  view_<sid>.png  overlay.jpg
+#                                       auto_setup.json (dynpose report)  job.json (the latest job)
+# The Video page shows it on the stream's card (projected field on the camera's picture) with one-click Accept
+# (accept_auto: camera + layout + view_<sid>.png, like the wizard's accept).  `program_feed` is written to the
+# source at once (a detection, not a setting); `dynamic` (null = auto) follows it unless an admin forced it.
+AUTO_SETUP = os.environ.get("AUTO_SETUP", "1") != "0"           # 0 = no automatic runs (the button still works)
+AUTO_SETUP_POLL = float(os.environ.get("AUTO_SETUP_POLL", "60"))
+AUTO_SETUP_MIN_S = float(os.environ.get("AUTO_SETUP_MIN_S", "90"))   # recorded seconds needed without a match clip
+AUTO_RETRY_S = 1800.0                                           # a failed automatic run is retried after this
+SLOW_JOBS = {"auto_setup"}                                      # minutes of CPU: their own runner thread
+AUTO_KINDS = ("livestream", "file")
+_SID_RE = re.compile(r"^[A-Za-z0-9_-]{1,80}$")
+
+
+def auto_dir(ev_dir, sid):
+    if not _SID_RE.match(sid or ""): raise ValueError("bad source id")
+    return os.path.join(ev_dir, "auto_setup", sid)
+
+
+def _jread(p, default=None):
+    try:
+        with open(p) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return default
+
+
+def auto_state(ev_dir, sid, data=None):
+    """The source's auto set-up: the last result (state.json) + the latest job's state -> dict or None.
+    {status: ok | no_camera | error, message, at, media, media_kind, program_feed, feed, fixed, scoreboard, clock,
+     vs_saved, accepted_at, accepted_by, job: {id, state, error?}, running: bool}."""
+    try:
+        d = auto_dir(ev_dir, sid)
+    except ValueError:
+        return None
+    st = _jread(os.path.join(d, "state.json"))
+    jr = _jread(os.path.join(d, "job.json"))
+    if jr and data:
+        j = get_job(data, jr.get("id")) or {}
+        jr = dict(id=jr.get("id"), state=j.get("state") or "gone", created=j.get("created"), started=j.get("started"),
+                  error=j.get("error"), auto=jr.get("auto"))
+    if st is None and jr is None: return None
+    out = dict(st or {}, source=sid)
+    if jr:
+        now = time.time()
+        out["job"] = jr
+        # a job file can stay "queued" (no runner) or "running" (the runner died): not running after a while
+        out["running"] = (jr.get("state") == "queued" and now - (jr.get("created") or 0) < 3600) or \
+                         (jr.get("state") == "running" and now - (jr.get("started") or jr.get("created") or 0) < 1800)
+    return out
+
+
+def _stream_dirs(ev, s, root=None):
+    """Recorder output dirs of a livestream source (meta.json names it), newest first."""
+    base = os.path.join(root or live_root(), ev)
+    out = []
+    for x in _ls(base):
+        d = os.path.join(base, x)
+        meta = _jread(os.path.join(d, "meta.json"))
+        if not isinstance(meta, dict): continue
+        if meta.get("source") != s.get("id") and meta.get("url") != s.get("url"): continue
+        out.append((meta.get("started") or os.path.getmtime(d), d))
+    return [d for _, d in sorted(out, reverse=True)]
+
+
+def _recorded_s(d, last=400):
+    """Seconds of real video among the last `last` chunks of a recorder dir."""
+    try:
+        with open(os.path.join(d, "chunks.jsonl")) as f:
+            rows = f.readlines()[-last:]
+    except OSError:
+        return 0.0
+    got = 0.0
+    for x in rows:
+        try: r = json.loads(x)
+        except ValueError: continue
+        if r.get("pts") is not None: got += r.get("dur") or 5.0
+    return got
+
+
+def setup_ready(ev, s, root=None):
+    """Can the auto set-up run now?  Like setup_media without building anything (the API's media mount is
+    read-only) -> (kind: clip | sample | file, None) or (None, why)."""
+    if s.get("kind") != "livestream":
+        p, why = setup_media(ev, s, root, build=False)
+        return (why, None) if p else (None, why)
+    dirs = _stream_dirs(ev, s, root)
+    if not dirs: return None, "nothing recorded from this stream yet"
+    for d in dirs:
+        if any(f.endswith(".mp4") for f in _ls(os.path.join(d, "clips"))): return "clip", None
+    got = max(_recorded_s(d) for d in dirs)
+    if got >= AUTO_SETUP_MIN_S: return "sample", None
+    return None, f"only {got:.0f} s recorded so far (needs {AUTO_SETUP_MIN_S:.0f} s)"
+
+
+def setup_media(ev, s, root=None, build=True):
+    """A local video of a source for the auto set-up -> (path, kind: clip | sample | file) or (None, why).
+    Livestream: the recorder's newest match clip, else (build=True) the last ~3 min recorded (recent_sample;
+    needs AUTO_SETUP_MIN_S of recording)."""
+    if s.get("kind") == "file":
+        p = s.get("url")
+        return (p, "file") if p and file_allowed(p) and os.path.exists(p) else (None, "the file is not readable")
+    if s.get("kind") != "livestream":
+        return None, "automatic set-up works on recorded streams and files: use Auto-calibrate for this video"
+    dirs = _stream_dirs(ev, s, root)
+    if not dirs: return None, "nothing recorded from this stream yet"
+    for d in dirs:
+        clips = [os.path.join(d, "clips", f) for f in _ls(os.path.join(d, "clips")) if f.endswith(".mp4")]
+        clips = [c for c in clips if os.path.getsize(c) > 100_000]
+        if clips: return max(clips, key=os.path.getmtime), "clip"
+    if not build: return None, "no match clip yet"
+    got = 0.0
+    for d in dirs:
+        got = _recorded_s(d)
+        if got < AUTO_SETUP_MIN_S: continue
+        p = recent_sample(d)
+        if p: return p, "sample"
+    return None, f"only {got:.0f} s recorded so far (needs {AUTO_SETUP_MIN_S:.0f} s)"
+
+
+def stream_calibration(ev_dir, sid):
+    """The saved calibration of a source's camera in an event dir: camera_<sid>.json, else camera.json made on it
+    (its "source") -> path or None (as liveingest.stream_camera, one dir)."""
+    p = os.path.join(ev_dir, f"camera_{sid}.json")
+    if os.path.exists(p): return p
+    p = os.path.join(ev_dir, "camera.json")
+    return p if (_jread(p, {}) or {}).get("source") == sid else None
+
+
+def accept_target(ev_dir, sid):
+    """Which file an accepted stream camera goes to: camera_<sid>.json when that exists (liveingest reads it first)
+    or camera.json belongs to another video (the uploads' camera: never overwritten), else camera.json (with
+    "source": the wizard's convention)."""
+    if os.path.exists(os.path.join(ev_dir, f"camera_{sid}.json")): return f"camera_{sid}.json"
+    c = _jread(os.path.join(ev_dir, "camera.json"))
+    if c is not None and c.get("source") != sid: return f"camera_{sid}.json"
+    return "camera.json"
+
+
+AUTO_KINDS_LAYOUT = ("scoreboard", "mask", "clock", "field")    # what an accepted auto set-up replaces in layout.json
+
+
+def accept_auto(ev_dir, sid, by=None, now=None):
+    """Video page "Accept" of an auto set-up candidate (stdlib: the API runs it): the camera -> accept_target()
+    (old file kept as .bak-<ts>; calib.accepted_by / accepted_at), its graphics / clock / field boxes -> this
+    source in layout.json (the admin's station / inset boxes kept; old file kept as .bak-<ts>), the view reference
+    -> view_<sid>.png, the carried pose (pose_latest_<sid>.json, + pose_latest.json for camera.json) moved aside.
+    -> dict(camera=file, layout=True, view=file, at).  Raises ValueError when there is nothing to accept."""
+    now = now or time.time()
+    d = auto_dir(ev_dir, sid)
+    st = _jread(os.path.join(d, "state.json"))
+    cam = _jread(os.path.join(d, f"camera_{sid}.json"))
+    if not st or cam is None: raise ValueError("no automatic set-up with a camera to accept: run it, or calibrate by hand")
+    ts = int(now)
+
+    def wjson(p, obj):
+        tmp = f"{p}.tmp{os.getpid()}"
+        with open(tmp, "w") as f: json.dump(obj, f, indent=1)
+        os.replace(tmp, p)
+
+    name = accept_target(ev_dir, sid)
+    dst = os.path.join(ev_dir, name)
+    if os.path.exists(dst): shutil_copy(dst, f"{dst}.bak-{ts}")
+    cam = dict(cam, source=sid, which="overhead")
+    cam.setdefault("calib", {})
+    cam["calib"].update(accepted_by=by, accepted_at=now, method=cam["calib"].get("method") or "dynpose auto_setup")
+    wjson(dst, cam)
+    for pl in [f"pose_latest_{sid}.json"] + (["pose_latest.json"] if name == "camera.json" else []):
+        p = os.path.join(ev_dir, pl)
+        if os.path.exists(p): os.replace(p, f"{p}.bak-{ts}")
+    # layout: this source's boxes from the candidate
+    lay_c = (_jread(os.path.join(d, "layout.json"), {}) or {}).get("sources", {}).get(sid)
+    lp = os.path.join(ev_dir, "layout.json")
+    lay = _jread(lp) or {"version": 1, "sources": {}}
+    if lay_c:
+        if os.path.exists(lp): shutil_copy(lp, f"{lp}.bak-{ts}")
+        old = (lay.get("sources") or {}).get(sid) or {}
+        W, H = lay_c.get("W") or 1920, lay_c.get("H") or 1080
+        sx, sy = W / (old.get("W") or W), H / (old.get("H") or H)
+        kept = [dict(r, box=[r["box"][0] * sx, r["box"][1] * sy, r["box"][2] * sx, r["box"][3] * sy])
+                for r in old.get("regions") or [] if r.get("kind") not in AUTO_KINDS_LAYOUT]
+        regs = [dict(r, suggested=False) for r in lay_c.get("regions") or []] + kept
+        doc = load(ev_dir); src = get(doc, sid) or {}
+        lay.setdefault("sources", {})[sid] = dict(W=W, H=H, role=src.get("role") or old.get("role"), regions=regs,
+                                                  frame=old.get("frame"), updated_at=now, updated_by=by,
+                                                  from_auto_setup=st.get("at"))
+        if src.get("primary") or not lay.get("processing_source") or lay.get("processing_source") == sid:
+            lay["processing_source"] = sid
+        wjson(lp, lay)
+    view = None
+    vp = os.path.join(d, f"view_{sid}.png")
+    if os.path.exists(vp):
+        view = f"view_{sid}.png"; shutil_copy(vp, os.path.join(ev_dir, view))
+    st.update(accepted_at=now, accepted_by=by, accepted_file=name)
+    wjson(os.path.join(d, "state.json"), st)
+    return dict(camera=name, layout=bool(lay_c), view=view, at=now)
+
+
+def shutil_copy(a, b):
+    import shutil
+    shutil.copy2(a, b)
+
+
+def _draw_setup(su, W, H):
+    """The card's proof image: the projected field (calibrate.overlay_lines) on the fixed camera's picture, the
+    graphics boxes, the clock and the field box -> BGR (<= 1280 px wide)."""
+    np, cv2, LY, CB = _live_imports()
+    base = su.get("view_ref") if su.get("view_ref") is not None else su.get("frame")
+    im = base.copy() if base is not None else np.full((H, W, 3), 40, np.uint8)
+    over = im.copy()
+    for b in su.get("overlays") or []:
+        cv2.rectangle(over, (int(b[0]), int(b[1])), (int(b[2]), int(b[3])), (43, 146, 255), -1)
+    im = cv2.addWeighted(over, 0.28, im, 0.72, 0)
+    lw = max(2, int(round(W / 800)))
+    for b in su.get("overlays") or []:
+        cv2.rectangle(im, (int(b[0]), int(b[1])), (int(b[2]), int(b[3])), (43, 146, 255), lw)
+    regs = ((su.get("layout") or {}).get("sources") or {})
+    regs = next(iter(regs.values()), {}).get("regions", []) if regs else []
+    for r in regs:
+        if r.get("kind") in ("clock", "field"):
+            b = [int(v) for v in r["box"]]
+            cv2.rectangle(im, (b[0], b[1]), (b[2], b[3]), (102, 207, 81) if r["kind"] == "clock" else (238, 212, 45), lw)
+    if su.get("p") is not None:
+        col = dict(grid=(255, 255, 255), field=(59, 212, 255), line=(255, 255, 255), hub_red=(95, 90, 255),
+                   hub_blue=(255, 139, 62), tag=(102, 207, 81))
+        for L in CB.overlay_lines(np.array(su["p"], float), W, H):
+            k = L.get("kind")
+            seg = []
+            for p in L["pts"] + [None]:
+                if p is None:
+                    if len(seg) > 1:
+                        cv2.polylines(im, [np.int32(seg)], False, col.get(k, (255, 255, 255)),
+                                      1 if k == "grid" else lw, cv2.LINE_AA)
+                    seg = []
+                else:
+                    seg.append(p)
+    if im.shape[1] > 1280:
+        im = cv2.resize(im, (1280, int(round(im.shape[0] * 1280 / im.shape[1]))), interpolation=cv2.INTER_AREA)
+    return im
+
+
+def _vs_saved(ev_dir, sid, su):
+    """The candidate camera vs the saved calibration of this source (if any): median / max px over the carpet grid,
+    as saved and re-aimed on the candidate's picture (the camera may have been nudged since)."""
+    p = stream_calibration(ev_dir, sid)
+    if not p or su.get("camera") is None: return None
+    import dynpose as DP
+    np, cv2, LY, CB = _live_imports()
+    acc = _jread(p)
+    if not acc or (acc.get("W"), acc.get("H")) != (su["camera"]["W"], su["camera"]["H"]): return None
+    a, b = DP.Pose.from_raw(su["camera"]), DP.Pose.from_raw(acc)
+    W, H = su["camera"]["W"], su["camera"]["H"]
+    Hp = DP._picture(W, H, su.get("overlays"))[3]
+    md, mx = DP.pose_px_diff(a, b, W, Hp)
+    out = dict(file=os.path.basename(p), median_px=round(md, 1) if md is not None else None,
+               max_px=round(mx, 1) if mx is not None else None)
+    if su.get("view_ref") is not None:
+        try:
+            tags = {int(k): np.array(v["corners"]) for k, v in
+                    CB.detect_tags_frames([cv2.cvtColor(su["view_ref"], cv2.COLOR_BGR2GRAY)]).items()}
+            P, uv, _ = DP._points(tags, DP.tag_layout())
+            if len(P) >= 8:
+                md2, mx2 = DP.pose_px_diff(a, DP.refine_rotation(b, P, uv), W, Hp)
+                out.update(reaimed_median_px=round(md2, 1), reaimed_max_px=round(mx2, 1))
+        except Exception:
+            traceback.print_exc()
+    return out
+
+
+def job_auto_setup(data, ev, p, log=print):
+    """Auto set-up of a stream from its recording (dynpose.auto_setup) -> the candidate in
+    DATA/events/<ev>/auto_setup/<sid>/ (see above); the detected program feed -> the source in sources.json."""
+    import shutil
+    sid = p["source"]
+    evd = _ev_dir(data, ev)
+    d = auto_dir(evd, sid)
+    os.makedirs(d, exist_ok=True)
+    t0 = time.time()
+    try:
+        s = _source(data, ev, sid)
+        media, kind = setup_media(ev, s)
+        if not media: raise ValueError(kind)
+        np, cv2, LY, CB = _live_imports()
+        import dynpose as DP
+        log(f"{ev}: auto set-up of {sid} from {media}")
+        su = DP.auto_setup(media, log=lambda *a: log(f"{ev} {sid}:", *a), source_id=sid)
+        tmp = d + ".new"
+        shutil.rmtree(tmp, ignore_errors=True)
+        DP.write_setup(su, tmp, sid)
+        rep = su["report"]
+        W, H = rep.get("W") or 1920, rep.get("H") or 1080
+        cv2.imwrite(os.path.join(tmp, "overlay.jpg"), _draw_setup(su, W, H), [cv2.IMWRITE_JPEG_QUALITY, 82])
+        fx = rep.get("fixed") or {}
+        regs = next(iter(su["layout"]["sources"].values()))["regions"]
+        st = dict(status="ok" if su["camera"] is not None else "no_camera", at=time.time(), seconds=round(time.time() - t0, 1),
+                  media=os.path.basename(media), media_kind=kind, W=W, H=H, duration=rep.get("duration"),
+                  message=None if su["camera"] is not None else rep.get("fixed_why"),
+                  program_feed=(rep.get("feed") or {}).get("program_feed"), feed=rep.get("feed"),
+                  fixed=dict(on_air=fx.get("on_air"), shots=fx.get("shots"), tags=fx.get("tags"), tag_rms_px=fx.get("tag_rms_px"),
+                             line_med_px=fx.get("line_med_px"), warnings=fx.get("warnings")) if fx else None,
+                  scoreboard=rep.get("scoreboard"), clock=rep.get("clock"),
+                  field=next((r["box"] for r in regs if r["kind"] == "field"), None), graphics=len(rep.get("overlays") or []),
+                  pose=dict((k, (rep.get("pose") or {}).get(k)) for k in ("pose_ok", "shots", "n_cameras", "anchor_rms_px")),
+                  vs_saved=_vs_saved(evd, sid, su), by=p.get("_by"), auto=bool(p.get("auto")))
+        with open(os.path.join(tmp, "state.json"), "w") as f: json.dump(st, f, indent=1, default=float)
+        if os.path.exists(os.path.join(d, "job.json")): shutil.copy2(os.path.join(d, "job.json"), os.path.join(tmp, "job.json"))
+        old = d + ".old"
+        shutil.rmtree(old, ignore_errors=True)
+        os.replace(d, old); os.replace(tmp, d); shutil.rmtree(old, ignore_errors=True)
+        doc = load(evd)
+        if get(doc, sid) is not None and st["program_feed"] is not None:
+            set_program_feed(doc, sid, rep.get("feed")); save(evd, doc)
+        log(f"{ev}: auto set-up of {sid}: {st['status']}{' (' + str(st['message']) + ')' if st['message'] else ''}, "
+            f"program feed {st['program_feed']}, {st['seconds']} s")
+        return st
+    except Exception as e:
+        st = dict(status="error", at=time.time(), message=str(e)[-300:], seconds=round(time.time() - t0, 1), auto=bool(p.get("auto")))
+        prev = _jread(os.path.join(d, "state.json")) or {}
+        if prev.get("status") in ("ok", "no_camera"):
+            prev.update(last_error=st); st = prev                  # keep the last good candidate
+        with open(os.path.join(d, "state.json"), "w") as f: json.dump(st, f, indent=1, default=float)
+        raise
+
+
+def submit_auto_setup(data, ev, sid, by=None, auto=False, inline=None):
+    """Queue an auto set-up job for a source (remembered in auto_setup/<sid>/job.json before it can start); run it
+    in a thread here when this process has the vision stack (inline None) -- else the worker's job thread does."""
+    d = auto_dir(_ev_dir(data, ev), sid)
+    os.makedirs(d, exist_ok=True)
+    j = new_job(data, ev, "auto_setup", {"source": sid, "auto": bool(auto), "_by": by}, by)
+    _jsave(os.path.join(d, "job.json"), dict(id=j["id"], at=time.time(), auto=bool(auto), by=by))
+    if (vision_available() if inline is None else inline) and _claim(data, j["id"]):
+        threading.Thread(target=run_job, args=(data, j), daemon=True).start()
+    return j
+
+
+def auto_setup_sweep(data, log=print, root=None):
+    """Worker job thread, every AUTO_SETUP_POLL s: queue the auto set-up of the first enabled livestream / file
+    source that has a recording and no result yet -- or whose result came from a between-matches sample without a
+    fixed camera / clock and now has a match clip, or failed AUTO_RETRY_S ago.  At most one job at a time.
+    -> the source id queued, or None."""
+    if not AUTO_SETUP: return None
+    base = os.path.join(data, "events")
+    try:
+        evs = sorted(os.listdir(base))
+    except OSError:
+        return None
+    for ev in evs:
+        evd = os.path.join(base, ev)
+        if not os.path.exists(os.path.join(evd, "sources.json")): continue
+        for s in load(evd).get("sources", []):
+            if s.get("kind") not in AUTO_KINDS or not s.get("enabled", True) or s.get("dismissed"): continue
+            if not _SID_RE.match(s.get("id") or ""): continue
+            st = auto_state(evd, s["id"], data) or {}
+            if st.get("running"): return None                     # one at a time
+            if st.get("accepted_at"): continue
+            stt = st.get("status")
+            if stt == "error" and time.time() - (st.get("at") or 0) < AUTO_RETRY_S: continue
+            if stt in ("ok", "no_camera"):              # done: again only from a match clip after a sample
+                if not (st.get("media_kind") == "sample" and (stt == "no_camera" or not st.get("clock"))): continue
+                media, kind = setup_media(ev, s, root, build=False)
+                if kind != "clip": continue
+            else:
+                media, kind = setup_media(ev, s, root)
+                if not media: continue
+            log(f"{ev}: auto set-up of {s['id']} queued ({kind} {os.path.basename(media)})")
+            submit_auto_setup(data, ev, s["id"], by="auto set-up", auto=True, inline=False)
+            return s["id"]
+    return None
+
+
 JOBS = dict(frame=job_frame, suggest=job_suggest, detect=job_detect, fit=job_fit, overlay=job_overlay,
-            discover=job_discover, index_playlist=job_index_playlist, plan=job_plan)
+            discover=job_discover, index_playlist=job_index_playlist, plan=job_plan, auto_setup=job_auto_setup)
 LIGHT_JOBS = {"discover"}           # no vision stack needed: always runs in the API process
 
 

@@ -1093,6 +1093,49 @@ def _static_shots(pt, min_s=1.5, max_px=1.0):
     return out
 
 
+def feed_summary(pt, min_s=2.0, still_px=2.0):
+    """Is this a produced program feed (cuts between cameras, or cameras that pan / zoom) or one fixed camera?
+    Views = shots with >= min_s s of pose: locked-off ones (the same tags on the same pixels, <= still_px) grouped by
+    pose, plus every shot whose camera moved.  >= 2 views -> program feed.  Without poses, cuts decide (>= 4 in the
+    clip); with neither -> None (unknown).  -> dict(program_feed, why, views, static_views, moving_s, shots, cuts)."""
+    still = pt.info.get("shot_still_px") or {}
+    groups, moving, posed, mov_n = [], 0, 0, 0
+    for sid in np.unique(pt.shot):
+        if sid < 0: continue
+        idx = np.where((pt.shot == sid) & (pt.kind > 0))[0]
+        if len(idx) < min_s * FPS: continue
+        posed += len(idx)
+        tg = np.where((pt.shot == sid) & (pt.kind == TAGS))[0]
+        sp = still.get(str(int(sid)))
+        if sp is not None and sp <= still_px and len(tg):
+            p = pt.pose(tg[int(np.nanargmin(pt.rms[tg] / np.maximum(pt.ntag[tg], 1)))])
+            for g in groups:
+                if np.linalg.norm(p.C - g[0].C) < 1.0 and rot_deg(p, g[0]) < 2.0 and abs(p.f / g[0].f - 1) < 0.05:
+                    g.append(p); break
+            else:
+                groups.append([p])
+        else:
+            moving += 1; mov_n += len(idx)
+    sh = pt.shot[pt.shot >= 0]
+    cuts = int(np.sum(sh[1:] != sh[:-1])) if len(sh) > 1 else 0
+    views = len(groups) + moving
+    mov_s = round(mov_n / FPS, 1)
+    if posed >= 5 * FPS:
+        pf = views >= 2
+        why = (f"{views} camera views ({len(groups)} locked-off, {moving} moving) and {cuts} cuts in {pt.n / FPS:.0f} s"
+               if pf else f"one locked-off camera ({cuts} cuts in {pt.n / FPS:.0f} s)")
+    elif cuts >= 4:
+        pf, why = True, f"{cuts} cuts in {pt.n / FPS:.0f} s (too few AprilTags to tell the cameras apart)"
+    else:
+        pf, why = None, "too few AprilTags in view to tell"
+    return dict(program_feed=pf, why=why, views=views, static_views=len(groups), moving_shots=moving,
+                moving_s=mov_s, shots=int(len(np.unique(sh))) if len(sh) else 0, cuts=cuts)
+
+
+def _scaled(b, W, H):
+    return [int(round(b[0] * W / 1920)), int(round(b[1] * H / 1080)), int(round(b[2] * W / 1920)), int(round(b[3] * H / 1080))]
+
+
 def auto_setup(video, t1=190.0, log=print, overlays=None, source_id=None):
     """Everything the tracker needs for a stream nobody calibrated, from one recorded clip of it (a match):
 
@@ -1102,23 +1145,36 @@ def auto_setup(video, t1=190.0, log=print, overlays=None, source_id=None):
                 point; refined on the white centre line) -> camera.json content ("which": "overhead")
       view_ref  that camera's median picture (BGR) -> view_<sid>.png (process(view_ref=...) / dynpose)
       field     the projected field box (+ robot height) above the score bar -> the layout's "field" region
-      clock     the 1 Hz clock digits (layout.suggest_clock on 10 s of 10 Hz frames) if found
+      clock     the clock digits: of the known 2026 FIRST scoreboard on air (livestream.detect_geometry: top-centre
+                or bottom bar), else the 1 Hz-ticking block (layout.suggest_clock on 10 s of 10 Hz frames)
+      feed      program feed or one fixed camera (feed_summary)
 
-    -> dict(camera, layout, view_ref, overlays, report).  camera / view_ref are None when no fixed view was found:
-    process(dynamic=True) then still locates robots from every camera, with no fuel / shots.
-    Callable from the worker (e.g. before the first match of a pasted stream: auto_setup(clip) -> write the files
-    as the event's candidate calibration) or from a Video-page job (live/sources.py job_* -> show the result in
-    the existing accept / reject overlay); nothing calls it yet."""
+    -> dict(camera, layout, view_ref, overlays, report, poses, p (the wizard parameter vector of the camera, for
+    calibrate.overlay_lines), frame (a mid-clip BGR frame)).  camera / view_ref / p are None when no fixed view was
+    found (report["fixed_why"] says why): process(dynamic=True) then still locates robots from every camera, with no
+    fuel / shots.  live/sources.py job_auto_setup runs it on a recorded clip of a stream (Video page: Accept)."""
     import layout as LY
+    import livestream as LS
     tt = time.time()
     dur, W, H = _duration(video)
+    ts = np.linspace(0.3 * dur, 0.85 * dur, 16) if dur > 20 else np.linspace(0, max(dur - 0.5, 0), 6)
+    frames = [f for _, f in LY.grab_frames(video, ts)]
     if overlays is None:
-        overlays = auto_overlays(video)
-    log(f"  auto_setup: {len(overlays)} graphics boxes {overlays}")
+        overlays = auto_overlays(video, frames=frames)
+    geo, geo_share = LS.detect_geometry(frames)
+    log(f"  auto_setup: {len(overlays)} graphics boxes {overlays}; scoreboard "
+        f"{geo.name + ' layout' if geo else 'not recognised'} ({geo_share:.0%} of frames)")
     pt = estimate(video, None, None, overlays, 0.0, min(t1, dur), log=log)
-    report = dict(pose=pt.summary(), overlays=overlays)
+    feed = feed_summary(pt)
+    report = dict(pose=pt.summary(), overlays=overlays, feed=feed, W=W, H=H, duration=round(dur, 1),
+                  scoreboard=dict(layout=geo.name if geo else None, share=geo_share))
+    log(f"  auto_setup: program feed {feed['program_feed']} ({feed['why']})")
     shots = _static_shots(pt)
-    camd, plate, field = None, None, None
+    camd, plate, field, pfit, fixed_why = None, None, None, None, None
+    if not shots:
+        n_tagf = int(np.sum(pt.kind == TAGS))
+        fixed_why = ("no locked-off view of the whole field in this clip: the cameras pan / zoom, or show too few "
+                     f"AprilTags ({n_tagf} frames with tags)")
     if shots:
         # cluster static shots by pose; the biggest cluster (samples on air) = the fixed camera
         groups = []
@@ -1133,9 +1189,9 @@ def auto_setup(video, t1=190.0, log=print, overlays=None, source_id=None):
         on_air = sum(len(x[1]) for x in g) / max(pt.n, 1)
         idx = np.concatenate([x[1] for x in g])
         p0 = g[int(np.argmax([len(x[1]) for x in g]))][2]
-        ts = pt.t[np.sort(idx)[np.linspace(0, len(idx) - 1, min(10, len(idx))).astype(int)]]
-        frames = [f for _, f in LY.grab_frames(video, ts)]
-        grays = [cv2.cvtColor(f, cv2.COLOR_BGR2GRAY) for f in frames]
+        fts = pt.t[np.sort(idx)[np.linspace(0, len(idx) - 1, min(10, len(idx))).astype(int)]]
+        ffr = [f for _, f in LY.grab_frames(video, fts)]
+        grays = [cv2.cvtColor(f, cv2.COLOR_BGR2GRAY) for f in ffr]
         tags = CAL.detect_tags_frames(grays)
         tags = {k: v for k, v in tags.items() if not _in_masks(v["center"], overlays)}
         vec = np.r_[p0.f, 1.0, p0.cx, p0.cy, p0.D[0], 0.0, p0.rv, p0.C, 0.0]
@@ -1146,8 +1202,12 @@ def auto_setup(video, t1=190.0, log=print, overlays=None, source_id=None):
             if more:
                 p2, rep2 = CAL.wizard_fit(W, H, {**tags, **more}, None, None, p_init=pfit)
                 if p2 is not None: pfit, rep, tags = p2, rep2, {**tags, **more}
+        if pfit is None:
+            fixed_why = (f"the fixed wide camera (on air {on_air:.0%} of the clip) shows {len(tags)} AprilTag"
+                         f"{'' if len(tags) == 1 else 's'}: too few for a fit ({rep.get('error') or 'fit failed'})")
+            report["fixed_tags"] = len(tags)
         if pfit is not None:
-            plate = np.median(np.stack(frames), 0).astype(np.uint8)
+            plate = np.median(np.stack(ffr), 0).astype(np.uint8)
             try:
                 p2, rep2 = CAL.refine_with_lines(pfit, cv2.cvtColor(plate, cv2.COLOR_BGR2GRAY), W, H, tags)
                 if rep2 is not None and (rep2.get("tag_rms_px") or 99) <= max(1.0, 1.5 * (rep.get("tag_rms_px") or 0)):
@@ -1170,25 +1230,32 @@ def auto_setup(video, t1=190.0, log=print, overlays=None, source_id=None):
             log(f"  auto_setup: fixed camera on air {on_air:.0%} ({len(g)} shots), {len(tags)} tags, "
                 f"RMS {rep.get('tag_rms_px')} px, line {rep.get('line_med_px')} px")
     if camd is None:
-        log("  auto_setup: no fixed wide camera found (moving views only: robots located, no fuel / shots)")
-    # clock: 10 s of 10 Hz frames in the middle of the clip, searched inside the graphics
+        fixed_why = fixed_why or "no fixed wide camera found"
+        log(f"  auto_setup: {fixed_why} (moving views only: robots located, no fuel / shots)")
+    # clock: the known scoreboard's digit box, else the 1 Hz-ticking block in 10 s of 10 Hz frames of the graphics
     clock = None
-    try:
-        dense = LY.grab_dense(video, 0.5 * dur, seconds=10.0, hz=10.0)
-        within = max(overlays, key=lambda b: (b[2] - b[0]) * (b[3] - b[1])) if overlays else None
-        clock = LY.suggest_clock(dense, tuple(within) if within else None)
-    except Exception as e:
-        log(f"  auto_setup: clock search failed ({e!r})")
+    if geo is not None:
+        clock = dict(kind="clock", box=_scaled(geo.clock_box, W, H), label=f"Clock digits (2026 FIRST {geo.name} scoreboard)",
+                     layout=geo.name)
+    else:
+        try:
+            dense = LY.grab_dense(video, 0.5 * dur, seconds=10.0, hz=10.0)
+            within = max(overlays, key=lambda b: (b[2] - b[0]) * (b[3] - b[1])) if overlays else None
+            clock = LY.suggest_clock(dense, tuple(within) if within else None)
+        except Exception as e:
+            log(f"  auto_setup: clock search failed ({e!r})")
     sid = source_id or "auto"
     regions = [dict(id=f"a{i}", kind="scoreboard" if i == 0 else "mask", label="Graphics (auto)", box=list(map(int, b)))
                for i, b in enumerate(sorted(overlays, key=lambda b: -(b[2] - b[0]) * (b[3] - b[1])))]
-    if clock: regions.append(dict(id="aclock", kind="clock", label="Clock digits (auto)", box=clock["box"]))
+    if clock: regions.append(dict(id="aclock", kind="clock", label=clock.get("label") or "Clock digits (auto)", box=clock["box"]))
     if field: regions.append(dict(id="afield", kind="field", label="Field area (auto)", box=list(map(int, field))))
     layout_doc = {"version": 1, "processing_source": sid,
                   "sources": {sid: dict(W=W, H=H, role="dynamic", regions=regions, updated_by="dynpose auto_setup",
                                         updated_at=time.time())}}
-    report.update(clock=clock["box"] if clock else None, seconds=round(time.time() - tt, 1))
-    return dict(camera=camd, layout=layout_doc, view_ref=plate, overlays=overlays, report=report, poses=pt)
+    report.update(clock=clock["box"] if clock else None, fixed_why=fixed_why, seconds=round(time.time() - tt, 1))
+    mid = frames[len(frames) // 2] if frames else None
+    return dict(camera=camd, layout=layout_doc, view_ref=plate, overlays=overlays, report=report, poses=pt,
+                p=[float(x) for x in pfit] if camd is not None else None, frame=mid)
 
 
 def _picture(W, H, overlays):

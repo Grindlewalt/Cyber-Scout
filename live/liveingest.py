@@ -356,7 +356,18 @@ def trackable(ev, sid):
     if not cam:
         return dict(ok=False, reason=f"no calibration for the stream camera (camera_{sid}.json)")
     lay = {"version": 1, "processing_source": sid, "sources": {sid: L.doc["sources"][sid]}}
-    return dict(ok=True, reason="trackable", camera=cam, layout=lay, view_ref=stream_view_ref(ev, sid))
+    return dict(ok=True, reason="trackable", camera=cam, layout=lay, view_ref=stream_view_ref(ev, sid),
+                dynamic=stream_dynamic(ev, sid))
+
+
+def stream_dynamic(ev, sid):
+    """Track this stream with a camera per frame (process(dynamic=True))?  sources.dynamic_on of the source in
+    events/<ev>/sources.json: the admin's `dynamic` true / false, else (null = auto) the detected `program_feed`."""
+    import layout as LY, sources as SRC
+    for d in LY.event_dirs(ev):
+        s = SRC.get(SRC.load(d), sid)
+        if s is not None: return SRC.dynamic_on(s)
+    return False
 
 
 def stream_view_ref(ev, sid):
@@ -423,7 +434,7 @@ class LiveView:
                     teams=teams, teams_from=src, tba_posted=bool(is_posted), stream_score=r.get("score"),
                     stream_teams=r.get("teams"), flags=r.get("flags"))
         return dict(clip=clip_of(r), start=float(r["auto_start_in_clip"]), camera=tr["camera"], layout=tr["layout"],
-                    view_ref=tr.get("view_ref"),
+                    view_ref=tr.get("view_ref"), dynamic=bool(tr.get("dynamic")),
                     start_trusted="start_from_tba_time" not in (r.get("flags") or []),
                     teams=teams, teams_from=src, source=sid, tba_posted=bool(is_posted), info=info,
                     video=dict(id=f"live-{re.sub(r'[^A-Za-z0-9_-]', '', vid)[:24]}-{r['id']}",
