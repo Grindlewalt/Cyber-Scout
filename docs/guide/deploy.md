@@ -131,6 +131,8 @@ app falls back to the matching `.env` value.
 | `YT_FORCE_IPV4` | worker, recorder | keep `1` on hosts whose IPv6 is bot-flagged by YouTube |
 | `LIVESTREAM`, `LIVE_BUDGET_GB`, `LIVE_MIN_FREE_GB`, `LIVE_BACKFILL_MIN`, `LIVE_DIR`, ... | recorder | §8.7 |
 | `CS_URL_ALLOW` | worker, recorder | private hosts allowed as video sources (e.g. a LAN OBS HLS server) |
+| `PROCESSORS_GPU0`, `PROCESSORS_GPU1`, `PROCESSOR_*`, `WORKER_TRACK` | compose, worker | extra tracking jobs, §3.1 |
+| `DYNAMIC` | worker, processors | `1` / `0` forces dynamic mode on / off for every livestream source; unset = per source (§3.1) |
 | `DASH_TEAM`, `DASH_GOAL`, `DASH_AWARD_CONTENDER`, `DCMP_CAPACITY` | worker | strategy perspective. `DASH_TEAM` defaults to `frc4911`, and the Admin team number does **not** change it |
 | `*_MEM_LIMIT` | compose | per-container caps |
 
@@ -180,6 +182,11 @@ docker compose config               # resolved config (careful: prints environme
 | recorder | cyber-scout-recorder | cyber-scout-worker:latest (shared) | — | `GPU_IDS` |
 | api | cyber-scout-api | cyber-scout-api:latest (~146 MB), healthcheck | — (8000 internal) | — |
 | web | cyber-scout-web | cyber-scout-web:latest (~64 MB) | `0.0.0.0:7560->80` | — |
+| processor-gpu0 | cyber-scout-processor-gpu0-*N* | cyber-scout-worker:latest (shared) | — | host card `PROCESSOR_GPU0_ID` (0) |
+| processor-gpu1 | cyber-scout-processor-gpu1-*N* | cyber-scout-worker:latest (shared) | — | host card `PROCESSOR_GPU1_ID` (1) |
+
+The two processor services have `PROCESSORS_GPU0` / `PROCESSORS_GPU1` replicas (default 0: not started); see
+[§3.1](#31-several-tracking-jobs-process-only-processors).
 
 **(atomosserver)** All four are up. `GPU_IDS` is unset, so worker and recorder share host **GPU 0** (RTX 3060 Ti,
 8 GB). GPU 1 (RTX 3060, 12 GB) is used for development runs from `/mnt/nas/autoscout-scratch` (see
@@ -195,6 +202,125 @@ docker compose config               # resolved config (careful: prints environme
   (`GPU_IDS=0,1`) for `--gpus 0,1` to mean two cards.
 * CPU-only: `COMPOSE_FILE=docker-compose.yml:docker-compose.cpu.yml` (sets `FORCE_CPU=1`), or Admin `cpu_only`.
   About 4× slower (~20 min per match instead of ~3–6).
+
+### 3.1 Several tracking jobs: process-only processors
+
+One worker tracks one match at a time. A backlog (a day of livestream clips, a reprocess in dynamic mode) goes
+faster with **processors**: more instances of `live/worker.py` started with `--process-only` (or
+`PROCESS_ONLY=1`) that do nothing but claim and track matches.
+
+**What a processor does.**
+* It takes the next match in the worker's own order: competitions on now first; in each, by time with
+  `events/<ev>/priority.json` (`tools/priority.py`) first. Claims are `events/<ev>/claims/<key>.json`
+  (`live/claims.py`, shared with `tools/helper.py` and the Client's "Help process matches"), so no match is tracked
+  twice.
+* Livestream-only mode: only clips that exist (TBA-time cuts stay with the worker). Auto mode: a trackable
+  livestream clip, else the uploads once TBA posted, using the worker's `video_plan.json`.
+* It writes the match outputs (`fuel/ shots/ analytics/`, then `matches/<key>.json` **last**), the kept clip
+  `MEDIA/<ev>/<key>.mp4`, its state per match in `events/<ev>/proc_status/<key>.json` (never `status.json`) and a
+  heartbeat `DATA/processors/<id>.json`. It reads TBA from the worker's cache `DATA/tba/` only.
+* Its own `WORKER_ID` (default `<PROCESSOR_TAG>-<hostname>-<pid>`) and GPU: `GPU_DEVICE` from its environment wins
+  over Admin's `gpu_device`.
+* `PAUSE_PROCESSING=1` pauses processors too.
+* Safety:
+  - `docker stop` / SIGTERM gives the match in hand back without counting a try.
+  - A processor whose heartbeat is older than `PROC_DEAD_S` (300 s; killed, container recreated) loses its
+    claims to the others at once, not after `CLAIM_S` (30 min).
+  - A GPU out-of-memory error is never a failed try of the match.
+  - `PROC_FAIL_TRIP` (2) failed matches in a row pause that processor for `PROC_FAIL_PAUSE` (600 s). Its heartbeat
+    then says `unhealthy`, and the worker tracks meanwhile.
+
+**What the main worker does then.**
+* It keeps everything else: TBA sync, site build, discovery, video plan, TBA-time cuts, reconcile, preview proxies.
+* `WORKER_TRACK=auto` (default): it leaves tracking to the processors while at least one healthy processor
+  heartbeat is fresh (< 3 min), and tracks itself otherwise. `1` = always track here too, `0` = never. The log
+  says `match tracking left to the processors (...)` / `tracking matches here`.
+* It wakes up when a match file appears and rebuilds the site at once. A claimed match shows as `processing`.
+* Reconcile is driven by the match file: `source: "livestream"` and not `live.tba_posted` → reconciled when TBA
+  posts, whoever tracked it.
+* Proxies: kept clips without a preview proxy (processors, helper, Client) are queued on the worker's proxy
+  thread (`MEDIA_PROXIES=1`).
+
+**Dynamic mode per source.** `sources.json` source field `"dynamic"`: `true` / `false` / `null`. `null` (or
+missing) = auto: dynamic when the source is a program feed (`"program_feed": true`, set by the stream
+auto-setup). `live/liveingest.py` resolves it into the clip's live input (`live["dynamic"]`); `DYNAMIC=1` /
+`DYNAMIC=0` in the worker's or processor's environment forces it on / off for every source
+(`worker.py:dynamic_for`). Only the main worker runs the Video-page job thread (and with it the auto set-up
+sweep); processors never do.
+
+**Compose (Linux).** In `.env`:
+
+| key | default | meaning |
+|---|---|---|
+| `PROCESSORS_GPU0`, `PROCESSORS_GPU1` | 0 | processor containers (jobs) on host card 0 / 1 |
+| `PROCESSOR_GPU0_ID`, `PROCESSOR_GPU1_ID` | 0 / 1 | the host card of each service (`nvidia-smi -L`; with CDI: `nvidia.com/gpu=N`) |
+| `PROCESSOR_GPU_DRIVER` | `nvidia` | `cdi` to pass cards by CDI name (see the GPU 1 note below) |
+| `PROCESSOR_MEM_LIMIT` | 6g | per processor container (one job peaks at ~2 GB RSS) |
+| `WORKER_TRACK` | auto | main worker: `auto` / `1` / `0` (above) |
+
+```bash
+cd /opt/stacks/cyber-scout
+docker compose build worker                      # the processors use the worker image
+docker compose up -d worker processor-gpu0 processor-gpu1
+docker compose ps                                # cyber-scout-processor-gpu1-1, -2, ...
+docker compose logs -f processor-gpu1            # "processor gpu1-<id>: tracking only (GPU_DEVICE=0)", per match "tracked by ..."
+cat data/processors/*.json                       # heartbeats: state idle | tracking | waiting | unhealthy, current match
+docker compose up -d --scale processor-gpu1=1    # change the count for now (.env for good)
+```
+
+With the CPU override the processor services keep their replicas and lose only the GPU reservation:
+`PROCESSORS_GPU0=N` then means N CPU-only jobs.
+
+**macOS server (`deploy/macos`).** Put `CS_PROCESSORS=N` in `~/CyberScout/server/server.env`, or pass it to
+`install-server.sh` once. `deploy/macos/deploy.sh` re-runs keep it. That adds the LaunchAgents
+`com.cyberscout.processor-1..N` (`run-processor.sh` → `run-worker.sh --process-only`, `WORKER_ID
+<host>-proc<i>`, logs `logs/com.cyberscout.processor-<i>.log`). Lowering N removes the extra agents. Default 0
+(unchanged). Not measured on the M2 (production): one Core ML job already keeps most of its cores busy, so try 1
+and compare the per-match times in the logs before going higher.
+
+**Measured (atomosserver, 2026-10-18; real CUDA pipeline, dynamic mode, 2026wagg 1080p60 program-feed clips
+qm20 / qm35 / qm45, worker image, GPU 1 only, throwaway containers; scripts `.work/gpuscale/`).**
+
+| jobs on one GPU | result |
+|---|---|
+| 1 (new model, FP16) | **6.9 matches/h**: 447 / 575 / 533 s per match (dynpose 53–303 s, detection 179–301 s, fuel 58–71 s); +282 MiB VRAM; GPU util median 0 %, p90 20 %; host CPU 34 % of 24 threads (5.2 cores mean, peaks ~10); ~2 GB RSS |
+| 1 (new model, FP32) | qm20 435 s; +337 MiB VRAM |
+| 2 | **out of GPU memory** (twice, FP32 and FP16): `Failed to allocate memory` / `CUBLAS failure 3` |
+| 3 | not possible (needs ≥ 800 MiB) |
+
+* **VRAM is the limit here, not the GPU or the CPU.** llama-server holds 11.4 GB of GPU 1 and 5.9 GB of GPU 0 (plus
+  ollama ~1.4 GB). After the driver's reserve (~390 MiB per card) **GPU 1 has ~355 MiB free and GPU 0 7–391 MiB**
+  (the other apps' use moves by ~0.5 GB). One job needs 267 MiB (FP16 model) to 337 MiB (FP32): **one job per
+  card**, and GPU 0 only while the other apps leave room.
+* **The job is bound by single-thread work**: the dynpose scan, the detection loop at ~20 fps, decode. FP16 vs FP32
+  did not change the time (447 vs 435 s), and the GPU sits mostly idle. A second job per card would add nearly
+  its full rate CPU-wise (34 % host CPU per job) once there is VRAM for it: with ≥ 1 GB free on a card, try
+  `PROCESSORS_GPU1=2`.
+* OCR runs on the CPU in this image: `live/ocr.py`'s worker processes cannot load the CUDA provider
+  (`libcublasLt.so.13`, no `preload_dlls`), so there is no extra VRAM per OCR worker. That is the right trade
+  while VRAM is short: 4 OCR workers on the GPU would be 4 more CUDA contexts per job. `OCR_PROC=0` (OCR in a thread on the
+  detector's CUDA context) cut a match to 268 s (detection 122 s) but read **0** bumpers: not usable as is.
+* For comparison, the M2 (Core ML) did 5–6 min per match in dynamic mode, about the same as one atomosserver job.
+
+**Recommended.** Code default: no processors (`PROCESSORS_GPU0=0`, `PROCESSORS_GPU1=0`, `CS_PROCESSORS=0`), so
+nothing changes. **atomosserver for a competition**: `PROCESSORS_GPU1=1`. Add `PROCESSORS_GPU0=1` only if the GPU 0
+apps leave ≥ 300 MiB (a GPU out-of-memory error costs nothing but a 10-minute pause of that processor), and keep
+`WORKER_TRACK=auto`. That is ~7 matches/h per job, against a match every ~7 min at an event. Use the FP16 export of the
+detector on GPU hosts (identical boxes within 0.5 px, −55 MiB per job); keep FP32 on Macs (Core ML).
+
+**GPU 1 cannot be passed into containers on atomosserver right now.** `--gpus device=1` and `device=all` fail
+in the NVIDIA hook (`failed to add device rules: unable to generate new device filter program`); `device=0`
+works. `/etc/cdi/nvidia.yaml` is stale: it lists `/dev/dri/card0` for GPU 1, which is `card2` since the last boot.
+Fix (owner, root): `sudo nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml`, then in `.env`
+`PROCESSOR_GPU_DRIVER=cdi` and `PROCESSOR_GPU1_ID=nvidia.com/gpu=1` (and `PROCESSOR_GPU0_ID=nvidia.com/gpu=0` if
+you use GPU 0 processors). Compose's `driver: cdi` reservation was checked to reach CDI; it fails only on that stale
+`card0` node. Until then, the benchmark used a hook-free fallback: device nodes `/dev/nvidia1`, `/dev/nvidiactl` and
+`/dev/nvidia-uvm*`, the host's `libcuda` / `libnvidia-ptxjitcompiler` / `-gpucomp` / `-nvvm` / `-ml` mounted into
+`/usr/local/nvidia/lib64`, `LD_LIBRARY_PATH` set, and `CUDA_VISIBLE_DEVICES=<GPU 1 UUID>` (`.work/gpuscale/nvrun.sh`).
+
+**Other knobs.** `PROC_POLL_SECONDS` (20: idle processors look for work this often, and also wake on a new
+livestream record), `PROC_BEAT_S` (30: claim + heartbeat refresh while tracking), `PROC_TBA_STALE_S` (600: older
+TBA cache → the processor fetches into its own cache `DATA/cache/tba-<id>` if it has the key).
 
 ---
 
@@ -448,7 +574,8 @@ keyed by a hash of the video content and model settings. Delete the file to forc
 
 * **Through the worker (re-downloads from YouTube):** delete
   `data/events/<ev>/matches/<key>.json` (and, for a clean v2 run, `fuel|shots|analytics/<key>.json`). If
-  `status.json` shows `"state": "failed"` for it (3 errors), remove that entry too, or it stays skipped. Needs
+  `status.json` shows `"state": "failed"` for it (3 errors), remove that entry too, or it stays skipped. With
+  processors (§3.1) also delete `events/<ev>/proc_status/<key>.json`: the newer of the two entries wins. Needs
   `PAUSE_PROCESSING` off.
 * **From the kept video (no YouTube), works while paused:**
 
@@ -500,8 +627,9 @@ docker compose exec api python -m server.manage make-admin <username>       # al
 docker compose exec -u 1000:1000 -e HOME=/tmp -e PAUSE_PROCESSING=0 -e ONCE=1 -e MAX_NEW=1 worker python -u live/worker.py
 ```
 
-This runs one sync pass in a second process that processes at most one new match per event and exits. Don't run
-it while the main worker is processing: there is no lock between the two.
+This runs one sync pass in a second process that processes at most one new match per event and exits. The two
+never track the same match (claims, `live/claims.py`), but both rewrite `status.json`: run it while the main worker
+is idle, or start a process-only processor instead (§3.1).
 
 ---
 
