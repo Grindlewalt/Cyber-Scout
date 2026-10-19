@@ -60,12 +60,18 @@ matches.
   only the configured server is contacted.
 - Packaging: pure-Python (stdlib only, Python ≥ 3.9) single entry point `client/cyberscout_client.py`, plus
   scripts to build standalone binaries (PyInstaller) for Windows/macOS/Linux; launches the browser on start.
+- Optional, admins: **Help process matches** (`/client/processing`, `GET/PUT /client/v1/processing`). A client with
+  an NVIDIA GPU (CUDA) or Apple silicon (Core ML) tracks matches for the server through `/app/v1/processing/*`
+  (same per-match claims as the worker); any client can run **Clip only** (record a livestream, cut matches by TBA
+  time, upload the clips the server lacks). The pipeline runs in a separate Python the client installs with uv;
+  the client itself stays stdlib-only. Details: `client/README.md`, `docs/guide/server.md` §7.10.
 
 ## 3. Web app (browser and client mode)
 
 - **Client mode** (when `GET /client/v1/status` answers): the Settings area gets a **Connection** section (server
-  address, Test connection, sign in/out, media option, which events to keep, storage used, Sync now, outbox list);
-  the app's own sign-in goes through `/client/v1/login`.
+  address, Test connection, sign in/out, media option, which events to keep, storage used, Sync now, outbox list)
+  and a **Help process matches** section (status line, GPU / speed / slow-Wi-Fi notices, link to
+  `/client/processing`; `web/settings.js`); the app's own sign-in goes through `/client/v1/login`.
 - **Browser mode** (phones/tablets): a service worker caches the app shell (versioned files) and the data the user
   views (stale-while-revalidate for `/api/...`), offers **"Save this event for offline"** (fetches the manifest +
   bundle and stores it), and keeps an **IndexedDB outbox** for writes with `Idempotency-Key`, flushed when back

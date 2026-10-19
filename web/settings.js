@@ -14,6 +14,38 @@
     command: '<span class="lo-rail"></span><span class="lo-top"></span><span class="lo-grid"><span></span><span></span><span></span><span></span></span>',
   };
 
+  // Cyber-Scout Client only: "Help process matches" (the client's processor mode) -- its status line, the GPU /
+  // slow-Wi-Fi notices and a link to its own page (client/csclient/procui.py at /client/processing)
+  let procT = 0;
+  function procSection(el) {
+    if (!el || !CS.sync || !CS.sync.ctl) return;
+    clearInterval(procT);
+    el.innerHTML = `<fieldset class="st-sec" id="processing"><legend><h2>Help process matches</h2></legend>
+      <p class="st-why">This computer can track match video on its GPU for the server, or record the stream and send it match clips (Clip only).</p>
+      <div class="cx-grid"><div class="cx-row"><div class="cx-k">Status</div><div class="cx-v" data-part="proc" aria-live="polite"><p class="cx-note">Asking the Cyber-Scout Client\u2026</p></div></div></div></fieldset>`;
+    const box = el.querySelector("[data-part=proc]");
+    const mbs = v => v >= 10e6 ? Math.round(v / 1e6) : (v / 1e6).toFixed(1);
+    async function load() {
+      if (!document.body.contains(el)) { clearInterval(procT); return; }
+      let p;
+      try { p = await CS.sync.ctl("GET", "processing", undefined, 6000); }
+      catch (x) { box.innerHTML = `<p class="cx-note">${esc(x.status === 404 ? "This version of the Cyber-Scout Client can't process matches." : x.message)}</p>`; return; }
+      const on = p.enabled, n = p.net || {}, g = p.gpu, sp = p.speed || {};
+      const mode = p.mode === "clip" ? "Clip only" : "Track matches";
+      const facts = [g ? (g.ok ? `GPU: ${g.name}` : "No GPU the tracker can use") : null,
+        sp.per_match_min != null ? `about ${sp.per_match_min < 10 ? sp.per_match_min.toFixed(1) : Math.round(sp.per_match_min)} min per match (${sp.from === "measured" ? "measured" : "benchmark"})` : null,
+        n.down_bps ? `${mbs(n.down_bps)} MB/s from the server` : null].filter(Boolean);
+      const notes = (p.notices || []).filter(x => x.level !== "info" && !(x.kind === "no_gpu" && p.mode === "clip"));
+      box.innerHTML = `<div class="cx-res${on && /^(error|no_gpu|needs_setup)/.test(p.state) ? " bad" : on ? " good" : ""}">${CS.icon(on ? "check" : "more", "ico")}<span><b>${on ? esc(mode) : "Off"}</b>${on ? `: ${esc(p.line)}` : ""}</span></div>
+        ${facts.length ? `<p class="cx-note">${esc(facts.join(", "))}.</p>` : ""}
+        ${notes.map(x => `<p class="cx-note warn">${esc(x.text)}</p>`).join("")}
+        <p class="cx-note"><a href="/client/processing">${on ? "Open processing" : "Set up and turn on processing"}</a></p>`;
+    }
+    load();
+    procT = setInterval(load, 5000);
+    if (typeof cleanup !== "undefined") cleanup.push(() => clearInterval(procT));
+  }
+
   CS.globalRoute("settings", async () => {
     crumbs([["Settings"]]); $updated.textContent = "";
     if (!S) { $app.innerHTML = `<div class="empty">Settings need theme.js, which didn't load. Reload the page.</div>`; return; }
@@ -24,7 +56,7 @@
       const def = S.defaults;
       $app.innerHTML = `<div class="st">
         <h1>Settings</h1><div class="sub">${client ? "This computer's connection to your team's server, and how Cyber-Scout looks for you." : "How Cyber-Scout looks for you, and what this device keeps for offline use. Saved in this browser only, so each device can have its own look."}</div>
-        ${client ? '<div id="st-sync"></div>' : ""}
+        ${client ? '<div id="st-sync"></div><div id="st-proc"></div>' : ""}
         <figure class="st-note">
           <blockquote>I like having a colorful UI and I'm sure others do too. I couldn't land on a specific design, so I went a little ham.</blockquote>
           <figcaption><span class="st-av" aria-hidden="true">G</span>Grant</figcaption>
@@ -60,6 +92,7 @@
       </div>`;
       // sync.js: Connection (Cyber-Scout Client) first, or Offline (browser) after the look
       if (CS.sync && CS.sync.mountSettings) CS.sync.mountSettings($app.querySelector("#st-sync"));
+      if (client) procSection($app.querySelector("#st-proc"));
       $app.querySelectorAll("input[name=st-style]").forEach(i => i.onchange = () => { S.set({ style: i.value }); draw(`input[name=st-style][value="${i.value}"]`); });
       $app.querySelectorAll("input[name=st-mode]").forEach(i => i.onchange = () => { S.set({ mode: i.value }); draw(`input[name=st-mode][value="${i.value}"]`); });
       $app.querySelectorAll("input[name=st-layout]").forEach(i => i.onchange = () => { S.set({ layout: i.value }); draw(`input[name=st-layout][value="${i.value}"]`); });

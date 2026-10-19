@@ -135,6 +135,10 @@ class ClipJob:
                     raise StreamLost(self.lost)
                 if self.child is None or self.child.poll() is not None:
                     if self.child is not None:
+                        try:
+                            self.child.stdin.close()
+                        except (OSError, AttributeError):
+                            pass
                         fails += 1
                         log.warning("%s: the clip runner exited (code %s); restarting in %d s", self.aid,
                                     self.child.returncode, min(120, 10 * fails))
@@ -164,7 +168,7 @@ class ClipJob:
         self.logf = open(lp, "a", encoding="utf-8", errors="replace")
         self.child = subprocess.Popen([self.py, "-u", os.path.join(self.pipe["dir"], "runner.py"), "--clip", jp],
                                       cwd=self.base, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                      stdin=subprocess.DEVNULL, env=child_env(), text=True, encoding="utf-8",
+                                      stdin=subprocess.PIPE, env=child_env(), text=True, encoding="utf-8",
                                       errors="replace", bufsize=1,
                                       creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
         self._got = 0
@@ -218,6 +222,11 @@ class ClipJob:
                     c.kill()
                 except OSError:
                     pass
+        if c is not None and c.stdin is not None:
+            try:
+                c.stdin.close()
+            except OSError:
+                pass
         self.child = None
 
     # ------------------------------------------------------------------------------------------------ heartbeat

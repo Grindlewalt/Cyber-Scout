@@ -7,6 +7,8 @@
 Starts it with --no-browser on 127.0.0.1:<free port> with a throwaway data folder, then checks, like the page does:
   GET  /                    the bundled web app is served (and sets the cs_client cookie the control API requires)
   GET  /client/v1/status    {"client": true, "version": ...}
+  GET  /client/processing   the Help process matches page; GET /client/v1/processing: the GPU check ran inside the
+                            executable (an answer either way: "usable" or why not) and Set up has a plan
   POST /client/v1/test      (only with --server) the server's public GET /app/v1/info answers: read-only, no sign-in.
                             --server mock starts a tiny stand-in server here (GET /app/v1/info only), for CI.
 and stops it. Exit status 0 = pass. Pure standard library; works on Windows, macOS and Linux."""
@@ -114,6 +116,20 @@ def main(argv=None):
               f"version={st.get('version')} server={st.get('server')} online={st.get('online')} "
               f"web_version={st.get('web_version')}")
 
+        with op.open(base + "/client/processing", timeout=10) as r:
+            pg = r.read()
+        check("GET /client/processing", r.status == 200 and b"Help process matches" in pg)
+        pr, t1 = {}, time.time()
+        while time.time() - t1 < 60:                      # the GPU check runs in a thread at start
+            with op.open(base + "/client/v1/processing", timeout=30) as r:
+                pr = json.loads(r.read())
+            if pr.get("gpu"):
+                break
+            time.sleep(1)
+        g = pr.get("gpu") or {}
+        check("processing: GPU check", isinstance(g.get("ok"), bool),
+              (f"usable: {g.get('name')} ({g.get('kind')})" if g.get("ok") else f"not usable: {g.get('why')}")
+              + f"; Set up would install the {(pr.get('plan') or {}).get('label')}")
         if a.server:
             req = urllib.request.Request(base + "/client/v1/test", data=json.dumps({"server": a.server}).encode(),
                                          headers={"Content-Type": "application/json"}, method="POST")

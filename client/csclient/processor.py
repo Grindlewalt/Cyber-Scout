@@ -64,11 +64,12 @@ WARN_MB = 100                    # default "warn before a clip download over N M
 SLOW_MIN = 25.0                  # minutes per match: slower than this, Clip only helps the event more
 SERVER_MIN = 3.5                 # what the server's own worker takes per match (RTX 3060 Ti), for the comparison
 BENCH_V = 1                      # bump to re-run every client's benchmark
-# minutes per match from the benchmark: a livestream clip is ~190 s at 60 fps, all of it decoded (the fuel tracker
-# uses every frame), the detector runs at 30 Hz over ~165 s; the rest of the pipeline (fuel, OCR, AprilTags /
-# dynamic view, analytics) scales with that: EST_K + EST_C fitted to real jobs (README: Benchmark)
-CLIP_S, CLIP_FPS, DET_HZ, DET_S = 190.0, 60.0, 30.0, 165.0
-EST_K, EST_C = 2.0, 30.0
+# minutes per match from the benchmark: a livestream clip is ~190 s at 60 fps; the detector runs at 30 Hz over all of
+# it (process.detect_video), and the rest of the pipeline (decode, fuel tracker on every frame, OCR, shots, intakes,
+# identity) is CPU work that scales with the decode time.  Fitted to a real job: Apple M1, Core ML, 2026wagg qm10:
+# detector 27.3 fps + decode 622 fps -> 312.5 s estimated, 312.7 s measured (README: Benchmark).
+CLIP_S, CLIP_FPS, DET_HZ = 190.0, 60.0, 30.0
+POST_K, EST_C = 5.0, 12.0
 DEFAULT_DECODE_FPS = 220.0       # no sample clip on the server: a typical 1080p H.264 software decode
 
 
@@ -112,6 +113,7 @@ def child_env(extra=None):
             else:
                 env.pop(k, None)
     env["PYTHONUNBUFFERED"] = "1"
+    env["CS_RUNNER_PARENT_PIPE"] = "1"          # runner.py: our stdin pipe closing = the client is gone, stop
     env.update(extra or {})
     return env
 
@@ -127,8 +129,8 @@ def estimate_min(b):
     if not det:
         return None
     dec = ((b.get("decode") or {}).get("fps")) or DEFAULT_DECODE_FPS
-    base = CLIP_S * CLIP_FPS / dec + DET_HZ * DET_S / det
-    return round((EST_K * base + EST_C) / 60, 1)
+    secs = CLIP_S * DET_HZ / det + POST_K * CLIP_S * CLIP_FPS / dec + EST_C
+    return round(secs / 60, 1)
 
 
 def extract_code(tar_path, dst, tmp_root):
@@ -232,6 +234,10 @@ class Processor:
         self.stop_ev.set()
         self.wake.set()
         self._kill_child()
+        cj = self.clip_job
+        if cj is not None:                      # Clip only: stop the recorder now (the next start resumes it)
+            cj.stop_ev.set()
+            cj._kill()
 
     def set_enabled(self, on):
         self.cfg.update(process=bool(on))
@@ -377,9 +383,9 @@ class Processor:
                       "slow_min": SLOW_MIN, "server_min": SERVER_MIN, "bench": b, "running": self.bench_st,
                       "jobs": [{k: x.get(k) for k in ("key", "process_s", "download_s", "total_s", "at")}
                                for x in self.perf[-5:]]}
-        s["net"] = self.net.view(mode, self.warn_mb())
-        s["notices"] = self.notices(s)
         cj = self.clip_job
+        s["net"] = self.net.view(mode, self.warn_mb(), (cj.rec or {}).get("behind_s") if cj else None)
+        s["notices"] = self.notices(s)
         s["clip"] = cj.status() if cj else self.clip_last
         try:
             s["plan"] = PS.plan(self.root, self.pipe, self.gpu_info) if self.gpu_info else None
@@ -401,7 +407,7 @@ class Processor:
             at = f" at {pct}%" if pct is not None else ""
             return f"{st} {m}{at}, {done}"
         if st == "idle":
-            return f"idle, {done}" + (f" ({s['message']})" if s.get("message") else "")
+            return f"idle, {done}" + (f": {s['message']}" if s.get("message") else "")
         if st == "confirm" and s.get("large"):
             lg = s["large"]
             return f"paused: the next clip ({_short(lg.get('key'))}) is {lg.get('mb')} MB, over {lg.get('warn_mb')} MB, {done}"
@@ -446,9 +452,9 @@ class Processor:
                             self._wait(3600)
                         continue
                 self._set(state="checking", message=None)
-                pipe = self.ensure_pipeline()
+                pipe = self.ensure_pipeline(model=mode == "track")
                 py = self.check_python(pipe, mode)
-                if self.net.due():
+                if self.net.due(up=mode == "clip"):
                     self._probe()
                 if mode == "clip":
                     self.run_clip(pipe, py)
@@ -640,8 +646,9 @@ class Processor:
             os.replace(part, dst)
             return dst
 
-    def ensure_pipeline(self):
-        """The server's pipeline version -> code dir + model file here (downloaded once per version)."""
+    def ensure_pipeline(self, model=True):
+        """The server's pipeline version -> code dir + model file here (downloaded once per version; model=False:
+        Clip only, which needs no detector)."""
         d = self._json("GET", API + "/pipeline")
         v = d.get("version") or ""
         if not VER_RE.match(v):
@@ -657,18 +664,23 @@ class Processor:
             os.remove(tar)
             log.info("processing code %s ready", v)
         m = d.get("model")
-        if not m:
+        if not m and model:
             raise NeedsSetup("the server has no detector model yet (data/models/robot.onnx)")
-        mp = os.path.join(self.root, "models", f"{m['sha256']}.onnx")
-        if not SHA_RE.match(m.get("sha256") or ""):
+        mp = os.path.join(self.root, "models", f"{(m or {}).get('sha256')}.onnx")
+        if m and not SHA_RE.match(m.get("sha256") or ""):
             raise HTTPError(502, None, "the server sent a bad model checksum")
-        if not os.path.isfile(mp):
+        if model and not os.path.isfile(mp):
             self._set(state="updating", message=f"downloading the detector model ({m['size'] >> 20} MB)")
             self._download(m["url"], mp, int(m["size"]), m["sha256"], "detector model")
             log.info("detector model %s ready", m["sha256"][:12])
+        if not os.path.isfile(mp):
+            mp = None
         self.pipe = {"version": v, "dir": pdir, "model": mp, "heartbeat_s": int(d.get("heartbeat_s") or 60),
-                     "requirements": d.get("requirements") or [], "python": d.get("python") or "3.12"}
-        self._prune(v, mp)
+                     "requirements": d.get("requirements") or [], "python": d.get("python") or "3.12",
+                     "runtimes": d.get("runtimes") or {}, "clip_extras": d.get("clip_extras"),
+                     "ytdlp_requirements": d.get("ytdlp_requirements")}
+        if mp:
+            self._prune(v, mp)
         return self.pipe
 
     def _prune(self, keep_v, keep_model):
@@ -784,7 +796,7 @@ class Processor:
             with self.lock:
                 self.bench_st.update(message="decoding + running the detector", pct=5)
             p = subprocess.Popen([py, "-u", os.path.join(pipe["dir"], "runner.py"), "--bench", jp], cwd=work,
-                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.PIPE,
                                  env=child_env(), text=True, encoding="utf-8", errors="replace", bufsize=1,
                                  creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
             killer = threading.Timer(900, p.kill)
@@ -808,6 +820,7 @@ class Processor:
             finally:
                 killer.cancel()
                 p.stdout.close()
+                p.stdin.close()
             with open(os.path.join(self.logs, "benchmark.log"), "w", encoding="utf-8", errors="replace") as f:
                 f.writelines(lines[-400:])
             r = final.get("bench")
@@ -818,8 +831,13 @@ class Processor:
             ok = bool(want) and r.get("provider") == want
             why = None
             if not ok:
+                cause = next((m.group(1).strip() for m in (re.search(r"CUDA failure \d+: ([^;]+)", x) for x in lines)
+                              if m), None)
+                if cause and "out of memory" in cause:
+                    cause = "the GPU's memory is full: close other programs that use it"
                 why = (f"the GPU did not work in the benchmark: onnxruntime ran on {r.get('provider') or 'the CPU'} "
-                       f"instead of {want or 'a GPU'} (see {os.path.join(self.logs, 'benchmark.log')})")
+                       f"instead of {want or 'a GPU'}" + (f" ({cause})" if cause else "")
+                       + f"; details in {os.path.join(self.logs, 'benchmark.log')}")
             est = estimate_min(r)
             b = {"v": BENCH_V, "at": time.time(), "python": py, "runtime": g.get("runtime"), "gpu": g.get("name"),
                  "provider": r.get("provider"), "det_fps": r.get("det_fps"),
@@ -868,7 +886,7 @@ class Processor:
         finally:
             self.clip_last = job.status()
             self.clip_job = None
-            if reason and (not self.enabled or self.mode() != "clip" or self.stop_ev.is_set()):
+            if reason and (not self.enabled or self.mode() != "clip"):     # a client restart keeps (resumes) it
                 job.release(reason)
         if self.stop_ev.is_set():
             raise Stopped()
@@ -997,7 +1015,7 @@ class Processor:
         final = {}
         try:
             self.child = subprocess.Popen([py, "-u", os.path.join(pipe["dir"], "runner.py"), jp], cwd=work,
-                                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+                                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.PIPE,
                                           env=child_env(), text=True, encoding="utf-8", errors="replace", bufsize=1)
             killer = threading.Timer(JOB_TIMEOUT_S, self._kill_child)
             killer.daemon = True
@@ -1025,6 +1043,7 @@ class Processor:
             logf.close()
             if self.child is not None and self.child.stdout is not None:
                 self.child.stdout.close()
+                self.child.stdin.close()
             self.child = None
         if beat.lost:
             raise Lost()

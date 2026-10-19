@@ -22,7 +22,7 @@ MIN_DRIVER = 580
 MIN_CC = (7, 5)
 MIN_VRAM_MB = 2048
 MIN_MACOS = (14, 0)
-QUERY = "index,name,memory.total,driver_version,compute_cap"
+QUERY = "index,name,memory.total,memory.used,driver_version,compute_cap"
 
 
 def _run(cmd, timeout=15):
@@ -108,22 +108,26 @@ def find_smi():
     return None
 
 
+def _int(x):
+    try:
+        return int(float(x))
+    except (TypeError, ValueError):
+        return None
+
+
 def parse_smi(text):
-    """CSV lines of QUERY (or without compute_cap) -> [{index, name, memory_mb, driver, cc}]."""
+    """CSV lines of QUERY (or without compute_cap) -> [{index, name, memory_mb, used_mb, driver, cc}]."""
     out = []
     for line in (text or "").splitlines():
         f = [x.strip() for x in line.split(",")]
-        if len(f) < 4 or not f[0].isdigit():
+        if len(f) < 5 or not f[0].isdigit():
             continue
-        try:
-            mem = int(float(f[2]))
-        except ValueError:
-            mem = None
         cc = None
-        if len(f) > 4 and re.match(r"^\d+\.\d+$", f[4]):
-            a, b = f[4].split(".")
+        if len(f) > 5 and re.match(r"^\d+\.\d+$", f[5]):
+            a, b = f[5].split(".")
             cc = (int(a), int(b))
-        out.append({"index": int(f[0]), "name": f[1], "memory_mb": mem, "driver": f[3], "cc": cc})
+        out.append({"index": int(f[0]), "name": f[1], "memory_mb": _int(f[2]), "used_mb": _int(f[3]),
+                    "driver": f[4], "cc": cc})
     return out
 
 
@@ -177,7 +181,7 @@ def _nvidia(run):
         return _result(False, None, names[0] if names else "no NVIDIA GPU", why=why)
     code, out, err = run([smi, f"--query-gpu={QUERY}", "--format=csv,noheader,nounits"])
     if code != 0 and "compute_cap" in (err + out):              # drivers before ~510 don't know the field
-        code, out, err = run([smi, "--query-gpu=index,name,memory.total,driver_version",
+        code, out, err = run([smi, "--query-gpu=index,name,memory.total,memory.used,driver_version",
                               "--format=csv,noheader,nounits"])
     gpus = parse_smi(out) if code == 0 else []
     if not gpus:
@@ -185,15 +189,18 @@ def _nvidia(run):
         return _result(False, None, "NVIDIA GPU", why="nvidia-smi didn't answer (" + (msg[-1] if msg else
                        f"exit {code}")[:160] + "): check the NVIDIA driver.")
     ok = [g for g in gpus if not _why_not(g)]
-    pick = max(ok or gpus, key=lambda g: (g["memory_mb"] or 0, -g["index"]))
+    free = lambda g: (g["memory_mb"] or 0) - (g.get("used_mb") or 0)
+    pick = max(ok or gpus, key=lambda g: (free(g), -g["index"]))         # the one with the most free memory
     view = [dict(g, cc=f"{g['cc'][0]}.{g['cc'][1]}" if g.get("cc") else None) for g in gpus]
+    busy = pick.get("used_mb") is not None and pick.get("memory_mb") and free(pick) < 1536
     detail = ", ".join(x for x in (f"{round(pick['memory_mb'] / 1024)} GB" if pick.get("memory_mb") else None,
+                                    f"{pick['used_mb'] / 1024:.1f} GB in use by other programs" if busy else None,
                                     f"driver {pick['driver']}", "CUDA") if x)
     if not ok:
         return _result(False, None, pick["name"], detail, why=_why_not(pick) + " Clip only works here.", gpus=view,
                        device=pick["index"])
     return _result(True, "cuda", pick["name"], detail, gpus=view, device=pick["index"],
-                   memory_mb=pick.get("memory_mb"), driver=pick["driver"])
+                   memory_mb=pick.get("memory_mb"), driver=pick["driver"], busy=bool(busy))
 
 
 def _fake(spec):

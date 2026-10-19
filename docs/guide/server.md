@@ -577,6 +577,40 @@ All three POSTs return 409 when the updater isn't installed / heartbeat stale (w
 They work during lockdown (admins). On atomosserver the updater is **not installed** at the time of writing
 (no `cyber-scout*` systemd units, no `updater/` folder), so the Updates tab reports "not installed".
 
+### 7.10 Distributed processing (`routers/processing.py`, admin only)
+
+Cyber-Scout Clients with a GPU track matches next to the worker ("Help process matches", `client/README.md`), and
+any client can record a livestream and send match clips ("Clip only"). Uses `live/claims.py` (the worker's per-match
+claims and order), `live/liveingest.py` (livestream records, `LiveView`, `live_sources`, `record_key`) and
+`live/sources.py`; without them every route answers 503. Claim owners are `app-u<user id>-<processor id>`.
+Heartbeats, chunk uploads and speed tests set `request.state.audited` (no fallback entries); the audit actions are
+`processing.claim`, `processing.upload`, `processing.release`, `processing.stream`, `processing.stream_release`,
+`processing.clip`.
+
+| method | path | what |
+|---|---|---|
+| GET | `/processing/pipeline` | code version + `code` / `model` file refs, `requirements` (CPU), `runtimes` {cuda, coreml, clip} (the client's Set up installs one), `clip_extras`, `ytdlp_requirements`, `python`, `claim_s`, `heartbeat_s` |
+| GET | `/processing/pipeline/code.tar.gz?v=`, `/processing/pipeline/model.onnx` | Range-resumable; 409 on an old `v` |
+| POST | `/processing/claim` | `{processor, pipeline?, events?, skip?}` -> `{job \| null, why, counts}`: the next trackable livestream clip, claimed (409 when the pipeline changed) |
+| GET | `/processing/{ev}/{key}/clip`, `.../view.png` | the claimed match's clip (Range) / the stream camera's view reference |
+| POST | `/processing/{ev}/{key}/heartbeat` | `{processor, progress?, stage?}`; 409 when the claim was lost |
+| PUT | `/processing/{ev}/{key}/results/{kind}` | fuel / shots / analytics / matches JSON (gzip ok; <= 20 MB on the wire, 64 MB decompressed), staged |
+| POST | `/processing/{ev}/{key}/complete` | staged files into `events/<ev>/<kind>/` (matches last), the clip into `MEDIA/<ev>/<key>.mp4`, claim released; idempotent |
+| POST | `/processing/{ev}/{key}/release` | `{processor, failed?, reason?}`; 2 failures -> the match is left to the worker |
+| GET | `/processing/status` | live claims of the followed events |
+| GET / POST | `/processing/speedtest` | `?bytes=` (<= 8 MB) of random bytes / an upload that is read and dropped: the client's slow-link notice |
+| GET | `/processing/sample`, `/processing/sample.mp4?ev=&name=` | the first 24 MB of the newest faststart livestream clip (the client's benchmark; Range) + `typical_clip_bytes` |
+| POST | `/processing/streams/claim` | `{processor, events?, ev?, source?}` -> `{assignment \| null, why}`: a livestream source of a followed event in its dates (`liveingest.live_sources`), one processor per source; a source the server's recorder isn't on (`livestream.json`) first (`role: secondary`), else the one it is on (`role: backup`). Same processor + event + source -> the same `aid` (`cs` + 10 hex), so a restart resumes |
+| POST | `/processing/streams/{ev}/{aid}/heartbeat` | `{processor, state?, rec?}` -> `{matches (TBA times since the recording started), want, have, skipped, grace_s, stop}`. `want`: over (start + 193 s, + 240 s grace when the server records the event too), no clip from this stream yet, no usable clip from any other recording |
+| POST | `/processing/streams/{ev}/{aid}/release` | stop recording it |
+| POST | `/processing/streams/{ev}/{aid}/clips/{mid}` | `{processor, size (<= 1 GB), sha256}` -> `{offset, chunk_bytes, chunk_max}` (or `done`); 507 when the media disk would keep < 2 GB free. `mid` = `tba-qm12`, `tba-sf3m1`, `tba-f1m2` |
+| PUT | `/processing/streams/{ev}/{aid}/clips/{mid}/data?processor=&offset=` | one chunk (<= 16 MB); 409 `expected offset N` when out of step |
+| POST | `/processing/streams/{ev}/{aid}/clips/{mid}/finish` | `{processor, record}` (only the `tba_cut` record fields; `extra=forbid`, `record_key` must be this match): size + sha256 + MP4 checked, then `MEDIA/live/<ev>/<aid>/clips/<mid>.mp4`, `matches/<mid>.json` (+ `uploaded`, flag `uploaded_by_client`), `meta.json` (`mode: client`). Idempotent |
+
+Files: `DATA/processing/<ev>/<key>/` (job.json + staged results), `DATA/processing/<ev>/failures.json`,
+`DATA/processing/streams/<ev>/<aid>.json` (assignments, stale after `CLAIM_S`), `DATA/cache/processing/code-*.tar.gz`,
+`MEDIA/live/<ev>/<aid>/.uploads/` (uploads in progress, same disk as the clips).
+
 ---
 
 ## 8. `DATA/config/worker.json`

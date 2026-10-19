@@ -1,16 +1,23 @@
 # Cyber-Scout Client: unit tests + standalone executables for Linux, macOS (arm64 + x64) and Windows.
 # PyInstaller can't cross-compile, so each target builds on its own runner, then smoke-tests the binary
-# (client/build/smoke_test.py: start with --no-browser, GET /, GET /client/v1/status, POST /client/v1/test against a
-# local stand-in server, stop). A v* tag also creates a draft GitHub Release with the four executables + .sha256.
+# (client/build/smoke_test.py: start with --no-browser, GET /, GET /client/v1/status, the Help process matches page
+# and its GPU check, POST /client/v1/test against a local stand-in server, stop). A v* tag also creates a draft
+# GitHub Release with the four executables + .sha256.
+# Job runtime: "Set up processing" is a separate uv venv (not in the executable): client/build/runtime_check.py
+# installs it per OS with the client's own setup code (uv from its GitHub release, Python 3.12, the pins of
+# server/routers/processing.py) and checks imports, onnxruntime's GPU provider, the pipeline modules and the Clip
+# only tools: NVIDIA CUDA on Linux + Windows, Core ML on Apple silicon, Clip only on an Intel Mac.
 name: client
 
 on:
   push:
     branches: [main]
     tags: ["v*"]
-    paths: ["client/**", "web/**", ".github/workflows/client.yml"]
+    paths: ["client/**", "web/**", ".github/workflows/client.yml", "server/routers/processing.py",
+            "live/requirements-ytdlp.txt"]
   pull_request:
-    paths: ["client/**", "web/**", ".github/workflows/client.yml"]
+    paths: ["client/**", "web/**", ".github/workflows/client.yml", "server/routers/processing.py",
+            "live/requirements-ytdlp.txt"]
   workflow_dispatch:
 
 permissions:
@@ -102,6 +109,31 @@ jobs:
             client/dist/${{ matrix.file }}.sha256
           if-no-files-found: error
 
+  runtime:
+    name: "processing runtime: ${{ matrix.runtime }} on ${{ matrix.os }}"
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest       # no GPU on the runner: installs + checks the CUDA build (provider listed)
+            runtime: cuda
+          - os: windows-latest
+            runtime: cuda
+          - os: macos-14            # Apple silicon, macOS 14
+            runtime: coreml
+          - os: macos-15-intel      # Intel Mac: no tracking, Clip only tools
+            runtime: clip
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: "Set up processing (uv venv), then check it"
+        shell: bash
+        run: python client/build/runtime_check.py --runtime ${{ matrix.runtime }}
+
   release:
     name: Draft release
     if: startsWith(github.ref, 'refs/tags/v')
@@ -129,6 +161,9 @@ jobs:
           generate_release_notes: true
           body: |
             Standalone Cyber-Scout Client builds (no Python needed). Install notes: client/README.md.
+            Help process matches (http://127.0.0.1:7600/client/processing): tracking needs an NVIDIA GPU (Windows /
+            Linux, driver 580+) or Apple silicon; "Set up processing" downloads its runtime once (about 1.8 GB for
+            NVIDIA, 0.25 GB on a Mac). Any computer can run Clip only.
             * Windows: `cyberscout-client-windows-x64.exe` (SmartScreen: More info → Run anyway)
             * macOS: `cyberscout-client-macos-arm64` (Apple silicon) / `cyberscout-client-macos-x64` (Intel); unsigned:
               right-click → Open the first time, or `xattr -d com.apple.quarantine <file>`

@@ -1,8 +1,10 @@
 # Cyber-Scout Client
 
 The Cyber-Scout web app on a laptop, **with a full local copy of the server's data**, so it keeps working when the
-venue Wi-Fi doesn't. Part 2 of [docs/SYNC.md](../docs/SYNC.md). Inference stays on the server; the client only
-downloads what the server has built (site JSON, optionally videos) and queues your changes while you're offline.
+venue Wi-Fi doesn't. Part 2 of [docs/SYNC.md](../docs/SYNC.md). The client downloads what the server has built
+(site JSON, optionally videos) and queues your changes while you're offline. A laptop with a GPU can also **help
+process matches** (track match video for the server), and any laptop can **record the stream and send match clips**
+(Clip only); see [Help process matches](#help-process-matches-processor-mode).
 
 ```
 browser ──► http://127.0.0.1:7600  (Cyber-Scout Client, this folder)
@@ -42,6 +44,20 @@ Each file has a `.sha256` next to it (`shasum -a 256 -c <file>.sha256` / `sha256
   On macOS 15+, if there is no "Open" button: System Settings → Privacy & Security → "… was blocked" → **Open Anyway**.
 * **Linux**: `chmod +x cyberscout-client-linux-x64 && ./cyberscout-client-linux-x64` (add `--no-browser` on a
   machine without a desktop).
+
+**To help process matches** (optional, admins): open `http://127.0.0.1:7600/client/processing` (or Settings → Help
+process matches → the link). The page checks the GPU first:
+
+| computer | tracking | what Set up processing downloads once |
+|---|---|---|
+| Windows 10/11 or Linux with an NVIDIA GPU (GTX 16xx / RTX 20xx or newer, driver 580+, 2 GB+ video memory) | yes, CUDA | about 1.8 GB (3.2 GB on disk; needs ~9.5 GB free during the install) |
+| Mac with Apple silicon, macOS 14+ | yes, Core ML | about 0.25 GB (0.6 GB on disk) |
+| anything else (Intel Mac, AMD / Intel graphics, no driver) | no: the page says why | Clip only tools, about 0.23 GB |
+
+Then: **Set up processing** (one click; it downloads uv, Python 3.12 and the packages into the client's data folder,
+then runs a 20-second benchmark), turn **Help process matches** on, and leave the client running. Nothing else is
+installed on the computer and no admin rights are needed. Windows may ask once to let `uv.exe` / `python.exe` through
+the firewall: they only make outgoing connections, so "Cancel" is fine.
 
 **From source** (any OS with Python 3.9+):
 
@@ -131,48 +147,143 @@ Tracking one match takes the server about 3.5 minutes. Any computer running the 
 the server's own pipeline on it and upload the results. The server publishes them as if its worker had tracked the
 match (and keeps the clip in `MEDIA/<ev>/<key>.mp4`). Server side: `server/routers/processing.py`.
 
-* **Needs an admin account** (a processor's uploads become the event's tracking data) and a **processing Python**.
-* Open `http://127.0.0.1:7600/client/processing` (the switch, the status line, the Python and Set up), or start with
-  `--process on [--process-python /path/to/python]`. The status line is also in `GET /client/v1/status` →
-  `processing.line`, e.g. `processing qm12 at 40%, done 3`.
+* **Needs an admin account** (a processor's uploads become the event's tracking data).
+* Open `http://127.0.0.1:7600/client/processing`: three readouts (**GPU**, **Tracking one match** in minutes,
+  **Wi-Fi to the server**) each with a verdict, the switch with **Track matches / Clip only**, the status line, Set
+  up and Advanced. Or start with `--process on [--process-python /path/to/python]`. The status line is also in
+  `GET /client/v1/status` → `processing.line`, e.g. `processing qm12 at 40%, done 3`, and the main app's Settings
+  page shows it (with the notices below and a link to the page) when it runs inside the client.
 * **Same claims as the server's worker** (`events/<ev>/claims/<key>.json`, `live/claims.py`), in the same order
   (time order, `priority.json` first), so the server, `tools/helper.py` and any number of clients never track a
   match twice. A heartbeat refreshes the claim every minute; a claim not refreshed for 30 min is handed to someone
   else (a processor that disappears costs at most 30 min for that match). A match that fails here is released and
   skipped here for 30 min; after 2 processor failures the server leaves it to its own worker.
-* **Data cost** (phone hotspot / venue link): each match downloads its clip (typically 150–250 MB) and uploads
-  1–3 MB; the first run also fetches the code (~10 MB) and the model (~40 MB). Processing is off until you turn it
-  on, and **Ask before downloading a clip over N MB** (`process_warn_mb`, default 100, `0` = never ask) pauses it
-  before each large clip (the match goes back to the others) until you press **Allow large clips** (until the client
-  restarts), raise the size or turn processing off. The page and `processing.data` show the bytes used this session.
 * One match at a time, never the same one twice: the server never hands a processor a match it already holds, and
   `processing/inflight.json` remembers the job in progress, so after a crash or restart the client releases that
   claim before it asks for work (instead of leaving it to go stale for 30 min).
 * Only **livestream clips** are handed out (the worker's livestream input: a trackable stream with a calibrated
   camera). Per-match YouTube uploads stay with the server's worker.
 
-**Why a separate Python.** The pipeline (`live/` + `src/`: onnxruntime, PyAV, OpenCV, NumPy, SciPy,
-pupil-apriltags) is ~400 MB of native packages that can't be part of this stdlib client. The client runs it as a
-subprocess, `<python> -u <pipeline>/runner.py job.json` (`csclient/procrunner.py`, shipped by the server inside its
-code tarball so it always matches that code), which calls `live/worker.py`'s `process_match` on the clip and reports
-progress on stdout (`@@CS {json}` lines). The processing Python is, in order:
+### GPU only
 
-1. Settings → **Processing Python** (`process_python` in `config.json`, `--process-python`): any Python with the
-   packages, e.g. a Cyber-Scout checkout's `.venv/bin/python` on a dev machine;
-2. `processing/venv/` made by **Set up processing** (one time, needs [uv](https://docs.astral.sh/uv/)):
-   `uv venv --python 3.12` + `uv pip install -r requirements.txt` (the pins the server sends, from the root
-   Dockerfile; CPU onnxruntime, which uses CoreML on a Mac). Without uv: install it, or make a venv by hand and
-   point setting 1 at it.
+A CPU-only laptop takes far longer per match than the server, so it would hold matches back. `csclient/gpu.py`
+checks the machine once per run (**Check again** after installing a driver):
 
-The client checks that Python once per version (`import onnxruntime, av, cv2, numpy, scipy, pupil_apriltags`); the
-status says `needs_setup: …` until it works. On macOS the pipeline runs with `FORCE_CPU=1 ORT_COREML=1` (like
-`tools/helper.py`).
+* **NVIDIA** (Windows / Linux): `nvidia-smi` lists the GPUs; one is usable with driver **580 or newer** (CUDA 13,
+  which onnxruntime-gpu 1.31 is built for), compute capability **7.5+** (CUDA 13 dropped Maxwell / Pascal / Volta:
+  GTX 16xx, RTX 20xx and newer) and 2 GB+ of memory. The one with the most free memory is used (`GPU_DEVICE`); one
+  that other programs have filled is shown as "N GB in use by other programs".
+* **Apple silicon** (also when the Intel build runs through Rosetta: `sysctl hw.optional.arm64`) on macOS 14+: Core
+  ML (`FORCE_CPU=1 ORT_COREML=1`, like `tools/helper.py`; the compiled model is cached in
+  `processing/coreml-cache/` between matches).
+* Otherwise tracking stays off: state `no_gpu`, with the reason (e.g. "this computer's graphics (Intel(R) UHD
+  Graphics 620) can't run the tracker: it needs an NVIDIA GPU with CUDA. Clip only works here.").
 
-**Code and model come from the server**, cached by version: `GET /app/v1/processing/pipeline` names the code
-version (content hash of `live/` + `src/` + the runner, e.g. `p-e46bb97a3587`) and the model's sha256; the client
-downloads `code.tar.gz` and `robot.onnx` (Range-resumable, checksum-verified) into `processing/pipelines/<version>/`
-and `processing/models/<sha256>.onnx`. Every claim carries the version; when the server's code changes, the claim is
-refused (409) and the client fetches the new code first.
+The benchmark is the final check: if onnxruntime falls back to the CPU (driver problem, the GPU's memory full), the
+page says "the GPU did not work in the benchmark ... (the GPU's memory is full: close other programs that use it)"
+and tracking stays off. `CS_FAKE_GPU=none|cuda|coreml` fakes the check (tests, screenshots).
+
+### Set up processing
+
+The pipeline (`live/` + `src/`: onnxruntime, PyAV, OpenCV, NumPy, SciPy, pupil-apriltags) is native code that can't
+be part of this stdlib client, so it runs in a separate **processing Python**: `processing/venv/`, made once by
+**Set up processing** (`csclient/procsetup.py`). It needs no Python on the computer and no admin rights:
+
+1. **uv** ([astral.sh/uv](https://docs.astral.sh/uv/)): an installed one, else the pinned release (0.12.21) is
+   downloaded from GitHub into `processing/tools/` and checked against its published sha256.
+2. `uv venv --python 3.12` (uv downloads python-build-standalone into `processing/python/`).
+3. `uv pip install` of the **runtime for this GPU**, with the server's pins (`GET /app/v1/processing/pipeline` →
+   `runtimes`): `cuda` = `onnxruntime-gpu[cuda,cudnn]` (the pip CUDA 13 + cuDNN wheels; `ort.preload_dlls()` loads
+   them, no CUDA toolkit needed), `coreml` = plain `onnxruntime`, `clip` = just numpy / opencv / av. Every runtime
+   also gets the Clip only tools (`imageio-ffmpeg`'s ffmpeg binary, `deno` for yt-dlp's YouTube support) and yt-dlp
+   from `live/requirements-ytdlp.txt` (`--require-hashes`, like the worker image).
+4. uv's cache is deleted afterwards (the files live in the venv), then the benchmark runs.
+
+The page shows what it will download and how much disk it needs before you press the button, and Set up refuses
+when the disk is too full (it needs twice the install size + 3 GB free while it runs: the download sits in uv's
+cache first). Measured installs (uv 0.12.21, 2026-10-18):
+
+| runtime | download | on disk | time |
+|---|---|---|---|
+| `cuda` (Linux x86_64, RTX 3060) | 1.75 GB | 3.1 GB | 33 s on a fast link |
+| `coreml` (Apple M1) | 0.24 GB | 0.6 GB | 12 s (setup + benchmark: 39 s) |
+| `clip` | ~0.23 GB | ~0.5 GB | |
+
+Settings → **Processing Python** (`process_python`, `--process-python`) can instead name any Python that has the
+packages, e.g. a Cyber-Scout checkout's `.venv/bin/python`. The client checks the Python once per version (`import
+onnxruntime, av, cv2, numpy, scipy, pupil_apriltags`; Clip only: `av, cv2, numpy, yt_dlp` + an ffmpeg); the status
+says `needs_setup: …` until it works. `client/build/runtime_check.py --runtime auto|cuda|coreml|clip` runs the same
+install + checks by hand (CI runs it on every OS).
+
+### Benchmark
+
+After setup (and with **Run benchmark**) `runner.py --bench` decodes the first 24 MB of a recent livestream clip from
+the server (`GET /app/v1/processing/sample`; synthetic frames when the server has none) and times the detector on
+40 frames with this GPU. Minutes per match = detector at 30 Hz over a 190 s clip + 5 × the decode time (the rest of
+the pipeline, fuel tracker / OCR / shots / identity, is CPU work that scales with it) + 12 s, fitted to a real job:
+
+| computer | detector | decode | estimate | real match |
+|---|---|---|---|---|
+| Apple M1, Core ML (2026wagg qm10, 1080p60 livestream clip) | 27.3 fps | 622 fps | 5.2 min | 5.2 min (312.7 s) |
+
+After the first real matches the page shows the measured time (median of the last 3) instead. A computer that needs
+more than **25 min per match** pauses (state `slow`): "This computer needs about 34 min per match (benchmark; the
+server needs about 4): tracking here would slow the event down. Clip only helps more, or track anyway." with
+**Switch to Clip only** and **Track anyway** (`allow_slow`, saved).
+
+### Slow connection and data cost
+
+Each match downloads its clip (typically 150–250 MB; 191 MB at 2026wagg) and uploads 1–3 MB; the first run also
+fetches the code (~12 MB) and the model (~38 MB). The client measures the link to the server
+(`csclient/procnet.py`): a short speed test (`GET /app/v1/processing/speedtest`, 1 MB, 4 MB more on a fast link, and
+1 MB up; again every 30 min without real transfers, or with **Check connection**) plus every real clip transfer.
+When a clip would take more than 3 minutes to download, the page and the main app's Settings say so:
+
+> Slow Wi-Fi: about 0.6 MB/s from the server, so a match clip (191 MB) takes about 6 min to download; processing
+> here won't be optimal (the server may be faster on its own). Each clip is also over your 100 MB data warning, so
+> you're asked before every download.
+
+(measured through a link throttled to 0.6 MB/s down / 0.4 MB/s up). On a metered link (phone hotspot) **Ask before
+downloading a clip over N MB** (`process_warn_mb`, default 100, `0` = never ask) pauses before each large clip (the
+match goes back to the others) until you press **Allow large clips** (until the client restarts), raise the size or
+turn processing off. The page and `processing.data` show the bytes used this session.
+
+### Clip only
+
+For a computer without a usable GPU, or one too slow to track: **Clip only** records a livestream and cuts every
+match out of it, with the server's own code (`live/livestream.py` Recorder + ChunkStore, `live/liveingest.py`
+`tba_cut`), run by `runner.py --clip` in the processing Python (`csclient/clipper.py` drives it):
+
+1. `POST /app/v1/processing/streams/claim`: the server assigns a stream, one client per stream: a livestream source
+   its own recorder isn't on (a second view) first, else the one it records (a backup recording). The client
+   records it into `processing/streams/<aid>/rec/<ev>/r<n>/` (one folder per video id; YouTube's DVR fills a short
+   gap after a restart), keeping the last 2 hours (and at most 40 % of the free disk, 3–12 GB; it needs 8 GB free
+   to start).
+2. A heartbeat every minute keeps the assignment and returns TBA's match start times plus which matches the server
+   still lacks a clip for (`want`: over for 3 min, no usable clip from any other recording; when the server records
+   the event itself it first waits 4 more minutes for its own clip). Only those are cut (TBA start − 15 s to the
+   end + 10 s, the auto start measured on the clip by the overlay OCR or else taken from TBA) and uploaded.
+3. Each clip goes up in 8 MB chunks (`POST …/clips/<mid>` → offset, `PUT …/data?offset=` per chunk, `POST …/finish`
+   with the record); a broken link resumes from the server's offset. The local clip is deleted once it is sent.
+4. The server checks size + sha256, then writes `MEDIA/live/<ev>/<aid>/clips/<mid>.mp4`, `matches/<mid>.json` (flag
+   `uploaded_by_client`) and `meta.json`: an ordinary livestream record, so the worker or a GPU processor tracks it
+   when that stream is calibrated (otherwise it is the match's video on the site).
+
+The page lists the stream, the recorder (state, seconds behind live, disk), and per match: uploaded, the server has
+it, cutting, waiting (e.g. "the recording is missing 11 of 37 chunks of this match" for a match that started before
+the recording did). Recording a 1080p60 stream takes about 1 MB/s down; when the recording falls more than 90 s
+behind live, or a clip would take over 5 min to upload, the slow-Wi-Fi notice says so.
+
+### Code, model, files
+
+Code and model come from the server, cached by version: `GET /app/v1/processing/pipeline` names the code version
+(content hash of `live/` + `src/` + the runner + the pins, e.g. `p-e46bb97a3587`) and the model's sha256; the client
+downloads `code.tar.gz` and `robot.onnx` (Range-resumable, checksum-verified; Clip only skips the model) into
+`processing/pipelines/<version>/` and `processing/models/<sha256>.onnx`. Every claim carries the version; when the
+server's code changes, the claim is refused (409) and the client fetches the new code first. The pipeline runs as
+`<python> -u <pipeline>/runner.py job.json` (`csclient/procrunner.py`, shipped by the server inside its code tarball
+so it always matches that code), which calls `live/worker.py`'s `process_match` on the clip and reports progress on
+stdout (`@@CS {json}` lines).
 
 Per match (all resumable on a flaky link): `POST /app/v1/processing/claim` → `GET …/clip` (Range; `processing/parts/`
 survives restarts) → pipeline → `PUT …/results/{fuel,shots,analytics,matches}` (gzip) → `POST …/complete`
@@ -182,16 +293,27 @@ survives restarts) → pipeline → `PUT …/results/{fuel,shots,analytics,match
 |---|---|
 | `processing/pipelines/<version>/` | the server's pipeline code (`live/`, `src/`, `runner.py`, `requirements.txt`) |
 | `processing/models/<sha256>.onnx` | the detector |
-| `processing/venv/` | the Python made by Set up processing |
+| `processing/venv/`, `processing/python/`, `processing/tools/` | the processing Python Set up made (`venv/cs-runtime.json` names its runtime), uv's Python, uv |
+| `processing/bench.json`, `processing/perf.json` | the benchmark result; timings of the last 20 real matches |
+| `processing/bench/` | the benchmark's sample clip (24 MB) |
+| `processing/coreml-cache/` | Core ML's compiled detector (Macs) |
 | `processing/work/<ev>/<key>/` | the match being tracked (clip, job.json, runner.log); removed afterwards |
-| `processing/logs/<key>.log` | the pipeline's log of the last 30 matches |
+| `processing/streams/<aid>/` | Clip only: the recording (`rec/`), `want.json`, `state.json` (uploaded), `runner.log` |
+| `processing/logs/<key>.log`, `logs/benchmark.log` | the pipeline's log of the last 30 matches; the last benchmark |
 | `processing/inflight.json` | the job in progress (its claim is released after a crash / restart) |
 
-Control API: `GET /client/v1/processing` → `{enabled, state (off | waiting | checking | updating | needs_setup |
-idle | confirm | downloading | processing | uploading | error), line, message, key, match, pct, done, failed, last,
-large, data {down, up, clips}, warn_mb, large_ok, processor, python, python_setting, pipeline, events, setup}`;
-`PUT /client/v1/processing {enabled?, python?: absolute path | null, events?: [keys] | null, warn_mb?: 0-100000,
-allow_large?: true}`; `POST /client/v1/processing/setup` (202; progress in `setup`).
+Control API: `GET /client/v1/processing` → `{enabled, mode (track | clip), state (off | waiting | checking | updating
+| needs_setup | no_gpu | benchmarking | slow | idle | confirm | downloading | processing | uploading | clip | error),
+line, message, key, match, pct, done, failed, last, large, data {down, up, clips}, warn_mb, large_ok, allow_slow,
+processor, python, python_setting, pipeline, events, setup {state, message, log, progress}, gpu {ok, kind, runtime,
+name, detail, why, device, gpus}, speed {per_match_min, from (measured | benchmark), measured_min, slow, slow_min,
+server_min, bench, running, jobs}, net {down_bps, up_bps, clip_bytes, clip_down_min, clip_up_min, slow, notice,
+probing}, notices [{kind (no_gpu | gpu_failed | slow_gpu | slow_net | metered), level, text}], clip {aid, ev, source,
+label, url, role, rec, uploaded, skipped, upload, matches}, plan {runtime, label, download, disk, free, need,
+installed, up_to_date, ok, why}}`; `PUT /client/v1/processing {enabled?, mode?: track | clip, python?: absolute path
+| null, events?: [keys] | null, warn_mb?: 0-100000, allow_large?: true, allow_slow?: true}`; `POST
+/client/v1/processing/setup` (202; progress in `setup`), `POST …/bench` (202), `POST …/netcheck` (202), `POST
+…/gpu` (check the GPU again → `{gpu}`).
 
 ## Control API (`/client/v1/*`)
 
@@ -211,7 +333,7 @@ local `cs_csrf` cookie (the client's own token — the server's CSRF token and s
 | `POST sync` `{ev?, media?}` | `202 {started:true, online}` |
 | `GET outbox` | `[{id, key, method, path, created, updated, state:"queued"\|"sending"\|"conflict"\|"failed", attempts, status, error, body, response}]` |
 | `DELETE outbox/<id>` | `204`; `404` unknown; `409` while it is being sent |
-| `GET processing`, `PUT processing`, `POST processing/setup` | processor mode, see [Help process matches](#help-process-matches-processor-mode) |
+| `GET processing`, `PUT processing`, `POST processing/setup`, `POST processing/{bench,netcheck,gpu}` | processor mode, see [Help process matches](#help-process-matches-processor-mode) |
 
 ## Storage
 
@@ -230,7 +352,8 @@ state/<ev>.json    per event: manifest cursor, last sync, verified file index
 web/v-<version>/   the server's web app; web/current.json names the one in use
 parts/             partial downloads being resumed (removed after 2 days)
 logs/client.log    rotating log (1 MB × 5)
-processing/…       processor mode: pipeline code, model, venv, work dir, logs (see Help process matches)
+processing/…       processor mode: pipeline code, model, venv + its Python + uv, benchmark, Clip only recordings,
+                   work dir, logs (see Help process matches; delete processing/ to remove all of it)
 ```
 
 Deleting the folder resets the client (queued changes are lost). Deleting `site/` and `state/` forces a full resync.
@@ -260,8 +383,10 @@ python3 -m unittest discover -s client/tests -v          # fake part-1 server; ~
 Code: `cyberscout_client.py` (entry) → `csclient/app.py` (wiring, CLI), `web.py` (local HTTP server, proxy,
 control API, security checks), `sync.py` (sync engine + outbox flush), `mirror.py` (safe bundle extraction, web
 mirror), `net.py` (keep-alive HTTP(S) to the server, session/CSRF), `store.py` (config, session, SQLite outbox,
-per-event state), `util.py`, `processor.py` (processor mode), `procui.py` (its page), `procrunner.py` (the pipeline
-side; runs in the processing Python, shipped by the server).
+per-event state), `util.py`, `processor.py` (processor mode), `gpu.py` (the GPU check), `procsetup.py` (Set up:
+uv, runtimes, sizes), `procnet.py` (connection speed, the slow-Wi-Fi notice), `clipper.py` (Clip only), `procui.py`
+(the processing page), `procrunner.py` (the pipeline side: track / `--bench` / `--clip`; runs in the processing
+Python, shipped by the server).
 
 ## Building
 
@@ -288,11 +413,14 @@ python3 client/build/smoke_test.py client/dist/<file> [--server mock | --server 
 `GET /` (web app + `cs_client` cookie), `GET /client/v1/status`, optionally `POST /client/v1/test` (`--server mock`
 starts a stand-in `/app/v1/info` on the machine; a real address only calls its public `/app/v1/info`), and stops it.
 
-**CI** (`.github/workflows/client.yml`): on push / PR touching `client/` or `web/`, a matrix of ubuntu-latest,
-macos-14 (arm64), macos-15-intel (x64) and windows-latest runs the unit tests, builds with these scripts, smoke-tests
-the binary and uploads the artifacts `cyberscout-client-linux-x64`, `cyberscout-client-macos-arm64`,
-`cyberscout-client-macos-x64`, `cyberscout-client-windows-x64.exe` (each with its `.sha256`). A `v*` tag also creates
-a **draft** GitHub Release with the four files and `SHA256SUMS`.
+**CI** (`.github/workflows/client.yml`): on push / PR touching `client/`, `web/`, `server/routers/processing.py` or
+`live/requirements-ytdlp.txt`, a matrix of ubuntu-latest, macos-14 (arm64), macos-15-intel (x64) and windows-latest
+runs the unit tests, builds with these scripts, smoke-tests the binary (incl. the processing page and its GPU check
+inside the executable) and uploads the artifacts `cyberscout-client-linux-x64`, `cyberscout-client-macos-arm64`,
+`cyberscout-client-macos-x64`, `cyberscout-client-windows-x64.exe` (each with its `.sha256`). Job **runtime** installs
+the processing runtime with `build/runtime_check.py` on each OS (CUDA on Linux + Windows, Core ML on macos-14, Clip
+only on macos-15-intel) and checks imports, the GPU execution provider, the pipeline modules and the Clip only tools.
+A `v*` tag also creates a **draft** GitHub Release with the four files and `SHA256SUMS`.
 
 Signing (not done; that is why the Gatekeeper / SmartScreen steps above exist): macOS: set `CS_CODESIGN_ID` to a
 Developer ID Application identity, then notarize (`xcrun notarytool submit … --wait`; a bare executable can't be

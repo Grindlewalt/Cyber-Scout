@@ -185,7 +185,7 @@ def plan(root, pipe, gpu):
     m = marker(venv)
     reqs, _ = requirements(pipe, runtime) if pipe else ([], None)
     same = bool(m and m.get("runtime") == runtime and os.path.isfile(venv_python(venv)))
-    up_to_date = bool(same and reqs and m.get("requirements") == _req_hash(reqs))
+    up_to_date = bool(same and (not reqs or m.get("requirements") == _req_hash(reqs)))   # no pipeline info yet: trust it
     os.makedirs(root, exist_ok=True)
     free = shutil.disk_usage(root).free
     need = (0 if same else 2 * s["disk"]) + HEADROOM

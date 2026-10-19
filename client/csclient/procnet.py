@@ -15,7 +15,7 @@ WINDOW_S = 1800
 PROBE_EVERY_S = 1800
 SLOW_DOWN_MIN = 3.0          # a clip taking longer than this to download: processing here isn't optimal
 SLOW_UP_MIN = 5.0            # Clip only: a clip taking longer than this to upload
-STREAM_BPS = 1.1e6           # a 1080p60 livestream (~8-9 Mbit/s): Clip only needs at least this down
+BEHIND_S = 90                # Clip only: the recording this far behind live = the Wi-Fi can't keep up with the stream
 CLIP_BYTES = 191_000_000     # a typical livestream match clip (2026wagg: 191 MB each)
 
 
@@ -47,9 +47,15 @@ class NetMeter:
         with self.lock:
             return max([x[0] for x in self.samples if x[4] != "probe"] or [0.0])
 
-    def due(self, now=None):
+    def due(self, up=False, now=None):
+        """Time for a speed test: none for PROBE_EVERY_S and no real transfer meanwhile, or (up: Clip only, which
+        uploads) no upload measured yet."""
         now = now or time.time()
-        return not self.probing and now - self.probe_at > PROBE_EVERY_S and now - self.last_real(now) > PROBE_EVERY_S
+        if self.probing or now - self.probe_at < PROBE_EVERY_S:
+            return False
+        if up and self.rate("up", now) is None:
+            return True
+        return now - self.last_real(now) > PROBE_EVERY_S
 
     def probe(self, server, count=None, up=True):
         """Speed test: 1 MB down (then 4 MB more on a fast link) and 1 MB up. -> (down B/s, up B/s)."""
@@ -97,14 +103,14 @@ class NetMeter:
             count("down", got)
         return got, el
 
-    def view(self, mode="track", warn_mb=0):
+    def view(self, mode="track", warn_mb=0, behind_s=None):
         down, up = self.rate("down"), self.rate("up")
         clip = self.clip_bytes or CLIP_BYTES
         out = {"down_bps": round(down) if down else None, "up_bps": round(up) if up else None,
                "clip_bytes": clip, "probing": self.probing, "probe_at": self.probe_at or None, "error": self.error,
                "clip_down_min": round(clip / down / 60, 1) if down else None,
                "clip_up_min": round(clip / up / 60, 1) if up else None}
-        out["slow"], out["notice"] = notice(mode, down, up, clip, warn_mb)
+        out["slow"], out["notice"] = notice(mode, down, up, clip, warn_mb, behind_s)
         return out
 
 
@@ -117,15 +123,17 @@ def _mins(m):
     return f"{m:.0f} min" if m >= 1.5 else f"{m * 60:.0f} s"
 
 
-def notice(mode, down, up, clip=CLIP_BYTES, warn_mb=0):
-    """(slow?, text or None).  Combined with the metered-link warning when clips are over warn_mb."""
+def notice(mode, down, up, clip=CLIP_BYTES, warn_mb=0, behind_s=None):
+    """(slow?, text or None).  Combined with the metered-link warning when clips are over warn_mb.  Clip only: the
+    stream comes from YouTube / Twitch, so its health is how far the recording is behind live (behind_s); the link to
+    the server matters for the uploads."""
     mb = clip / 1e6
     parts, slow = [], False
     if mode == "clip":
-        if down and down < STREAM_BPS:
+        if behind_s is not None and behind_s > BEHIND_S:
             slow = True
-            parts.append(f"Slow Wi-Fi: about {_mbs(down)} MB/s down, and recording the stream needs about "
-                         f"{_mbs(STREAM_BPS)} MB/s, so the recording will fall behind")
+            parts.append(f"Slow Wi-Fi: the recording is {_mins(behind_s / 60)} behind the live stream, so this "
+                         "connection can't keep up with it")
         if up:
             m = clip / up / 60
             if m > SLOW_UP_MIN:

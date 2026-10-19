@@ -36,6 +36,22 @@ def emit(**kw):
     sys.stdout.flush()
 
 
+def die_with_parent():
+    """The client keeps our stdin open; EOF = the client is gone (crashed, killed, closed): stop too, instead of
+    tracking / recording on without anyone reading the results (all OSes: the pipe closes when the process ends)."""
+    import threading
+
+    def watch():
+        try:
+            while sys.stdin.read(4096):
+                pass
+        except (OSError, ValueError):
+            pass
+        os._exit(3)
+    if os.environ.get("CS_RUNNER_PARENT_PIPE") == "1":
+        threading.Thread(target=watch, name="parent-watch", daemon=True).start()
+
+
 def clip_seconds(path):
     try:
         import av
@@ -389,6 +405,7 @@ def clip_main(path):
 
 
 if __name__ == "__main__":
+    die_with_parent()
     if len(sys.argv) > 2 and sys.argv[1] == "--bench":
         sys.exit(bench_main(sys.argv[2]))
     if len(sys.argv) > 2 and sys.argv[1] == "--clip":

@@ -16,7 +16,8 @@ a = Analysis(
     pathex=[CLIENT],
     datas=[(WEB, "web_bundle")],
     hiddenimports=["csclient", "csclient.app", "csclient.web", "csclient.sync", "csclient.net", "csclient.mirror",
-                   "csclient.store", "csclient.util"],
+                   "csclient.store", "csclient.util", "csclient.processor", "csclient.procui", "csclient.gpu",
+                   "csclient.procsetup", "csclient.procnet", "csclient.clipper"],
     excludes=["tkinter", "unittest", "pydoc", "doctest", "pdb", "lib2to3", "test", "idlelib", "turtle"],
     noarchive=False,
 )

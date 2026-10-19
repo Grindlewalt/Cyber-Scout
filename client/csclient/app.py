@@ -203,6 +203,13 @@ def main(argv=None):
     app.start()
     if not a.no_browser:
         threading.Timer(0.6, lambda: webbrowser.open(app.url)).start()
+    def on_term(*_):                            # `kill` / a service manager: shut down like Ctrl+C (stops the
+        raise KeyboardInterrupt()               # processing children, gives claims back)
+    try:
+        import signal
+        signal.signal(signal.SIGTERM, on_term)
+    except (ValueError, OSError, AttributeError):
+        pass
     print(f"\n  Cyber-Scout Client is running: {app.url}\n  Data: {data}\n"
           f"  Help process matches: {app.url}client/processing\n  Press Ctrl+C to stop.\n", flush=True)
     try:

@@ -103,7 +103,7 @@ class TestProcessing(Base):
         root = os.path.join(self.app.data_dir, "processing")
         self.assertTrue(os.path.isfile(os.path.join(root, "pipelines", P.version, "runner.py")))
         self.assertEqual(len(os.listdir(os.path.join(root, "models"))), 1)
-        self.assertEqual(os.listdir(os.path.join(root, "work", EV)), [])                 # cleaned up
+        self.assertTrue(wait_for(lambda: os.listdir(os.path.join(root, "work", EV)) == []))   # cleaned up
         self.assertTrue(os.path.isfile(os.path.join(root, "logs", f"{k1}.log")))
         b = P.claim_bodies[0]
         self.assertEqual((b["pipeline"], b["processor"]), (P.version, self.app.config["process_id"]))
@@ -498,21 +498,24 @@ class TestGPUDetect(unittest.TestCase):
         return run
 
     def test_nvidia(self):
-        q = "0, NVIDIA GeForce RTX 3060 Ti, 8192, 610.43.03, 8.6\n1, NVIDIA GeForce RTX 3060, 12288, 610.43.03, 8.6\n"
+        q = "0, NVIDIA GeForce RTX 3060 Ti, 8192, 300, 610.43.03, 8.6\n1, NVIDIA GeForce RTX 3060, 12288, 11800, 610.43.03, 8.6\n"
         orig = G.find_smi
         G.find_smi = lambda: "/usr/bin/nvidia-smi"
         try:
             g = G._nvidia(self.run_with({"--query-gpu": (0, q, "")}))
-            self.assertEqual((g["ok"], g["kind"], g["device"], g["name"]), (True, "cuda", 1, "NVIDIA GeForce RTX 3060"))
-            self.assertEqual(G.pipeline_env(g), {"GPU_DEVICE": "1"})
-            g = G._nvidia(self.run_with({"--query-gpu": (0, "0, NVIDIA GeForce GTX 1080, 8192, 590.10, 6.1\n", "")}))
+            self.assertEqual((g["ok"], g["kind"], g["device"], g["name"]), (True, "cuda", 0, "NVIDIA GeForce RTX 3060 Ti"))
+            self.assertEqual(G.pipeline_env(g), {"GPU_DEVICE": "0"})                    # the most free memory
+            g = G._nvidia(self.run_with({"--query-gpu": (0, "0, NVIDIA GeForce RTX 3060, 12288, 11800, 610.43.03, 8.6\n", "")}))
+            self.assertTrue(g["ok"] and g["busy"])
+            self.assertIn("11.5 GB in use by other programs", g["detail"])
+            g = G._nvidia(self.run_with({"--query-gpu": (0, "0, NVIDIA GeForce GTX 1080, 8192, 0, 590.10, 6.1\n", "")}))
             self.assertFalse(g["ok"])
             self.assertIn("compute capability 6.1", g["why"])
             self.assertEqual(g["runtime"], "clip")
-            g = G._nvidia(self.run_with({"--query-gpu": (0, "0, NVIDIA RTX A2000, 6144, 536.23, 8.6\n", "")}))
+            g = G._nvidia(self.run_with({"--query-gpu": (0, "0, NVIDIA RTX A2000, 6144, 0, 536.23, 8.6\n", "")}))
             self.assertIn("driver (536.23) is too old", g["why"])
             old = {"compute_cap": (2, "", 'Field "compute_cap" is not a valid field to query.'),
-                   "driver_version --format": (0, "0, NVIDIA GeForce RTX 4090, 24564, 612.01\n", "")}
+                   "driver_version --format": (0, "0, NVIDIA GeForce RTX 4090, 24564, 1000, 612.01\n", "")}
             g = G._nvidia(self.run_with(old))
             self.assertTrue(g["ok"], g)
         finally:
@@ -612,10 +615,23 @@ class TestNotices(unittest.TestCase):
         slow, t = N.notice("track", 20e6, None, 191e6, 100)
         self.assertFalse(slow)
         self.assertIn("over your 100 MB warning", t)
-        slow, t = N.notice("clip", 0.8e6, 0.3e6, 191e6, 100)
+        slow, t = N.notice("clip", 0.8e6, 0.3e6, 191e6, 100, behind_s=240)
         self.assertTrue(slow)
-        self.assertIn("recording the stream needs about 1.1 MB/s", t)
+        self.assertIn("the recording is 4 min behind the live stream", t)
         self.assertIn("Also slow: about 0.3 MB/s up, so a match clip (191 MB) takes about 11 min to upload", t)
+        self.assertEqual(N.notice("clip", 0.2e6, 5e6, 191e6, 100, behind_s=8), (False, None))   # stream keeps up
+
+    def test_probe_due(self):
+        m = N.NetMeter()
+        self.assertTrue(m.due())
+        m.add("down", 50 << 20, 10, "clip")                 # a real download just now: no speed test needed
+        self.assertFalse(m.due())
+        self.assertTrue(m.due(up=True))                      # ... unless the upload speed matters (Clip only)
+        m.add("up", 1 << 20, 2, "probe")
+        m.probe_at = time.time()
+        self.assertFalse(m.due(up=True))
+        self.assertFalse(m.due(now=time.time() + 600))
+        self.assertTrue(m.due(now=time.time() + N.PROBE_EVERY_S + N.WINDOW_S))
 
     def test_estimate(self):
         self.assertIsNone(PR.estimate_min({}))
@@ -664,6 +680,19 @@ class TestUnits(unittest.TestCase):
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 
+    def test_runner_stops_when_the_client_is_gone(self):
+        import subprocess
+        code = ("import sys, time; sys.path.insert(0, %r); import procrunner; procrunner.die_with_parent(); "
+                "print('up', flush=True); time.sleep(60)" % os.path.join(os.path.dirname(HERE), "csclient"))
+        p = subprocess.Popen([sys.executable, "-c", code], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                             env=PR.child_env(), text=True)
+        self.assertEqual(p.stdout.readline().strip(), "up")
+        t0 = time.time()
+        p.stdin.close()                                   # what the OS does when the client process ends
+        self.assertEqual(p.wait(10), 3)
+        self.assertLess(time.time() - t0, 5)
+        p.stdout.close()
+
     def test_child_env_drops_python_overrides(self):
         os.environ["PYTHONPATH"] = "/somewhere"
         try:
@@ -696,7 +725,7 @@ class TestUnits(unittest.TestCase):
                 json.dump(job, f)
             import subprocess
             p = subprocess.run([sys.executable, "-u", os.path.join(code, "runner.py"), jp], capture_output=True,
-                               text=True, timeout=60, env=PR.child_env())
+                               text=True, timeout=60, env=PR.child_env({"CS_RUNNER_PARENT_PIPE": "0"}))
             self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
             msgs = [json.loads(ln[len(PR.PROTO):]) for ln in p.stdout.splitlines() if ln.startswith(PR.PROTO)]
             self.assertIn({"progress": 0.4, "stage": "processing"}, msgs)
