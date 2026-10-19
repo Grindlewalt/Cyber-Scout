@@ -306,6 +306,11 @@ class TestNoGPU(Base):
         self.assertEqual(s["line"], "can't track here: no usable GPU (Clip only works)")
         self.assertEqual(s["notices"][0]["kind"], "no_gpu")
         self.assertEqual(s["plan"]["runtime"], "clip")                  # Set up would install the Clip only tools
+        pr = self.app.processor                                          # a benchmark from another GPU doesn't count
+        pr.bench = {"v": PR.BENCH_V, "runtime": "coreml", "est_min": 66.0, "ok": True}
+        s = self.pstatus()
+        self.assertEqual((s["speed"]["per_match_min"], s["speed"]["slow"]), (None, False))
+        self.assertNotIn("slow_gpu", [n["kind"] for n in s["notices"]])
         self.assertEqual(self.proc.claim_bodies, [])
         self.assertFalse([r for r in self.fs.state.requests if "/pipeline/code" in r[1]])   # nothing downloaded
 

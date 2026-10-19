@@ -330,11 +330,16 @@ class Processor:
         return round(xs[len(xs) // 2] / 60, 1) if xs else None
 
     def per_match_min(self):
+        """(minutes per match, "measured" | "benchmark") for the GPU this computer has now (none: (None, None))."""
+        g = self.gpu_info
+        if g is not None and not g.get("ok"):
+            return None, None
         m = self.measured_min()
         if m is not None:
             return m, "measured"
         b = self.bench
-        if b and b.get("est_min") is not None and b.get("v") == BENCH_V:
+        if b and b.get("est_min") is not None and b.get("v") == BENCH_V and \
+                (g is None or b.get("runtime") == g.get("runtime")):
             return b["est_min"], "benchmark"
         return None, None
 
@@ -355,7 +360,8 @@ class Processor:
             if g and not g.get("ok"):
                 out.append({"kind": "no_gpu", "level": "bad", "text": f"Tracking needs a GPU: {g.get('why')}"})
             b = self.bench
-            if b and b.get("v") == BENCH_V and not b.get("ok") and b.get("why"):
+            if g and g.get("ok") and b and b.get("v") == BENCH_V and not b.get("ok") and b.get("why") \
+                    and b.get("runtime") == g.get("runtime"):
                 out.append({"kind": "gpu_failed", "level": "bad", "text": b["why"]})
             if self.slow():
                 out.append({"kind": "slow_gpu", "level": "warn", "text": self._slow_text()})

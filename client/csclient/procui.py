@@ -164,8 +164,9 @@ SCRIPT = b"""\"use strict\";
       else verdict("gj", g.ok ? "go" : "warn", g.ok ? "Can track" : "Clip only");
     }
     const m = sp.per_match_min;
-    $("bench").disabled = !!(run && run.state === "running") || !s.python;
-    if (run && run.state === "running") { $("sv").textContent = (run.pct || 0) + "%"; $("ss").textContent = "Benchmarking: " + (run.message || ""); verdict("sj", "", ""); }
+    $("bench").disabled = !!(run && run.state === "running") || !s.python || !!(g && !g.ok);
+    if (g && !g.ok && !(run && run.state === "running")) { $("sv").textContent = "\\u2013"; $("ss").textContent = "Tracking needs a usable GPU."; verdict("sj", "", ""); }
+    else if (run && run.state === "running") { $("sv").textContent = (run.pct || 0) + "%"; $("ss").textContent = "Benchmarking: " + (run.message || ""); verdict("sj", "", ""); }
     else if (m == null) { $("sv").textContent = "\\u2013"; $("ss").textContent = s.python ? "Not measured yet." : "Measured after Set up."; verdict("sj", "", ""); }
     else {
       $("sv").innerHTML = (m < 10 ? m.toFixed(1) : Math.round(m)) + "<small>min</small>";
