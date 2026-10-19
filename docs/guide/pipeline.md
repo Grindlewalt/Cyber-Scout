@@ -823,6 +823,7 @@ box is also scored against all event teams.
 | `OCR_MAX_PER_FRAME` | 3 | the most-stale robots first |
 | `OCR_T1` | 190 s | stop reading after this video time |
 | `OCR_WORKERS` | 4 | OCR worker processes (`python live/ocr.py --worker`), fed pickled jobs over stdin; separate interpreters so OCR doesn't fight decode/detection for the GIL. `OCR_PROC=0` uses a thread instead. |
+| `OCR_CUDA` | auto | OCR device: auto = CUDA only when the detector in that process is on CUDA (the `OCR_PROC=0` thread; worker processes stay on CPU), `1` force CUDA, `0` never. Out of GPU memory -> reloads on the CPU, no reads lost. With a free card `OCR_PROC=0` is ~27 % faster per match (deploy.md §3.1). |
 | `OCR_GPU` | `GPU_DEVICE` | OCR device |
 | `OCR_PERIOD_READ`, `OCR_FRESH` | = period, 3 s | re-read recently-read robots less often. Off: measured to *lower* total reads (qm12: 514 → 281). |
 

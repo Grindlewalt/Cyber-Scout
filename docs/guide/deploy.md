@@ -296,10 +296,11 @@ qm20 / qm35 / qm45, worker image, GPU 1 only, throwaway containers; scripts `.wo
   did not change the time (447 vs 435 s), and the GPU sits mostly idle. A second job per card would add nearly
   its full rate CPU-wise (34 % host CPU per job) once there is VRAM for it: with ≥ 1 GB free on a card, try
   `PROCESSORS_GPU1=2`.
-* OCR runs on the CPU in this image: `live/ocr.py`'s worker processes cannot load the CUDA provider
-  (`libcublasLt.so.13`, no `preload_dlls`), so there is no extra VRAM per OCR worker. That is the right trade
-  while VRAM is short: 4 OCR workers on the GPU would be 4 more CUDA contexts per job. `OCR_PROC=0` (OCR in a thread on the
-  detector's CUDA context) cut a match to 268 s (detection 122 s) but read **0** bumpers: not usable as is.
+* OCR device (`OCR_CUDA`, live/ocr.py): by default the OCR worker processes run on the CPU (no extra VRAM, 0 errors;
+  qm20: 428 s, 728 reads). `OCR_PROC=0` runs OCR in a thread on the detector's CUDA context: **312 s, 730 reads, +260 MiB
+  VRAM** — the faster choice when the card has room (atomosserver with its LLM services stopped). If CUDA runs out of
+  memory, OCR reloads on the CPU and keeps every read (slower: one thread). `OCR_CUDA=1` forces CUDA, `0` never.
+  (Before 8276dbf, `OCR_PROC=0` on a full card read 0 bumpers: the OCR's CUDA allocations failed silently.)
 * For comparison, the M2 (Core ML) did 5–6 min per match in dynamic mode, about the same as one atomosserver job.
 
 **Recommended.** Code default: no processors (`PROCESSORS_GPU0=0`, `PROCESSORS_GPU1=0`, `CS_PROCESSORS=0`), so

@@ -519,7 +519,7 @@ the compose file, and as `env_file` for **worker and recorder only**.
 | `LIVE_BACKFILL_MIN` | liveingest → livestream | `60` | on a fresh dir, also record this many minutes already streamed |
 | `LIVE_ANY_DATE` | liveingest | unset | `1` skips the event-date check |
 | `LS_LEAD`, `LS_TAIL`, `LS_SAMPLE_HZ`, `LS_OCR_HZ`, `LS_FULL_EVERY`, `LS_FORMAT` | livestream | 8, 5, 10, 2, 4, `312/301/bv*[height<=1080]...` | clip padding, analyser rates, HLS format |
-| `OCR_*` (`OCR_WORKERS` 4, `OCR_PROC` 1, `OCR_PERIOD` 0.3, `OCR_PERIOD_READ`, `OCR_FRESH` 3.0, `OCR_MAX_PER_FRAME` 3, `OCR_CONF` 0.30, `OCR_T1` 190, `OCR_MAX_DET` 512, `OCR_ANGLES` `0,45,-45`, `OCR_OPENSET` 1, `OCR_OPEN_REJECT` 0, `OCR_OPEN_MARGIN` 1.0) | ocr | as listed | bumper OCR tuning |
+| `OCR_*` (`OCR_WORKERS` 4, `OCR_PROC` 1, `OCR_PERIOD` 0.3, `OCR_PERIOD_READ`, `OCR_FRESH` 3.0, `OCR_MAX_PER_FRAME` 3, `OCR_CONF` 0.30, `OCR_T1` 190, `OCR_MAX_DET` 512, `OCR_ANGLES` `0,45,-45`, `OCR_OPENSET` 1, `OCR_OPEN_REJECT` 0, `OCR_OPEN_MARGIN` 1.0, `OCR_CUDA` auto) | ocr | as listed | bumper OCR tuning; `OCR_CUDA` auto = CUDA only in a process whose detector is on CUDA (`OCR_PROC=0` thread, station OCR), 1 force, 0 never; CUDA failure -> CPU |
 | `CYBERSCOUT_OCR_DIR`, `CYBERSCOUT_OCR_THREADS`, `CYBERSCOUT_OCR_CUDA` | ocr, identity | — | OCR model dir / threads / device (identity's older OCR path) |
 | `CONF_KEEP`, `CONF_TRACK`, `START_FALLBACK`, `SCAN_T1`, `CLOCK_BOX` | process | 0.10, 0.30, 6.5, 190, `912,72,1008,116` | detection thresholds, match-start fallback, clock crop |
 | `HC_BOUNCE_CROWD`, `HC_BOUNCE_D0` | hubcam | 1, 25.0 | hub-cam bounce-out tests |
