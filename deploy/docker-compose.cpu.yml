@@ -9,3 +9,14 @@ services:
     deploy: !reset {}
     environment:
       FORCE_CPU: "1"
+  # processors: only the GPU reservation goes (replicas stay: PROCESSORS_GPU0=N = N CPU-only jobs; ~8-10 cores each)
+  processor-gpu0:
+    deploy:
+      resources: !reset {}
+    environment:
+      FORCE_CPU: "1"
+  processor-gpu1:
+    deploy:
+      resources: !reset {}
+    environment:
+      FORCE_CPU: "1"

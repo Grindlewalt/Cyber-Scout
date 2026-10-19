@@ -9,6 +9,11 @@
 # definitions, and restarts the services.
 #   CS_LISTEN="100.64.153.104 127.0.0.1"  addresses nginx listens on (default: this Mac's Tailscale IP + loopback)
 #   CS_PORT=7560                          port
+#   CS_PROCESSORS=N                       N extra process-only workers (LaunchAgents com.cyberscout.processor-1..N,
+#                                         live/worker.py --process-only, WORKER_ID <host>-proc<i>): they track matches
+#                                         in parallel; the worker keeps TBA, site, livestream cuts, reconcile, proxies.
+#                                         Default: CS_PROCESSORS= in server.env (so deploy.sh re-runs keep it), else 0.
+#                                         Each job wants several CPU cores and ~2 GB RAM: measure before going above 1.
 set -euo pipefail
 H="${CS_HOME:-$HOME/CyberScout/server}"
 APP="$H/app"; DATA="$H/data"; MEDIA="$H/media"; WEB="$H/web"; NG="$H/nginx"; LOGS="$H/logs"
@@ -16,6 +21,8 @@ PORT="${CS_PORT:-7560}"
 TSIP="$("$H/../bin/tailscale" ip -4 2>/dev/null || /usr/local/bin/tailscale ip -4 2>/dev/null || true)"
 LISTEN="${CS_LISTEN:-${TSIP:+$TSIP }127.0.0.1}"
 UIDN="$(id -u)"; LA="$HOME/Library/LaunchAgents"
+NPROC="${CS_PROCESSORS:-$( { sed -n 's/^CS_PROCESSORS=//p' "$H/server.env" 2>/dev/null || true; } | tail -1)}"
+NPROC="$(printf %s "$NPROC" | tr -dc '0-9')"; NPROC="${NPROC:-0}"
 mkdir -p "$DATA/config" "$DATA/models" "$MEDIA" "$LOGS" "$NG/cache" "$NG/temp" "$LA"
 chmod 700 "$DATA"
 
@@ -74,6 +81,12 @@ $COMMON
 export FORCE_CPU=\${FORCE_CPU:-1} ORT_COREML=\${ORT_COREML:-1} MEDIA_PROXIES=\${MEDIA_PROXIES:-1} PROXY_GPU=\${PROXY_GPU:-0} YTDLP="$H/venv/bin/yt-dlp"
 exec python -u live/worker.py "\$@"
 EOF
+cat > "$H/run-processor.sh" <<EOF
+#!/bin/bash
+# process-only worker \$1 (com.cyberscout.processor-\$1): a stable id per slot, so a restart takes its claims back
+export WORKER_ID="\${WORKER_ID:-\$(hostname -s)-proc\$1}" PROCESSOR_TAG=proc
+exec /bin/bash "$H/run-worker.sh" --process-only
+EOF
 cat > "$H/run-nginx.sh" <<EOF
 #!/bin/bash
 # wait for the Tailscale address (nginx binds to it) instead of crash-looping right after boot
@@ -107,8 +120,15 @@ svc com.cyberscout.api "$H/run-api.sh"
 svc com.cyberscout.web "$H/run-nginx.sh"
 svc com.cyberscout.worker "$H/run-worker.sh"
 svc com.cyberscout.recorder "$H/run-worker.sh" --recorder
+for ((i = 1; i <= NPROC; i++)); do svc "com.cyberscout.processor-$i" "$H/run-processor.sh" "$i"; done
+for f in "$LA"/com.cyberscout.processor-*.plist; do       # CS_PROCESSORS lowered: stop + remove the extra ones
+  [ -e "$f" ] || continue
+  L="$(basename "$f" .plist)"; i="${L##*-}"
+  if [ "$i" -gt "$NPROC" ] 2>/dev/null; then launchctl bootout "gui/$UIDN/$L" 2>/dev/null || true; rm -f "$f"; fi
+done
 sleep 6
-for L in api web worker recorder; do
+PROCS=""; for ((i = 1; i <= NPROC; i++)); do PROCS="$PROCS processor-$i"; done   # (BSD seq 1 0 counts down)
+for L in api web worker recorder $PROCS; do
   printf "%-10s %s\n" "$L" "$(launchctl print "gui/$UIDN/com.cyberscout.$L" 2>/dev/null | awk '/^\tstate =/{print $3}')"
 done
 curl -s -o /dev/null -w "web+api: GET /app/v1/info -> %{http_code}\n" "http://127.0.0.1:$PORT/app/v1/info" || true

@@ -9,7 +9,10 @@
 # needs (root phase: chown of ./data + setpriv to PUID/PGID; nginx: bind :80 + switch to its worker user),
 # no-new-privileges, a pids + memory cap, and read-only root filesystems for api + web (tmpfs for scratch).
 # Optional .env knobs: GPU_IDS (default "0"; e.g. "1" or "0,1"), WEB_BIND (default 0.0.0.0; e.g. a LAN or
-# Tailscale IP), WORKER_MEM_LIMIT / RECORDER_MEM_LIMIT / API_MEM_LIMIT / WEB_MEM_LIMIT.
+# Tailscale IP), WORKER_MEM_LIMIT / RECORDER_MEM_LIMIT / API_MEM_LIMIT / WEB_MEM_LIMIT / PROCESSOR_MEM_LIMIT.
+# Extra tracking jobs (services processor-gpu0/-gpu1): PROCESSORS_GPU0 / PROCESSORS_GPU1 = jobs on host card 0 / 1
+# (default 0), PROCESSOR_GPU0_ID / PROCESSOR_GPU1_ID (host card, default 0 / 1), PROCESSOR_GPU_DRIVER (nvidia;
+# "cdi" with ..._ID=nvidia.com/gpu=N), WORKER_TRACK (auto: the worker tracks only while no processor is alive).
 name: ${CS_PREFIX:-cyber-scout}
 services:
   worker:
@@ -46,6 +49,74 @@ services:
           devices:
             - driver: nvidia
               device_ids: ["${GPU_IDS:-0}"]
+              capabilities: [gpu]
+
+  # Process-only processors (same image; live/worker.py --process-only): extra match-tracking jobs, one container
+  # per job, PROCESSORS_GPU0 / PROCESSORS_GPU1 of them on host card 0 / 1 (.env; default 0 = none). They claim
+  # matches in the worker's order (live/claims.py, events/<ev>/priority.json first), each with its own WORKER_ID
+  # (<tag>-<container id>-<pid>), and write only the match outputs, the kept clip and their own state files. While
+  # one is alive the worker leaves tracking to them (WORKER_TRACK=auto) and keeps TBA, site, discovery, TBA-time
+  # cuts, reconcile and preview proxies; it rebuilds the site as soon as a processor's match file appears.
+  # Measured on atomosserver (docs/guide/deploy.md "Several jobs per GPU"): ~270-340 MiB VRAM and ~8-10 CPU cores
+  # per job.  PAUSE_PROCESSING=1 pauses them too.  `docker compose logs -f processor-gpu1` shows all its jobs.
+  processor-gpu0:
+    build: ./app
+    image: ${CS_PREFIX:-cyber-scout}-worker:latest
+    restart: unless-stopped
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    cap_add: [CHOWN, DAC_READ_SEARCH, SETUID, SETGID]   # entrypoint chown + setpriv only (see worker)
+    pids_limit: 2048
+    mem_limit: ${PROCESSOR_MEM_LIMIT:-6g}
+    command: ["--process-only"]
+    stop_grace_period: 30s                     # SIGTERM: the match in hand is given back (not counted as a try)
+    env_file: .env
+    environment:
+      DATA: /data
+      PROCESSOR_TAG: gpu0
+      GPU_DEVICE: "0"                          # the one card passed in below (container-local index)
+      OCR_GPU: "0"
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+    volumes:
+      - ./data:/data
+      - ${MEDIA_DIR:-./data/media}:/media
+    deploy:
+      replicas: ${PROCESSORS_GPU0:-0}
+      resources:
+        reservations:
+          devices:
+            - driver: ${PROCESSOR_GPU_DRIVER:-nvidia}
+              device_ids: ["${PROCESSOR_GPU0_ID:-0}"]
+              capabilities: [gpu]
+
+  processor-gpu1:
+    build: ./app
+    image: ${CS_PREFIX:-cyber-scout}-worker:latest
+    restart: unless-stopped
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    cap_add: [CHOWN, DAC_READ_SEARCH, SETUID, SETGID]
+    pids_limit: 2048
+    mem_limit: ${PROCESSOR_MEM_LIMIT:-6g}
+    command: ["--process-only"]
+    stop_grace_period: 30s
+    env_file: .env
+    environment:
+      DATA: /data
+      PROCESSOR_TAG: gpu1
+      GPU_DEVICE: "0"
+      OCR_GPU: "0"
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+    volumes:
+      - ./data:/data
+      - ${MEDIA_DIR:-./data/media}:/media
+    deploy:
+      replicas: ${PROCESSORS_GPU1:-0}
+      resources:
+        reservations:
+          devices:
+            - driver: ${PROCESSOR_GPU_DRIVER:-nvidia}
+              device_ids: ["${PROCESSOR_GPU1_ID:-1}"]
               capabilities: [gpu]
 
   # Live-stream recorder (same image as the worker): records each followed event's livestream (Video page
