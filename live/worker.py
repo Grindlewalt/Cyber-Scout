@@ -28,8 +28,15 @@ per-match uploads.  TBA gives the match list (+ lineups, results); no upload is 
 channel scan, TBA match videos or YouTube search).  Each match is tracked from its livestream clip; a match the
 stream analyser missed is cut from the recording by TBA's actual_time (liveingest.tba_cut).  Matches without a
 clip yet are "waiting_live" with a note saying why; a clip that fails LIVE_ONLY_FAILS times -> "failed".
+
+Process-only processors (`worker.py --process-only` or PROCESS_ONLY=1; compose services processor-gpu0/-gpu1,
+deploy/macos CS_PROCESSORS): extra instances that only claim and track matches, in the same order as this worker
+(live/claims.py), each with its own WORKER_ID and GPU_DEVICE.  No TBA sync, site build, discovery, video plan,
+TBA-time cuts, reconcile or preview proxies: the main worker keeps doing those, wakes up when a new
+matches/<key>.json appears (rebuilds the site), and leaves tracking to the processors while one is alive
+(WORKER_TRACK=auto, default; 1 = always track here too, 0 = never).  See process_only() below.
 """
-import json, os, socket, sys, time, traceback, shutil
+import json, os, re, signal, socket, sys, threading, time, traceback, shutil
 import numpy as np
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -55,6 +62,14 @@ VPLAN_S = float(os.environ.get("VPLAN_SECONDS", "60"))   # per poll: time for ch
 VPLAN_N = int(os.environ.get("VPLAN_MAX", "12"))         # ... and at most this many uploads
 LIVE_FAILS = 2                                           # uploads mode: livestream clip failures before the uploads
 LIVE_ONLY_FAILS = int(os.environ.get("LIVE_ONLY_FAILS", "3"))   # livestream-only mode: ... before "failed"
+# GPU out of memory (another job / app holds the card): the machine's fault, not the clip's -- never a failed try
+GPU_OOM = ("Failed to allocate memory", "out of memory", "CUBLAS failure 3", "CUDNN_STATUS_ALLOC_FAILED",
+           "cudaErrorMemoryAllocation", "CUDA failure 2:")
+_OOM_AT = [0.0]                                          # last GPU out-of-memory (sync stops its pass after one)
+
+
+def gpu_oom(errors):
+    return bool(errors) and all(any(x in str(e) for x in GPU_OOM) for e in errors)
 
 
 def log(*a):
@@ -81,14 +96,171 @@ def ev_dir(ev): return os.path.join(DATA, "events", ev)
 # ------------------------------------------------------------------ order + claims (several processors per event)
 # live/claims.py: the same rules for this worker, tools/helper.py and the api (Client "Help process matches")
 import claims as CL
-WORKER_ID = os.environ.get("WORKER_ID") or socket.gethostname()
+PROCESS_ONLY = os.environ.get("PROCESS_ONLY") == "1"      # (or --process-only, see main)
+WORKER_ID = os.environ.get("WORKER_ID") or (
+    f"{os.environ.get('PROCESSOR_TAG') or 'proc'}-{socket.gethostname()}" if PROCESS_ONLY else socket.gethostname())
 CLAIM_S = CL.CLAIM_S
+BEAT_S = float(os.environ.get("PROC_BEAT_S", "30"))      # claim + processor heartbeat while a match is tracked
+PROC_ALIVE_S = 180.0                                     # a processor heartbeat this fresh = processor alive
+PROC_DEAD_S = float(os.environ.get("PROC_DEAD_S", "300"))  # ... older: the processor is gone, its claims are void
 
 
 def prioritized(ev, ms): return CL.prioritized(DATA, ev, ms)
-def claimed_elsewhere(ev, key, by=None): return CL.claimed_elsewhere(DATA, ev, key, by or WORKER_ID)
-def claim(ev, key, by=None): return CL.claim(DATA, ev, key, by or WORKER_ID)
+
+
+def claimed_elsewhere(ev, key, by=None):
+    by = by or WORKER_ID
+    if not CL.claimed_elsewhere(DATA, ev, key, by):
+        return False
+    return not _void_dead_claim(ev, key)
+
+
+def claim(ev, key, by=None):
+    by = by or WORKER_ID
+    if CL.claim(DATA, ev, key, by):
+        return True
+    return _void_dead_claim(ev, key) and CL.claim(DATA, ev, key, by)
+
+
 def release(ev, key, by=None): return CL.release(DATA, ev, key, by or WORKER_ID)
+
+
+def being_tracked(ev, key):
+    """Someone (this worker, a processor, tools/helper.py, a Client) holds a live claim on the match."""
+    c = CL.read(DATA, ev, key)
+    return bool(c) and not c.get("unreadable") and not CL.is_stale(c) and not dead_processor(c.get("by"))
+
+
+def _safe_id(x=None):
+    return re.sub(r"[^A-Za-z0-9._-]", "_", str(x or WORKER_ID))[:64] or "worker"
+
+
+def _proc_file(pid=None): return os.path.join(DATA, "processors", f"{_safe_id(pid)}.json")
+
+
+def proc_beat(**state):
+    """Processor heartbeat DATA/processors/<WORKER_ID>.json {id, at, pid, gpu, state, current, ...}: the main
+    worker counts live processors from these (WORKER_TRACK=auto), and a claim of a processor whose file went stale
+    (killed, container recreated) is void (_void_dead_claim)."""
+    try:
+        jsave(_proc_file(), dict(id=WORKER_ID, at=time.time(), pid=os.getpid(), host=socket.gethostname(),
+                                 gpu=None if os.environ.get("FORCE_CPU") == "1" else os.environ.get("GPU_DEVICE", "0"),
+                                 started=_STARTED, **state))
+    except OSError:
+        pass
+
+
+def processors_alive(now=None):
+    """Healthy process-only processors (fresh heartbeat, not paused) -> ids."""
+    d, now, out = os.path.join(DATA, "processors"), now or time.time(), []
+    try:
+        names = os.listdir(d)
+    except OSError:
+        return out
+    for n in sorted(names):
+        if not n.endswith(".json"): continue
+        p = jload(os.path.join(d, n))
+        if isinstance(p, dict) and now - float(p.get("at") or 0) < PROC_ALIVE_S and p.get("state") != "unhealthy" \
+                and not p.get("paused"):
+            out.append(p.get("id") or n[:-5])
+    return out
+
+
+def dead_processor(by, now=None):
+    """`by` is a local process-only processor (it has a heartbeat file) that stopped beating PROC_DEAD_S ago."""
+    if not by: return False
+    p = jload(_proc_file(by))
+    return isinstance(p, dict) and p.get("id", by) == by and (now or time.time()) - float(p.get("at") or 0) >= PROC_DEAD_S
+
+
+def _void_dead_claim(ev, key):
+    """A claim held by a dead local processor -> removed (True).  Renamed away first, so of two processors that
+    see it at once only one removes it, and a claim that turns out to be live after all is put back."""
+    c = CL.read(DATA, ev, key)
+    if not c or c.get("unreadable") or not dead_processor(c.get("by")):
+        return False
+    p = CL.claim_path(DATA, ev, key)
+    tmp = f"{p}.void-{os.getpid()}-{_safe_id()}"
+    try:
+        os.rename(p, tmp)
+    except OSError:
+        return True                                    # someone else voided it first
+    c = jload(tmp, {}) or {}
+    if dead_processor(c.get("by")):
+        log(f"{key}: claim of stopped processor {c.get('by')} voided")
+        os.remove(tmp)
+        return True
+    try:                                               # not the dead one's claim any more: back where it was
+        os.link(tmp, p)
+    except OSError:
+        pass
+    os.remove(tmp)
+    return False
+
+
+class _Beat:
+    """While a match is tracked: refresh its claim (live/claims.py heartbeat) and, for a processor, its heartbeat
+    file every BEAT_S, so a slow match never outlives its claim and the main worker sees the processor alive."""
+
+    def __init__(self, ev, key):
+        self.ev, self.key, self.stop = ev, key, threading.Event()
+
+    def _run(self):
+        while not self.stop.wait(BEAT_S):
+            try:
+                if not CL.heartbeat(DATA, self.ev, self.key, WORKER_ID):
+                    log(f"{self.key}: claim lost while tracking (another processor may take it over)")
+                if PROCESS_ONLY:
+                    proc_beat(state="tracking", current=dict(ev=self.ev, key=self.key, since=self.t0))
+            except Exception:
+                traceback.print_exc()
+
+    def __enter__(self):
+        self.t0 = time.time()
+        if PROCESS_ONLY:
+            proc_beat(state="tracking", current=dict(ev=self.ev, key=self.key, since=self.t0))
+        self.thr = threading.Thread(target=self._run, name="claim-beat", daemon=True)
+        self.thr.start()
+        return self
+
+    def __exit__(self, *a):
+        self.stop.set()
+        self.thr.join(timeout=5)
+
+
+_STARTED = time.time()
+
+
+# ------------------------------------------------------------------ match state (status.json + processors' entries)
+def load_status(ev):
+    """status.json (written by the main worker only) + the per-match entries processors write instead
+    (events/<ev>/proc_status/<key>.json): per match the entry with the newer "at" wins."""
+    status = jload(os.path.join(ev_dir(ev), "status.json"), {}) or {}
+    d = os.path.join(ev_dir(ev), "proc_status")
+    try:
+        names = os.listdir(d)
+    except OSError:
+        return status
+    for n in names:
+        if not n.endswith(".json"): continue
+        e = jload(os.path.join(d, n))
+        k = n[:-5]
+        try:
+            newer = isinstance(e, dict) and float(e.get("at") or 0) > float((status.get(k) or {}).get("at") or 0)
+        except (TypeError, ValueError):
+            newer = False
+        if newer:
+            status[k] = e
+    return status
+
+
+def save_status(ev, status, key=None):
+    """Main worker: the whole status.json.  Processor: only this match's entry, in its own file (two processes
+    rewriting status.json would undo each other's states)."""
+    if PROCESS_ONLY and key:
+        jsave(os.path.join(ev_dir(ev), "proc_status", f"{key}.json"), status.get(key) or {})
+    else:
+        jsave(os.path.join(ev_dir(ev), "status.json"), status)
 
 
 def ev_file(ev, name):
@@ -117,7 +289,7 @@ def process_match(ev, m, cfg, status, meta_cache, live=None):
         st.update(state="no_video", at=time.time()); return False
     cache = os.environ.get("VIDEO_CACHE") or os.path.join(DATA, "cache"); os.makedirs(cache, exist_ok=True)
     st.update(state="processing", at=time.time(), video=tries[0][1]["id"], attempts=st.get("attempts", 0) + 1)
-    jsave(os.path.join(ev_dir(ev), "status.json"), status)
+    save_status(ev, status, m["key"])
     import process
     best, best_path, best_cam, errors, paths = None, None, None, [], []
     try:
@@ -134,7 +306,7 @@ def process_match(ev, m, cfg, status, meta_cache, live=None):
                     pose_p = os.path.join(ev_dir(ev), f"pose_latest_{live['source']}.json")
                     kw = dict(start_hint=live["start"], start_trusted=live.get("start_trusted", True),
                               teams=live["teams"], layout=live["layout"], view_ref=live.get("view_ref"),
-                              dynamic=os.environ.get("DYNAMIC") == "1",     # program feed: robots from every camera
+                              dynamic=dynamic_for(ev, live.get("source")),  # program feed: robots from every camera
                               event=None if m.get("livestream") else event_ctx(ev, m))
                 else:
                     log(f"{m['key']}: downloading {v['id']} ({v['title']}"
@@ -172,6 +344,13 @@ def process_match(ev, m, cfg, status, meta_cache, live=None):
                     break
             except Exception as e:
                 traceback.print_exc(); errors.append(str(e)[-300:])
+        if best is None and gpu_oom(errors):
+            _OOM_AT[0] = time.time()
+            log(f"{m['key']}: GPU out of memory (not counted as a failed try; retried later)")
+            st.update(state="waiting_live" if only_live else "no_video" if live is None else "pending", at=time.time(),
+                      attempts=max(0, st.get("attempts", 1) - 1), error="GPU out of memory", gpu_oom=time.time(),
+                      note="GPU out of memory on this machine; retrying")
+            return False
         if best is not None and best.get("source") == "livestream" and best.get("wrong_video"):
             # the stream clip's bumpers say it is another match: never use this record again; uploads later
             st["live_rejected"] = live["info"]["record_path"]
@@ -202,7 +381,6 @@ def process_match(ev, m, cfg, status, meta_cache, live=None):
             raise RuntimeError("; ".join(errors) or "no usable video")
         if best.get("source") == "livestream" and not live["tba_posted"]:
             st["live_reconcile"] = True                   # re-check teams / refresh shots once TBA posts
-        jsave(os.path.join(ev_dir(ev), "matches", f"{m['key']}.json"), best)
         if V2:
             try:                                          # v2: fuel -> shots -> analytics
                 import enrich
@@ -217,8 +395,9 @@ def process_match(ev, m, cfg, status, meta_cache, live=None):
             try:
                 dst = os.path.join(MEDIA, ev, f"{m['key']}.mp4"); os.makedirs(os.path.dirname(dst), exist_ok=True)
                 shutil.move(best_path, dst)
-                import proxies                            # MEDIA_PROXIES=1: small preview copy for client sync
-                proxies.submit(MEDIA, ev, m["key"], log=lambda *a: log(m["key"], *a))
+                if not PROCESS_ONLY:                      # (processors: the main worker backfills, backfill_proxies)
+                    import proxies                        # MEDIA_PROXIES=1: small preview copy for client sync
+                    proxies.submit(MEDIA, ev, m["key"], log=lambda *a: log(m["key"], *a))
             except Exception as e:
                 log(f"{m['key']}: could not keep video: {e}")
         if HUBCAM and KEEP_VIDEO and V2 and best.get("source") != "livestream":
@@ -227,6 +406,9 @@ def process_match(ev, m, cfg, status, meta_cache, live=None):
                 enrich.station_pass(DATA, MEDIA, ev, m["key"], best, m, meta_cache, log=lambda *a: log(m["key"], *a))
             except Exception:
                 traceback.print_exc()
+        # the match file last (like the api's processor uploads): whoever sees it (the main worker rebuilds the
+        # site when one appears) finds the shots, analytics and the kept video already there
+        jsave(os.path.join(ev_dir(ev), "matches", f"{m['key']}.json"), best)
         st.update(state="done", at=time.time(), error=None, video=best["video"]["id"], source=best.get("source", "upload"))
         st.pop("note", None)
         log(f"{m['key']}: done ({best['video']['id']}, coverage {best['feed_ok']:.0%})")
@@ -238,7 +420,7 @@ def process_match(ev, m, cfg, status, meta_cache, live=None):
     finally:
         for vp in paths:
             if os.path.exists(vp): os.remove(vp)
-        jsave(os.path.join(ev_dir(ev), "status.json"), status)
+        save_status(ev, status, m["key"])
 
 
 def station_reads(ev, m, wide_path, meta_cache, plan=None):
@@ -263,10 +445,119 @@ def station_reads(ev, m, wide_path, meta_cache, plan=None):
 def event_ctx(ev, m):
     """Event context for open-set OCR + match integrity (wrong video / substitution checks)."""
     try:
-        t = TBA(os.environ["TBA_KEY"], os.path.join(DATA, "tba"))
+        t = SharedTBA(os.environ.get("TBA_KEY")) if PROCESS_ONLY else TBA(os.environ["TBA_KEY"], os.path.join(DATA, "tba"))
         return {"teams": [x["key"] for x in t.teams(ev)], "matches": t.matches(ev), "key": m["key"]}
     except Exception:
         return None
+
+
+def dynamic_for(ev, sid):
+    """process(dynamic=...) for a livestream clip of source `sid` (live/dynpose.py: robots from every camera of a
+    program feed).  Env DYNAMIC=1 / 0 forces it on / off; else the source's sources.json "dynamic": true / false;
+    null or missing = auto: on for a program feed ("program_feed": true, set by the stream auto-setup)."""
+    env = os.environ.get("DYNAMIC")
+    if env in ("1", "0"):
+        return env == "1"
+    try:
+        import sources
+        s = sources.get(sources.load(ev_dir(ev)), sid) if sid else None
+    except Exception:
+        traceback.print_exc(); s = None
+    if not s:
+        return False
+    d = s.get("dynamic")
+    if isinstance(d, bool):
+        return d
+    return s.get("program_feed") is True
+
+
+TBA_STALE_S = float(os.environ.get("PROC_TBA_STALE_S", "600"))
+
+
+class SharedTBA:
+    """Processors' TBA: the main worker's cache (DATA/tba, refreshed every poll), read only -- live/tba.py rewrites
+    cache files in place, so a second writer could hand the main worker half a file.  Missing or stale (main worker
+    down) -> fetched into this processor's own cache (DATA/cache/tba-<WORKER_ID>), else the stale copy."""
+
+    def __init__(self, key):
+        self.key, self._own = key, None
+
+    def get(self, ep, fresh_s):
+        d = jload(os.path.join(DATA, "tba", ep.strip("/").replace("/", "__") + ".json"))
+        ok = isinstance(d, dict) and "data" in d
+        try:
+            age = time.time() - float(d.get("fetched") or 0) if ok else float("inf")
+        except (TypeError, ValueError):
+            age = float("inf")
+        if ok and age < fresh_s:
+            return d["data"]
+        if self.key:
+            try:
+                if self._own is None:
+                    self._own = TBA(self.key, os.path.join(DATA, "cache", f"tba-{_safe_id()}"))
+                return self._own.get(ep, max_age=60)
+            except Exception as e:
+                log(f"TBA {ep}: {e!r:.120} (using the main worker's cache)")
+        if ok:
+            return d["data"]
+        raise RuntimeError(f"no TBA data for {ep}: main worker not running and no TBA key")
+
+    def event(self, key): return self.get(f"/event/{key}", 6 * 3600)
+    def matches(self, key): return self.get(f"/event/{key}/matches", TBA_STALE_S)
+    def teams(self, key): return self.get(f"/event/{key}/teams/simple", 6 * 3600)
+
+
+_RECON = {}                                            # (ev, key) -> (match file mtime_ns, needs a reconcile)
+
+
+def needs_reconcile(ev, key):
+    """The match file says it was tracked from the livestream before TBA posted (source "livestream", not
+    live.tba_posted) -- by this worker or by any processor (which never writes status.json).  Cached by mtime."""
+    p = os.path.join(ev_dir(ev), "matches", f"{key}.json")
+    try:
+        mt = os.stat(p).st_mtime_ns
+    except OSError:
+        return False
+    c = _RECON.get((ev, key))
+    if c and c[0] == mt:
+        return c[1]
+    r = jload(p) or {}
+    need = isinstance(r, dict) and r.get("source") == "livestream" and not (r.get("live") or {}).get("tba_posted")
+    _RECON[(ev, key)] = (mt, bool(need))
+    return bool(need)
+
+
+_PROXY_SEEN = {}                                       # (ev, key) -> kept video mtime_ns already checked / queued
+
+
+def backfill_proxies(ev):
+    """Preview proxies (live/proxies.py) for kept videos of tracked matches that have none: processors (process-only,
+    tools/helper.py, the Client's "Help process matches") keep the clip without making one.  Main worker only; one
+    check per video version, encodes on proxies' background thread.  -> number queued."""
+    if PROCESS_ONLY or not (KEEP_VIDEO and os.path.isdir(MEDIA)):
+        return 0
+    try:
+        import proxies
+        if not proxies.enabled():
+            return 0
+        done = [f[:-5] for f in os.listdir(os.path.join(ev_dir(ev), "matches")) if f.endswith(".json")]
+    except (ImportError, OSError):
+        return 0
+    n = 0
+    for k in sorted(done):
+        if not proxies.KEY_RE.match(k): continue
+        try:
+            mt = os.stat(os.path.join(MEDIA, ev, f"{k}.mp4")).st_mtime_ns
+        except OSError:
+            continue
+        if _PROXY_SEEN.get((ev, k)) == mt: continue
+        _PROXY_SEEN[(ev, k)] = mt
+        if proxies.up_to_date(MEDIA, ev, k): continue
+        proxies.submit(MEDIA, ev, k, log=log)
+        n += 1
+    if n:
+        log(f"{ev}: {n} preview prox{'y' if n == 1 else 'ies'} queued (videos kept by processors)")
+    return n
 
 
 def match_teams(m):
@@ -312,7 +603,7 @@ def build_site(ev, tba):
     if lv:
         ms = sorted(ms + lv.extra_matches({m["key"] for m in ms}), key=sort_key)
     teams = {t["key"]: t for t in tba.teams(ev)}
-    status = jload(os.path.join(ev_dir(ev), "status.json"), {})
+    status = load_status(ev)                           # incl. the processors' per-match states
     mdir = os.path.join(ev_dir(ev), "matches")
     results = {}
     for m in ms:
@@ -341,7 +632,8 @@ def build_site(ev, tba):
                    time=m.get("actual_time") or m.get("time"),
                    red=dict(teams=m["alliances"]["red"]["team_keys"], score=m["alliances"]["red"]["score"]),
                    blue=dict(teams=m["alliances"]["blue"]["team_keys"], score=m["alliances"]["blue"]["score"]),
-                   winner=m.get("winning_alliance"), state="done" if r else st.get("state", "pending"))
+                   winner=m.get("winning_alliance"),
+                   state="done" if r else "processing" if being_tracked(ev, k) else st.get("state", "pending"))
         if not r and st.get("note") and row["state"] in ("waiting_live", "failed"):
             row["state_note"] = str(st["note"])[:200]  # livestream-only mode: why there is no clip yet
         if lv:
@@ -692,7 +984,7 @@ def live_reconcile(ev, m, status):
                 traceback.print_exc()
     li.update(tba_posted=True, reconciled_at=time.time())
     jsave(p, r)
-    jsave(os.path.join(ev_dir(ev), "status.json"), status)
+    save_status(ev, status)
     log(f"{m['key']}: reconciled with TBA (stream {li.get('stream_score')} / TBA {li['tba_score']})")
 
 
@@ -730,24 +1022,59 @@ def upload_layout(ev, v):
         traceback.print_exc(); return None
 
 
-def sync(ev, tba, max_new=None, track=True):
-    """track=False (no detector model yet): TBA results, livestream fast results and the site only."""
-    tba_ms = tba.matches(ev)
-    ms = sorted(tba_ms, key=lambda m: (m.get("actual_time") or m.get("time") or 0, sort_key(m)))
-    lv = live_view(ev)                                 # livestream records (live/liveingest.py)
-    if lv:
-        ms = sorted(ms + lv.extra_matches({m["key"] for m in ms}),
-                    key=lambda m: (m.get("actual_time") or m.get("time") or 0, sort_key(m)))
-    ms = prioritized(ev, ms)
-    status = jload(os.path.join(ev_dir(ev), "status.json"), {})
+def event_cfg(ev):
+    """The event's video config: event.json + the admin-configured video sources (Video page) -> which uploads to
+    use, video_mode."""
     cfg = jload(ev_file(ev, "event.json"), {}) or {}
-    try:                                               # admin-configured video sources (Video page) -> which uploads to use
+    try:
         import sources
         doc = sources.load(ev_dir(ev))
         cfg = sources.video_config(doc, cfg, jload(os.path.join(ev_dir(ev), "layout.json"), None))
         cfg["video_mode"] = sources.video_mode(doc)
     except Exception:
         traceback.print_exc()
+    return cfg
+
+
+def match_order(ev, tba_ms, lv):
+    """Processing order (the same in this worker and every processor): by time, the livestream's synthesized
+    matches merged in, then priority.json first."""
+    ms = sorted(tba_ms, key=lambda m: (m.get("actual_time") or m.get("time") or 0, sort_key(m)))
+    if lv:
+        ms = sorted(ms + lv.extra_matches({m["key"] for m in ms}),
+                    key=lambda m: (m.get("actual_time") or m.get("time") or 0, sort_key(m)))
+    return prioritized(ev, ms)
+
+
+def is_played(m):
+    return m["alliances"]["red"]["score"] is not None and m["alliances"]["red"]["score"] >= 0 and not m.get("livestream")
+
+
+_DELEGATING = [None]
+
+
+def delegating():
+    """The main worker leaves match tracking to the process-only processors: WORKER_TRACK=0 always, 1 never,
+    auto (default) while at least one healthy processor is alive (DATA/processors/*.json)."""
+    w = os.environ.get("WORKER_TRACK", "auto").strip().lower()
+    ids = [] if w in ("1", "on", "yes") else ["WORKER_TRACK=0"] if w in ("0", "off", "no") else processors_alive()
+    on = bool(ids)
+    if on != _DELEGATING[0]:
+        if on or _DELEGATING[0] is not None:
+            log(f"match tracking left to the processors ({', '.join(ids)})" if on else "tracking matches here")
+        _DELEGATING[0] = on
+    return on
+
+
+def sync(ev, tba, max_new=None, track=True):
+    """track=False (no detector model yet): TBA results, livestream fast results and the site only.  While
+    process-only processors are alive (delegating()), this worker does everything but the tracking itself."""
+    tba_ms = tba.matches(ev)
+    lv = live_view(ev)                                 # livestream records (live/liveingest.py)
+    ms = match_order(ev, tba_ms, lv)
+    status = load_status(ev)                           # (+ processors' per-match states)
+    cfg = event_cfg(ev)
+    delegate = track and delegating()
     only_live = cfg.get("video_mode") == "livestream"
     if only_live and ev not in _LIVE_ONLY_LOGGED:
         _LIVE_ONLY_LOGGED.add(ev)
@@ -764,12 +1091,11 @@ def sync(ev, tba, max_new=None, track=True):
         _NEEDS_SETUP_LOGGED.discard(ev)
     done_any = False; n = 0; more = False; dirty = False
     for m in ms:
-        played = m["alliances"]["red"]["score"] is not None and m["alliances"]["red"]["score"] >= 0 \
-            and not m.get("livestream")
+        played = is_played(m)
+        if played and (status.get(m["key"], {}).get("live_reconcile") or needs_reconcile(ev, m["key"])):
+            live_reconcile(ev, m, status)              # TBA posted a match tracked from the stream (here or elsewhere)
         if only_live:                                  # livestream only: the clip (or a TBA-time cut), never uploads
             k = m["key"]
-            if played and status.get(k, {}).get("live_reconcile"):
-                live_reconcile(ev, m, status)
             if os.path.exists(os.path.join(ev_dir(ev), "matches", f"{k}.json")): continue
             if status.get(k, {}).get("state") == "failed": continue
             started = bool(m.get("actual_time")) and time.time() > m["actual_time"] + MATCH_S_WAIT
@@ -783,9 +1109,12 @@ def sync(ev, tba, max_new=None, track=True):
             if not track:                              # no detector model: the clip waits for it
                 dirty = note_wait(status, k, "clip ready; robot tracking waits for the detector model") or dirty
                 continue
+            if delegate: continue                      # a processor takes it (the clip / TBA-time cut is ready)
             if not claim(ev, k): continue
+            t_try = time.time()
             try:
-                ok = process_match(ev, m, cfg, status, meta_cache, live=live)
+                with _Beat(ev, k):
+                    ok = process_match(ev, m, cfg, status, meta_cache, live=live)
             finally:
                 release(ev, k)
             if ok:
@@ -793,20 +1122,25 @@ def sync(ev, tba, max_new=None, track=True):
                 build_site(ev, tba)
                 if max_new and n >= max_new:
                     more = True; break
+            elif _OOM_AT[0] >= t_try:
+                break                                  # GPU full: the next match would fail the same way
             continue
         live = live_input(lv, m, played, status)       # trackable livestream clip: process now, TBA or not
         if not has_cam and live is None: continue
         if not played and live is None: continue
-        if played and status.get(m["key"], {}).get("live_reconcile"):
-            live_reconcile(ev, m, status)              # TBA posted a match tracked from the stream
         if os.path.exists(os.path.join(ev_dir(ev), "matches", f"{m['key']}.json")): continue
         if status.get(m["key"], {}).get("state") == "failed": continue
         if not track: continue                         # no detector model: robot tracking waits, the rest publishes
+        if delegate: continue                          # the processors track it
         if claimed_elsewhere(ev, m["key"]) or not claim(ev, m["key"]): continue     # a processor has it
+        t_try = time.time()
         try:
-            ok = process_match(ev, m, cfg, status, meta_cache, live=live)
+            with _Beat(ev, m["key"]):
+                ok = process_match(ev, m, cfg, status, meta_cache, live=live)
         finally:
             release(ev, m["key"])
+        if not ok and _OOM_AT[0] >= t_try:
+            break                                      # GPU full: the next match would fail the same way
         if ok:
             done_any = True; n += 1
             jsave(os.path.join(DATA, "cache", "ytmeta.json"), meta_cache)
@@ -814,10 +1148,14 @@ def sync(ev, tba, max_new=None, track=True):
             if max_new and n >= max_new:
                 more = True; break
     if dirty:
-        jsave(os.path.join(ev_dir(ev), "status.json"), status)
+        save_status(ev, status)
     jsave(os.path.join(DATA, "cache", "ytmeta.json"), meta_cache)
     if not done_any:
         build_site(ev, tba)
+    try:
+        backfill_proxies(ev)                           # clips kept by processors get their preview copy here
+    except Exception:
+        traceback.print_exc()
     return more                                        # True: stopped at max_new (there may be more to do)
 
 
@@ -872,6 +1210,153 @@ def sync_all(events, tba, max_new=None, track=True):
         except Exception:
             traceback.print_exc()
     return more
+
+
+# ------------------------------------------------------------------ process-only processors
+PROC_POLL = float(os.environ.get("PROC_POLL_SECONDS", "20"))     # idle: look for a match this often (+ wake-ups)
+PROC_TRIP = int(os.environ.get("PROC_FAIL_TRIP", "2"))           # this many failed matches in a row ->
+PROC_TRIP_S = float(os.environ.get("PROC_FAIL_PAUSE", "600"))    # ... the processor pauses (GPU out of memory etc.)
+
+
+def next_job(ev, tba):
+    """The first match of the event (match_order) this processor may track now, claimed -> (m, cfg, live) | None.
+    The main worker's rules: not done, not failed, not claimed elsewhere; livestream-only mode: a usable clip that
+    exists (TBA-time cuts are the main worker's job); auto mode: a trackable livestream clip, else the uploads once
+    TBA posted (the main worker's video plan, read from video_plan.json)."""
+    lv = live_view(ev)
+    ms = match_order(ev, tba.matches(ev) or [], lv)
+    status = load_status(ev)
+    cfg = event_cfg(ev)
+    only_live = cfg.get("video_mode") == "livestream"
+    if not only_live:
+        try:
+            import videoplan
+            cfg["video_plan"] = (videoplan.load_plan(ev_dir(ev)) or {}).get("matches") or {}
+        except Exception:
+            traceback.print_exc()
+    has_cam = os.path.exists(ev_file(ev, "camera.json"))
+    done = lambda k: os.path.exists(os.path.join(ev_dir(ev), "matches", f"{k}.json"))
+    for m in ms:
+        k = m["key"]; st = status.get(k, {}); played = is_played(m)
+        if done(k) or st.get("state") == "failed": continue
+        if only_live:
+            started = bool(m.get("actual_time")) and time.time() > m["actual_time"] + MATCH_S_WAIT
+            if not (played or started or (lv and k in lv.fast)): continue
+            if claimed_elsewhere(ev, k): continue
+            live = _live_only(lv, m, played, set(st.get("live_skip") or []))
+            if live is None: continue
+        else:
+            live = live_input(lv, m, played, status)
+            if live is None and not (has_cam and played): continue
+            if live is None and st.get("state") == "no_video" and time.time() - st.get("at", 0) < RETRY_NO_VIDEO:
+                continue
+            if claimed_elsewhere(ev, k): continue
+        if not claim(ev, k): continue
+        if done(k):                                    # finished by someone between the check and the claim
+            release(ev, k); continue
+        return m, cfg, live
+    return None
+
+
+def _tidy_claims(events):
+    """At start: give back claims this WORKER_ID still holds (a restart mid-match) and drop processor heartbeat
+    files older than an hour (their claims are stale by then)."""
+    for ev in events or []:
+        d = os.path.join(ev_dir(ev), "claims")
+        for n in (os.listdir(d) if os.path.isdir(d) else []):
+            if n.endswith(".json") and (CL.read(DATA, ev, n[:-5]) or {}).get("by") == WORKER_ID:
+                release(ev, n[:-5]); log(f"{n[:-5]}: released this processor's claim from before the restart")
+    d = os.path.join(DATA, "processors")
+    for n in (os.listdir(d) if os.path.isdir(d) else []):
+        p = jload(os.path.join(d, n))
+        if n.endswith(".json") and isinstance(p, dict) and time.time() - float(p.get("at") or 0) > 3600:
+            try: os.remove(os.path.join(d, n))
+            except OSError: pass
+
+
+def process_only():
+    """Process-only mode (--process-only / PROCESS_ONLY=1): claim the next match (competitions on now first, each
+    in match_order) and track it, until stopped.  Its own WORKER_ID (default <PROCESSOR_TAG>-<host>-<pid>) and GPU
+    (GPU_DEVICE wins over the app's gpu_device); writes only matches/ fuel/ shots/ analytics/, the kept video,
+    events/<ev>/proc_status/<key>.json (its match states; the main worker merges them) and its heartbeat
+    DATA/processors/<id>.json.  PROC_FAIL_TRIP failed matches in a row -> pauses PROC_FAIL_PAUSE s (heartbeat
+    "unhealthy": the main worker tracks meanwhile).  SIGTERM: the match in hand is given back."""
+    global PROCESS_ONLY, WORKER_ID
+    PROCESS_ONLY = True
+    WORKER_ID = os.environ.get("WORKER_ID") or \
+        f"{os.environ.get('PROCESSOR_TAG') or 'proc'}-{socket.gethostname()}-{os.getpid()}"
+
+    def _term(*a):
+        raise SystemExit(0)
+    signal.signal(signal.SIGTERM, _term)
+    gpu = _ENV0["GPU_DEVICE"]
+    log(f"processor {WORKER_ID}: tracking only ({'CPU' if os.environ.get('FORCE_CPU') == '1' else f'GPU_DEVICE={gpu or 0}'}"
+        f"); TBA sync, site, discovery, cuts, reconcile and proxies stay with the main worker")
+    fails, pause_until, waiting, tidy = 0, 0.0, None, True
+    try:
+        while True:
+            key, events = load_config()
+            if gpu is not None:
+                os.environ["GPU_DEVICE"] = gpu         # this instance's card, whatever Admin's gpu_device says
+            if tidy:
+                _tidy_claims(events); tidy = False
+            why = ("match processing paused (PAUSE_PROCESSING=1)" if os.environ.get("PAUSE_PROCESSING") == "1" else
+                   "no events followed" if not events else
+                   f"no detector model ({MODEL})" if not os.path.exists(MODEL) else
+                   f"{fails} failed matches in a row: paused until {time.strftime('%H:%M', time.localtime(pause_until))}"
+                   if time.time() < pause_until else None)
+            if why:
+                if why != waiting: log("waiting:", why)
+                waiting = why
+                proc_beat(state="unhealthy" if time.time() < pause_until else "waiting", note=why)
+                if os.environ.get("ONCE") == "1": return
+                _sleep(30, events); continue
+            if waiting:
+                log("processing matches of", ", ".join(events)); waiting = None
+            proc_beat(state="idle")
+            tba, job, ev = SharedTBA(key), None, None
+            for ev in comp_order(events, tba)[0]:
+                try:
+                    job = next_job(ev, tba)
+                except Exception:
+                    traceback.print_exc(); job = None
+                if job: break
+            if job is None:
+                if os.environ.get("ONCE") == "1": return
+                _sleep(PROC_POLL, events, matches=False); continue
+            m, cfg, live = job
+            k, t0, status = m["key"], time.time(), {}
+            try:
+                status = load_status(ev)
+                lf0 = (status.get(k) or {}).get("live_failed", 0)
+                meta_cache = jload(os.path.join(DATA, "cache", "ytmeta.json"), {}) or {}   # read only
+                with _Beat(ev, k):
+                    ok = process_match(ev, m, cfg, status, meta_cache, live=live)
+            except (SystemExit, KeyboardInterrupt):
+                st = status.get(k) or {}                # stopped mid-match: not this match's fault
+                st.update(state="pending", at=time.time(), attempts=max(0, st.get("attempts", 1) - 1))
+                st.pop("note", None)
+                if status: save_status(ev, status, k)
+                log(f"{k}: stopped mid-match, given back")
+                raise
+            finally:
+                release(ev, k)
+            st = status.get(k) or {}
+            if ok:
+                fails = 0
+                log(f"{k}: tracked by {WORKER_ID} in {time.time() - t0:.0f}s")
+            elif st.get("state") in ("error", "failed") or st.get("live_failed", 0) > lf0 or \
+                    float(st.get("gpu_oom") or 0) >= t0:     # (a clip that failed / the GPU is full)
+                fails += 1
+                if fails >= PROC_TRIP:
+                    pause_until = time.time() + PROC_TRIP_S
+                    log(f"{fails} failed matches in a row ({str(st.get('error'))[-160:]}): pausing {PROC_TRIP_S:.0f}s")
+            if os.environ.get("ONCE") == "1": return
+    finally:
+        try:
+            os.remove(_proc_file())
+        except OSError:
+            pass
 
 
 # ------------------------------------------------------------------ config (platform agent)
@@ -933,14 +1418,29 @@ def _live_sig(events):
         return None
 
 
-def _sleep(seconds, events=None):
-    """Sleep, but wake early when the app settings change (e.g. an event was just added) or the livestream
-    recorder wrote a new match record (process it now, not at the next poll)."""
+def _matches_sig(events):
+    """Changes when a match file appears or is rewritten (a processor finished a match)."""
+    out = []
+    for ev in events or []:
+        try:
+            with os.scandir(os.path.join(ev_dir(ev), "matches")) as it:
+                out.append(tuple(sorted((e.name, e.stat().st_mtime_ns) for e in it if e.name.endswith(".json"))))
+        except OSError:
+            out.append(None)
+    return tuple(out)
+
+
+def _sleep(seconds, events=None, matches=True):
+    """Sleep, but wake early when the app settings change (e.g. an event was just added), the livestream
+    recorder wrote a new match record (process it now, not at the next poll) or -- matches=True, the main worker --
+    a processor wrote a match file (rebuild the site now)."""
     m0, l0, t_end = _conf_mtime(), _live_sig(events), time.time() + seconds
+    s0 = _matches_sig(events) if matches and events else None
     while time.time() < t_end:
         time.sleep(min(5, max(0.1, t_end - time.time())))
         if _conf_mtime() != m0: return
         if events and _live_sig(events) != l0: return
+        if s0 is not None and _matches_sig(events) != s0: return
 
 
 _TRACK_LOGGED = [None]
@@ -950,6 +1450,8 @@ def main():
     if "--recorder" in sys.argv[1:]:                  # compose service `recorder` (same image): live streams
         import liveingest
         return liveingest.Service(DATA, log=lambda *a: log("recorder:", *a)).run()
+    if PROCESS_ONLY or "--process-only" in sys.argv[1:]:   # compose processor-gpu*, deploy/macos CS_PROCESSORS
+        return process_only()
     try:                                               # Video page jobs: frame grabs, layout suggestions, calibration fits
         import threading, sources
         threading.Thread(target=sources.job_loop, args=(DATA,), kwargs={"log": log}, daemon=True).start()
