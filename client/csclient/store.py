@@ -45,7 +45,7 @@ class Config:
                 "ca_file": None, "alt_servers": [],
                 # processor mode (csclient/processor.py): on/off, the processing Python, events, claim owner id
                 "process": False, "process_python": None, "process_events": None, "process_id": None,
-                "process_warn_mb": 100}
+                "process_warn_mb": 100, "process_mode": "track", "process_allow_slow": False}
 
     def __init__(self, data_dir: str):
         self.path = os.path.join(data_dir, "config.json")

@@ -592,6 +592,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 started = app.processor.start_setup()
                 return self.send_json(202 if started else 409, {"started": started,
                                                                 "setup": app.processor.status()["setup"]})
+            if sub == "processing/bench" and m == "POST":
+                started = app.processor.start_bench()
+                return self.send_json(202 if started else 409, {"started": started})
+            if sub == "processing/netcheck" and m == "POST":
+                started = app.processor.start_netcheck()
+                return self.send_json(202 if started else 409, {"started": started})
+            if sub == "processing/gpu" and m == "POST":
+                g = app.processor.gpu(again=True)
+                app.processor.kick()
+                return self.send_json(200, {"gpu": g})
             if sub == "outbox" and m == "GET":
                 return self.send_json(200, app.db.items())
             mm = re.match(r"^outbox/(\d+)$", sub)
@@ -649,7 +659,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def ctl_processing(self, d):
         """{enabled?: bool, python?: absolute path | null, events?: [event keys] | null, warn_mb?: int (0 = never),
-        allow_large?: true} (processor mode)."""
+        allow_large?: true, mode?: "track" | "clip", allow_slow?: true} (processor mode)."""
         app = self.app
         ch = {}
         if "python" in d:
@@ -677,11 +687,19 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self.send_json(422, {"detail": "allow_large: true (allows large clips until the client restarts)"})
         if "enabled" in d and not isinstance(d["enabled"], bool):
             return self.send_json(422, {"detail": "enabled: true or false"})
+        if "mode" in d and d["mode"] not in ("track", "clip"):
+            return self.send_json(422, {"detail": "mode: track (GPU tracking) or clip (Clip only)"})
+        if "allow_slow" in d and d["allow_slow"] is not True:
+            return self.send_json(422, {"detail": "allow_slow: true (track even though this computer is slow)"})
         if ch:
             app.config.update(**ch)
             app.processor.kick()
         if d.get("allow_large") is True:
             app.processor.allow_large()
+        if "mode" in d:
+            app.processor.set_mode(d["mode"])
+        if d.get("allow_slow") is True:
+            app.processor.allow_slow()
         if "enabled" in d:
             app.processor.set_enabled(d["enabled"])
         return self.send_json(200, app.processor.status())

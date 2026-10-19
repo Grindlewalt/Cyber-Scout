@@ -14,7 +14,11 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
 sys.path.insert(0, HERE)
 
+import csclient.clipper as PR_C                  # noqa: E402
+import csclient.gpu as G                         # noqa: E402
+import csclient.procnet as N                     # noqa: E402
 import csclient.processor as PR                  # noqa: E402
+import csclient.procsetup as PS                  # noqa: E402
 from csclient.app import App                      # noqa: E402
 from fakeprocessing import FakeProcessing, wait_for   # noqa: E402
 from fakeserver import FakeServer                 # noqa: E402
@@ -29,11 +33,17 @@ EV = "2026test"
 class Base(unittest.TestCase):
     modes = ("ok",)
 
+    env = {}                                      # extra environment for the test (CS_FAKE_*)
+
     def setUp(self):
         self._imports, self._beat, self._idle = PR.IMPORTS, PR.MIN_BEAT, PR.IDLE_S
-        PR.IMPORTS = ()                           # the test Python has no onnxruntime; the fake runner needs none
+        self._cimports = PR.CLIP_IMPORTS
+        PR.IMPORTS = PR.CLIP_IMPORTS = ()         # the test Python has no onnxruntime; the fake runner needs none
         PR.MIN_BEAT = 0.3
         PR.IDLE_S = 0.5
+        self._env = {k: os.environ.get(k) for k in ("CS_FAKE_GPU", "CS_FAKE_DET_FPS", "CS_FAKE_PROVIDER",
+                                                    "CS_FAKE_CUT_WAIT", "CS_FAKE_CLIP_BYTES")}
+        os.environ.update(dict({"CS_FAKE_GPU": "coreml"}, **self.env))   # an Apple-silicon GPU, on any test machine
         self.fs = FakeServer().start()
         self.proc = self.fs.state.proc = FakeProcessing(self.modes)
         self.tmp = tempfile.mkdtemp(prefix="csc-proc-")
@@ -49,6 +59,12 @@ class Base(unittest.TestCase):
         self.fs.stop()
         shutil.rmtree(self.tmp, ignore_errors=True)
         PR.IMPORTS, PR.MIN_BEAT, PR.IDLE_S = self._imports, self._beat, self._idle
+        PR.CLIP_IMPORTS = self._cimports
+        for k, v in self._env.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
 
     def login(self, user="coach", pw="pw-admin-1"):
         code, d = self.c.req("POST", "/client/v1/login", {"username": user, "password": pw})
@@ -80,7 +96,7 @@ class TestProcessing(Base):
         m = up["matches"]
         self.assertEqual((m["key"], m["feed_ok"], m["source"]), (k1, 0.95, "livestream"))
         self.assertEqual(m["live"]["record_path"], "/srv/media/live/x/matches/qm1.json")   # the server's record
-        self.assertEqual(m["env"].get("FORCE_CPU"), "1" if sys.platform == "darwin" else None)
+        self.assertEqual((m["env"].get("FORCE_CPU"), m["env"].get("ORT_COREML")), ("1", "1"))   # Core ML (fake GPU)
         self.assertTrue(m["work"].startswith(os.path.join(self.app.data_dir, "processing", "work")))
         # code + model downloaded once and cached by version / checksum
         self.assertEqual((P.code_gets, P.model_gets), (1, 1))
@@ -97,6 +113,15 @@ class TestProcessing(Base):
         self.assertTrue(s["line"].startswith("idle, done 2"), s["line"])
         self.assertEqual(self.c.req("GET", "/client/v1/status")[1]["processing"]["done"], 2)
         self.assertGreaterEqual(len(P.beats), 0)
+        # the benchmark ran once before the first claim (no sample clip on the server: synthetic frames)
+        b = s["speed"]["bench"]
+        self.assertEqual((b["provider"], b["frames"], b["ok"], b["runtime"]), ("CoreMLExecutionProvider", "synthetic",
+                                                                                True, "coreml"))
+        self.assertEqual(b["est_min"], PR.estimate_min({"det_fps": 60.0}))
+        self.assertEqual(s["speed"]["from"], "measured")                 # real jobs count from then on
+        self.assertEqual(len(s["speed"]["jobs"]), 2)
+        self.assertEqual(s["gpu"]["kind"], "coreml")
+        self.assertTrue(os.path.isfile(os.path.join(root, "bench.json")))
 
     def test_turn_off_stops(self):
         self.login()
@@ -267,6 +292,337 @@ class TestNeeds(Base):
         self.assertIn("cs_client=", " ".join(h.get_all("Set-Cookie")))
         code, h, b = self.c.req("GET", "/client/processing.js", raw=True)
         self.assertEqual((code, h["Content-Type"].split(";")[0]), (200, "text/javascript"))
+
+
+class TestNoGPU(Base):
+    env = {"CS_FAKE_GPU": "none"}
+
+    def test_tracking_needs_a_gpu(self):
+        self.login()
+        self.turn_on()
+        self.assertTrue(wait_for(lambda: self.pstatus()["state"] == "no_gpu"), self.pstatus())
+        s = self.pstatus()
+        self.assertIn("NVIDIA GPU", s["message"])
+        self.assertEqual(s["line"], "can't track here: no usable GPU (Clip only works)")
+        self.assertEqual(s["notices"][0]["kind"], "no_gpu")
+        self.assertEqual(s["plan"]["runtime"], "clip")                  # Set up would install the Clip only tools
+        self.assertEqual(self.proc.claim_bodies, [])
+        self.assertFalse([r for r in self.fs.state.requests if "/pipeline/code" in r[1]])   # nothing downloaded
+
+
+class TestSlowComputer(Base):
+    env = {"CS_FAKE_DET_FPS": "1.5"}             # ~2 h per match
+
+    def test_slow_computer_pauses_and_offers_clip_only(self):
+        self.login()
+        self.turn_on()
+        self.assertTrue(wait_for(lambda: self.pstatus()["state"] == "slow"), self.pstatus())
+        s = self.pstatus()
+        self.assertGreater(s["speed"]["per_match_min"], PR.SLOW_MIN)
+        self.assertIn("Clip only helps", s["message"])
+        self.assertIn("slow_gpu", [n["kind"] for n in s["notices"]])
+        self.assertEqual(self.proc.claim_bodies, [])
+        code, d = self.c.req("PUT", "/client/v1/processing", {"allow_slow": True})
+        self.assertTrue(d["allow_slow"])
+        self.assertTrue(wait_for(lambda: self.proc.completed), self.pstatus())     # tracks anyway
+        self.assertEqual(self.c.req("PUT", "/client/v1/processing", {"allow_slow": False})[0], 422)
+
+
+class TestGpuFailsInBenchmark(Base):
+    env = {"CS_FAKE_PROVIDER": "CPUExecutionProvider"}
+
+    def test_cpu_fallback_counts_as_no_gpu(self):
+        self.login()
+        self.turn_on()
+        self.assertTrue(wait_for(lambda: self.pstatus()["state"] == "no_gpu"), self.pstatus())
+        s = self.pstatus()
+        self.assertIn("did not work in the benchmark", s["message"])
+        self.assertFalse(s["speed"]["bench"]["ok"])
+        self.assertEqual(self.proc.claim_bodies, [])
+
+
+class TestBenchmarkSample(Base):
+    def test_benchmark_uses_the_servers_sample_clip(self):
+        self.proc.sample = os.urandom(200_000)
+        self.login()
+        code, d = self.c.req("PUT", "/client/v1/processing", {"python": sys.executable})
+        code, d = self.c.req("POST", "/client/v1/processing/bench", {})
+        self.assertEqual(code, 202)
+        self.assertTrue(wait_for(lambda: (self.pstatus()["speed"]["running"] or {}).get("state") == "done"),
+                        self.pstatus()["speed"])
+        b = self.pstatus()["speed"]["bench"]
+        self.assertEqual((b["frames"], b["decode_fps"]), ("sample", 300.0))
+        self.assertEqual(self.pstatus()["data"]["down"] >= 200_000, True)
+        self.assertEqual(self.pstatus()["net"]["clip_bytes"], 191_000_000)     # typical clip size from the server
+        bd = os.path.join(self.app.data_dir, "processing", "bench")
+        import hashlib
+        self.assertEqual([n for n in os.listdir(bd) if n.startswith("sample-")],
+                         [f"sample-{hashlib.sha256(self.proc.sample).hexdigest()[:16]}.mp4"])
+
+
+class TestSlowNet(Base):
+    def test_slow_wifi_notice_with_the_metered_warning(self):
+        self.proc.speed_bps = 400_000                       # 0.4 MB/s: a 191 MB clip takes ~8 min
+        self.login()
+        code, d = self.c.req("PUT", "/client/v1/processing", {"python": sys.executable})
+        self.assertEqual(self.c.req("POST", "/client/v1/processing/netcheck", {})[0], 202)
+        self.assertTrue(wait_for(lambda: self.pstatus()["net"]["down_bps"] and not self.pstatus()["net"]["probing"]),
+                        self.pstatus()["net"])
+        n = self.pstatus()["net"]
+        self.assertTrue(n["slow"])
+        self.assertLess(n["down_bps"], 500_000)
+        self.assertGreater(n["clip_down_min"], 5)
+        self.assertRegex(n["notice"], r"^Slow Wi-Fi: about 0\.\d MB/s from the server, so a match clip \(191 MB\) "
+                                      r"takes about \d+ min to download; processing here won't be optimal")
+        self.assertIn("over your 100 MB data warning", n["notice"])
+        st = self.c.req("GET", "/client/v1/status")[1]["processing"]
+        self.assertEqual(st["notices"][-1]["kind"], "slow_net")
+        # the main web app's Settings read the same notice through GET /client/v1/processing (web/settings.js)
+
+
+class TestClipOnly(Base):
+    env = {"CS_FAKE_GPU": "none", "CS_FAKE_CLIP_BYTES": "300000"}
+
+    def setUp(self):
+        super().setUp()
+        now = time.time()
+        P = self.proc
+        P.stream_matches = [{"key": f"{EV}_qm{n}", "comp_level": "qm", "set_number": 1, "match_number": n,
+                             "actual_time": now - 600 + 100 * n, "alliances": {}} for n in (1, 2, 3)]
+        P.stream_want = [f"{EV}_qm1", f"{EV}_qm2"]
+        P.stream_skipped = [f"{EV}_qm3"]
+
+    def test_records_cuts_and_uploads_what_the_server_wants(self):
+        P = self.proc
+        P.cut_chunk_once = True                             # one broken chunk upload on the way
+        self.login()
+        code, d = self.c.req("PUT", "/client/v1/processing", {"python": sys.executable, "mode": "clip",
+                                                               "enabled": True})
+        self.assertEqual((code, d["mode"]), (200, "clip"))
+        self.assertTrue(wait_for(lambda: len(P.clips_done) == 2, 40), (self.pstatus(), P.clip_uploads.keys()))
+        rec, data, _ = P.clips_done["tba-qm1"]
+        self.assertTrue(data.startswith(b"\0\0\0\x14ftyp") and len(data) == 300_012)
+        self.assertEqual(sorted(rec), sorted(set(rec) & set(PR_C.REC_FIELDS)))   # only the record fields, no paths
+        self.assertGreater(P.chunk_puts, 300_012 // (64 << 10))                     # chunked (64 KB here)
+        self.assertTrue(wait_for(lambda: self.pstatus()["clip"]["uploaded"] == 2), self.pstatus()["clip"])
+        s = self.pstatus()
+        self.assertEqual(s["state"], "clip")
+        self.assertRegex(s["line"], r"^clip only: (recording Main stream, \d+ (KB|MB) kept, 2 uploaded|uploading)")
+        rows = {r["match"]: r["state"] for r in s["clip"]["matches"]}
+        self.assertEqual(rows["qm1"], "uploaded")
+        self.assertEqual(rows["qm3"], "the server has it")
+        rec_dir = os.path.join(self.app.data_dir, "processing", "streams", "cs0123456789", "rec", EV, "r1")
+        self.assertEqual(os.listdir(os.path.join(rec_dir, "clips")), [])              # sent clips are deleted
+        self.assertTrue(os.path.isfile(os.path.join(rec_dir, "matches", "tba-qm1.json")))
+        self.assertGreater(s["data"]["up"], 400_000)                                   # 2 clips, acknowledged chunks
+        self.assertGreater(s["data"]["down"], 0)                                       # the recording's bytes
+        self.assertTrue(wait_for(lambda: any(b.get("state") == "recording" and b["rec"].get("chunks")
+                                             for b in P.stream_beats), 15), P.stream_beats)
+        # turned off: the runner stops and the stream is given back
+        self.c.req("PUT", "/client/v1/processing", {"enabled": False})
+        self.assertTrue(wait_for(lambda: P.stream_released == ["turned off"]), P.stream_released)
+        self.assertTrue(wait_for(lambda: self.pstatus()["state"] == "off"))
+
+    def test_waits_are_shown_and_a_lost_stream_stops(self):
+        os.environ["CS_FAKE_CUT_WAIT"] = "the recording does not cover this match"
+        P = self.proc
+        self.login()
+        self.c.req("PUT", "/client/v1/processing", {"python": sys.executable, "mode": "clip", "enabled": True})
+        self.assertTrue(wait_for(lambda: any("waiting: the recording does not cover" in r["state"]
+                                             for r in (self.pstatus()["clip"] or {}).get("matches") or [])),
+                        self.pstatus()["clip"])
+        P.stream_stop = True
+        self.assertTrue(wait_for(lambda: self.pstatus()["state"] in ("idle", "clip") and P.stream_by is not None
+                                 and len(P.stream_beats) > 3), self.pstatus())
+        self.assertEqual(P.clips_done, {})
+
+
+class TestSetup(Base):
+    env = {"CS_FAKE_GPU": "coreml"}
+
+    def test_setup_installs_the_runtime_then_benchmarks(self):
+        self.login()
+        pr = self.app.processor
+        cmds = []
+
+        def fake_uv(cmd, watch=None, expect=0, timeout=0):
+            cmds.append(cmd[1:3])
+            if cmd[1] == "venv":
+                os.makedirs(os.path.join(cmd[-1], "bin" if os.name != "nt" else "Scripts"), exist_ok=True)
+                py = PR.venv_python(cmd[-1])
+                try:
+                    os.symlink(sys.executable, py)
+                except (OSError, NotImplementedError):
+                    shutil.copy(sys.executable, py)
+        pr.setup_cmd = fake_uv
+        os.makedirs(os.path.join(pr.root, "tools", f"uv-{PS.UV_VERSION}"), exist_ok=True)
+        uv = os.path.join(pr.root, "tools", f"uv-{PS.UV_VERSION}", "uv.exe" if os.name == "nt" else "uv")
+        open(uv, "w").close()
+        orig = PS.find_uv
+        PS.find_uv = lambda: None
+        try:
+            code, d = self.c.req("POST", "/client/v1/processing/setup", {})
+            self.assertEqual(code, 202)
+            self.assertTrue(wait_for(lambda: (self.pstatus()["setup"] or {}).get("state") in ("done", "error")))
+        finally:
+            PS.find_uv = orig
+        s = self.pstatus()
+        self.assertEqual(s["setup"]["state"], "done", s["setup"])
+        self.assertEqual([c[0] for c in cmds], ["venv", "pip"])
+        self.assertTrue(any("Core ML" in ln for ln in s["setup"]["log"]), s["setup"]["log"])
+        self.assertEqual(s["speed"]["bench"]["provider"], "CoreMLExecutionProvider")   # benchmarked right after
+        self.assertTrue(s["plan"]["installed"])
+        with open(os.path.join(pr.root, "requirements-coreml.txt")) as f:
+            self.assertIn("imageio-ffmpeg==0.6.0", f.read())
+
+    def test_setup_refuses_without_disk_space(self):
+        self.login()
+        orig = PS.shutil.disk_usage
+        PS.shutil.disk_usage = lambda p: type("U", (), {"free": 1 << 30, "total": 1, "used": 1})()
+        try:
+            self.c.req("POST", "/client/v1/processing/setup", {})
+            self.assertTrue(wait_for(lambda: (self.pstatus()["setup"] or {}).get("state") == "error"))
+            self.assertIn("not enough free disk space", self.pstatus()["setup"]["message"])
+            self.assertFalse(self.pstatus()["plan"]["ok"])
+        finally:
+            PS.shutil.disk_usage = orig
+
+
+class TestGPUDetect(unittest.TestCase):
+    def run_with(self, table):
+        def run(cmd, timeout=15):
+            for k, v in table.items():
+                if k in " ".join(cmd):
+                    return v
+            return (1, "", "not found")
+        return run
+
+    def test_nvidia(self):
+        q = "0, NVIDIA GeForce RTX 3060 Ti, 8192, 610.43.03, 8.6\n1, NVIDIA GeForce RTX 3060, 12288, 610.43.03, 8.6\n"
+        orig = G.find_smi
+        G.find_smi = lambda: "/usr/bin/nvidia-smi"
+        try:
+            g = G._nvidia(self.run_with({"--query-gpu": (0, q, "")}))
+            self.assertEqual((g["ok"], g["kind"], g["device"], g["name"]), (True, "cuda", 1, "NVIDIA GeForce RTX 3060"))
+            self.assertEqual(G.pipeline_env(g), {"GPU_DEVICE": "1"})
+            g = G._nvidia(self.run_with({"--query-gpu": (0, "0, NVIDIA GeForce GTX 1080, 8192, 590.10, 6.1\n", "")}))
+            self.assertFalse(g["ok"])
+            self.assertIn("compute capability 6.1", g["why"])
+            self.assertEqual(g["runtime"], "clip")
+            g = G._nvidia(self.run_with({"--query-gpu": (0, "0, NVIDIA RTX A2000, 6144, 536.23, 8.6\n", "")}))
+            self.assertIn("driver (536.23) is too old", g["why"])
+            old = {"compute_cap": (2, "", 'Field "compute_cap" is not a valid field to query.'),
+                   "driver_version --format": (0, "0, NVIDIA GeForce RTX 4090, 24564, 612.01\n", "")}
+            g = G._nvidia(self.run_with(old))
+            self.assertTrue(g["ok"], g)
+        finally:
+            G.find_smi = orig
+        G.find_smi, orig2 = (lambda: None), G._other_gpus
+        G._other_gpus = lambda run: ["Intel(R) Iris(R) Xe Graphics"]
+        try:
+            g = G._nvidia(self.run_with({}))
+            self.assertIn("Iris(R) Xe Graphics", g["why"])
+            self.assertFalse(g["ok"])
+        finally:
+            G.find_smi, G._other_gpus = orig, orig2
+
+    def test_mac(self):
+        orig = G.apple_silicon
+        try:
+            G.apple_silicon = lambda run=None: False
+            self.assertIn("Intel Macs", G._mac(self.run_with({}))["why"])
+            G.apple_silicon = lambda run=None: True
+            g = G._mac(self.run_with({"machdep.cpu": (0, "Apple M2\n", ""), "hw.memsize": (0, str(16 << 30), ""),
+                                      "SPDisplays": (0, json.dumps({"SPDisplaysDataType": [{"sppci_cores": "10"}]}), "")}))
+            if tuple(int(x) for x in (__import__("platform").mac_ver()[0] or "15").split(".")[:2]) >= (14, 0):
+                self.assertEqual((g["ok"], g["kind"], g["name"]), (True, "coreml", "Apple M2 (10-core GPU)"))
+                self.assertEqual(G.pipeline_env(g), {"FORCE_CPU": "1", "ORT_COREML": "1"})
+        finally:
+            G.apple_silicon = orig
+
+
+class TestSetupUnits(unittest.TestCase):
+    def test_requirements_per_runtime(self):
+        base = ["onnxruntime==1.31.0", "opencv-python-headless==5.0.0.93", "av==19.0.1", "numpy==2.5.4", "scipy==1.18.1"]
+        pipe = {"requirements": base}                                # an older server: no "runtimes"
+        r, _ = PS.requirements(pipe, "cuda")
+        self.assertEqual(r[0], "onnxruntime-gpu[cuda,cudnn]==1.31.0")
+        self.assertIn("imageio-ffmpeg==0.6.0", r)
+        r, _ = PS.requirements(pipe, "clip")
+        self.assertEqual({x.split("==")[0] for x in r}, {"opencv-python-headless", "av", "numpy", "imageio-ffmpeg", "deno"})
+        r, _ = PS.requirements(dict(pipe, runtimes={"coreml": ["x==1"]}, clip_extras=["y==2"]), "coreml")
+        self.assertEqual(r, ["x==1", "y==2"])
+
+    def test_plan_checks_disk(self):
+        tmp = tempfile.mkdtemp(prefix="csc-plan-")
+        try:
+            p = PS.plan(tmp, {"requirements": ["numpy==2"]}, {"runtime": "cuda"})
+            self.assertEqual((p["runtime"], p["download"], p["installed"]), ("cuda", PS.SIZES["cuda"]["download"], False))
+            self.assertEqual(p["need"], 2 * PS.SIZES["cuda"]["disk"] + PS.HEADROOM)
+            orig = PS.shutil.disk_usage
+            PS.shutil.disk_usage = lambda p: type("U", (), {"free": 2 << 30})()
+            try:
+                p = PS.plan(tmp, {"requirements": []}, {"runtime": "cuda"})
+                self.assertFalse(p["ok"])
+                self.assertRegex(p["why"], r"needs about 9\.\d GB on this disk, 2\.0 GB free")
+            finally:
+                PS.shutil.disk_usage = orig
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_uv_download_is_checksum_verified(self):
+        tmp = tempfile.mkdtemp(prefix="csc-uv-")
+        try:
+            buf = io.BytesIO()
+            with tarfile.open(fileobj=buf, mode="w:gz") as t:
+                for name, data in (("uv-x/uv", b"#!uv"), ("uv-x/uvx", b"#!uvx"), ("uv-x/uv.exe", b"MZuv")):
+                    ti = tarfile.TarInfo(name)
+                    ti.size = len(data)
+                    t.addfile(ti, io.BytesIO(data))
+            blob = buf.getvalue()
+            key = PS.machine()
+            orig_assets, orig_find = dict(PS.UV_ASSETS), PS.find_uv
+            PS.find_uv = lambda: None
+            PS.UV_ASSETS[key] = ("uv-x.tar.gz", "0" * 64)
+            try:
+                with self.assertRaises(RuntimeError):
+                    PS.ensure_uv(tmp, lambda m: None, fetch=lambda u: blob)
+                import hashlib
+                PS.UV_ASSETS[key] = ("uv-x.tar.gz", hashlib.sha256(blob).hexdigest())
+                if os.name != "nt":
+                    p = PS.ensure_uv(tmp, lambda m: None, fetch=lambda u: blob)
+                    with open(p, "rb") as f:
+                        self.assertEqual(f.read(), b"#!uv")
+                    self.assertTrue(os.access(p, os.X_OK))
+            finally:
+                PS.UV_ASSETS.clear()
+                PS.UV_ASSETS.update(orig_assets)
+                PS.find_uv = orig_find
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
+class TestNotices(unittest.TestCase):
+    def test_texts(self):
+        slow, t = N.notice("track", 600_000, None, 191e6, 0)
+        self.assertTrue(slow)
+        self.assertEqual(t, "Slow Wi-Fi: about 0.6 MB/s from the server, so a match clip (191 MB) takes about 5 min "
+                            "to download; processing here won't be optimal (the server may be faster on its own).")
+        self.assertEqual(N.notice("track", 20e6, None, 191e6, 0), (False, None))
+        slow, t = N.notice("track", 20e6, None, 191e6, 100)
+        self.assertFalse(slow)
+        self.assertIn("over your 100 MB warning", t)
+        slow, t = N.notice("clip", 0.8e6, 0.3e6, 191e6, 100)
+        self.assertTrue(slow)
+        self.assertIn("recording the stream needs about 1.1 MB/s", t)
+        self.assertIn("Also slow: about 0.3 MB/s up, so a match clip (191 MB) takes about 11 min to upload", t)
+
+    def test_estimate(self):
+        self.assertIsNone(PR.estimate_min({}))
+        fast = PR.estimate_min({"det_fps": 120, "decode": {"fps": 600}})
+        slow = PR.estimate_min({"det_fps": 2, "decode": {"fps": 100}})
+        self.assertLess(fast, 5)
+        self.assertGreater(slow, PR.SLOW_MIN)
 
 
 class TestUnits(unittest.TestCase):
