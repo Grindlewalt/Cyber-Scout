@@ -10,15 +10,17 @@ and rotated 180 degrees, so a read is (candidate index, log P, margin over the
 runner-up).  Measured on 20 Sammamish quals: ~96% of reads with lp > -8 name the
 robot actually in the crop.
 
-GPU: CUDA on device $OCR_GPU (default: $GPU_DEVICE, the detector's GPU, default 0);
-FORCE_CPU=1 or no CUDA provider -> CPU.  Crops are batched: detector inputs are
-padded to a few fixed bucket sizes (no per-shape cuDNN re-tuning), recogniser
-inputs are a fixed 48x320 batch.
+Device (cuda_device(), env OCR_CUDA): CPU, except inside a process whose robot detector runs on
+CUDA (OCR_PROC=0's thread, station OCR in the worker), where OCR shares that CUDA context on
+$OCR_GPU (default $GPU_DEVICE); OCR_CUDA=1 = CUDA in any process, 0 = never; FORCE_CPU=1 = CPU.
+A CUDA failure while reading (e.g. out of GPU memory) moves the sessions to the CPU and keeps
+going.  Detector inputs are padded to a few fixed bucket sizes (no per-shape cuDNN re-tuning),
+recogniser inputs are a fixed 48x320 batch.
 
     o = BumperOCR()
     reads = o.read_many(crops, ["2910", "1983", ...])   # per crop: [Read, ...]
 """
-import os, sys, threading, numpy as np, cv2
+import os, sys, numpy as np, cv2
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 MODEL_DIRS = [os.environ.get("CYBERSCOUT_OCR_DIR", ""), os.path.join(HERE, "models", "ocr"),
@@ -86,20 +88,38 @@ def _find_models():
     raise FileNotFoundError("OCR models not found (live/models/ocr or $CYBERSCOUT_OCR_DIR)")
 
 
+def _why(e):
+    """An ORT/CUDA exception -> one short line (its last non-empty line, e.g. 'CUDA failure 2: out of memory ...')."""
+    lines = [x.strip() for x in str(e).splitlines() if x.strip()]
+    return f"{type(e).__name__}: {lines[-1][:240]}" if lines else repr(e)
+
+
+def cuda_device(device=None):
+    """CUDA device index for the OCR sessions, or None = CPU.  device: index (default $OCR_GPU, else
+    $GPU_DEVICE, else 0) or "cpu".  OCR_CUDA=auto (default): CUDA only when this process already has a
+    robot detector on CUDA (detector.CUDA) -- the OCR then shares its context and libraries.  A
+    separate OCR process (OcrSampler's workers, the recorder's overlay OCR) would need a CUDA context of
+    its own, which the shared cards don't have room for, and the pip CUDA wheels must be preloaded.
+    OCR_CUDA=1: CUDA in any process (preloads the wheels); 0: never.  FORCE_CPU=1: never."""
+    mode = os.environ.get("OCR_CUDA", "auto")
+    if device == "cpu" or mode == "0" or os.environ.get("FORCE_CPU") == "1":
+        return None
+    import onnxruntime as ort
+    if "CUDAExecutionProvider" not in ort.get_available_providers():
+        return None
+    if mode != "1" and not getattr(sys.modules.get("detector"), "CUDA", False):
+        return None
+    if mode == "1" and hasattr(ort, "preload_dlls"):      # pip CUDA/cuDNN wheels (onnxruntime-gpu[cuda,cudnn])
+        try: ort.preload_dlls()
+        except Exception: pass
+    return int(os.environ.get("OCR_GPU", os.environ.get("GPU_DEVICE", "0")) if device is None else device)
+
+
 class BumperOCR:
     def __init__(self, model_dir=None, device=None, threads=2, confusable=False):
-        import onnxruntime as ort
-        d = model_dir or _find_models()
-        so = ort.SessionOptions(); so.log_severity_level = 3; so.intra_op_num_threads = threads
-        if device is None:
-            device = int(os.environ.get("OCR_GPU", os.environ.get("GPU_DEVICE", "0")))
-        prov = ["CPUExecutionProvider"]
-        if os.environ.get("FORCE_CPU") != "1" and "CUDAExecutionProvider" in ort.get_available_providers():
-            prov = [("CUDAExecutionProvider", {"device_id": int(device), "cudnn_conv_algo_search": "HEURISTIC"}),
-                    "CPUExecutionProvider"]
-        self.det = ort.InferenceSession(os.path.join(d, "ch_PP-OCRv3_det_infer.onnx"), so, providers=prov)
-        self.rec = ort.InferenceSession(os.path.join(d, "ch_PP-OCRv3_rec_infer.onnx"), so, providers=prov)
-        self.device = self.det.get_providers()[0]
+        self._dir, self._threads = model_dir or _find_models(), threads
+        self.fallback = None                # why CUDA was given up for the CPU mid-run (None: it wasn't)
+        self._load(cuda_device(device))
         self.det_in = self.det.get_inputs()[0].name
         self.rec_in = self.rec.get_inputs()[0].name
         chars = ["<b>"] + self.rec.get_modelmeta().custom_metadata_map["character"].splitlines() + [" "]
@@ -110,6 +130,38 @@ class BumperOCR:
         self.confusable = confusable
         self._conf = [(self.cidx[d], [self.cidx[c] for c in alts if c in self.cidx])
                       for d, alts in CONFUSABLE.items() if d in self.cidx]
+
+    def _load(self, cuda):
+        """Both sessions on CUDA device `cuda` (None: CPU).  CUDA that fails to start (no room for the
+        context, ...) means CPU, with the reason in self.fallback instead of ORT's printed EP Error."""
+        import onnxruntime as ort
+        so = ort.SessionOptions(); so.log_severity_level = 3; so.intra_op_num_threads = self._threads
+        path = lambda n: os.path.join(self._dir, f"ch_PP-OCRv3_{n}_infer.onnx")
+        if cuda is not None:
+            prov = [("CUDAExecutionProvider", {"device_id": int(cuda), "cudnn_conv_algo_search": "HEURISTIC"}),
+                    "CPUExecutionProvider"]
+            try:
+                self.det = ort.InferenceSession(path("det"), so, providers=prov, enable_fallback=0)
+                self.rec = ort.InferenceSession(path("rec"), so, providers=prov, enable_fallback=0)
+                self.device = self.det.get_providers()[0]
+                return
+            except Exception as e:
+                self.fallback = _why(e)
+        self.det = ort.InferenceSession(path("det"), so, providers=["CPUExecutionProvider"])
+        self.rec = ort.InferenceSession(path("rec"), so, providers=["CPUExecutionProvider"])
+        self.device = "CPUExecutionProvider"
+
+    def _run(self, rec, X):
+        """One forward pass (rec: recogniser, else text detector).  A CUDA error (out of GPU memory, ...)
+        reloads both sessions on the CPU and retries there, for the rest of this object's life."""
+        try:
+            return (self.rec if rec else self.det).run(None, {self.rec_in if rec else self.det_in: X})[0]
+        except Exception as e:
+            if self.device == "CPUExecutionProvider": raise
+            self.fallback = _why(e)
+            self.det = self.rec = None          # free the CUDA sessions' memory first
+            self._load(None)
+            return (self.rec if rec else self.det).run(None, {self.rec_in if rec else self.det_in: X})[0]
 
     # ------------------------------------------------------------ detection
     def _det_batch(self, ims, thr=0.25, box_thr=0.4, unclip=1.8):
@@ -132,7 +184,7 @@ class BumperOCR:
                 if s < 1.0: im = cv2.resize(im, (int(w * s), int(h * s)))
                 hh, ww = im.shape[:2]
                 X[0, :, :hh, :ww] = ((im.astype(np.float32) - mean) / std).transpose(2, 0, 1)
-                p = self.det.run(None, {self.det_in: X})[0][0, 0, :hh, :ww]
+                p = self._run(False, X)[0, 0, :hh, :ww]
                 m = (p > thr).astype(np.uint8)
                 cs, _ = cv2.findContours(m, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
                 rects = []
@@ -177,7 +229,7 @@ class BumperOCR:
                 nw = int(min(320, max(16, np.ceil(48 * w / max(h, 1)))))
                 x = (cv2.resize(im, (nw, 48)).astype(np.float32) / 255. - 0.5) / 0.5
                 X[r, :, :, :nw] = x.transpose(2, 0, 1); T.append(int(np.ceil(nw / 8)) + 1)
-            P = self.rec.run(None, {self.rec_in: X})[0]
+            P = self._run(True, X)
             for r in range(len(chunk)):
                 out.append(np.log(np.clip(P[r, :min(T[r], P.shape[1])], 1e-9, 1)))
         return out
@@ -353,7 +405,8 @@ def _attribute(ocr_res, jobs, rects, cen, row0):
 
 def _worker_main(cands, device, open_cands=None):
     """OCR worker process (python live/ocr.py --worker ...): pickled jobs on stdin,
-    pickled ("reads", rows) / ("ready", device) / ("error", msg) / ("done", busy_s) on stdout.
+    pickled ("reads", rows) / ("ready", device) / ("fallback", why CUDA -> CPU) / ("error", msg) / ("done", busy_s)
+    on stdout.
     A separate interpreter, so OCR never contends with decoding/detection for the GIL."""
     import pickle, time
     fin, fout = sys.stdin.buffer, sys.stdout.buffer
@@ -362,6 +415,7 @@ def _worker_main(cands, device, open_cands=None):
     try:
         o = BumperOCR(device=device)
         send(("ready", o.device))
+        if o.fallback: send(("fallback", o.fallback))
     except Exception as e:
         send(("error", repr(e))); return
     busy = 0.0
@@ -374,8 +428,10 @@ def _worker_main(cands, device, open_cands=None):
         t0 = time.time()
         try:
             row0, jobs, rects, cen = item
+            fb = o.fallback
             res = o.read_many([c for _, c, _ in jobs], cands, offsets=[x for _, _, x in jobs],
                               open_cands=open_cands, keep_rejected=open_cands is not None)
+            if o.fallback != fb: send(("fallback", o.fallback))
             send(("reads", _attribute(res, jobs, rects, cen, row0)))
         except Exception as e:
             send(("error", repr(e)))
@@ -412,7 +468,7 @@ class OcrSampler:
         self.good = []                      # (t, x, y) of successful reads (filled asynchronously)
         self.rowpos = {}                    # det row -> (t, x, y) for rows in submitted frames
         self.reads, self.n_tried, self.busy_s = [], 0, 0.0
-        self.err = None; self.device = None; self.dead = False
+        self.err = None; self.n_err = 0; self.device = None; self.dead = False; self.fallback = None
         use_process = (os.environ.get("OCR_PROC", "1") == "1") if use_process is None else use_process
         self.proc = None
         if use_process and ocr is None:
@@ -499,7 +555,8 @@ class OcrSampler:
                     for r in val:
                         if r[2] > -6 and r[3] >= 4 and r[0] in self.rowpos: self.good.append(self.rowpos[r[0]])
                 elif kind == "ready": self.device = val
-                elif kind == "error": self.err = val
+                elif kind == "fallback": self.fallback, self.device = val, "CPUExecutionProvider"
+                elif kind == "error": self.err = val; self.n_err += 1
                 elif kind == "done": self.busy[k] = val; break
         except Exception as e:
             if not self.err: self.err = f"OCR worker: {e!r}"
@@ -520,7 +577,7 @@ class OcrSampler:
                     if r[2] > -6 and r[3] >= 4 and r[0] in self.rowpos: self.good.append(self.rowpos[r[0]])
                 self.busy_s += time.time() - t0
             except Exception as e:          # never kill detection over OCR
-                self.err = repr(e)
+                self.err = repr(e); self.n_err += 1
 
     def _split(self, rows):
         """open-set rows -> self.open_reads (all) + accepted 7-col reads (returned, added to self.reads)."""
@@ -549,7 +606,9 @@ class OcrSampler:
             self.busy_s = sum(self.busy)
         else:
             self.q.put(None); self.th.join()
-        if self.err: self.log(f"  OCR error: {self.err}")
+            self.device, self.fallback = self.ocr.device, self.ocr.fallback
+        if self.fallback: self.log(f"  OCR: CUDA failed, continued on the CPU: {self.fallback}")
+        if self.err: self.log(f"  OCR error ({self.n_err}x, last): {self.err}")
         oos = sum(1 for r in self.open_reads if r[13])
         self.log(f"  OCR: {self.n_tried} crops, {len(self.reads)} reads "
                  + (f"(open set of {len(self.open_cands) + len(self.cands)}: {oos} text boxes out of match"

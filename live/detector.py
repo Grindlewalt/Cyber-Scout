@@ -7,6 +7,8 @@ src/detect_match.py: frame, t, tid(-1), x0, y0, x1, y1 (FULL-FRAME px), conf, al
 import os, numpy as np, cv2
 import onnxruntime as ort
 
+CUDA = False    # a Detector session in this process runs on CUDA (ocr.py's OCR_CUDA=auto then shares that context)
+
 
 def alliance(img, box):
     """0 abstain, 1 red, 2 blue -- bumper colour in the lower part of the box
@@ -49,6 +51,9 @@ class Detector:
         prov = [p for p in want if p[0] in ort.get_available_providers()] + ["CPUExecutionProvider"]
         self.sess = ort.InferenceSession(onnx_path, so, providers=prov)
         self.device = self.sess.get_providers()[0]
+        if self.device == "CUDAExecutionProvider":
+            global CUDA
+            CUDA = True
         i = self.sess.get_inputs()[0]
         self.inp = i.name
         self.h = int(i.shape[2]) if isinstance(i.shape[2], int) else (imgsz or 1280)
