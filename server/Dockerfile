@@ -23,7 +23,9 @@ WORKDIR /srv
 COPY server/requirements.txt server/requirements.txt
 RUN pip install -r server/requirements.txt
 COPY server/ server/
-COPY live/sources.py live/layout.py live/videoplan.py live/
+COPY live/ live/
+COPY src/ src/
+COPY client/csclient/procrunner.py client/csclient/procrunner.py
 RUN rm -rf server/tests
 COPY --from=version /VERSION /srv/VERSION
 EXPOSE 8000
