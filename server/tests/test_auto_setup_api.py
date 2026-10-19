@@ -98,6 +98,7 @@ def test_accept_saves_the_candidate_and_is_audited(admin, data, stream):
     assert r.status_code == 200 and r.headers["content-type"] == "image/jpeg"
     C = {c["key"]: c for c in admin.get(f"/events/{EV}/video-mode").json()["checks"]}
     assert C["calibration"]["state"] == "bad" and "Accept" in C["calibration"]["detail"]
+    assert C["source"]["state"] == "ok" and "every camera" in C["source"]["detail"]          # a broadcast, detected feed
     r = admin.post(f"/events/{EV}/sources/{sid}/auto-setup/accept")
     assert r.status_code == 200, r.text
     out = r.json()

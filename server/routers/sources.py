@@ -171,10 +171,13 @@ def _readiness(ev, doc):
     if src is None:
         add("source", "Livestream source", "bad", "add the event's livestream URL (YouTube / Twitch) below", "sources")
     else:
-        tracked = src.get("primary") or src.get("role") == "wide"
+        S_, _ = _mods()
+        feed = S_.dynamic_on(src)                 # a program feed tracked from every camera is a tracked stream too
+        tracked = src.get("primary") or src.get("role") == "wide" or feed
         add("source", "Livestream source", "ok" if tracked else "warn",
-            (src.get("label") or src.get("url") or src["id"]) + ("" if tracked else
-             " · set its camera role to wide (or mark it Tracked) so it is the stream that is calibrated"), "sources")
+            (src.get("label") or src.get("url") or src["id"]) + (" · program feed: robots tracked from every camera" if feed
+             else "" if tracked else " · set its camera role to wide (or mark it Tracked) so it is the stream that is calibrated"),
+            "sources")
     st = _live_status(ev)
     if src is None:
         pass
