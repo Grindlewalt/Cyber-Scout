@@ -146,51 +146,150 @@ async function comparePane(el, d, ev, arg) {
 // ------------------------------------------------------------------ picklist
 // Storage: one shared picklist per event on the server (app/v1/events/<ev>/picklists/main; strategists and admins
 // edit, everyone signed in reads), cached in localStorage under the old key (teamsTable / quant.js read the stars
-// from there). No server (legacy static site) or not allowed to edit -> localStorage only, as before.
-const PL_NAME = "main", plMeta = {}, plTimers = {};
+// from there). No server (legacy static site) -> localStorage only, as before.
+// A change is never dropped silently: until the server has it, it is kept on this device as a draft
+// (localStorage cyberscout:picks:unsaved:<ev>:<user>) and the page says why it isn't saved (an error, someone else
+// saved first, waiting in the offline outbox). Edits are never merged automatically: on a conflict the strategist sees
+// what differs and picks which list to keep. Every saved version stays restorable (History).
+const PL_NAME = "main", plMeta = {}, plTimers = {}, plSt = {}, plChain = {};
 const plKey = ev => "cyberscout:picks:" + ev;
+const plPath = ev => `events/${ev}/picklists/${PL_NAME}`;
 const plShared = () => !!(window.CS && CS.platform && CS.user);
+const plDraftKey = ev => `cyberscout:picks:unsaved:${ev}:${CS.user ? CS.user.id ?? CS.user.username : ""}`;
+const plDraft = ev => { const x = plShared() ? lsGet(plDraftKey(ev), null) : null; return x && x.data && typeof x.data === "object" ? x : null; };
+const plDropDraft = ev => { try { localStorage.removeItem(plDraftKey(ev)); } catch (e) { } };
+// who may change the shared list: strategists and admins; during lockdown only admins (the server checks both)
+const plLocked = () => !!(CS.session && CS.session.lockdown) && !CS.can("admin");
+const plCanEdit = () => !plShared() || (CS.can("strategist") && !plLocked());
+// saves waiting in the offline outbox (sync.js: this browser's, or the Client's), oldest first
+const plQueued = ev => CS.sync && CS.sync.pending ? CS.sync.pending(x => x.method === "PUT" && x.path === plPath(ev) && !!(x.body && x.body.data)) : [];
+const plCur = r => ({ version: r.version, by: r.updated_by, at: r.updated_at, data: r.data });
+const plMe = u => !!(u && CS.user && u.id != null && u.id === CS.user.id);
+const plWho = u => plMe(u) ? "You" : (u && u.display_name) || "Someone";
+const plStop = t => /[.!?]$/.test(t = String(t || "").trim()) ? t : t + ".";
+function plAgo(t) {
+  if (!t) return "";
+  const s = Date.now() / 1000 - t, x = new Date(t * 1000);
+  if (s < 45) return "just now";
+  if (s < 5400) return `${Math.max(1, Math.round(s / 60))} min ago`;
+  const day = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][x.getDay()] + " " + x.toTimeString().slice(0, 5);
+  return s < 6 * 86400 ? day : x.toLocaleDateString(undefined, { month: "short", day: "numeric" }) + " " + x.toTimeString().slice(0, 5);
+}
+// state of the shared list: saved | saving | queued (offline outbox) | error {why} | conflict {cur} | loaderr {why};
+// pages hear about changes through the "cs:picklist" event (and an optional per-call status callback)
+function plTell(ev, s, on) {
+  plSt[ev] = s;
+  if (on && on.status) on.status(s);
+  document.dispatchEvent(new CustomEvent("cs:picklist", { detail: { ev } }));
+}
 async function plLoad(ev) {
   if (!plShared()) return lsGet(plKey(ev), {});
-  try {
-    const r = await CS.app("GET", `events/${ev}/picklists/${PL_NAME}`);
-    plMeta[ev] = { version: r.version, by: r.updated_by, at: r.updated_at };
-    lsSet(plKey(ev), r.data);
-    return r.data;
-  } catch (e) {
-    if (e.status === 404) plMeta[ev] = { version: null };      // none yet: the first save creates it from this browser's list
-    return lsGet(plKey(ev), {});
+  let data;
+  try { const r = await CS.app("GET", plPath(ev)); plMeta[ev] = plCur(r); data = r.data; }
+  catch (e) {
+    if (e.status !== 404) {      // can't tell what the team's list is: show this device's copy, and send nothing until it loads
+      plMeta[ev] = { version: null, data: null };
+      plTell(ev, { k: "loaderr", why: CS.writeErr ? CS.writeErr(e) : e.message });
+      return lsGet(plKey(ev), {});
+    }
+    plMeta[ev] = { version: null, data: null };       // none yet: the first save creates it from this browser's list
+    data = lsGet(plKey(ev), {});
   }
+  const q = plQueued(ev), dr = plDraft(ev), m = plMeta[ev];
+  if (!plCanEdit()) plSt[ev] = { k: "saved" };                                   // read-only: the team's list as it is
+  else if (plTimers[ev] || plChain[ev]) { if (dr) data = dr.data; }                   // a save from this page is on its way
+  else if (q.length) { data = q[q.length - 1].body.data; plSt[ev] = { k: "queued" }; }       // made offline, not sent yet
+  else if (dr) {        // an edit that never reached the server: an error, the page closed mid-save, or someone saved first
+    data = dr.data;
+    plSt[ev] = (dr.base ?? null) === (m.version ?? null) ? { k: "error", why: dr.why || "It wasn't sent before the page was closed." } : { k: "conflict", cur: m };
+  } else plSt[ev] = { k: "saved" };
+  lsSet(plKey(ev), data);
+  return data;
 }
-function plSave(ev, st, onConflict) {
+// on = {status(s)}: called whenever the save state changes (the team page's star uses it for a toast)
+function plSave(ev, st, on) {
   lsSet(plKey(ev), st);
-  if (!plShared() || !CS.can("strategist")) return;
+  if (!plShared() || !plCanEdit()) return;
+  const at = Date.now(), m = plMeta[ev] || {}, s = plSt[ev] || {};
+  const dr = plDraft(ev);
+  lsSet(plDraftKey(ev), { data: st, base: dr && (plTimers[ev] || plChain[ev] || s.k === "conflict") ? dr.base : m.version ?? null, at, why: dr && dr.why });
+  if (s.k === "conflict" || s.k === "loaderr") return plTell(ev, s, on);      // held until the strategist picks a version / the list loads
+  plTell(ev, { k: "saving" }, on);
   clearTimeout(plTimers[ev]);
-  plTimers[ev] = setTimeout(async () => {
+  plTimers[ev] = setTimeout(() => { plTimers[ev] = 0; plSend(ev, st, at, on); }, 500);
+}
+// one PUT at a time per event: the next one is based on the version the previous one created. base: send on top of
+// that version instead of the last one seen (Save mine, after a conflict)
+function plSend(ev, st, at, on, base) {
+  const run = async () => {
     const m = plMeta[ev] || {};
     try {
-      const r = await CS.app("PUT", `events/${ev}/picklists/${PL_NAME}`, { data: st, base_version: m.version ?? undefined });
-      if (r && r.queued) return;       // offline: kept in the outbox (sync.js), sent in order when the server is back
-      plMeta[ev] = { version: r.version, by: r.updated_by, at: r.updated_at };
+      const r = await CS.app("PUT", plPath(ev), { data: st, base_version: (base !== undefined ? base : m.version) ?? undefined });
+      const dr = plDraft(ev);
+      if (r && r.queued) {          // offline: kept in the outbox (sync.js), sent in order when the server is back
+        if (dr && dr.at <= at) plDropDraft(ev);
+        return plTell(ev, { k: "queued" }, on);
+      }
+      plMeta[ev] = plCur(r);
+      if (dr && dr.at <= at) plDropDraft(ev); else if (dr) lsSet(plDraftKey(ev), Object.assign(dr, { base: r.version }));
+      if (!plTimers[ev]) plTell(ev, { k: "saved" }, on);
     } catch (e) {
       const cur = e.status === 409 && e.data && e.data.detail && e.data.detail.current;
-      if (cur) {        // someone else saved first: take theirs (re-apply your change if you still want it)
-        plMeta[ev] = { version: cur.version, by: cur.updated_by, at: cur.updated_at };
-        lsSet(plKey(ev), cur.data);
-        onConflict && onConflict(cur.data, cur.updated_by);
-      } else console.warn("picklist not saved to the server:", e.message);
+      if (cur) { clearTimeout(plTimers[ev]); plTimers[ev] = 0; return plTell(ev, { k: "conflict", cur: plCur(cur) }, on); }
+      const why = CS.writeErr ? CS.writeErr(e) : e.message, dr = plDraft(ev);
+      if (dr) lsSet(plDraftKey(ev), Object.assign(dr, { why }));
+      plTell(ev, { k: "error", why, status: e.status }, on);
     }
-  }, 500);
+  };
+  const p = (plChain[ev] || Promise.resolve()).then(run);
+  plChain[ev] = p; p.finally(() => { if (plChain[ev] === p) plChain[ev] = null; });
+  return p;
+}
+// adopt a server copy as the list (take theirs, restore, a newer save seen by polling): drops this device's draft
+function plAdopt(ev, cur) {
+  plMeta[ev] = plCur(cur); lsSet(plKey(ev), cur.data); plDropDraft(ev);
+  plTell(ev, { k: "saved" });
 }
 // sync.js: a queued save was sent (new version), or the user picked "take theirs" on a conflict
 window.CS = window.CS || { routes: {}, globalRoutes: {}, navItems: [] };     // event.js loads before app.js
 CS.picklist = {
-  adopt(ev, cur) { plMeta[ev] = { version: cur.version, by: cur.updated_by, at: cur.updated_at }; lsSet(plKey(ev), cur.data); },
+  adopt(ev, cur) { plAdopt(ev, cur); },
 };
 document.addEventListener("cs:sent", e => {
   const d = e.detail || {}, m = /^events\/([^/]+)\/picklists\/main$/.exec(d.path || "");
-  if (m && d.data && d.data.version != null) plMeta[decodeURIComponent(m[1])] = { version: d.data.version, by: d.data.updated_by, at: d.data.updated_at };
+  if (!m || !d.data || d.data.version == null) return;
+  const ev = decodeURIComponent(m[1]);
+  plMeta[ev] = plCur(d.data);
+  if ((plSt[ev] || {}).k === "queued" && !plQueued(ev).length) plTell(ev, { k: "saved" });
 });
+// a vs b: the teams only a has starred / marked do-not-pick; whether the order / the weights differ
+function plDiff(a, b) {
+  a = a || {}; b = b || {};
+  const only = k => (a[k] || []).filter(t => !(b[k] || []).includes(t)).map(num);
+  return { stars: only("stars"), dnp: only("dnp"), order: JSON.stringify(a.order || []) !== JSON.stringify(b.order || []),
+    weights: JSON.stringify(plWeights(a.weights)) !== JSON.stringify(plWeights(b.weights)) };
+}
+const plSame = (a, b) => { const d = plDiff(a, b), e = plDiff(b, a); return !d.stars.length && !d.dnp.length && !e.stars.length && !e.dnp.length && !d.order && !d.weights; };
+// what changed from version `prev` to `cur`, in words (History)
+function plChanges(prev, cur) {
+  if (!prev) return [`started the list: ${(cur.stars || []).length} starred, ${(cur.dnp || []).length} do-not-pick`];
+  const add = plDiff(cur, prev), rem = plDiff(prev, cur), out = [];
+  if (add.stars.length) out.push("starred " + add.stars.join(", "));
+  if (rem.stars.length) out.push("unstarred " + rem.stars.join(", "));
+  if (add.dnp.length) out.push("do-not-pick " + add.dnp.join(", "));
+  if (rem.dnp.length) out.push("cleared do-not-pick " + rem.dnp.join(", "));
+  if (add.order) out.push((cur.order || []).length ? "changed our order" : "cleared our order");
+  if (add.weights) out.push("changed the weights");
+  return out.length ? out : ["no change"];
+}
+// clipboard: the async API needs https (or localhost); on the venue LAN (plain http) fall back to a selected textarea
+async function plCopy(txt) {
+  try { if (navigator.clipboard && window.isSecureContext) { await navigator.clipboard.writeText(txt); return true; } } catch (e) { }
+  const ta = document.createElement("textarea"); ta.value = txt; ta.setAttribute("readonly", ""); ta.style.cssText = "position:fixed;top:0;left:0;width:1px;height:1px;opacity:0";
+  document.body.appendChild(ta); ta.select();
+  let ok = false; try { ok = document.execCommand("copy"); } catch (e) { }
+  ta.remove(); return ok;
+}
 const PL_DEFAULT = { blend: 4, made: 0, acc: 0, automade: 0, cycle: 0, climb: 0, defs: 0 };
 // weights come from the shared server picklist or localStorage: only the known keys, each a number in 0..5 (security
 // audit: never render a stored value as markup, in value="" or as the shown number)
@@ -205,27 +304,29 @@ async function picklistPane(el, d, ev) {
   const ts = hm ? hm[1] : "";                                      // as-of time lives in the toolbar (URL)
   const { sd, rows } = await scoutRows(d, ev, ts);
   const fmtTs = t => { const x = new Date(t * 1000); return ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][x.getDay()] + " " + x.toTimeString().slice(0, 5); };
-  const st = Object.assign({ stars: [], dnp: [], order: [], weights: { ...PL_DEFAULT } }, await plLoad(ev));
-  st.weights = plWeights(st.weights && "blend" in st.weights ? st.weights : {});
+  const EMPTY = () => ({ stars: [], dnp: [], order: [], weights: { ...PL_DEFAULT } });
+  const st = EMPTY();
+  const use = data => { Object.assign(st, EMPTY(), data || {}); st.weights = plWeights(st.weights && "blend" in st.weights ? st.weights : {}); };
+  use(await plLoad(ev));
+  if (!el.isConnected) return;
   const climbOn = !!(sd && sd.event_stats && sd.event_stats.climb_matters);
-  const save = () => plSave(ev, st, cur => {
-    Object.assign(st, { stars: [], dnp: [], order: [] }, cur); st.weights = plWeights(cur.weights);
-    if (el.isConnected) render();
-  });
+  const edit = plCanEdit(), us = d.team || "frc4911";
+  let fresh = null, copyTxt = "";                // fresh: {by, at} after another strategist's save was picked up
+  const save = () => plSave(ev, st);
   // z-scores across the event (missing = event mean); video metrics are already shrunk toward the event
   const zs = {};
   PL_KEYS.forEach(([k, , g, sg]) => { const v = rows.map(g).filter(has), m = v.reduce((a, b) => a + b, 0) / Math.max(1, v.length);
     const s_ = Math.sqrt(v.reduce((a, b) => a + (b - m) ** 2, 0) / Math.max(1, v.length - 1)) || 1; zs[k] = r => { const x = g(r); return has(x) ? sg * (x - m) / s_ : 0; }; });
-  let only = "all", mode = lsGet("cyberscout:plmode", "blend");
+  let only = "all", mode = lsGet("cyberscout:plmode", "blend"), dragging = false;
   const W = k => (k === "climb" && !climbOn) ? 0 : plWeight(st.weights[k]);
   const custom = r => { let s_ = 0, w = 0; for (const [k] of PL_KEYS) { const wt = W(k); if (!wt) continue; s_ += wt * zs[k](r); w += wt; } return w ? s_ / w : 0; };
   const key = { blend: r => r.s?.rating?.blend, epa: r => r.s?.rating?.epa, opr: r => r.t.opr, custom };
-  // "My order": the strategist's dragged ranking (st.order, best first); teams not placed yet follow by blend
+  // "Our order": the strategists' dragged ranking (st.order, best first, shared like stars); teams not placed yet follow by blend
   const sorted = m => { if (m === "manual") { const ix = new Map(st.order.map((k, i) => [k, i])), b = key.blend;
       return [...rows].sort((x, y) => (ix.get(x.t.key) ?? 1e6) - (ix.get(y.t.key) ?? 1e6) || (b(y) ?? -1e9) - (b(x) ?? -1e9)).map(r => ({ r, s: ix.has(r.t.key) ? ix.get(r.t.key) + 1 : null })); }
     const kf = key[m] || key.blend; return rows.map(r => ({ r, s: kf(r) })).sort((a, b) => (b.s ?? -1e9) - (a.s ?? -1e9)); };
   // move team k to just before (after = false) or after team t in the full list; dragging in a computed order starts
-  // "My order" from what's on screen
+  // "Our order" from what's on screen
   const move = (k, t, after) => {
     const full = sorted(mode).map(x => x.r.t.key).filter(x => x !== k);
     full.splice(full.indexOf(t) + (after ? 1 : 0), 0, k);
@@ -235,36 +336,176 @@ async function picklistPane(el, d, ev) {
   const maxB = Math.max(1, ...rows.map(r => (r.s?.rating?.blend || 0) + (r.s?.rating?.sd || 0)));
   const bbar = r => { const b = r.s?.rating; if (!b || b.blend == null) return "–"; const X = v => Math.max(0, Math.min(100, v / maxB * 100)).toFixed(1);
     return `<span class="sc-prb" title="blend ${fx(b.blend)} ± ${fx(b.sd)} (1 sd)"><i class="rg" style="left:${X(b.blend - b.sd)}%;width:${(X(b.blend + b.sd) - X(b.blend - b.sd)).toFixed(1)}%"></i><i class="mn" style="left:${X(b.blend)}%"></i></span><b>${fx(b.blend)}</b><span class="sc-sd">±${fx(b.sd, 0)}</span>`; };
+
+  // ---- save state: one status line beside the filters, and a banner above the table when something needs a decision
+  const stHtml = () => {
+    const s = plSt[ev] || { k: "saved" }, m = plMeta[ev] || {};
+    if (!plShared()) return `<span class="pl-st">Kept in this browser only</span>`;
+    if (s.k === "saving") return `<span class="pl-st">Saving…</span>`;
+    if (s.k === "queued") return `<span class="pl-st warn" title="Kept on this device. It's sent when the connection to the server is back.">Waiting to send · offline</span>`;
+    if (s.k === "error" || s.k === "conflict") return `<span class="pl-st bad">Not saved</span>`;
+    if (s.k === "loaderr") return `<span class="pl-st bad">Not loaded</span>`;
+    if (m.version == null) return `<span class="pl-st">${edit ? "Not started: your first change creates the team's list" : "No team list yet"}</span>`;
+    const f = fresh && fresh.at === m.at;
+    return `<span class="pl-st${f ? " good" : ""}">${f ? "Updated" : "Saved"} · ${esc(plWho(m.by))} · ${esc(plAgo(m.at))}</span>`;
+  };
+  const alertHtml = () => {
+    const s = plSt[ev] || {};
+    if (s.k === "loaderr") return `<div class="pl-alert" role="alert"><p><b>Couldn't load the team's picklist:</b> ${esc(plStop(s.why))} This is this device's last copy; nothing can be changed until it loads.</p>
+      <div class="acts"><button type="button" class="primary" data-pa="reload">Try again</button></div></div>`;
+    if (s.k === "error") return `<div class="pl-alert" role="alert"><p><b>Your change isn't saved.</b> ${esc(plStop(s.why))} It's kept on this device only, so the team doesn't see it yet.</p>
+      <div class="acts"><button type="button" class="primary" data-pa="retry">Try again</button><button type="button" data-pa="discard">Discard my change</button></div></div>`;
+    if (s.k === "conflict") {
+      const c = s.cur || {}, a = plDiff(st, c.data), b = plDiff(c.data, st), who = plWho(c.by);
+      const li = (l, x) => { const t = [x.stars.length ? `starred ${x.stars.join(", ")}` : "", x.dnp.length ? `do-not-pick ${x.dnp.join(", ")}` : ""].filter(Boolean).join(" · ");
+        return t ? `<li><b>${l}</b> ${esc(t)}</li>` : ""; };
+      return `<div class="pl-alert" role="alert"><p><b>Not saved: ${esc(who)} saved the picklist ${esc(plAgo(c.at))}${plMe(c.by) ? " on another device or tab" : ""}, after this page loaded.</b> Nothing is merged automatically: pick which list to keep. Either way the other one stays in History.</p>
+        <ul class="pl-diff">${li("Only in yours:", a)}${li("Only in theirs:", b)}${a.order ? "<li>The order is different.</li>" : ""}${a.weights ? "<li>The weights are different.</li>" : ""}</ul>
+        <div class="acts"><button type="button" data-pa="theirs">Use theirs (drop my change)</button><button type="button" class="primary" data-pa="mine">Save mine (replaces theirs)</button></div></div>`;
+    }
+    if (!plShared() || edit) return "";
+    return `<p class="pl-ro">${plLocked() ? "Lockdown is on: an admin made everything read-only, so the picklist can't be changed right now." : "Read-only: only strategists and admins change the team picklist. You see their stars, do-not-picks and order."}</p>`;
+  };
+  const paintSt = () => {
+    const a = el.querySelector("#plst"), b = el.querySelector("#plalert"); if (!a || !b) return;
+    a.innerHTML = stHtml();
+    const h = alertHtml(); if (b.__h !== h) { b.innerHTML = h; b.__h = h; }
+    b.querySelectorAll("[data-pa]").forEach(x => x.onclick = () => act(x.dataset.pa, x));
+  };
+  async function act(a, btn) {
+    const s = plSt[ev] || {};
+    if (a === "reload") return route(false);
+    if (a === "retry") { plTell(ev, { k: "saving" }); return plSend(ev, st, Date.now()); }
+    if (a === "discard") {
+      const m = plMeta[ev] || {}; plDropDraft(ev); use(m.data || {}); lsSet(plKey(ev), st); plTell(ev, { k: "saved" }); return render();
+    }
+    if (a === "theirs" && s.cur) { plAdopt(ev, { version: s.cur.version, updated_by: s.cur.by, updated_at: s.cur.at, data: s.cur.data }); use(s.cur.data); return render(); }
+    if (a === "mine" && s.cur) { btn.disabled = true; plTell(ev, { k: "saving" }); plSend(ev, st, Date.now(), null, s.cur.version); }
+  }
+  // someone else saved and this page wasn't changed meanwhile: same edit as theirs = nothing to decide
+  document.addEventListener("cs:picklist", onPl);
+  function onPl(e) {
+    if (!el.isConnected) return document.removeEventListener("cs:picklist", onPl);
+    if (e.detail.ev !== ev) return;
+    const s = plSt[ev] || {};
+    if (s.k === "conflict" && s.cur && plSame(st, s.cur.data)) { plAdopt(ev, { version: s.cur.version, updated_by: s.cur.by, updated_at: s.cur.at, data: s.cur.data }); return; }
+    paintSt();
+  }
+  // offline edits (CLIENT-4): the Client's outbox arrives a moment after the page; show what's waiting on top of the server copy
+  const onOutbox = () => {
+    if (!el.isConnected) return document.removeEventListener("cs:outbox", onOutbox);
+    const q = plQueued(ev), s = plSt[ev] || {};
+    if (q.length && (s.k === "saved" || s.k === "queued")) {
+      const data = q[q.length - 1].body.data; plSt[ev] = { k: "queued" };
+      if (!plSame(data, st)) { use(data); if (!busy()) render(); return; }
+    } else if (!q.length && s.k === "queued") { plSt[ev] = { k: "saved" }; poll(); }
+    paintSt();
+  };
+  document.addEventListener("cs:outbox", onOutbox);
+  // another strategist's save shows up without a reload (every 20 s, and when the tab comes back)
+  const busy = () => dragging || (el.contains(document.activeElement) && document.activeElement.matches("input, textarea"));
+  async function poll() {
+    if (!plShared() || document.hidden || !el.isConnected || busy()) return;
+    if ((plSt[ev] || {}).k !== "saved" || plTimers[ev] || plChain[ev]) return;
+    let r; try { r = await CS.app("GET", plPath(ev)); } catch (e) { return; }
+    const m = plMeta[ev] || {};
+    if (!r || r.version == null || r.version === m.version || (plSt[ev] || {}).k !== "saved" || plTimers[ev] || plChain[ev] || !el.isConnected) return;
+    plAdopt(ev, r); use(r.data); fresh = { at: r.updated_at }; hist.items = null;
+    render();
+  }
+  const iv = setInterval(poll, 20000), onVis = () => { if (!document.hidden) poll(); };
+  document.addEventListener("visibilitychange", onVis); window.addEventListener("focus", onVis);
+  cleanup.push(() => { clearInterval(iv); document.removeEventListener("visibilitychange", onVis); window.removeEventListener("focus", onVis);
+    document.removeEventListener("cs:outbox", onOutbox); document.removeEventListener("cs:picklist", onPl); });
+
+  // ---- History (MATCH-5): who changed what, newest first; strategists can restore any version (saved as a new one)
+  const hist = { open: false, items: null, more: false, busy: false, err: "", n: 8 };
+  async function loadHist() {
+    hist.busy = true; hist.err = ""; paintHist();
+    try {
+      const vs = await CS.app("GET", `${plPath(ev)}/versions?limit=${hist.n + 1}`) || [];
+      const full = await Promise.all(vs.map(v => CS.app("GET", `${plPath(ev)}/versions/${v.version}`).then(x => x.data, () => null)));
+      hist.items = vs.map((v, i) => ({ ...v, data: full[i] }));
+      hist.more = vs.length > hist.n;
+    } catch (e) { hist.err = e.status === 404 ? "No saved versions yet." : (CS.writeErr ? CS.writeErr(e) : e.message); hist.items = []; }
+    hist.busy = false; paintHist();
+  }
+  function histHtml() {
+    if (hist.busy && !hist.items) return `<p class="small muted">Loading…</p>`;
+    if (hist.err) return `<p class="small muted">${esc(hist.err)}</p>`;
+    if (!hist.items || !hist.items.length) return `<p class="small muted">No saved versions yet.</p>`;
+    const its = hist.items.slice(0, hist.n);
+    return `<ol class="pl-hl">${its.map((v, i) => { const prev = hist.items[i + 1];
+      const what = v.note ? [v.note.replace(/^restored v/, "restored version ")] : !v.data || (prev && !prev.data) ? [] : plChanges(prev ? prev.data : null, v.data);
+      return `<li><div class="pl-hv"><b>v${v.version}</b> ${esc(plWho(v.updated_by))} · <span title="${esc(new Date(v.updated_at * 1000).toLocaleString())}">${esc(plAgo(v.updated_at))}</span>${v.current ? ' <span class="pill done">current</span>' : ""}</div>
+        <div class="small muted">${esc(what.join(" · "))}</div>
+        ${edit && plShared() && !v.current ? `<button type="button" class="small" data-rv="${v.version}">Restore</button>` : ""}</li>`; }).join("")}</ol>
+      ${hist.more ? `<button type="button" class="small" data-hm="1">Show older</button>` : ""}`;
+  }
+  function paintHist() {
+    const b = el.querySelector("#plhistb"); if (!b) return;
+    b.innerHTML = histHtml();
+    b.querySelectorAll("[data-rv]").forEach(x => x.onclick = () => restore(+x.dataset.rv, x));
+    const more = b.querySelector("[data-hm]"); if (more) more.onclick = () => { hist.n += 8; loadHist(); };
+  }
+  async function restore(v, btn) {
+    const it = (hist.items || []).find(x => x.version === v) || {};
+    if (!confirm(`Restore version ${v} (${plWho(it.updated_by)}, ${plAgo(it.updated_at)})? It's saved as a new version, so the current list stays in History.${plDraft(ev) ? " Your unsaved change is dropped." : ""}`)) return;
+    btn.disabled = true;
+    try {
+      const r = await CS.app("POST", `${plPath(ev)}/versions/${v}/restore`);
+      plAdopt(ev, r); use(r.data); fresh = null; hist.items = null; render();
+    } catch (e) { btn.disabled = false; hist.err = `Not restored: ${CS.writeErr ? CS.writeErr(e) : e.message}`; paintHist(); hist.err = ""; }
+  }
+
   const render = () => {
     const list = sorted(mode);
     const shown = list.filter(x => only === "all" || (only === "star" && st.stars.includes(x.r.t.key)) || (only === "avail" && !st.dnp.includes(x.r.t.key)));
     const dis = x => x && x.r.s ? flagChips(x.r.s, ["video_higher", "video_lower", "auto_not_tracked"]) : "";
-    el.innerHTML = `${ts ? `<div class="sc-banner"><b>Replay as of ${fmtTs(+ts)}</b>: ratings, ranks, OPR and video only from data posted before then.</div>` : dataBanner(sd, "ratings: end-of-event dashboard")}<div class="plwrap"><div class="plw card"><h2>Order by ${CS.help(`<span class="hl">Default: <b>blend</b> rating ± sd (expected points/match; best predictor here: rank-order agreement with the day-2 result .92 vs .65 for video-only stats).</span><span class="hl"><b>Custom</b> = weighted z-scores; video metrics are shrunk and missing values count as event average.</span><span class="hl"><b>My order</b> = your own ranking: drag a row by its handle (or focus the handle and press ↑ ↓). Dragging in any other order starts My order from it. Shared with the team like stars.</span>`, "How the order works")}</h2><div class="chips" id="plm"></div>
-      ${mode === "custom" ? PL_KEYS.map(([k, l]) => `<label class="wrow ${k === "climb" && !climbOn ? "sc-dis" : ""}" title="${k === "climb" && !climbOn ? `off: the best robot here averages ${fx(sd?.event_stats?.tower_pts_max)} tower pts/match (≤ 10)` : ""}"><span>${l}</span><input type="range" min="0" max="5" step="0.5" value="${plWeight(st.weights[k])}" data-k="${k}" ${k === "climb" && !climbOn ? "disabled" : ""}><b>${W(k)}</b></label>`).join("") : ""}
-      <div class="controls">${mode === "manual" ? '<button id="plro">Reset my order</button>' : ""}<button id="plreset">Reset weights</button><button id="plcopy">Copy list</button></div></div>
-      <div class="plt card"><div class="pl-bar"><div class="chips" id="plf"></div>${CS.help(`<span class="hl">Video columns: verified matches only, shrunk (hover for raw and n); <i>grey italic</i> = n &lt; 3.</span><span class="hl">"video higher" = reconciled video FUEL ≥ 1.15× EPA FUEL + 8. Video FUEL numbers use only alliance results that reconcile with TBA within 20% (hover for n).</span><span class="hl">"video lower?" appears only with ≥ 3 reconciled matches: under-attribution made every "video says worse" call wrong.</span>${climbOn ? "" : `<span class="hl">Climb column hidden: no robot here averages more than 10 tower pts/match (max ${fx(sd?.event_stats?.tower_pts_max)}).</span>`}`, "How to read the picklist")}</div><div class="tablewrap"><table><thead><tr><th class="num" data-pri="1000">#</th><th data-pri="960"><span class="vh">Star / do not pick</span></th><th data-pri="990">Team</th><th class="num" data-pri="300">Rank</th><th data-pri="800">Blend ± sd</th><th class="num" data-pri="200">EPA</th><th class="num" data-pri="150">OPR</th>
+    const foc = document.activeElement && el.contains(document.activeElement) && document.activeElement.matches("[data-s],[data-n]") ? (document.activeElement.dataset.s ? `[data-s="${document.activeElement.dataset.s}"]` : `[data-n="${document.activeElement.dataset.n}"]`) : "";
+    // read-only (viewers, scouts, lockdown): the marks show as plain icons, no grips or buttons
+    const marks = (r, k, star, no) => edit
+      ? `<button class="star ${star ? "on" : ""}" data-s="${k}" title="star" aria-label="Star ${r.t.number}" aria-pressed="${star}">${CS.icon(star ? "starOn" : "star")}</button><button class="star ${no ? "on" : ""}" data-n="${k}" title="do not pick" aria-label="Do not pick ${r.t.number}" aria-pressed="${no}">${CS.icon("ban")}</button>`
+      : `${star ? `<span class="pl-mk on" title="starred">${CS.icon("starOn")}<span class="vh">starred</span></span>` : '<span class="pl-mk"></span>'}${no ? `<span class="pl-mk no" title="do not pick">${CS.icon("ban")}<span class="vh">do not pick</span></span>` : '<span class="pl-mk"></span>'}`;
+    el.innerHTML = `${ts ? `<div class="sc-banner"><b>Replay as of ${fmtTs(+ts)}</b>: ratings, ranks, OPR and video only from data posted before then.</div>` : dataBanner(sd, "ratings: end-of-event dashboard")}<div class="plwrap"><div class="plw card"><h2>Order by ${CS.help(`<span class="hl">Default: <b>blend</b> rating ± sd (expected points/match; best predictor here: rank-order agreement with the day-2 result .92 vs .65 for video-only stats).</span><span class="hl"><b>Custom</b> = weighted z-scores; video metrics are shrunk and missing values count as event average.</span><span class="hl"><b>Our order</b> = the team's own ranking, shared like the stars${edit ? ": drag a row by its handle (or focus the handle and press ↑ ↓). Dragging in any other order starts Our order from it" : ". Strategists set it"}.</span><span class="hl">The order you look at (Blend, EPA, …) is your own view on this device; stars, do-not-picks, weights and Our order are the team's.</span>`, "How the order works")}</h2><div class="chips" id="plm"></div>
+      ${mode === "custom" ? PL_KEYS.map(([k, l]) => `<label class="wrow ${k === "climb" && !climbOn ? "sc-dis" : ""}" title="${k === "climb" && !climbOn ? `off: the best robot here averages ${fx(sd?.event_stats?.tower_pts_max)} tower pts/match (≤ 10)` : ""}"><span>${l}</span><input type="range" min="0" max="5" step="0.5" value="${plWeight(st.weights[k])}" data-k="${k}" ${(k === "climb" && !climbOn) || !edit ? "disabled" : ""}><b>${W(k)}</b></label>`).join("") : ""}
+      <div class="controls">${mode === "manual" && edit ? '<button id="plro">Clear our order</button>' : ""}${edit ? '<button id="plreset">Reset weights</button>' : ""}<button id="plcopy">Copy list</button></div>
+      ${copyTxt ? `<label class="pl-copy"><span class="small muted">Copying isn't allowed on this connection: select the text and copy it.</span><textarea readonly rows="6">${esc(copyTxt)}</textarea></label>` : ""}
+      ${plShared() ? `<details class="pl-hist" id="plhist"${hist.open ? " open" : ""}><summary>History</summary><div id="plhistb"></div></details>` : ""}</div>
+      <div class="plt card"><h2 class="vh">Team picklist</h2><div class="pl-bar"><div class="chips" id="plf"></div>${CS.help(`<span class="hl">Video columns: verified matches only, shrunk (hover for raw and n); <i>grey italic</i> = n &lt; 3.</span><span class="hl">"video higher" = reconciled video FUEL ≥ 1.15× EPA FUEL + 8. Video FUEL numbers use only alliance results that reconcile with TBA within 20% (hover for n).</span><span class="hl">"video lower?" appears only with ≥ 3 reconciled matches: under-attribution made every "video says worse" call wrong.</span>${climbOn ? "" : `<span class="hl">Climb column hidden: no robot here averages more than 10 tower pts/match (max ${fx(sd?.event_stats?.tower_pts_max)}).</span>`}`, "How to read the picklist")}<span id="plst" role="status" aria-live="polite"></span></div>
+      <div id="plalert"></div><div class="tablewrap"><table><thead><tr><th class="num" data-pri="1000">#</th><th data-pri="960"><span class="vh">Star / do not pick</span></th><th data-pri="990">Team</th><th class="num" data-pri="300">Rank</th><th data-pri="800">Blend ± sd</th><th class="num" data-pri="200">EPA</th><th class="num" data-pri="150">OPR</th>
         <th title="verified robot-video matches / played" data-pri="450">Video</th><th class="num" title="FUEL made per match on verified video (≥ = floor)" data-pri="600">Made/m</th><th class="num" data-pri="550">Acc</th><th class="num" data-pri="250">Auto</th>${climbOn ? '<th class="num" data-pri="240">Climb</th>' : ""}<th class="num" title="matches with defense played (episodes) on verified video: third-robot / defender value" data-pri="230">Def.</th><th class="num" title="stopped ≥ 30 s AND the alliance scored under 85% of expectation (TBA); ≥ 3 verified matches" data-pri="220">Dead</th>${mode === "custom" ? '<th class="num" data-pri="850">Score</th>' : ""}<th data-pri="400">Notes</th></tr></thead>
-      <tbody>${shown.map((x, i) => { const r = x.r, k = r.t.key, star = st.stars.includes(k), no = st.dnp.includes(k), dd = VID(r, "dead"); return `<tr data-k="${k}" class="${no ? "dnp" : ""} ${k === (d.team || "frc4911") ? "usrow" : ""}"><td class="num"><span class="pl-rk"><button class="grip" data-g="${k}" title="Drag to rank" aria-label="Move ${r.t.number}: drag, or arrow keys">${CS.icon("grip")}</button>${i + 1}</span></td>
-        <td style="white-space:nowrap"><button class="star ${star ? "on" : ""}" data-s="${k}" title="star" aria-label="Star ${r.t.number}" aria-pressed="${star}">${CS.icon(star ? "starOn" : "star")}</button><button class="star ${no ? "on" : ""}" data-n="${k}" title="do not pick" aria-label="Do not pick ${r.t.number}" aria-pressed="${no}">${CS.icon("ban")}</button></td><td><a class="team" href="#/${ev}/t/${k}">${r.t.number}</a> <span class="muted small pl-nick" title="${esc(r.t.nickname || "")}">${esc((r.t.nickname || "").slice(0, 12))}</span></td>
+      <tbody>${shown.map((x, i) => { const r = x.r, k = r.t.key, star = st.stars.includes(k), no = st.dnp.includes(k), dd = VID(r, "dead"); return `<tr data-k="${k}" class="${no ? "dnp" : ""} ${k === us ? "usrow" : ""}"><td class="num"><span class="pl-rk">${edit ? `<button class="grip" data-g="${k}" title="Drag to rank" aria-label="Move ${r.t.number}: drag, or arrow keys">${CS.icon("grip")}</button>` : ""}${i + 1}</span></td>
+        <td style="white-space:nowrap">${marks(r, k, star, no)}</td><td class="pl-tm"><a class="team" href="#/${ev}/t/${k}">${r.t.number}</a> <span class="muted small pl-nick" title="${esc(r.t.nickname || "")}">${esc(r.t.nickname || "")}</span>${no ? '<span class="vh"> (do not pick)</span>' : ""}</td>
         <td class="num">${r.t.rank ?? "–"}</td><td>${bbar(r)}</td><td class="num">${fx(r.s?.rating?.epa)}</td><td class="num">${fx(r.t.opr)}</td><td>${covPill(r.s?.coverage, { short: true })}</td>
         <td class="num">${svHtml(VID(r, "made_pm"))}</td><td class="num">${svHtml(VID(r, "acc"), "p")}</td><td class="num">${VID(r, "auto_made") ? svHtml(VID(r, "auto_made")) : r.s?.coverage?.n ? '<span class="muted" title="video auto contradicts TBA: not tracked">n/t</span>' : "–"}</td>
         ${climbOn ? `<td class="num">${pct(r.s?.climb?.rate)}</td>` : ""}<td class="num" title="${VID(r, "def_played") || 0} defense episodes in ${VID(r, "def_matches") || 0} matches">${VID(r, "def_matches") || "–"}</td><td class="num">${dd && dd.n >= 3 ? pct(dd.v) : "–"}</td>${mode === "custom" ? `<td class="num"><b>${fx(x.s, 2)}</b></td>` : ""}
         <td>${dis(x)}</td></tr>`; }).join("")}</tbody></table></div></div></div>`;
-    chipRow(el.querySelector("#plm"), [["blend", "Blend"], ["epa", "EPA"], ["opr", "OPR"], ["custom", "Custom"], ["manual", "My order"]], mode, k => { mode = k; lsSet("cyberscout:plmode", k); render(); });
+    chipRow(el.querySelector("#plm"), [["blend", "Blend"], ["epa", "EPA"], ["opr", "OPR"], ["custom", "Custom"], ["manual", "Our order"]], mode, k => { mode = k; lsSet("cyberscout:plmode", k); render(); });
     chipRow(el.querySelector("#plf"), [["all", "All"], ["star", "Starred"], ["avail", "Hide do-not-pick"]], only, k => { only = k; render(); });
+    paintSt();
+    const hd = el.querySelector("#plhist");
+    if (hd) { hd.ontoggle = () => { hist.open = hd.open; if (hd.open && !hist.items && !hist.busy) loadHist(); }; if (hist.open) { if (!hist.items && !hist.busy) loadHist(); else paintHist(); } }
+    const cp = el.querySelector(".pl-copy textarea"); if (cp) { cp.focus(); cp.select(); }
+    el.querySelector("#plcopy").onclick = async e => {
+      const b = e.currentTarget, txt = shown.map((x, i) => `${i + 1}. ${x.r.t.number} ${x.r.t.nickname || ""}${mode === "manual" ? "" : ` (${mode} ${fx(x.s, mode === "custom" ? 2 : 0)})`}${st.stars.includes(x.r.t.key) ? " *" : ""}`).join("\n");
+      if (await plCopy(txt)) { copyTxt = ""; b.textContent = "Copied"; setTimeout(() => { if (b.isConnected) b.textContent = "Copy list"; }, 2000); }
+      else { copyTxt = txt; render(); }
+    };
+    if (foc) { const f = el.querySelector(foc); if (f) f.focus(); }
+    if (!edit) return;
     el.querySelectorAll(".wrow input").forEach(i => i.oninput = () => { st.weights[i.dataset.k] = plWeight(i.value); save(); i.nextElementSibling.textContent = String(plWeight(i.value)); clearTimeout(render.t); render.t = setTimeout(render, 120); });
     el.querySelectorAll("[data-s]").forEach(b => b.onclick = () => { const k = b.dataset.s, i = st.stars.indexOf(k); i >= 0 ? st.stars.splice(i, 1) : st.stars.push(k); save(); render(); });
     el.querySelectorAll("[data-n]").forEach(b => b.onclick = () => { const k = b.dataset.n, i = st.dnp.indexOf(k); i >= 0 ? st.dnp.splice(i, 1) : st.dnp.push(k); save(); render(); });
     el.querySelector("#plreset").onclick = () => { st.weights = { ...PL_DEFAULT }; save(); render(); };
-    const ro = el.querySelector("#plro"); if (ro) ro.onclick = () => { st.order = []; save(); render(); };
-    plDrag(el.querySelector(".plt tbody"), shown.map(x => x.r.t.key), move);
-    el.querySelector("#plcopy").onclick = e => { const txt = shown.map((x, i) => `${i + 1}. ${x.r.t.number} ${x.r.t.nickname || ""} ${mode === "manual" ? "" : ` (${mode} ${fx(x.s, mode === "custom" ? 2 : 0)})`}${st.stars.includes(x.r.t.key) ? " *" : ""}`).join("\n"); try { navigator.clipboard.writeText(txt); e.target.textContent = "Copied"; } catch (x) { e.target.textContent = "Copy failed"; } };
+    const ro = el.querySelector("#plro"); if (ro) ro.onclick = () => { if (!plShared() || confirm("Clear our order for the whole team? History can bring it back.")) { st.order = []; save(); render(); } };
+    plDrag(el.querySelector(".plt tbody"), shown.map(x => x.r.t.key), move, on => { dragging = on; });
   };
   render();
 }
 // Drag-to-rank on the picklist rows: pointer events (mouse, touch, pen) on the grip; arrow keys on a focused grip.
-// keys = the rows on screen, in order; move(k, target, after) re-renders.
-function plDrag(tb, keys, move) {
+// keys = the rows on screen, in order; move(k, target, after) re-renders; onDrag(true / false) while a row is held.
+function plDrag(tb, keys, move, onDrag) {
   if (!tb) return;
   tb.querySelectorAll("[data-g]").forEach(g => {
     g.onkeydown = e => {
@@ -277,7 +518,7 @@ function plDrag(tb, keys, move) {
       if (e.button) return;
       e.preventDefault(); try { g.setPointerCapture(e.pointerId); } catch (_) { /* synthetic events */ }
       const k = g.dataset.g, src = g.closest("tr"); let tgt = null, after = false;
-      src.classList.add("pl-drag");
+      src.classList.add("pl-drag"); onDrag && onDrag(true);
       const mark = () => tb.querySelectorAll(".pl-before,.pl-after").forEach(r => r.classList.remove("pl-before", "pl-after"));
       g.onpointermove = ev => {
         if (ev.clientY < 70) scrollBy(0, -14); else if (ev.clientY > innerHeight - 70) scrollBy(0, 14);
@@ -290,7 +531,7 @@ function plDrag(tb, keys, move) {
         }
       };
       g.onpointerup = g.onpointercancel = ev => {
-        g.onpointermove = g.onpointerup = g.onpointercancel = null; mark(); src.classList.remove("pl-drag");
+        g.onpointermove = g.onpointerup = g.onpointercancel = null; mark(); src.classList.remove("pl-drag"); onDrag && onDrag(false);
         if (ev.type === "pointerup" && tgt) move(k, tgt, after);
       };
     };

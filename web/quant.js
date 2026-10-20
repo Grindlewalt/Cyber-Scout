@@ -221,7 +221,8 @@ async function teamPage(ev, tk) {
     <div class="sub">${d.rank ? `Rank ${d.rank} · ` : ""}${d.opr != null ? `OPR ${fx(d.opr)} · ` : ""}${CV.n} verified match${CV.n === 1 ? "" : "es"}${CV.of ? ` of ${CV.of} played` : ""}${d.tracked > CV.n ? ` <span class="muted small">(${d.tracked - CV.n} replay-only)</span>` : ""}
       ${HP ? ` · <span class="hp-pills"><span class="pill hp on${HP.on.thin ? " thin" : ""}" title="teleop, while our hub is active (n=${HP.on.n})">Hub active: ${esc(HP.on.label)}</span> <span class="pill hp off${HP.off.thin ? " thin" : ""}" title="teleop, while our hub is inactive (n=${HP.off.n})">Inactive: ${esc(HP.off.label)}</span></span>` : ""}
       · ${covPill(CV)} ${flagChips(SR)} · <a href="https://www.thebluealliance.com/team/${d.number}/${(e && e.year) || ""}" target="_blank" rel="noopener">TBA</a></div></div>
-    <button id="star" type="button" class="${starred ? "on" : ""}" aria-pressed="${starred}">${CS.icon(starred ? "starOn" : "star")}<span>${starred ? "Starred" : "Star"}</span></button></div>
+    ${typeof plCanEdit !== "function" || plCanEdit() ? `<button id="star" type="button" class="${starred ? "on" : ""}" aria-pressed="${starred}">${CS.icon(starred ? "starOn" : "star")}<span>${starred ? "Starred" : "Star"}</span></button>`
+      : starred ? `<span id="star" class="on starmark" title="Starred on the team picklist (strategists change it)">${CS.icon("starOn")}<span>Starred</span></span>` : ""}</div>
     <nav class="jump">${navs.map(([k, l]) => `<a href="#" data-j="${k}">${l}</a>`).join("")}</nav>
     ${ag ? "" : `<div class="card empty">No quantitative analytics for this team yet.</div>`}
     ${dataBanner(scd)}
@@ -292,10 +293,16 @@ async function teamPage(ev, tk) {
 
   if (CS.notes) CS.notes.mount(document.getElementById("tpNotes"), ev, { team: tk });      // notes.js
   document.querySelectorAll(".jump a").forEach(a => a.onclick = ev_ => { ev_.preventDefault(); const s = document.getElementById("s-" + a.dataset.j); s && s.scrollIntoView({ behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "start" }); });
-  document.getElementById("star").onclick = async e_ => {     // shared picklist (event.js) when signed in
+  const starB = document.querySelector("button#star");
+  if (starB) starB.onclick = async e_ => {     // shared picklist (event.js) when signed in; read-only users get a plain mark instead
     const p = typeof plLoad === "function" ? await plLoad(ev) : lsGet("cyberscout:picks:" + ev, {}); p.stars = p.stars || [];
     const i = p.stars.indexOf(tk); i >= 0 ? p.stars.splice(i, 1) : p.stars.push(tk);
-    typeof plSave === "function" ? plSave(ev, p) : lsSet("cyberscout:picks:" + ev, p);
+    // a star that doesn't reach the server says so (the Picklist shows the details and keeps the change until then)
+    const told = {}, open = () => { location.hash = `#/${ev}/picklist`; };
+    const status = s => { if (told[s.k] || !CS.toast || !document.body.contains(starB)) return; told[s.k] = 1;
+      if (s.k === "error") CS.toast(`Star not saved: ${s.why}`, { kind: "bad", action: "Open picklist", fn: open });
+      else if (s.k === "conflict") CS.toast(`Star not saved: ${s.cur && s.cur.by && s.cur.by.display_name || "someone"} changed the picklist after this page loaded. Pick which list to keep on the Picklist.`, { kind: "warn", action: "Open picklist", fn: open }); };
+    typeof plSave === "function" ? plSave(ev, p, { status }) : lsSet("cyberscout:picks:" + ev, p);
     const b = e_.currentTarget; b.classList.toggle("on", i < 0); b.setAttribute("aria-pressed", i < 0); b.innerHTML = `${CS.icon(i < 0 ? "starOn" : "star")}<span>${i < 0 ? "Starred" : "Star"}</span>`;
   };
 
