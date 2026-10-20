@@ -529,7 +529,7 @@ def live_sources(doc, today=None, event=None):
                 continue
             ls.append(dict(id=f"tba-webcast-{i}", origin="tba", kind="livestream", provider=(w.get("type") or "").lower(),
                            url=c["url"], role="dynamic", enabled=True, auto=True, webcast=w,
-                           label=f"Event webcast ({w.get('type')}{', ' + w['date'] if w.get('date') else ''})"))
+                           label=SRC.webcast_label(w, c["url"])))
     ls = [s for s in ls if s.get("enabled", True)]
     if not ls: return []
     day = lambda s: _norm_date((s.get("webcast") or {}).get("date"))
