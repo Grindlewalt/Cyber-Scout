@@ -134,7 +134,7 @@ app falls back to the matching `.env` value.
 | `POLL_SECONDS`, `HUBCAM`, `EVENTS`, `TBA_KEY` | worker | fallbacks only; prefer the app |
 | `YT_FORCE_IPV4` | worker, recorder | keep `1` on hosts whose IPv6 is bot-flagged by YouTube |
 | `LIVESTREAM`, `LIVE_BUDGET_GB`, `LIVE_MIN_FREE_GB`, `LIVE_BACKFILL_MIN`, `LIVE_DIR`, ... | recorder | §8.7 |
-| `CS_URL_ALLOW` | worker, recorder | private hosts allowed as video sources (e.g. a LAN OBS HLS server). Pasting such a link on the Video page is checked by the **api**, which doesn't get this variable: add it to the api's `environment:` too, or the paste is refused |
+| `CS_URL_ALLOW` | worker, recorder, api | private hosts allowed as video sources (e.g. a LAN OBS HLS server); the api checks links pasted on the Video page |
 | `PROCESSORS_GPU0`, `PROCESSORS_GPU1`, `PROCESSOR_*`, `WORKER_TRACK` | compose, worker | extra tracking jobs, §3.1 |
 | `DYNAMIC` | worker, processors | `1` / `0` forces dynamic mode on / off for every livestream source; unset = per source (§3.1) |
 | `DASH_TEAM`, `DASH_GOAL`, `DASH_AWARD_CONTENDER`, `DCMP_CAPACITY` | worker | strategy perspective. `DASH_TEAM` defaults to `frc4911`, and the Admin team number does **not** change it |
@@ -167,8 +167,8 @@ options null.
   (every 30 s while waiting), the api returns it in `/app/v1/session` → `processing`, and signed-in pages show
   "Processing is paused on the server" (admins get how to turn it back on), Matches says "not tracked (paused)",
   empty pages give that reason, the time control says "Latest" instead of "Live", and Admin → Settings has a
-  worker status line. The same channel reports "no TBA key" and "The worker hasn't checked in since …" (no pass for
-  over an hour: a stopped worker, or a very long pass). The notice goes away within about a minute of unpausing
+  worker status line. The same channel reports "no TBA key" and "The worker hasn't checked in since …" (no
+  status write for over an hour: the worker re-writes it every 2 min even during a long pass, so this means it stopped). The notice goes away within about a minute of unpausing
   (the app re-reads the session every 60 s).
 
 Production on atomosserver runs paused. The 2026wasam data is complete and frozen, and new site builds are made by

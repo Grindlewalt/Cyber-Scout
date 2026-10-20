@@ -533,3 +533,4 @@ def test_compose_gives_api_an_env_allowlist():
     assert float(env["SESSION_IDLE_DAYS"]) == d.SESSION_IDLE_DAYS and float(env["SESSION_MAX_DAYS"]) == d.SESSION_MAX_DAYS
     assert int(env["PASSWORD_MIN"]) == d.PASSWORD_MIN and int(env["MEMBER_PASSWORD_MIN"]) == d.MEMBER_PASSWORD_MIN
     assert (env["SETUP_CODE_REQUIRED"] != "0") == d.SETUP_CODE_REQUIRED and env["COOKIE_SECURE"] == d.COOKIE_SECURE
+    assert "CS_URL_ALLOW" in env and env.get("CS_PROBE_LINKS") == "1"      # pasted-link checks run in the api

@@ -1436,11 +1436,29 @@ def _sleep(seconds, events=None, matches=True):
 _TRACK_LOGGED = [None]
 
 
+_BEAT = {"reason": None, "thr": None}
+BEAT_S = 120
+
+
 def status_beat(reason):
     """DATA/worker-status.json {at, paused, reason}: written every pass (every 30 s while waiting), so the web app can
-    say "processing is paused" / when the worker last checked in (GET app/v1/session -> processing)."""
+    say "processing is paused" / when the worker last checked in (GET app/v1/session -> processing).  A daemon thread
+    re-writes it every BEAT_S with the last reason, so an hour-long pass (a tracking backlog) never reads as stale."""
+    _BEAT["reason"] = reason
+    _status_write()
+    if _BEAT["thr"] is None:
+        def run():
+            while True:
+                time.sleep(BEAT_S)
+                _status_write()
+        _BEAT["thr"] = threading.Thread(target=run, name="status-beat", daemon=True)
+        _BEAT["thr"].start()
+
+
+def _status_write():
+    r = _BEAT["reason"]
     try:
-        jsave(os.path.join(DATA, "worker-status.json"), dict(at=time.time(), paused=reason == "paused", reason=reason))
+        jsave(os.path.join(DATA, "worker-status.json"), dict(at=time.time(), paused=r == "paused", reason=r))
     except OSError:
         pass
 

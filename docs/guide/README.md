@@ -134,9 +134,6 @@ calibration) and, optionally, correcting a robot's team (an identity override; s
 * *(Fixed in the cleanup pass.)* Notes and identity fixes have a UI: a Notes card on the team and match pages and a
   "Wrong team?" form on the match page (scouts' fixes go to the per-competition queue `#/<ev>/fixes`).
   ([web.md](web.md))
-* The app calls the worker "not checked in" after an hour without a loop pass, which a very long backlog pass can
-  also trigger. The Video page's hint to allow a private host with `CS_URL_ALLOW` needs that variable added to the
-  api container too. ([server.md](server.md) Docs vs code 13–14)
 * Every idle poll (120 s) rebuilds the whole site, including the dashboard, the defense library and all
   `scout/<ts>.json` replay snapshots. ([pipeline.md](pipeline.md), [architecture.md](architecture.md))
 * `camera_<source>.json` (needed to track from a livestream) is written by no code; it must be made by hand.

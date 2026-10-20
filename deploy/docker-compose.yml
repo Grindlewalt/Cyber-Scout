@@ -188,6 +188,9 @@ services:
       MEDIA: /media
       SERVER_NAME: ${SERVER_NAME:-}
       SYNC_CACHE_MB: ${SYNC_CACHE_MB:-256}
+      # pasted Video-page links are checked here (live/sources.py): private hosts an admin allows; one HEAD probe
+      CS_URL_ALLOW: ${CS_URL_ALLOW:-}
+      CS_PROBE_LINKS: ${CS_PROBE_LINKS:-1}
     volumes:
       - ./data:/data
       - ${MEDIA_DIR:-./data/media}:/media:ro  # only listed (/app/v1/sync/media); nginx serves the files

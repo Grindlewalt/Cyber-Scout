@@ -772,9 +772,8 @@ policy path). Neither writes an audit entry.
 The shipped `deploy/docker-compose.yml` gives the api no `env_file`; its `environment:` is an explicit allowlist:
 `DATA`, `PUID`, `PGID`, `TZ`, `COOKIE_SECURE`, `PYTHONDONTWRITEBYTECODE` and (since the cleanup pass)
 `SESSION_IDLE_DAYS`, `SESSION_MAX_DAYS`, `PASSWORD_MIN`, `MEMBER_PASSWORD_MIN`, `SETUP_CODE_REQUIRED`, each as `${VAR:-<config.py default>}`. `TBA_BASE`,
-`TBA_KEY` and `EVENTS` are not passed (the one-time `.env` import is off on purpose). Neither are `CS_URL_ALLOW` and
-`CS_PROBE_LINKS`, so in the shipped stack the api always refuses private hosts for pasted links and always probes
-direct ones (see Docs vs code 13). A new api setting must be added to that block; `server/tests/test_hardening.py::test_compose_gives_api_an_env_allowlist` checks the list and its
+`TBA_KEY` and `EVENTS` are not passed (the one-time `.env` import is off on purpose). `CS_URL_ALLOW` (empty) and
+`CS_PROBE_LINKS` (`1`) are, because the pasted-link checks run in the api. A new api setting must be added to that block; `server/tests/test_hardening.py::test_compose_gives_api_an_env_allowlist` checks the list and its
 defaults.
 
 Container hardening (compose): `read_only: true`, tmpfs `/tmp` 64 MB, `cap_drop: ALL` + `CHOWN, DAC_OVERRIDE,
@@ -870,11 +869,7 @@ Where the code and existing docs disagree (the code is what runs):
 11. **Picklist weights** accept -10..10 (`PicklistData`); the security report's suggested fix said 0..5. Not a bug,
     just different from the recommendation.
 12. **`manage.py`** isn't mentioned as bypassing the password policy and the audit log; it does both (section 10).
-13. **`CS_URL_ALLOW` for pasted links.** The Video page's refusal for a private host says "the server's admin can
-    allow that host with CS_URL_ALLOW", and `deploy.md` lists it for worker / recorder. The check that refuses the
-    paste runs in the **api** (`sources._checked`), and compose doesn't pass `CS_URL_ALLOW` (or `CS_PROBE_LINKS`) to
-    the api, so setting it in `.env` doesn't let such a link be added until it is added to the api's `environment:`.
-14. **Worker "stale" during a long pass.** `worker-status.json` is written once per loop pass. A pass that tracks a
-    big backlog (`BACKLOG_BATCH` caps only the other competitions while one is live) can take more than an hour; the app then
-    says "The worker hasn't checked in since …" (web `STALE_S` 1 h) although it is working, and `/session` reports
-    `paused: null` (`FRESH_S` 1 h).
+13. **`CS_URL_ALLOW` for pasted links.** Fixed: compose passes `CS_URL_ALLOW` and `CS_PROBE_LINKS` to the api, where
+    the pasted-link check runs.
+14. **Worker "stale" during a long pass.** Fixed: a `status-beat` thread in `live/worker.py` re-writes
+    `worker-status.json` every `BEAT_S` (120 s) with the last reason, so a long pass stays fresh.
