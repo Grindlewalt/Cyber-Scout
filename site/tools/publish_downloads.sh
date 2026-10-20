@@ -112,7 +112,8 @@ if [ "$LISTING_ONLY" = 1 ]; then mkdir -p "$DL"; write_listing "$DL"; echo "wrot
 
 # ---- CS_SERVER_URL: optional team server for the Client one-liners
 CS_SERVER_URL="${CS_SERVER_URL:-}"; CS_SERVER_URL="${CS_SERVER_URL%/}"
-[ -z "$CS_SERVER_URL" ] || [[ "$CS_SERVER_URL" =~ ^https?://[A-Za-z0-9.:\[\]_-]+(/[A-Za-z0-9._~/-]*)?$ ]] ||
+URL_RE='^https?://[][A-Za-z0-9.:_-]+(/[A-Za-z0-9._~/-]*)?$'     # ] first: literal in a bracket expression
+[ -z "$CS_SERVER_URL" ] || [[ "$CS_SERVER_URL" =~ $URL_RE ]] ||
   die "CS_SERVER_URL must look like http://10.0.0.58:7560, got: $CS_SERVER_URL"
 
 # ---- PORT: SITE's own port unless given; 8790 on atomosserver is another app (7580 is the site's)

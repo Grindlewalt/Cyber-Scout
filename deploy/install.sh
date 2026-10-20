@@ -717,7 +717,8 @@ else
   info "The one-time setup code is in $CODEF (until the admin account is created)."
 fi
 # installed with get.sh from a downloads site: each laptop gets the Client with one line, already pointed at this server
-if [ -n "${CS_SITE:-}" ] && [ "$CS_BIND" != 127.0.0.1 ] && [[ "$CS_SITE" =~ ^https?://[A-Za-z0-9.:\[\]_-]+$ ]]; then
+SITE_RE='^https?://[][A-Za-z0-9.:_-]+$'                       # ] first: literal in a bracket expression
+if [ -n "${CS_SITE:-}" ] && [ "$CS_BIND" != 127.0.0.1 ] && [[ "$CS_SITE" =~ $SITE_RE ]]; then
   SRV="http://${IP:-localhost}:$CS_PORT"
   echo
   bold "Laptops: the Cyber-Scout Client in one line (installs it, starts it at login, connects to this server):"

@@ -38,7 +38,8 @@ main() {
   done
   SERVER="${SERVER%/}"
   [[ "$PORT" =~ ^[0-9]{2,5}$ ]] && [ "$PORT" -le 65535 ] || die "bad --port: $PORT"
-  [ -z "$SERVER" ] || [[ "$SERVER" =~ ^https?://[A-Za-z0-9.:\[\]_-]+(/[A-Za-z0-9._~/-]*)?$ ]] ||
+  URL_RE='^https?://[][A-Za-z0-9.:_-]+(/[A-Za-z0-9._~/-]*)?$'   # ] first: literal in a bracket expression
+  [ -z "$SERVER" ] || [[ "$SERVER" =~ $URL_RE ]] ||
     die "--server must look like http://10.0.0.58:7560 or https://scout.example.org, got: $SERVER"
   case "$DIR" in /*) ;; *) DIR="$PWD/$DIR";; esac
   [ -z "$DATA" ] || case "$DATA" in /*) ;; *) DATA="$PWD/$DATA";; esac
