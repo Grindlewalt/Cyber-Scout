@@ -117,6 +117,8 @@ body.bare .shell { grid-template-columns: minmax(0, 1fr); }  /* sidebar is displ
 .timectl.static .tc-tag { font-weight: 500; }
 
 main { width: 100%; max-width: 1320px; padding: var(--sp-5) var(--gut) var(--sp-7); flex: 1; }
+/* the page area holds a screen's height while it loads, so the footer doesn't flash into view and jump away (MATCH-31) */
+main#app { min-height: calc(100vh - var(--tb-h)); min-height: calc(100dvh - var(--tb-h)); }
 .foot { max-width: calc(1320px - 2 * var(--gut)); margin: 0 var(--gut); padding: var(--sp-4) 0 var(--sp-6); font-size: var(--fs-cap); color: var(--ink-2); border-top: 1px solid var(--line); }
 
 /* phone: bottom tab bar + More sheet instead of the sidebar */
@@ -340,6 +342,7 @@ canvas.field { width: 100%; display: block; border-radius: 8px; background: var(
 .mv-tm { display: flex; align-items: center; gap: 7px; min-height: 30px; padding: 0 2px; border-radius: 6px; cursor: pointer; font-size: var(--fs-body); }
 .mv-tm:hover { background: var(--hover); } .mv-tm input { margin: 0; }
 .mv-tm .sw { width: 10px; height: 10px; border: 0; }
+.chip .sw { width: 9px; height: 9px; border: 0; margin-right: 5px; vertical-align: 0; }
 .mv-tm:has(input:not(:checked)) .team, .mv-tm:has(input:not(:checked)) .mv-n { opacity: .45; }
 .mv-un { cursor: default; color: var(--ink-2); font-style: italic; padding-left: 24px; font-size: var(--fs-foot); } .mv-un:hover { background: none; } .mv-un .mv-n { font-weight: 500; font-style: normal; }
 .mv-tba { margin-top: 6px; padding-top: 8px; border-top: 1px solid var(--line); font-size: var(--fs-cap); line-height: 1.5; }

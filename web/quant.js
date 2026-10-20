@@ -19,10 +19,13 @@ function lsSet(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch
 const teamCache = {};
 function getTeam(ev, tk) { return teamCache[ev + tk] || (teamCache[ev + tk] = api(`${ev}/t/${tk}.json`)); }
 
+// an explanation that opens on a tap or click too (app.js tipA: data-tip + title), not only on hover (MATCH-15)
+const tipX = (t, key) => typeof tipA === "function" ? tipA(t, key) : ` title="${esc(t)}"`;
 /** metric tile: x is a number or {v,n,conf}; shows n and a confidence bar when present */
 function tile(label, x, f = "1", unit = "", tip = "") {
   const v = val(x), n = mn(x), c = mc(x);
-  return `<div class="tile" title="${esc(tip)}"><b>${fmtV(v, f)}${has(v) && unit ? `<small>${unit}</small>` : ""}</b><span>${label}</span>
+  // the explanation opens on a tap too (app.js tipA), not only on hover (MATCH-15)
+  return `<div class="tile"${tip ? tipX(tip) : ""}><b>${fmtV(v, f)}${has(v) && unit ? `<small>${unit}</small>` : ""}</b><span>${label}</span>
     ${n != null ? `<em>n=${n}${c != null ? ` ${confBar(c, "metric confidence")}` : ""}</em>` : ""}</div>`;
 }
 function spark(vals, opts = {}) {
@@ -126,9 +129,9 @@ function liveCanvas(el, draw) {
   window.addEventListener("resize", go); cleanup.push(() => window.removeEventListener("resize", go));
   go.F = F; F.redraw = go; return F;
 }
-function chipRow(el, opts, cur, cb) {       // single-select chips
-  el.innerHTML = opts.map(([k, l]) => `<span class="chip ${k === cur ? "on" : ""}" data-k="${k}">${l}</span>`).join("");
-  el.querySelectorAll(".chip").forEach(ch => ch.onclick = () => { el.querySelectorAll(".chip").forEach(x => x.classList.toggle("on", x === ch)); cb(ch.dataset.k); });
+function chipRow(el, opts, cur, cb) {       // single-select chips: buttons, so they work from the keyboard (aria-pressed = selected)
+  el.innerHTML = opts.map(([k, l]) => `<button type="button" class="chip ${k === cur ? "on" : ""}" data-k="${k}" aria-pressed="${k === cur}">${l}</button>`).join("");
+  el.querySelectorAll(".chip").forEach(ch => ch.onclick = () => { el.querySelectorAll(".chip").forEach(x => { x.classList.toggle("on", x === ch); x.setAttribute("aria-pressed", x === ch); }); cb(ch.dataset.k); });
 }
 
 // ------------------------------------------------------------------ hub active / inactive behaviour (team analytics.hub)
@@ -205,6 +208,8 @@ async function teamPage(ev, tk) {
   crumbs([[e ? e.name : ev, `#/${ev}`], [`${d.number}${d.nickname ? " · " + d.nickname : ""}`]]); $updated.textContent = "";
   const ag = d.analytics, S = ag && ag.scoring || {}, MV = ag && ag.movement || {}, DF = ag && ag.defense || {}, EG = ag && ag.endgame || {}, RL = ag && ag.reliability || {};
   const ms = d.matches || [], an = ms.map(m => m.analytics || null);
+  const hasRoutine = an.some((a, i) => a && ms[i].verified && a.auto && a.auto.routine), RC = hasRoutine ? 0 : 1;     // the Auto routine column only when some match has one
+  const ma = (m, x) => m == null && x == null ? "–" : `${m ?? "–"}/${x ?? "–"}`;                                     // made / attempts; "–" instead of "null/null" (MATCH-19)
   const tr = fn => an.map((a, i) => { try { return a && ms[i].verified ? fn(a) : null; } catch (x) { return null; } });
   const starred = (lsGet("cyberscout:picks:" + ev, {}).stars || []).includes(tk);
   const HP = tainted ? null : hubPhaseSummary(ag && ag.hub);
@@ -219,7 +224,7 @@ async function teamPage(ev, tk) {
 
   $app.innerHTML = `<div class="titlebar"><div><h1>${d.number} <span class="muted" style="font-weight:500">${esc(d.nickname || "")}</span></h1>
     <div class="sub">${d.rank ? `Rank ${d.rank} · ` : ""}${d.opr != null ? `OPR ${fx(d.opr)} · ` : ""}${CV.n} verified match${CV.n === 1 ? "" : "es"}${CV.of ? ` of ${CV.of} played` : ""}${d.tracked > CV.n ? ` <span class="muted small">(${d.tracked - CV.n} replay-only)</span>` : ""}
-      ${HP ? ` · <span class="hp-pills"><span class="pill hp on${HP.on.thin ? " thin" : ""}" title="teleop, while our hub is active (n=${HP.on.n})">Hub active: ${esc(HP.on.label)}</span> <span class="pill hp off${HP.off.thin ? " thin" : ""}" title="teleop, while our hub is inactive (n=${HP.off.n})">Inactive: ${esc(HP.off.label)}</span></span>` : ""}
+      ${HP ? ` · <span class="hp-pills"><span class="pill hp on${HP.on.thin ? " thin" : ""}"${tipX(`Teleop, while our hub is active (n=${HP.on.n} matches).`, true)}>Hub active: ${esc(HP.on.label)}</span> <span class="pill hp off${HP.off.thin ? " thin" : ""}"${tipX(`Teleop, while our hub is inactive (n=${HP.off.n} matches).`, true)}>Inactive: ${esc(HP.off.label)}</span></span>` : ""}
       · ${covPill(CV)} ${flagChips(SR)} · <a href="https://www.thebluealliance.com/team/${d.number}/${(e && e.year) || ""}" target="_blank" rel="noopener">TBA</a></div></div>
     ${typeof plCanEdit !== "function" || plCanEdit() ? `<button id="star" type="button" class="${starred ? "on" : ""}" aria-pressed="${starred}">${CS.icon(starred ? "starOn" : "star")}<span>${starred ? "Starred" : "Star"}</span></button>`
       : starred ? `<span id="star" class="on starmark" title="Starred on the team picklist (strategists change it)">${CS.icon("starOn")}<span>Starred</span></span>` : ""}</div>
@@ -260,7 +265,7 @@ async function teamPage(ev, tk) {
       `<span class="hl">Launch positions from the team's own end (own alliance wall on the left, our hub ringed).</span><span class="hl"><b>Hub shots</b> = made or missed at our hub. <b>Passes &amp; clears</b> = FUEL sent anywhere else: passes and feeds to a partner or the floor, and clears lobbed out of the far end near the opponent's hub (older data: misses that landed nearer the opponent's hub).</span><span class="hl">Density shows where the selected set is launched from (hub shots unless Passes &amp; clears is picked).</span>`)}
     ${section("intake", "Intake map", `<div id="intakemap"></div>
       <div class="tiles" style="margin-top:10px">${tile("Intakes / match", ag && ag.collection && ag.collection.intakes, "1")}${tile("Per minute", ag && ag.collection && ag.collection.per_min, "1")}
-      ${["neutral", "depot", "outpost", "opp"].map(k => tile("From " + k, ag && ag.collection && ag.collection.by_loc && ag.collection.by_loc[k], "1")).join("")}</div>`, "Where floor fuel was picked up, from the team's own end.")}
+      ${["neutral", "depot", "outpost", "opp"].map(k => [k, ag && ag.collection && ag.collection.by_loc && ag.collection.by_loc[k]]).filter(([, x]) => has(val(x))).map(([k, x]) => tile("From " + k, x, "1")).join("")}</div>`, "Where floor fuel was picked up, from the team's own end.")}
     ${section("auto", "Autonomous", `<div class="grid2"><div><div id="autocv"></div><div class="chips" id="autochips"></div><label class="small muted"><input type="checkbox" id="allautos"> show all auto paths</label></div>
       <div id="routines"></div></div>`, "Highlighted path = representative of the selected routine. Dot = start, arrow = end of auto. Routines are clustered by start spot and path shape.")}
     ${section("move", "Movement", `<div class="grid2"><div><div class="tiles">
@@ -279,15 +284,15 @@ async function teamPage(ev, tk) {
         ${tile("Arrives at tower", EG.arrive_t, "0", " s", "match time")}${tile("Climb duration", EG.duration_s, "1", " s")}${tile("Stops scoring", EG.stop_scoring_t, "0", " s", "match time")}</div></div>`)}
     ${section("rel", "Reliability & hub phases", `<div class="grid2"><div class="tiles">${tile("Dead matches", has(RL.dead_matches) ? { v: RL.dead_matches, n: RL.n } : null, "0", "", "no movement for 15 s or more mid-match, not climbing")}
         ${tile("Avg dead time", RL.mean_dead_s, "1", " s")}${tile("Low-coverage matches", has(RL.low_coverage_matches) ? RL.low_coverage_matches : null, "0")}</div>
-      <div><h3 class="hp-h3">Hub active vs inactive ${CS.help(hubHelp(), "About hub active / inactive")}</h3>${HP ? hubPhaseBlock(ag.hub) : `<div class="muted small">${tainted ? "Hidden: this team's aggregates still mix in unverified matches." : "No hub-phase data for this team yet (needs a site rebuild with verified video)."}</div>`}</div></div>`)}
+      <div><h3 class="hp-h3">Hub active vs inactive ${CS.help(hubHelp(), "About hub active / inactive")}</h3>${HP ? hubPhaseBlock(ag.hub) : `<div class="muted small">${tainted ? "Hidden: this team's aggregates still mix in unverified matches." : "No hub active / inactive split for this team yet: it needs verified video of its teleop."}</div>`}</div></div>`)}
     ${section("matches", "Matches", `<div class="tablewrap"><table><thead><tr><th>Match</th><th>All.</th><th class="num" data-pri="800">Made/Att</th><th class="num" data-pri="700">Acc</th><th class="num" data-pri="200">Fire /s</th><th class="num" data-pri="190">Volley</th><th class="num" data-pri="300">Cycle s</th>
-      <th class="num" data-pri="180">Intakes</th><th data-pri="120">Auto</th><th class="num" data-pri="500">Auto made</th><th data-pri="450">Climb</th><th class="num" data-pri="170">Def s</th><th class="num" data-pri="160">Cont.</th><th class="num" data-pri="150">Pins</th><th class="num" data-pri="140">Dist m</th><th title="verified identity (v2, ≥ 60%)" data-pri="250">Verified</th><th data-pri="400">Flags</th></tr></thead>
-      <tbody>${ms.map((m, i) => { const a = an[i]; const lo = mcf(m) != null && mcf(m) < IDC.low; if (!m.verified) return `<tr class="sc-dis"><td><a href="#/${ev}/m/${m.match}">${esc(m.short)}</a></td><td class="${m.alliance[0]}">${m.alliance[0].toUpperCase()}</td><td colspan="15" class="muted wrapc" title="identity not verified (v1 tracks or confidence &lt; 60%): replay only, feeds no numbers">not verified · replay only</td></tr>`;
+      <th class="num" data-pri="180">Intakes</th>${hasRoutine ? '<th data-pri="120">Auto</th>' : ""}<th class="num" data-pri="500">Auto made</th><th data-pri="450">Climb</th><th class="num" data-pri="170">Def s</th><th class="num" data-pri="160">Cont.</th><th class="num" data-pri="150">Pins</th><th class="num" data-pri="140">Dist m</th><th title="verified identity (v2, ≥ 60%)" data-pri="250">Verified</th><th data-pri="400">Flags</th></tr></thead>
+      <tbody>${ms.map((m, i) => { const a = an[i]; const lo = mcf(m) != null && mcf(m) < IDC.low; if (!m.verified) return `<tr class="sc-dis"><td><a href="#/${ev}/m/${m.match}">${esc(m.short)}</a></td><td class="${m.alliance[0]}">${m.alliance[0].toUpperCase()}</td><td colspan="${15 - RC}" class="muted wrapc" title="identity not verified (v1 tracks or confidence &lt; 60%): replay only, feeds no numbers">not verified · replay only</td></tr>`;
         return `<tr><td><a href="#/${ev}/m/${m.match}">${esc(m.short)}</a></td><td class="${m.alliance[0]}">${m.alliance[0].toUpperCase()}</td>` + (a ? `
-        <td class="num">${a.scoring.made}/${a.scoring.attempts}</td><td class="num">${fmtV(a.scoring.accuracy, "p")}</td><td class="num">${fmtV(a.scoring.fire_rate)}</td><td class="num">${fmtV(a.scoring.volley_size, "0")}</td><td class="num">${fmtV(a.scoring.cycle_s)}</td>
-        <td class="num">${a.collection.intakes}</td><td>${esc(a.auto.routine || "–")}</td><td class="num">${a.auto.made}/${a.auto.shots}</td><td>${a.endgame.level ? "L" + a.endgame.level : a.endgame.attempted ? "failed" : "–"}</td>
+        <td class="num">${ma(a.scoring.made, a.scoring.attempts)}</td><td class="num">${fmtV(a.scoring.accuracy, "p")}</td><td class="num">${fmtV(a.scoring.fire_rate)}</td><td class="num">${fmtV(a.scoring.volley_size, "0")}</td><td class="num">${fmtV(a.scoring.cycle_s)}</td>
+        <td class="num">${a.collection.intakes ?? "–"}</td>${hasRoutine ? `<td>${esc(a.auto.routine || "–")}</td>` : ""}<td class="num">${ma(a.auto.made, a.auto.shots)}</td><td>${a.endgame.level ? "L" + a.endgame.level : a.endgame.attempted ? "failed" : "–"}</td>
         <td class="num">${fmtV(a.defense.time_s)}</td><td class="num">${a.defense.contacts}</td><td class="num">${a.defense.pins}</td><td class="num">${fmtV(a.movement.distance_m, "0")}</td><td>✓</td>
-        <td>${a.reliability.dead ? '<span class="pill failed">dead</span>' : ""}${a.reliability.low_coverage ? '<span class="pill no_video">low cov.</span>' : ""}</td>` : `<td colspan="13" class="muted wrapc">no analytics</td><td>✓</td>`) + `</tr>`; }).join("")
+        <td>${a.reliability.dead ? '<span class="pill failed">dead</span>' : ""}${a.reliability.low_coverage ? '<span class="pill no_video">low cov.</span>' : ""}</td>` : `<td colspan="${13 - RC}" class="muted wrapc">no analytics</td><td>✓</td>`) + `</tr>`; }).join("")
         || `<tr><td colspan="16" class="empty">No tracked matches yet</td></tr>`}</tbody></table></div>`)}
     </div>`;
 
@@ -320,8 +325,8 @@ async function teamPage(ev, tk) {
   const routines = d.routines || [], autos = d.autos || [];
   let selR = routines.length ? routines[0].id : null, showAll = false;
   const on = autos.map(() => true), chips = document.getElementById("autochips");
-  chips.innerHTML = autos.map((a, i) => `<span class="chip on" data-i="${i}" style="color:${PALETTE[i % PALETTE.length]}">${esc(a.short)}${a.routine ? " · " + esc(a.routine) : ""}</span>`).join("");
-  chips.querySelectorAll(".chip").forEach(ch => ch.onclick = () => { const i = +ch.dataset.i; on[i] = !on[i]; ch.classList.toggle("on", on[i]); AC.redraw(); });
+  chips.innerHTML = autos.map((a, i) => `<button type="button" class="chip on" data-i="${i}" aria-pressed="true"><i class="sw" style="background:${PALETTE[i % PALETTE.length]}" aria-hidden="true"></i>${esc(a.short)}${a.routine ? " · " + esc(a.routine) : ""}</button>`).join("");
+  chips.querySelectorAll(".chip").forEach(ch => ch.onclick = () => { const i = +ch.dataset.i; on[i] = !on[i]; ch.classList.toggle("on", on[i]); ch.setAttribute("aria-pressed", on[i]); AC.redraw(); });
   const AC = liveCanvas(document.getElementById("autocv"), F => {
     F.bg(.6);
     if (showAll || !routines.length) autos.forEach((a, i) => { if (on[i]) drawPath(F, a.xy, PALETTE[i % PALETTE.length], { alpha: routines.length ? .35 : .9, obs: a.obs }); });
@@ -331,7 +336,7 @@ async function teamPage(ev, tk) {
   const rdiv = document.getElementById("routines");
   const drawR = () => {
     rdiv.innerHTML = routines.length ? `<div class="tablewrap"><table><thead><tr><th>Routine</th><th class="num">Used</th><th class="num" data-pri="300">Shots</th><th class="num" data-pri="400">Made</th><th class="num" data-pri="200">Neutral</th><th class="num" data-pri="100">Consist.</th></tr></thead><tbody>
-      ${routines.map(r => `<tr class="${r.id === selR ? "sel" : ""} clk" data-r="${r.id}"><td><b>${esc(r.name || r.id)}</b><div class="small muted">start ${spotTxt(r.start_xy)} · ${esc((r.matches || []).join(", "))}</div></td>
+      ${routines.map(r => `<tr class="${r.id === selR ? "sel" : ""} clk" data-r="${r.id}"><td><b>${esc(r.name || r.id)}</b><div class="small muted">${r.start_xy ? `start ${spotTxt(r.start_xy)} · ` : ""}${esc((r.matches || []).join(", "))}</div></td>
       <td class="num">${r.n}/${r.of}<div class="bartiny"><i style="width:${100 * (r.freq ?? r.n / r.of)}%"></i></div></td><td class="num">${fx(r.shots_avg)}</td><td class="num">${fx(r.made_avg)}</td><td class="num">${pct(r.neutral_cross_rate)}</td><td class="num">${pct(r.consistency)}</td></tr>`).join("")}</tbody></table></div>`
       : `<div class="empty">No routines clustered yet.</div>`;
     rdiv.querySelectorAll("tr.clk").forEach(tr => tr.onclick = () => { selR = tr.dataset.r; drawR(); AC.redraw(); });

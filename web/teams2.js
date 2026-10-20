@@ -73,11 +73,13 @@
     const draw = () => {
       const kv = (r, k) => k === "made_pm" && r.made_v ? r.made_v.v : r[k];
       const r = rows.slice().sort((a, b) => { const x = kv(a, sk), y = kv(b, sk); if (x == null) return 1; if (y == null) return -1; return (x > y ? 1 : x < y ? -1 : 0) * sd; });
-      tb.innerHTML = `<thead><tr>${COLS.map(([k, l, , t]) => `<th class="${k === "number" ? "" : "num"}" data-k="${k}" data-pri="${SPRI[k] ?? 100}" title="${H(t)}">${l}${k === sk ? (sd < 0 ? " ▾" : " ▴") : ""}</th>`).join("")}</tr></thead>
+      tb.innerHTML = `<thead><tr>${COLS.map(([k, l, , t]) => `<th class="${k === "number" ? "" : "num"}" data-k="${k}" data-pri="${SPRI[k] ?? 100}" title="${H(t)}"${k === "flags" ? "" : ` tabindex="0" aria-sort="${k === sk ? (sd < 0 ? "descending" : "ascending") : "none"}"`}>${l}${k === sk ? (sd < 0 ? " ▾" : " ▴") : ""}</th>`).join("")}</tr></thead>
       <tbody>${r.map(x => `<tr class="clk" data-t="${x.team}">${COLS.map(([k, , f]) => k === "number"
         ? `<td><a href="#/${ev}/specs/${x.team}"><b>${x.number}</b></a> <span class="sx-mini">${H((x.nickname || "").slice(0, 22))}</span></td>`
         : `<td class="${k === "flags" ? "" : "num"}">${f(x[k], x)}</td>`).join("")}</tr>`).join("")}</tbody>`;
-      tb.querySelectorAll("th").forEach(th => th.onclick = () => { const k = th.dataset.k; if (!k || k === "flags") return; if (k === sk) sd = -sd; else { sk = k; sd = k === "rank" || k === "number" ? 1 : -1; } draw(); });
+      // sortable from the keyboard too (Enter / Space), focus stays on the header (MATCH-27)
+      tb.querySelectorAll("th").forEach(th => { th.onclick = () => { const k = th.dataset.k; if (!k || k === "flags") return; if (k === sk) sd = -sd; else { sk = k; sd = k === "rank" || k === "number" ? 1 : -1; } draw(); const f = tb.querySelector(`th[data-k="${k}"]`); if (f) f.focus(); };
+        th.onkeydown = e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); th.onclick(); } }; });
       tb.querySelectorAll("tr.clk").forEach(tr => tr.onclick = ev_ => { if (ev_.target.tagName !== "A") location.hash = `#/${ev}/specs/${tr.dataset.t}`; });
     };
     draw();
@@ -194,7 +196,7 @@
     const TR = sp.truth || {}, TV = TR.video || {}, autoBad = (TR.flags || []).some(f => f.k === "auto_not_tracked");
     crumbs([[e ? e.name : ev, `#/${ev}`], ["Spec sheets", `#/${ev}/specs`], [String(sp.number)]]); $updated.textContent = "";
     const D = sp.drive || {}, S = sp.scoring || {}, A = sp.auto || {}, CL = sp.climb || {}, LN = sp.lanes || {}, DF = sp.defense || {};
-    const st = (v, l, u = "", tip = "") => `<div title="${H(tip)}"><b>${v}${u && v !== "–" ? `<small> ${u}</small>` : ""}</b><span>${l}</span></div>`;
+    const st = (v, l, u = "", tip = "") => `<div${!tip ? "" : typeof tipA === "function" ? tipA(tip) : ` title="${H(tip)}"`}><b>${v}${u && v !== "–" ? `<small> ${u}</small>` : ""}</b><span>${l}</span></div>`;
     const matchTxt = (sp.matches || []).map(m => `<span title="identity-valid ${pc(m.valid)} of the match, mean conf ${pc(m.conf)}">${m.m}<span class="sx-mini">(${m.al[0]}, ${pc(m.valid)})</span></span>`).join(" ");
     const recv = DF.received || {}, play = DF.played || null;
     const lvls = CL.levels || {}, nL = Object.values(lvls).reduce((a, b) => a + b, 0);
@@ -207,14 +209,14 @@
       <div class="sx-card"><h2>Drive <small>${f1(D.seconds, 0)} s tracked</small></h2><div class="sx-stat">
         ${st(f1(D.top_speed, 2), "Top speed", "m/s", "99th percentile of speed")}${st(f1(D.p95_speed, 2), "p95 moving", "m/s")}${st(f1(D.mean_speed, 2), "Mean moving", "m/s")}
         ${st(f1(D.accel_p90), "Accel p90", "m/s²")}${st(f1(D.accel_max), "Accel max", "m/s²", "99th percentile")}${st(pc(D.pct_moving), "Time moving")}${st(f1(D.dist_per_match, 0), "Dist / match", "m")}</div></div>
-      <div class="sx-card"><h2>Scoring <small>${S.made}/${S.att} made${S.passes ? ` · ${S.passes} passes` : ""}</small></h2><div class="sx-stat">
+      <div class="sx-card"><h2>Scoring <small>${S.made}/${S.att} made${S.passes ? ` · ${S.passes} passes` : ""} · ${S.n_fuel ?? 0} reconciled match${S.n_fuel === 1 ? "" : "es"}</small> ${CS.help(`<span class="hl">Scoring counts FUEL only in matches whose video total reconciles with the TBA alliance score (${S.n_fuel ?? 0} of ${(sp.matches || []).length} verified here), so the totals can be lower than the shot map, which shows every verified match.</span>`, "Which matches these totals cover")}</h2><div class="sx-stat">
         ${st(TV.made_pm ? (TV.made_pm.lower_bound ? "≥" : "") + f1(TV.made_pm.v) : f1(S.made_pm), "Made / match", "", TV.made_pm ? `canonical (shrunk, TBA-reconciled); raw ${f1(TV.made_pm.raw)} over n=${TV.made_pm.n}` : "")}${st(pc(S.acc), "Accuracy", "", `${S.made}/${S.made + S.missed} shots`)}
         ${st(f1(S.pts_per_active_min), "Pts / active min", "", "made into an active hub per minute of own-hub-active teleop")}
         ${st(f1(S.fire_rate), "Fire rate", "/s", "balls per second inside a volley of 3+")}${st(f1(S.volley_mean), "Volley mean")}
         ${st(S.hopper_est ?? S.volley_max ?? "–", "Volley p90 ≈ hopper", "", `max volley ${S.volley_max ?? "–"}, ${S.n_volleys} teleop volleys`)}
         ${st(f1(S.cycle_s), "Cycle", "s", S.cycle_iqr ? `IQR ${S.cycle_iqr[0]}–${S.cycle_iqr[1]} s` : "")}${st(pc(S.on_move), "Shots on move")}${st(f1(S.dist_med), "Shot dist", "m", "median distance to hub")}</div></div>
       <div class="sx-card"><h2>Auto &amp; climb</h2><div class="sx-stat">
-        ${autoBad ? st("n/t", "Auto made", "", (TR.flags.find(f => f.k === "auto_not_tracked") || {}).text) + st("n/t", "Auto shots") : st(f1(A.made_avg), "Auto made") + st(f1(A.att_avg), "Auto shots")}${st(pc(A.climb_rate), "Auto L1 (TBA)")}
+        ${autoBad ? st("n/t", "Auto made", "", (TR.flags.find(f => f.k === "auto_not_tracked") || {}).text) + st("n/t", "Auto shots") : st(TV.auto_made ? f1(TV.auto_made.v) : f1(A.made_avg), "Auto made", "", TV.auto_made ? `the same number as the team page and Teams (shrunk toward the event, n=${TV.auto_made.n}); the plain mean of the rows below is ${f1(A.made_avg)}` : "mean over the reconciled matches below") + st(f1(A.att_avg), "Auto shots", "", "mean over the reconciled matches below")}${st(pc(A.climb_rate), "Auto L1 (TBA)")}
         ${st(pc(CL.rate), "Endgame climb (TBA)", "", `${CL.n ?? nL} quals · levels: ${Object.entries(lvls).map(([k, v]) => `L${k}×${v}`).join(", ")}`)}</div>
         ${autoBad ? `<div class="sx-mini" style="margin-top:6px;color:var(--caution)">${H((TR.flags.find(f => f.k === "auto_not_tracked") || {}).text)}</div>` : ""}
         ${autoBad ? "" : `<div class="sx-mini" style="margin-top:6px">${(A.rows || []).map(r => `${r.m}: ${r.made}/${r.att}${r.climb ? " + climb" : ""}`).join(" · ")}</div>`}
@@ -231,10 +233,10 @@
         <div class="sx-leg"><span><i class="dot" style="background:${C_MADE}"></i>made</span><span><i class="dot" style="background:${C_MISS}"></i>missed</span>${CS.help("■ = launched on the move, ● = stopped. Own end on the left, hub ringed.", "How to read the shot map")}</div></div>
     </div>
     <div class="sx-card" style="margin-top:14px"><h2>Shooting paths ${CS.help(`<span class="hl">The drive leading into each volley, aligned on the first shot.</span><span class="hl">Lead-in starts at the latest of: previous volley, last floor intake, leaving the neutral zone (crossing back over the own hub line), a tracking hole, or 10 s. Moving = robot speed &gt; 0.5 m/s at the first shot.</span><span class="hl">Tap a row to highlight one path.</span>`, "How shooting paths work")}</h2>
-      <div class="sx-ctl"><select id="sxPm"><option value="">all matches</option>${(sp.matches || []).map(m => `<option>${m.m}</option>`).join("")}</select>
-        <select id="sxPp"><option value="tele">teleop</option><option value="auto">auto</option><option value="">all periods</option></select>
-        <select id="sxPn"><option value="3">volleys ≥ 3</option><option value="1">all launches</option><option value="8">volleys ≥ 8</option></select>
-        <select id="sxPs"><option value="1">1×</option><option value="2">2×</option><option value="0.5">0.5×</option></select>
+      <div class="sx-ctl"><select id="sxPm" aria-label="Match"><option value="">all matches</option>${(sp.matches || []).map(m => `<option>${m.m}</option>`).join("")}</select>
+        <select id="sxPp" aria-label="Period"><option value="tele">teleop</option><option value="auto">auto</option><option value="">all periods</option></select>
+        <select id="sxPn" aria-label="Which launches"><option value="3">volleys ≥ 3</option><option value="1">all launches</option><option value="8">volleys ≥ 8</option></select>
+        <select id="sxPs" aria-label="Playback speed"><option value="1">1×</option><option value="2">2×</option><option value="0.5">0.5×</option></select>
         <button id="sxPclr">clear selection</button></div>
       <div class="sx-grid"><div><div id="sxPath"></div>
         <div class="sx-leg"><span><i style="background:${LANE_COL.trench}"></i>came via trench</span><span><i style="background:${LANE_COL.bump}"></i>via bump</span>
@@ -261,7 +263,7 @@
       const pts = (sp.shots || []).filter(p => sper === "all" || (sper === "auto" ? p[3] === "a" : sper === "tele" ? p[3] !== "a" : sper === "move" ? p[5] === 1 : p[5] === 0));
       shotMap(SF, pts, smode);
       const mm = pts.filter(p => p[2] === "m").length, xx = pts.filter(p => p[2] === "x").length;
-      document.getElementById("sxShN").textContent = `${pts.length} shots · ${mm} made · ${xx} missed`;
+      document.getElementById("sxShN").textContent = `${pts.length} shots · ${mm} made · ${xx} missed · all ${(sp.matches || []).length} verified matches`;
     };
     chipRow(document.getElementById("sxShP"), [["all", "All"], ["auto", "Auto"], ["tele", "Teleop"], ["stop", "Stopped"], ["move", "Moving"]], sper, k => { sper = k; drawShot(); });
     chipRow(document.getElementById("sxShM"), [["both", "Points+density"], ["pts", "Points"], ["heat", "Density"]], smode, k => { smode = k; drawShot(); });

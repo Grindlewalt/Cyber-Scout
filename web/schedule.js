@@ -132,15 +132,19 @@
 
   CS.route("schedule", async function (ev, key) {
     css();
+    crumbs([[ev, `#/${ev}`], ["Schedule"]]);             // this page's title even if its data fails to load (MATCH-8)
     const [d, evj] = await Promise.all([api(`${ev}/schedule.json`), api(`${ev}/event.json`).catch(() => null)]);
     const live = !d.asof && evj ? Object.fromEntries((evj.matches || []).filter(m => CS.isStream(m)).map(m => [m.key, m])) : null;
     const nextOurs = d.matches.find(m => !m.played && m.us && !(live && live[m.key]));
     S = { ev, filter: S && S.ev === ev ? S.filter : (d.matches.some(m => m.us) ? "ours" : "all"), open: new Set(S && S.ev === ev ? S.open : []), nextKey: nextOurs?.key };
     if (nextOurs && !S.open.size) S.open.add(nextOurs.key);
     S.live = live;
-    crumbs([[ev, `#/${ev}`], ["Schedule"]]); $updated.textContent = d.asof ? "replay" : ago(d.generated);
-    $app.innerHTML = `<div class="dash sc"><div class="dtop"><div><h1>Schedule</h1><div class="sub">${H(ev)} · ${tn(d.team)} ${CS.help(`Predictions for <b>${tn(d.team)}</b>'s matches break down where each alliance scores: tap a row with ▸ to expand it. Tap a played match to open its video and replay.`, "How the schedule works")}</div></div></div>
-      ${d.asof ? "" : `<div class="sc-banner"><b>End-of-event data</b>, not replay time ${CS.help("Predictions for unplayed matches use everything posted so far. For a replay view, pick a time on the Dashboard.", "About end-of-event data")}</div>`}
+    // asof: built with data up to that time (a finished event), not a replay; "Latest data" until the competition is over (MATCH-12)
+    const name = evj && evj.name || ev, asofTxt = d.asof ? (CS.fmtWhen ? CS.fmtWhen(d.asof, { day: true }) : new Date(d.asof * 1000).toLocaleString()) : "";
+    const lab = CS.latestLabel ? CS.latestLabel(ev) : "Latest data";
+    crumbs([[name, `#/${ev}`], ["Schedule"]]); $updated.textContent = d.asof ? "data as of " + asofTxt : ago(d.generated);
+    $app.innerHTML = `<div class="dash sc"><div class="dtop"><div><h1>Schedule</h1><div class="sub">${H(name)} · us = ${tn(d.team)} ${CS.help(`Predictions for <b>${tn(d.team)}</b>'s matches break down where each alliance scores: tap a row with ▸ to expand it. Tap a played match to open its video and replay.`, "How the schedule works")}</div></div></div>
+      <div class="sc-banner"><b>${H(lab)}</b>${d.asof ? ` as of ${H(asofTxt)}` : ""}, not replay time ${CS.help("Predictions for unplayed matches use everything posted so far. For a replay view, pick a time on the Dashboard.", "About this data")}</div>
       <section class="card" id="sc-body"></section></div>`;
     draw(d);
     const target = key;                              // deep link #/<ev>/schedule/<matchkey>

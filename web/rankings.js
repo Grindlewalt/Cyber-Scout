@@ -166,7 +166,7 @@
     crumbs([[name, `#/${ev}`], ["Rankings"]]); $updated.textContent = d.asof ? "data as of " + fmtD(d.asof) : ago(d.generated);
     // "Latest data" while quals are still being played; it is only final once they're all in (MATCH-12)
     $app.innerHTML = `<div class="dash rk"><div class="dtop"><div><h1>Rankings &amp; season goal</h1><div class="sub">${H(name)} · us = ${tn(d.team)}${d.district ? " · district " + H(d.district) : ""}</div></div></div>
-      ${`<div class="sc-banner"><b>${allQ ? "All quals played" : "Latest data"}</b>${d.asof ? ` as of ${fmtD(d.asof)}` : ""}, not replay time${d.quals_played != null ? ` · ${d.quals_played}/${d.quals_total} quals played` : ""}. Replay: pick a time on <a href="#/${ev}/selection">Selection</a> or the <a href="#/${ev}/dash">Dashboard</a>.</div>`}
+      ${`<div class="sc-banner"><b>${CS.latestLabel && CS.latestLabel(ev) !== "Latest data" ? H(CS.latestLabel(ev)) : allQ ? "All quals played" : "Latest data"}</b>${d.asof ? ` as of ${fmtD(d.asof)}` : ""}, not replay time${d.quals_played != null ? ` · ${d.quals_played}/${d.quals_total} quals played` : ""}. Replay: pick a time on <a href="#/${ev}/selection">Selection</a> or the <a href="#/${ev}/dash">Dashboard</a>.</div>`}
       ${goalPanel(d)}<div style="height:16px"></div><div id="rk-table">${table(d)}</div></div>`;
     wire(d);
     const iv = setInterval(async () => { try { const n = await api(`${ev}/rankings.json`); if (n.generated !== d.generated) route(false); } catch (e) { } }, 90000);
