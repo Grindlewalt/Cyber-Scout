@@ -64,7 +64,8 @@ def load_project(name):
 
 
 def load_index(P):
-    """frames/index.jsonl -> {id: record}; a later line for the same id wins."""
+    """frames/index.jsonl -> {id: record}; a later line for the same id wins.  A reviewer's view correction (the
+    review tool's Fixed / Moving toggle, `view` in labels/review/<id>.json) replaces the index's F / M / ? tag."""
     idx = {}
     try:
         with open(os.path.join(P, "frames", "index.jsonl")) as fh:
@@ -75,6 +76,11 @@ def load_index(P):
                     idx[r["id"]] = r
     except OSError:
         pass
+    for f in glob.glob(os.path.join(P, "labels", "review", "*.json")):
+        fid = os.path.basename(f)[:-5]
+        v = (jload(f) or {}).get("view") if fid in idx else None
+        if v in ("F", "M", "?") and v != idx[fid].get("view"):
+            idx[fid] = dict(idx[fid], view=v)
     return idx
 
 

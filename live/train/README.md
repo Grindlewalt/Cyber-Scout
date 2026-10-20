@@ -28,7 +28,8 @@ $TRAIN_DIR/<project>/
   labels/auto/<id>.json    teacher pseudo-labels: boxes [{c, b: [x0,y0,x1,y1] px, p, n, src}], u (0..1), teacher
   labels/import/<id>.json  human labels from an imported public set
   labels/review/<id>.json  human gold from the review UI: boxes, status ok | fixed | bad (skip: older files), by, at,
-                           diff, conf, hidden (auto boxes the slider left out), view (the reviewer's F / M fix)
+                           diff, conf, hidden (auto boxes the slider left out), view (the reviewer's F / M fix:
+                           build, eval and status use it in place of the index's tag)
   datasets/<name>/         YOLO layout (hard links), data.yaml, manifest.json
   runs/<name>/             ultralytics run, cstrain.json, report.json (eval)
   models/<name>/           robot.onnx (production format), robot.pt, card.json

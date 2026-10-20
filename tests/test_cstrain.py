@@ -241,6 +241,15 @@ def test_build(tmp_path, monkeypatch):
     assert man["frames"].get(rid, [None, None])[1] != "review"              # that reviewer's labels are ignored
 
 
+def test_review_view_correction_wins(tmp_path, monkeypatch):
+    P = make_project(tmp_path, monkeypatch)
+    fid = next(i for i, r in CT.load_index(P).items() if r.get("view") == "F")
+    os.makedirs(os.path.join(P, "labels", "review"), exist_ok=True)
+    with open(os.path.join(P, "labels", "review", fid + ".json"), "w") as fh:
+        json.dump({"id": fid, "boxes": [], "status": "ok", "by": "t", "at": 0, "view": "M"}, fh)
+    assert CT.load_index(P)[fid]["view"] == "M"
+
+
 def test_load_index_last_wins(tmp_path, monkeypatch):
     P = make_project(tmp_path, monkeypatch)
     idx = CT.load_index(P)
