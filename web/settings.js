@@ -39,7 +39,7 @@
       box.innerHTML = `<div class="cx-res${on && /^(error|no_gpu|needs_setup)/.test(p.state) ? " bad" : on ? " good" : ""}">${CS.icon(on ? "check" : "more", "ico")}<span><b>${on ? esc(mode) : "Off"}</b>${on ? `: ${esc(p.line)}` : ""}</span></div>
         ${facts.length ? `<p class="cx-note">${esc(facts.join(", "))}.</p>` : ""}
         ${notes.map(x => `<p class="cx-note warn">${esc(x.text)}</p>`).join("")}
-        <p class="cx-note"><a href="/client/processing">${on ? "Open processing" : "Set up and turn on processing"}</a></p>`;
+        <p class="cx-note"><a href="/client/processing">${on ? "Open processing" : CS.can("admin") ? "Set up and turn on processing" : "See processing (setting it up needs an admin account)"}</a></p>`;
     }
     load();
     procT = setInterval(load, 5000);
