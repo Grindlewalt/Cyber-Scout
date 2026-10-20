@@ -43,7 +43,9 @@ its field-space tracklets, identity solver and smoother are used here; its READM
 `docs/AUTOSCOUT_README.md`. Field geometry and AprilTag layouts from
 [WPILib](https://github.com/wpilibsuite/allwpilib); match data from
 [The Blue Alliance](https://www.thebluealliance.com); bumper OCR models are PP-OCRv3
-(Apache-2.0, via rapidocr_onnxruntime). Much of the code was written with Claude Code.
+(Apache-2.0, via rapidocr_onnxruntime).
+
+Built by FRC Team 4911 CyberKnights.
 
 ## License
 

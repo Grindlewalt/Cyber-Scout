@@ -57,7 +57,8 @@ samdev-7/autoscout (MIT, credited).
   127.0.0.1, or copies of data under the NAS scratch dir. No full-event reprocessing without the owner's OK.
 - `pkill -f` over ssh can kill its own session — use self-safe patterns (`pgrep -f "foo[.]py"`) or PIDs. Don't
   `pkill` other agents' servers.
-- Commits end with `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`; commit only the files you changed
+- **No Claude attribution anywhere:** no `Co-Authored-By: Claude`, "Generated with Claude Code" or similar lines in
+  commits, PRs, docs or the UI (owner's rule; a local commit-msg hook strips them). Commit only the files you changed
   (other agents may have uncommitted work in the tree — never `git commit -a`). Push to origin main after review.
 - Tests: `.venv/bin/python -m pytest -q server/tests tests` (343 pass), `python3 -m unittest discover -s client/tests`,
   `node --check web/*.js`. Regenerate `server/openapi.json` after API changes. GitHub Actions run on push (private
