@@ -102,8 +102,11 @@ def list_audit(user_id: int | None = Query(None), action: str | None = Query(Non
                                          "'none' (changes not tied to one: accounts, settings, sign-ins)"),
                since: float | None = Query(None, description="unix seconds"), before_id: int | None = Query(None),
                via: Literal["lan", "public"] | None = Query(None), limit: int = Query(100, ge=1, le=500),
+               changes: bool = Query(False, description="only changes: leave out sign-ins / sign-outs / failed sign-ins "
+                                     "and raw request entries (http.*)"),
                user: User = Depends(require_role("admin")), db=Depends(DB.get_db)):
     q, a = "SELECT * FROM audit_log WHERE 1=1", []
+    if changes: q += " AND action NOT IN ('auth.login','auth.login_failed','auth.logout') AND action NOT LIKE 'http.%'"
     if user_id is not None: q += " AND user_id=?"; a.append(user_id)
     if action: q += " AND action LIKE ? ESCAPE '\\'"; a.append(action.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%")
     if event == "none": q += " AND event IS NULL"
@@ -162,6 +165,7 @@ class RevertUserIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
     user_id: int
     since: float = Field(description="unix seconds: undo this account's changes made at or after this time")
+    dry_run: bool = Field(False, description="only count: what would be undone / skipped, nothing changes")
 
 
 @router.post("/audit/revert-user", summary="Undo everything one account changed since a time (admin), newest first")
@@ -175,9 +179,12 @@ def revert_user(body: RevertUserIn, request: Request, user: User = Depends(requi
             if not audit.revertible(e["action"]) or db.execute("SELECT 1 FROM audit_log WHERE ref=?", (e["id"],)).fetchone():
                 skipped.append(e["id"])
                 continue
+            if body.dry_run:
+                done.append(e["id"])
+                continue
             try:
                 _revert(db, request, user, e)
                 done.append(e["id"])
             except HTTPException:
                 skipped.append(e["id"])
-    return {"reverted": done, "skipped": skipped}
+    return {"reverted": done, "skipped": skipped, "dry_run": body.dry_run}
