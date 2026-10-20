@@ -34,8 +34,11 @@ class DataDirInUse(Exception):
 
 
 class DirLock:
-    """An exclusive lock on <data>/client.lock for as long as this client runs (released by the OS if it dies)."""
+    """An exclusive lock on <data>/client.lock for as long as this client runs (released by the OS if it dies).
+    Windows locks are mandatory, so the byte locked there sits far past the "who holds it" note at the start of the
+    file: a second start can still read the note."""
     NAME = "client.lock"
+    NT_BYTE = 1 << 30
 
     def __init__(self, data_dir):
         self.path = os.path.join(data_dir, self.NAME)
@@ -46,7 +49,7 @@ class DirLock:
         try:
             if os.name == "nt":
                 import msvcrt
-                f.seek(0)
+                f.seek(self.NT_BYTE)
                 msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1)
             else:
                 import fcntl
@@ -55,7 +58,7 @@ class DirLock:
             f.seek(0)
             try:
                 info = json.loads(f.read() or "{}")
-            except ValueError:
+            except (OSError, ValueError):
                 info = {}
             f.close()
             raise DataDirInUse(os.path.dirname(self.path), info if isinstance(info, dict) else {})
@@ -83,7 +86,7 @@ class DirLock:
             f.truncate()
             if os.name == "nt":
                 import msvcrt
-                f.seek(0)
+                f.seek(self.NT_BYTE)
                 msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1)
         except OSError:
             pass
