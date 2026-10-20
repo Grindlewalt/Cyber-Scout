@@ -1436,6 +1436,15 @@ def _sleep(seconds, events=None, matches=True):
 _TRACK_LOGGED = [None]
 
 
+def status_beat(reason):
+    """DATA/worker-status.json {at, paused, reason}: written every pass (every 30 s while waiting), so the web app can
+    say "processing is paused" / when the worker last checked in (GET app/v1/session -> processing)."""
+    try:
+        jsave(os.path.join(DATA, "worker-status.json"), dict(at=time.time(), paused=reason == "paused", reason=reason))
+    except OSError:
+        pass
+
+
 def main():
     if "--recorder" in sys.argv[1:]:                  # compose service `recorder` (same image): live streams
         import liveingest
@@ -1450,9 +1459,12 @@ def main():
     tba, waiting = None, None
     while True:
         key, events = load_config()
-        why = ("match processing paused (PAUSE_PROCESSING=1)" if os.environ.get("PAUSE_PROCESSING") == "1" else
-               "no TBA key (finish setup in the web app, or set TBA_KEY)" if not key else
-               "no events followed (add one in the web app, or set EVENTS)" if not events else None)
+        reason = ("paused" if os.environ.get("PAUSE_PROCESSING") == "1" else "no_key" if not key else
+                  "no_events" if not events else None)
+        why = {"paused": "match processing paused (PAUSE_PROCESSING=1)",
+               "no_key": "no TBA key (finish setup in the web app, or set TBA_KEY)",
+               "no_events": "no events followed (add one in the web app, or set EVENTS)"}.get(reason)
+        status_beat(reason)
         if why:
             if os.environ.get("ONCE") == "1": sys.exit(why)
             if why != waiting: log("waiting:", why)

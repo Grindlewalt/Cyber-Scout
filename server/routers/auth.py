@@ -4,7 +4,7 @@ import os, secrets, time
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, ConfigDict, Field
 
-from .. import audit, db as DB, textrules, workerconf
+from .. import audit, db as DB, textrules, workerconf, workerstatus
 from ..config import cfg, CSRF_COOKIE, SESSION_COOKIE
 from ..deps import (User, client_ip, csrf_anonymous, load_session, lockdown_state, passwordless_policy, rate_limit,
                     require_role, set_csrf_cookie, set_session_cookies, via_public, USERNAME_RE)
@@ -22,6 +22,9 @@ class SessionOut(BaseModel):
     lockdown: bool = Field(False, description="read-only mode: only admins can change anything right now")
     network: str = Field("lan", description="'lan' (direct from the team network / Tailscale) or 'public' (tunnel)")
     passwordless_ok: bool = Field(True, description="accounts without a password can sign in from here")
+    processing: dict | None = Field(None, description="signed in only: the worker's state {paused: bool|null (null = "
+                                    "unknown), worker_seen: unix|null (its last pass), reason: 'paused'|'no_key'|"
+                                    "'no_events'|null, why: sentence|null}")
 
 
 class SetupIn(BaseModel):
@@ -83,6 +86,18 @@ def password_strength(pw: str, username: str = "") -> int:
     return 2 if len(pw) >= cfg.PASSWORD_MIN and pw.lower() != (username or "").lower() else 1
 
 
+_RUNS = ("0123456789", "1234567890", "abcdefghijklmnopqrstuvwxyz", "qwertyuiop", "asdfghjkl", "zxcvbnm")
+
+
+def too_simple(pw: str) -> bool:
+    """An admin password that only meets the length rule by repetition or a keyboard / alphabet run
+    ('aaaaaaaaaa', 'abababab12', '1234567890', 'qwertyuiop')."""
+    p = pw.lower()
+    if len(set(p)) <= 3:
+        return True
+    return any(p in r or p in r[::-1] for r in _RUNS)
+
+
 def check_password_policy(pw: str, username: str = "", role: str = "admin") -> int:
     """Admins need PASSWORD_MIN+ characters (not the username). Everyone else: optional, MEMBER_PASSWORD_MIN+ if set.
     Returns the strength to store in users.pw_strength."""
@@ -91,6 +106,9 @@ def check_password_policy(pw: str, username: str = "", role: str = "admin") -> i
             raise HTTPException(422, f"admin passwords must be at least {cfg.PASSWORD_MIN} characters")
         if username and pw.lower() == username.lower():
             raise HTTPException(422, "password must not be the username")
+        if too_simple(pw):
+            raise HTTPException(422, "that admin password is too easy to guess (one repeated character or a "
+                                     "keyboard run): try a few words, e.g. 'robots like 9 fuel'")
     elif pw and len(pw) < cfg.MEMBER_PASSWORD_MIN:
         raise HTTPException(422, f"password must be at least {cfg.MEMBER_PASSWORD_MIN} characters (or leave it blank)")
     return password_strength(pw, username)
@@ -162,7 +180,8 @@ def _session_out(db, request, u: User | None, csrf: str, n: int | None = None) -
     return SessionOut(setup_required=n == 0, setup_code_required=n == 0 and cfg.SETUP_CODE_REQUIRED,
                       user=u.public() if u else None, csrf=csrf, configured=configured(db),
                       lockdown=bool(lockdown_state(db)), network="public" if via_public(request) else "lan",
-                      passwordless_ok=passwordless_allowed(db, request))
+                      passwordless_ok=passwordless_allowed(db, request),
+                      processing=workerstatus.processing_state() if u else None)
 
 
 @router.post("/setup", response_model=SessionOut, dependencies=[Depends(csrf_anonymous)],
@@ -171,17 +190,19 @@ def setup(body: SetupIn, request: Request, response: Response, db=Depends(DB.get
     ip = client_ip(request)
     if login_limiter.blocked(ip, "#setup"):
         raise HTTPException(429, "too many attempts, try again later")
+    if DB.user_count(db):
+        raise HTTPException(409, "setup already done; sign in instead")
+    if cfg.SETUP_CODE_REQUIRED:                        # the code first: no point fixing the rest with a wrong one
+        want = setup_code()
+        if not want or not consteq((body.setup_code or "").strip().lower(), want.lower()):
+            login_limiter.fail(ip, "#setup")
+            raise HTTPException(403, "wrong setup code (see data/setup-code.txt on the server)")
     check_username(body.username)
     check_password_policy(body.password, body.username)
     dname = check_display_name(db, body.display_name, allow_reserved=True)
     with DB.tx(db):
         if DB.user_count(db):
             raise HTTPException(409, "setup already done; sign in instead")
-        if cfg.SETUP_CODE_REQUIRED:
-            want = setup_code()
-            if not want or not consteq((body.setup_code or "").strip().lower(), want.lower()):
-                login_limiter.fail(ip, "#setup")
-                raise HTTPException(403, "wrong setup code (see data/setup-code.txt on the server)")
         now = time.time()
         uid = db.execute("INSERT INTO users(username,display_name,pw_hash,role,created_at,updated_at,pw_strength) "
                          "VALUES(?,?,?,?,?,?,2)",
