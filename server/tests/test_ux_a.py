@@ -13,15 +13,18 @@ def _status(data, **st):
 
 def test_session_processing_state(client, admin, data):
     p = admin.get("/session").json()["processing"]
-    assert p == {"paused": None, "worker_seen": None, "reason": None, "why": None}      # no worker status yet: unknown
+    assert p == {"paused": None, "paused_by": None, "worker_seen": None, "reason": None, "why": None}   # unknown yet
     now = time.time()
     _status(data, at=now - 20, paused=True, reason="paused")
     p = admin.get("/session").json()["processing"]
     assert p["paused"] is True and p["reason"] == "paused" and abs(p["worker_seen"] - (now - 20)) < 1
-    assert "paused" in p["why"].lower() and "PAUSE_PROCESSING" in p["why"]
+    assert "paused" in p["why"].lower() and "Admin → Settings" in p["why"]
+    assert p["paused_by"] == "env"                       # an older worker (no paused_by): it can only be the .env
+    _status(data, at=now - 20, paused=True, reason="paused", paused_by="app")
+    assert admin.get("/session").json()["processing"]["paused_by"] == "app"
     _status(data, at=now - 5, paused=False, reason=None)
     p = admin.get("/session").json()["processing"]
-    assert p["paused"] is False and p["why"] is None
+    assert p["paused"] is False and p["why"] is None and p["paused_by"] is None
     # a stale "paused" isn't trusted (the worker may have been restarted without it), but the last-seen time stays
     _status(data, at=now - 2 * workerstatus.FRESH_S, paused=True, reason="paused")
     p = admin.get("/session").json()["processing"]
@@ -70,7 +73,27 @@ def test_worker_status_beat(tmp_path, monkeypatch):
     assert st["paused"] is True and st["reason"] == "paused" and time.time() - st["at"] < 5
     worker.status_beat(None)
     st = json.loads((tmp_path / "worker-status.json").read_text())
-    assert st["paused"] is False and st["reason"] is None
+    assert st["paused"] is False and st["reason"] is None and st["paused_by"] is None
+
+
+def test_worker_pause_switch(tmp_path, monkeypatch):
+    """Admin → Settings → Processing (worker.json options.paused) wins over PAUSE_PROCESSING; null = the .env."""
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "live"))
+    import worker
+    conf = tmp_path / "worker.json"
+    monkeypatch.setattr(worker, "WORKER_CONF", str(conf))
+    monkeypatch.setattr(worker, "DATA", str(tmp_path))
+    monkeypatch.setattr(worker, "PAUSED", list(worker.PAUSED))
+    for env, opt, want in (("1", None, [True, "env"]), (None, None, [False, "env"]), ("1", False, [False, "app"]),
+                           (None, True, [True, "app"])):
+        if env: monkeypatch.setenv("PAUSE_PROCESSING", env)
+        else: monkeypatch.delenv("PAUSE_PROCESSING", raising=False)
+        conf.write_text(json.dumps({"options": {"paused": opt}}))
+        worker.load_config()
+        assert worker.PAUSED == want, (env, opt)
+    worker.status_beat("paused")
+    st = json.loads((tmp_path / "worker-status.json").read_text())
+    assert st["paused_by"] == "app" and "Admin" in worker.paused_why()
 
 
 def test_audit_changes_filter_and_dry_run(team):

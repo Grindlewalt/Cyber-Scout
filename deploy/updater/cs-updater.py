@@ -6,29 +6,34 @@ Runs on the HOST as the stack's owner (a normal user in the `docker` group), sta
 container, and no container gets the docker socket: the api can only *ask*, by writing
 data/config/update-request.json with this fixed schema (anything else is ignored and deleted):
 
-    {"v": 1, "action": "check" | "apply" | "rollback", "nonce": "<32 hex>", "at": <unix s>,
-     "by": {"id": <int>, "name": "<display name>"}, "ytdlp": <bool, apply only>}
+    {"v": 1, "action": "check" | "apply" | "rollback" | "env", "nonce": "<32 hex>", "at": <unix s>,
+     "by": {"id": <int>, "name": "<display name>"}, "ytdlp": <bool, apply only>,
+     "env": {"<KEY>": "<value>" | null, ...}  <- action "env" only (Admin -> Server)}
 
-There are no commands, URLs, refs, paths or arguments in a request. The git remote/branch, deploy key and limits
-come from updater/updater.conf on the host (outside data/, invisible to the containers). Progress and results go to
-data/config/update-status.json (read by the api) and updater/update.log.
+There are no commands, URLs, refs, paths or arguments in a request. "env" may only name keys from ENV_KEYS below
+(infrastructure knobs, never secrets, ports, paths or ids), each value checked against its kind; the updater writes
+them into .env, recreates the containers and puts the old .env back if the app doesn't come up healthy.
+The git remote/branch, deploy key and limits come from updater/updater.conf on the host (outside data/, invisible to
+the containers). Progress and results go to data/config/update-status.json (read by the api) and updater/update.log.
 
     cs-updater.py --stack DIR run                  systemd: heartbeat, handle a pending request, daily check
     cs-updater.py --stack DIR check | apply [--ytdlp] | rollback | status      the same, from a shell
+    cs-updater.py --stack DIR env KEY=VALUE ... | KEY=                          Admin -> Server, from a shell
 
 Python 3.8+ standard library only. See deploy/updater/README.md.
 """
 import argparse, errno, fcntl, json, os, re, secrets, shlex, shutil, sqlite3, stat, subprocess, sys, threading, \
     time, urllib.error, urllib.parse, urllib.request
 
-UPDATER_VERSION = "1"
-ACTIONS = ("check", "apply", "rollback")
+UPDATER_VERSION = "2"
+FEATURES = ("env",)
+ACTIONS = ("check", "apply", "rollback", "env")
 REQ_NAME, STATUS_NAME = "update-request.json", "update-status.json"
 REQ_KEYS = {"v", "action", "nonce", "at", "by", "ytdlp"}
 NONCE_RE = re.compile(r"\A[0-9a-f]{32}\Z")
 SHA_RE = re.compile(r"\A[0-9a-f]{40}\Z")
 CTRL_RE = re.compile(r"[\x00-\x1f\x7f]")
-MAX_REQ_BYTES = 2048
+MAX_REQ_BYTES = 4096
 REQ_MAX_AGE = 900                 # a request older than 15 min (e.g. written while the updater was off) is ignored
 PROGRESS_KEEP = 150
 ROLLBACK_TAG = "cs-rollback"      # <image repo>:cs-rollback keeps the previous version's images for a fast rollback
@@ -60,6 +65,41 @@ NUMERIC = ("MIN_FREE_GB", "HEAVY_BUILD_GB", "LIGHT_BUILD_GB", "HEALTH_TIMEOUT", 
 WORKER_PATHS = ("Dockerfile", "live/", "src/", "events/", ".dockerignore")
 API_PATHS = ("server/", "live/sources.py", "live/layout.py", ".dockerignore")
 WEB_PATHS = ("web/", ".dockerignore")
+# Admin -> Server: the only .env keys the web app may read or change. kind: bool "0"/"1" | int (min..max) | choice |
+# a text format from ENV_FORMATS (server/routers/update.py has the same regexes; a test keeps them equal). api: the
+# key also reaches the api container. Every .env key reaches the env_file services (worker, recorder, processors), so
+# `docker compose up -d` recreates those on any change (and the api for api keys). Pausing is not here: it's a live
+# switch in Admin -> Settings (no restart).
+ENV_FORMATS = {
+    "gpus": r"\A\d{1,2}(?:,\d{1,2}){0,7}\Z",                                         # 0 | 1 | 0,1
+    "mem": r"\A[1-9]\d{0,5}[mg]\Z",                                                  # 12g | 768m
+    "tz": r"\A[A-Za-z][A-Za-z0-9_+-]{0,30}(?:/[A-Za-z0-9_+-]{1,30}){0,2}\Z",           # America/Los_Angeles
+    "hosts": r"\A[A-Za-z0-9.:-]{1,100}(?:/\d{1,3})?(?:,[A-Za-z0-9.:-]{1,100}(?:/\d{1,3})?){0,19}\Z",   # host / CIDR list
+}
+ENV_KEYS = {
+    "GPU_IDS": {"kind": "gpus", "default": "0"},
+    "PROCESSORS_GPU0": {"kind": "int", "min": 0, "max": 8, "default": "0"},
+    "PROCESSORS_GPU1": {"kind": "int", "min": 0, "max": 8, "default": "0"},
+    "WORKER_TRACK": {"kind": "choice", "choices": ["auto", "1", "0"], "default": "auto"},
+    "WORKER_MEM_LIMIT": {"kind": "mem", "default": "12g"},
+    "PROCESSOR_MEM_LIMIT": {"kind": "mem", "default": "6g"},
+    "MEDIA_PROXIES": {"kind": "bool", "default": "1"},
+    "PROXY_ENCODER": {"kind": "choice", "choices": ["auto", "nvenc", "cpu"], "default": "auto"},
+    "PROXY_GPU": {"kind": "gpus", "default": "1"},
+    "YT_FORCE_IPV4": {"kind": "bool", "default": "1"},
+    "CS_PROBE_LINKS": {"kind": "bool", "default": "1", "api": True},
+    "CS_URL_ALLOW": {"kind": "hosts", "default": "", "api": True},
+    "LIVESTREAM": {"kind": "bool", "default": "1"},
+    "LIVE_BUDGET_GB": {"kind": "int", "min": 1, "max": 100000, "default": "60"},
+    "LIVE_MIN_FREE_GB": {"kind": "int", "min": 0, "max": 100000, "default": "30"},
+    "RECORDER_MEM_LIMIT": {"kind": "mem", "default": "8g"},
+    "TZ": {"kind": "tz", "default": "UTC", "api": True},
+    "SESSION_IDLE_DAYS": {"kind": "int", "min": 1, "max": 365, "default": "7", "api": True},
+    "SESSION_MAX_DAYS": {"kind": "int", "min": 1, "max": 3650, "default": "30", "api": True},
+}
+ENV_LINE_RE = re.compile(r"\A\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=(.*)\Z")
+ENV_MARK = "# Set in Admin -> Server (cs-updater)"
+ENV_BACKUPS_KEEP = 10
 COMPOSE_NAME_RE = re.compile(r"\Adocker-compose(?:\.[a-z0-9-]+)?\.yml\Z")
 IMAGE_RE = re.compile(r"\A[a-z0-9][a-z0-9._/-]{0,200}(?::[A-Za-z0-9._-]{1,128})?(?:@sha256:[0-9a-f]{64})?\Z")
 
@@ -173,7 +213,7 @@ class Updater:
         self.log(msg)
         if sys.stdout.isatty():
             print(msg, flush=True)
-        p = self.state.setdefault("progress", [])
+        p = self.state.setdefault("env_progress" if self.state.get("action") == "env" else "progress", [])
         p.append(time.strftime("%H:%M:%S ") + msg)
         del p[:-PROGRESS_KEEP]
         self.write_status()
@@ -202,7 +242,8 @@ class Updater:
                 "progress": s.get("progress") or [], "result": s.get("result"), "request": s.get("request"),
                 "rejected": s.get("rejected"), "started_at": s.get("started_at"), "finished_at": s.get("finished_at"),
                 "paused": self._env_flag("PAUSE_PROCESSING"), "ytdlp": s.get("ytdlp"),
-                "ytdlp_allowed": self.conf["YTDLP"] == "1"}
+                "ytdlp_allowed": self.conf["YTDLP"] == "1", "features": list(FEATURES), "env": self.env_doc(),
+                "env_progress": s.get("env_progress") or [], "env_result": s.get("env_result")}
 
     def write_status(self):
         with self._wlock:
@@ -527,6 +568,12 @@ class Updater:
             raise Fail("docker compose config didn't return JSON (Docker Compose too old? needs v2.20+)")
         svcs = cfg.get("services") or {}
         images = sorted({v["image"] for v in svcs.values() if v.get("build") and IMAGE_RE.match(v.get("image", ""))})
+
+        def scale(v):
+            try:
+                return int((v.get("deploy") or {}).get("replicas", 1))
+            except (TypeError, ValueError):
+                return 1
         web = None
         for pt in (svcs.get("web") or {}).get("ports") or []:
             if int(pt.get("target", 0)) == 80 and str(pt.get("published", "")).isdigit():
@@ -534,7 +581,8 @@ class Updater:
                 host = "127.0.0.1" if host in ("", "0.0.0.0") else "[::1]" if host == "::" else \
                     f"[{host}]" if ":" in host else host            # WEB_BIND=<LAN / Tailscale IP>
                 web = f"http://{host}:{int(pt['published'])}"
-        return {"name": cfg.get("name"), "services": sorted(svcs), "images": images, "web": web}
+        return {"name": cfg.get("name"), "services": sorted(k for k, v in svcs.items() if scale(v) > 0),
+                "images": images, "web": web}
 
     def image_id(self, ref):
         p = self.docker("image", "inspect", "--format", "{{.Id}}", ref, check=False)
@@ -735,34 +783,39 @@ class Updater:
     def _health_once(self, proj, first_rc):
         p = self.dc("ps", "-a", "--format", "json", check=False, timeout=60)
         rows = parse_ps(p.stdout)
-        byservice = {r.get("Service"): r for r in rows}
+        byservice = {}
+        for r in rows:
+            if "com.docker.compose.oneoff=True" not in str(r.get("Labels") or ""):
+                byservice.setdefault(r.get("Service"), []).append(r)
         ok_parts = []
         for svc in proj["services"]:
-            r = byservice.get(svc)
-            if not r:
+            if not byservice.get(svc):
                 return False, f"{svc}: no container yet", False
-            ins = self.docker("inspect", "--format", "{{json .State}}|{{.RestartCount}}", r.get("ID") or r.get("Name"),
-                              check=False)
-            if ins.returncode:
-                return False, f"{svc}: not found", False
-            js, _, rc = ins.stdout.strip().rpartition("|")
-            st = json.loads(js)
-            rc = int(rc or 0)
-            first_rc.setdefault(svc, rc)
-            if st.get("Status") != "running" or st.get("Restarting"):
-                if rc > first_rc[svc] + 1 or st.get("Status") in ("exited", "dead"):
-                    logs = self.dc("logs", "--no-color", "--tail", "15", svc, check=False).stdout
-                    return False, f"{svc} keeps crashing ({st.get('Status')}); its last log lines: {last_lines(logs)}", True
-                return False, f"{svc}: {st.get('Status')}", False
-            health = (st.get("Health") or {}).get("Status")
-            if health and health != "healthy":
-                if health == "unhealthy":
-                    logs = self.dc("logs", "--no-color", "--tail", "15", svc, check=False).stdout
-                    return False, f"{svc} is unhealthy; its last log lines: {last_lines(logs)}", True
-                return False, f"{svc}: {health}", False
-            if rc != first_rc[svc]:
-                return False, f"{svc} restarted", False
-            ok_parts.append(f"{svc} {'healthy' if health else 'running'}")
+            for r in byservice[svc]:
+                cid = r.get("ID") or r.get("Name")
+                ins = self.docker("inspect", "--format", "{{json .State}}|{{.RestartCount}}", cid, check=False)
+                if ins.returncode:
+                    return False, f"{svc}: not found", False
+                js, _, rc = ins.stdout.strip().rpartition("|")
+                st = json.loads(js)
+                rc = int(rc or 0)
+                first_rc.setdefault(cid, rc)
+                if st.get("Status") != "running" or st.get("Restarting"):
+                    if rc > first_rc[cid] + 1 or st.get("Status") in ("exited", "dead"):
+                        logs = self.dc("logs", "--no-color", "--tail", "15", svc, check=False).stdout
+                        return False, (f"{svc} keeps crashing ({st.get('Status')}); its last log lines: "
+                                       f"{last_lines(logs)}"), True
+                    return False, f"{svc}: {st.get('Status')}", False
+                health = (st.get("Health") or {}).get("Status")
+                if health and health != "healthy":
+                    if health == "unhealthy":
+                        logs = self.dc("logs", "--no-color", "--tail", "15", svc, check=False).stdout
+                        return False, f"{svc} is unhealthy; its last log lines: {last_lines(logs)}", True
+                    return False, f"{svc}: {health}", False
+                if rc != first_rc[cid]:
+                    return False, f"{svc} restarted", False
+            n = len(byservice[svc])
+            ok_parts.append(f"{svc}{f' x{n}' if n > 1 else ''} {'healthy' if health else 'running'}")
         if proj.get("web"):
             for path, want in (("/", None), ("/app/v1/health", '"ok"')):
                 try:
@@ -827,6 +880,93 @@ class Updater:
         self.git("commit", "--quiet", "--no-verify", "-m", msg, env=_bot_env())
 
     # ------------------------------------------------------------------ keep the installed copy of this script current
+    # ------------------------------------------------------------------ .env (Admin -> Server)
+    def _env_path(self):
+        return os.path.join(self.stack, ".env")
+
+    def _env_text(self):
+        try:
+            with open(self._env_path(), encoding="utf-8") as f:
+                return f.read()
+        except FileNotFoundError:
+            return ""
+
+    def env_doc(self):
+        """The allowlisted .env keys and their values for the status file (nothing else in .env is ever reported)."""
+        try:
+            vals = env_values(self._env_text())
+        except (OSError, UnicodeDecodeError) as e:
+            return {"error": clean(f"can't read .env: {e}", 200)}
+        return {"values": {k: None if vals.get(k) is None else clean(vals[k], 600) for k in ENV_KEYS},
+                "schema": ENV_KEYS}
+
+    def _env_backup(self, text):
+        bdir = os.path.join(self.udir, "env-backups")
+        os.makedirs(bdir, mode=0o700, exist_ok=True)
+        name = f"env-{time.strftime('%Y%m%d-%H%M%S')}"
+        _atomic_write(os.path.join(bdir, name), text.encode("utf-8"), 0o600)
+        for f in sorted(f for f in os.listdir(bdir) if f.startswith("env-"))[:-ENV_BACKUPS_KEEP]:
+            os.unlink(os.path.join(bdir, f))
+        return name
+
+    def env_apply(self, changes):
+        """Write `changes` (validated: validate_env) into .env, recreate what uses them, wait for health; on any failure
+        put the previous .env back and recreate again."""
+        s = self.state
+        s["env_prev_state"] = s.get("state") if s.get("state") not in ("checking", "applying") else "idle"
+        s.update(action="env", state="applying", env_progress=[], env_result=None)
+        self.write_status()
+        path, old = self._env_path(), self._env_text()
+        cur = env_values(old)
+        diff = {k: v for k, v in changes.items() if cur.get(k) != v}
+        if not diff:
+            return self._env_finish(True, "Nothing to change: .env already has these values.")
+        desc = "; ".join(f"{k} {cur.get(k) if cur.get(k) is not None else '(default)'} -> "
+                         f"{v if v is not None else '(default)'}" for k, v in sorted(diff.items()))
+        api = any(ENV_KEYS[k].get("api") for k in diff)
+        self.say("Changing .env: " + desc)
+        existed = os.path.exists(path)
+        mode = stat.S_IMODE(os.stat(path).st_mode) if existed else 0o600
+        self.say(f"Saved the current .env as updater/env-backups/{self._env_backup(old)}")
+        _atomic_write(path, env_edit(old, diff).encode("utf-8"), mode)
+        try:
+            self.dc("config", "--quiet", timeout=60)
+            proj = self._project()
+            self.say(f"Restarting the worker, recorder{', api' if api else ''} and any extra tracking jobs")
+            self.dc("up", "-d", "--no-build", timeout=600, log_output=True)
+            self.wait_healthy(proj)
+        except BaseException as e:
+            msg = str(e) if isinstance(e, Fail) else f"{type(e).__name__}: {e}"
+            self.say(f"Failed: {msg}")
+            self.say("Putting the previous .env back")
+            try:
+                if existed:
+                    _atomic_write(path, old.encode("utf-8"), mode)
+                else:
+                    os.unlink(path)
+                self.dc("up", "-d", "--no-build", timeout=600, log_output=True)
+                self.wait_healthy(self._project())
+                self._env_finish(False, f"Couldn't apply the change ({msg}). The previous .env is back and everything "
+                                        "runs as before.", rolled_back=True)
+            except BaseException as e2:
+                m2 = str(e2) if isinstance(e2, Fail) else f"{type(e2).__name__}: {e2}"
+                self._env_finish(False, f"Couldn't apply the change ({msg}), and restarting with the previous .env "
+                                        f"failed too ({m2}). On the server: cd {self.stack} && docker compose ps / "
+                                        "logs; earlier .env files are in updater/env-backups/.")
+            if isinstance(e, KeyboardInterrupt):
+                raise
+            return
+        self._env_finish(True, f"Saved and restarted: {desc}.")
+
+    def _env_finish(self, ok, message, rolled_back=False):
+        s = self.state
+        s.update(state=s.pop("env_prev_state", None) or "idle", action=None,
+                 env_result={"ok": ok, "message": clean(message, 1200), "at": now(), "rolled_back": rolled_back})
+        self.log(f"RESULT env {'ok' if ok else 'failed'}: {message}")
+        if sys.stdout.isatty():
+            print(f"=> env: {message}", flush=True)
+        self.write_status()
+
     def self_update(self):
         src = os.path.join(self.app, "deploy", "updater", "cs-updater.py")
         dst = os.path.join(self.udir, "cs-updater.py")
@@ -882,20 +1022,22 @@ class Updater:
         th.start()
         return stop
 
-    def do(self, action, ytdlp=False, request=None):
+    def do(self, action, ytdlp=False, request=None, env=None):
         if request:
             self.state["request"] = {k: request[k] for k in ("nonce", "action", "at", "by", "ytdlp")}
-        self.log(f"=== {action}{' +yt-dlp' if ytdlp else ''}" +
+        self.log(f"=== {action}{' +yt-dlp' if ytdlp else ''}{' ' + ','.join(sorted(env)) if env else ''}" +
                  (f" (asked by {clean(request['by']['name'], 64)} #{request['by']['id']})" if request else " (shell)"))
         stop = self.heartbeat_thread()
         try:
-            {"check": self.check, "apply": lambda: self.apply(ytdlp=ytdlp), "rollback": self.rollback}[action]()
+            {"check": self.check, "apply": lambda: self.apply(ytdlp=ytdlp), "rollback": self.rollback,
+             "env": lambda: self.env_apply(env)}[action]()
         except Fail as e:
             self.say(str(e))
-            self._finish("failed", False, str(e))
+            self._env_finish(False, str(e)) if action == "env" else self._finish("failed", False, str(e))
         except Exception as e:
             self.log(f"crash: {type(e).__name__}: {e}")
-            self._finish("failed", False, f"The updater hit an unexpected error: {type(e).__name__}: {e}")
+            m = f"The updater hit an unexpected error: {type(e).__name__}: {e}"
+            self._env_finish(False, m) if action == "env" else self._finish("failed", False, m)
         finally:
             stop.set()
 
@@ -903,7 +1045,10 @@ class Updater:
         """systemd entry point: heartbeat, then a pending request, else the periodic check."""
         if not self.lock():
             return 0                                   # another run is busy and keeps the heartbeat itself
-        if self.state.get("state") in ("checking", "applying"):
+        if self.state.get("state") in ("checking", "applying") and self.state.get("action") == "env":
+            self._env_finish(False, "The settings change was interrupted (server restart?). Check Admin -> Server: "
+                                    ".env may already have the new values.")
+        elif self.state.get("state") in ("checking", "applying"):
             # a previous run died mid-way (reboot, kill): say so instead of showing "applying" forever
             self.state.update(state="failed", action=None, finished_at=now(), result={
                 "action": self.state.get("action"), "ok": False, "at": now(),
@@ -921,7 +1066,7 @@ class Updater:
         self.write_status()
         req = self.read_request()
         if req:
-            self.do(req["action"], ytdlp=req["ytdlp"], request=req)
+            self.do(req["action"], ytdlp=req["ytdlp"], request=req, env=req.get("env"))
             return 0
         hrs = self.conf["AUTO_CHECK_HOURS"]
         if hrs and now() - (self.state.get("checked_at") or 0) > hrs * 3600:
@@ -941,7 +1086,7 @@ def validate_request(raw, t_now, seen_nonces=()):
         req = json.loads(raw.decode("utf-8") if isinstance(raw, bytes) else raw)
     except (ValueError, UnicodeDecodeError):
         raise ValueError("request is not JSON")
-    if not isinstance(req, dict) or set(req) != REQ_KEYS:
+    if not isinstance(req, dict) or set(req) != (REQ_KEYS | {"env"} if req.get("action") == "env" else REQ_KEYS):
         raise ValueError("request has the wrong fields")
     if type(req["v"]) is not int or req["v"] != 1:
         raise ValueError("unknown request version")
@@ -959,7 +1104,76 @@ def validate_request(raw, t_now, seen_nonces=()):
         raise ValueError("bad 'by'")
     if type(req["ytdlp"]) is not bool or (req["ytdlp"] and req["action"] != "apply"):
         raise ValueError("bad ytdlp flag")
+    if req["action"] == "env":
+        req["env"] = validate_env(req["env"])
     return req
+
+
+def env_check(key, v):
+    """One Admin -> Server value -> its normalized form (None = remove from .env: the default). Raises ValueError."""
+    spec = ENV_KEYS.get(key) if isinstance(key, str) else None
+    if spec is None:
+        raise ValueError(f"{clean(key, 40)!r} can't be changed from the web app")
+    if v is None or v == "":
+        return None
+    if not isinstance(v, str) or len(v) > 600:
+        raise ValueError(f"bad value for {key}")
+    kind = spec["kind"]
+    if kind == "bool" and v in ("0", "1") or kind == "choice" and v in spec["choices"]:
+        return v
+    if kind == "int" and re.fullmatch(r"\d{1,7}", v) and spec["min"] <= int(v) <= spec["max"]:
+        return str(int(v))
+    if kind in ENV_FORMATS and re.match(ENV_FORMATS[kind], v):
+        return v
+    raise ValueError(f"bad value for {key}")
+
+
+def validate_env(changes):
+    if not isinstance(changes, dict) or not 1 <= len(changes) <= len(ENV_KEYS):
+        raise ValueError("bad 'env'")
+    return {k: env_check(k, v) for k, v in changes.items()}
+
+
+def _env_unquote(v):
+    v = v.strip()
+    if len(v) >= 2 and v[0] == v[-1] and v[0] in "'\"":
+        return v[1:-1]
+    return v.split(" #", 1)[0].rstrip()
+
+
+def env_values(text):
+    """KEY -> value of every assignment in a .env text (the last one wins, like Compose)."""
+    out = {}
+    for line in text.splitlines():
+        m = ENV_LINE_RE.match(line)
+        if m and not line.lstrip().startswith("#"):
+            out[m.group(1)] = _env_unquote(m.group(2))
+    return out
+
+
+def env_edit(text, changes):
+    """.env text with `changes` applied: a key's last assignment is replaced (earlier duplicates dropped), a None value
+    removes the key (back to the compose default), a new key is appended under ENV_MARK. Comments and every other
+    line stay as they are."""
+    lines = text.splitlines()
+    where = {}
+    for i, line in enumerate(lines):
+        m = ENV_LINE_RE.match(line)
+        if m and not line.lstrip().startswith("#") and m.group(1) in changes:
+            where.setdefault(m.group(1), []).append(i)
+    drop, put = set(), {}
+    for k, v in changes.items():
+        idx = where.get(k, [])
+        drop.update(idx[:-1] if v is not None else idx)
+        if v is not None and idx:
+            put[idx[-1]] = f"{k}={v}"
+    out = [put.get(i, l) for i, l in enumerate(lines) if i not in drop]
+    new = [f"{k}={v}" for k, v in changes.items() if v is not None and k not in where]
+    if new:
+        if ENV_MARK not in out:
+            out += ([""] if out and out[-1].strip() else []) + [ENV_MARK]
+        out += new
+    return "\n".join(out) + "\n" if out else ""
 
 
 def heavy_prefix(dockerfile):
@@ -1082,6 +1296,8 @@ def main(argv=None):
     a.add_argument("--ytdlp", action="store_true", help="also re-pin yt-dlp to its newest release")
     sub.add_parser("rollback")
     sub.add_parser("status")
+    e = sub.add_parser("env", help="change allowlisted .env keys (KEY=VALUE; KEY= resets to the default), then restart")
+    e.add_argument("pairs", nargs="+", metavar="KEY=VALUE")
     args = ap.parse_args(argv)
     if os.geteuid() == 0 and os.environ.get("CS_UPDATER_ALLOW_ROOT") != "1":
         print("refusing to run as root: run it as the stack's owner (a member of the docker group)", file=sys.stderr)
@@ -1097,6 +1313,14 @@ def main(argv=None):
         if not u.lock():
             print("another update is running", file=sys.stderr)
             return 1
+        if args.cmd == "env":
+            try:
+                env = validate_env(dict(p.partition("=")[::2] for p in args.pairs))
+            except ValueError as e:
+                print(f"cs-updater: {e} (allowed: {', '.join(ENV_KEYS)})", file=sys.stderr)
+                return 2
+            u.do("env", env=env)
+            return 0 if (u.state.get("env_result") or {}).get("ok") else 1
         u.do(args.cmd, ytdlp=getattr(args, "ytdlp", False))
         return 0 if (u.state.get("result") or {}).get("ok") else 1
     except Fail as e:

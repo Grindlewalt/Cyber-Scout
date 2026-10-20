@@ -1,11 +1,11 @@
 "use strict";
 // admin.js: platform plugin -- accounts + roles, team settings, TBA key, worker options, followed events.
-// Route #/admin[/users|settings|events|updates] (admin only). Uses CS.app / CS.form / CS.eventPicker from setup.js.
+// Route #/admin[/users|settings|events|server|updates] (admin only). Uses CS.app / CS.form / CS.eventPicker from setup.js.
 (function () {
   CS.nav({ label: "Admin", key: "admin", href: () => "#/admin", order: 95, global: true, group: "manage", icon: "admin", roles: ["admin"] });
 
   const when = ts => ts ? CS.fmtWhen(ts) : "never";
-  const TABS = [["users", "Teammates"], ["settings", "Settings"], ["events", "Competitions"], ["updates", "Updates"]];
+  const TABS = [["users", "Teammates"], ["settings", "Settings"], ["events", "Competitions"], ["server", "Server"], ["updates", "Updates"]];
   const css = document.createElement("style");
   css.textContent = `
   .uacts { display: flex; flex-wrap: wrap; gap: 6px; } .uacts button { white-space: nowrap; }
@@ -14,6 +14,13 @@
   .evacts .cmp-btn { min-height: 36px; }
   .wk { display: flex; gap: 10px; align-items: flex-start; margin: 0 0 var(--sp-3); padding: var(--sp-2) var(--sp-3); border-radius: var(--r-s); background: var(--surface-2); font-size: var(--fs-foot); }
   .wk.paused { background: var(--caution-tint); border: 1px solid var(--caution-line); } .wk b { color: var(--ink); }
+  .envgrp { border: 0; padding: 0; margin: 0 0 var(--sp-4); display: grid; gap: var(--sp-2); }
+  .envgrp legend { font-weight: 600; color: var(--ink); margin-bottom: 4px; }
+  .envrow { display: grid; grid-template-columns: minmax(0, 1fr) minmax(9rem, 14rem); gap: 4px 12px; align-items: center; }
+  .envrow .k { font-family: var(--mono); font-size: var(--fs-foot); color: var(--ink-3); }
+  .envrow.dirty { background: var(--caution-tint); border-radius: var(--r-s); margin: 0 -6px; padding: 2px 6px; }
+  .envrow input, .envrow select { width: 100%; }
+  @media (max-width: 560px) { .envrow { grid-template-columns: 1fr; } }
   .wk .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--ink-3); margin-top: 5px; flex: none; } .wk.ok .dot { background: var(--good); } .wk.paused .dot { background: var(--caution); }
   @media (pointer: coarse) { .uacts button, .evacts .cmp-btn, .evacts button { min-height: 44px; } }`;
   document.head.appendChild(css);
@@ -28,7 +35,7 @@
     const el = document.getElementById("adm");
     const on = $app.querySelector(".admtabs .tab.on"), row = on && on.parentElement;      // phones: the tab row scrolls; show the current one
     if (row && row.scrollWidth > row.clientWidth) row.scrollLeft = on.offsetLeft - row.offsetLeft - 16;
-    await ({ users, settings, events, updates })[tab](el);
+    await ({ users, settings, events, server, updates })[tab](el);
   });
 
   // ---------------------------------------------------------------- users
@@ -115,7 +122,8 @@
     const pr = CS.processing;
     if (!pr || (pr.paused == null && !pr.worker_seen)) return `<div class="wk"><span class="dot"></span><span><b>Worker status unknown.</b> It reports here after its next pass (a worker older than this version doesn't).</span></div>`;
     const seen = pr.worker_seen ? `last check ${esc(CS.fmtWhen(pr.worker_seen))}` : "";
-    if (pr.paused) return `<div class="wk paused"><span class="dot"></span><span><b>Worker: paused</b> (PAUSE_PROCESSING=1) · ${seen}. Nothing new is built or tracked; Video page jobs still run. ${CS.help(CS.PAUSE_HOW || "", "How to turn processing back on")}</span></div>`;
+    if (pr.paused) return `<div class="wk paused"><span class="dot"></span><span><b>Worker: paused</b> (${pr.paused_by === "app" ? "by the switch below" : "PAUSE_PROCESSING=1 in the server's .env"}) · ${seen}. Nothing new is built or tracked; Video page jobs still run.
+      <div style="margin-top:6px"><button type="button" class="primary" data-resume>Resume processing</button></div></span></div>`;
     if (pr.paused == null) return `<div class="wk"><span class="dot"></span><span><b>Worker: not heard from</b> · ${seen}. Check that it's running on the server.</span></div>`;
     return `<div class="wk ok"><span class="dot"></span><span><b>Worker: ${pr.reason === "no_key" ? "waiting for a TBA key" : pr.reason === "no_events" ? "idle (no competition followed)" : "running"}</b> · ${seen}.</span></div>`;
   }
@@ -142,6 +150,8 @@
         <label>GPU<select name="gpu_mode"><option value="" ${o.cpu_only == null ? "selected" : ""}>default (from .env)</option>
           <option value="gpu" ${o.cpu_only === false ? "selected" : ""}>use the GPU</option><option value="cpu" ${o.cpu_only === true ? "selected" : ""}>CPU only (~4x slower)</option></select></label>
         <label>GPU device number (if there are several)<input name="gpu_device" type="number" min="0" max="15" placeholder="default (0)" value="${o.gpu_device ?? ""}"></label>
+        <label>Match processing <span class="hint">paused: nothing new is tracked or built (schedules, results, rankings); Video page jobs still run</span><select name="paused"><option value="" ${o.paused == null ? "selected" : ""}>default (from .env)</option>
+          <option value="0" ${o.paused === false ? "selected" : ""}>running</option><option value="1" ${o.paused === true ? "selected" : ""}>paused</option></select></label>
         <label>Driver-station cameras ("hub cams": camera switcher + shot checks, ~1-2 min extra per match)${tri("hubcam", o.hubcam, "on", "off")}</label>
         <button type="submit" class="primary">Save</button><div><div class="cserr" aria-live="polite" style="min-height:0"></div><div class="csok" role="status" aria-live="polite"></div></div></form>
 </div></div>`;
@@ -161,9 +171,20 @@
     CS.form(fo, async (d, f) => {
       const num = v => v === "" ? null : +v;
       await CS.app("PATCH", "settings", { options: { poll_seconds: num(d.poll_seconds), gpu_device: num(d.gpu_device),
-        cpu_only: d.gpu_mode === "" ? null : d.gpu_mode === "cpu", hubcam: d.hubcam === "" ? null : d.hubcam === "1" } });
+        cpu_only: d.gpu_mode === "" ? null : d.gpu_mode === "cpu", hubcam: d.hubcam === "" ? null : d.hubcam === "1",
+        paused: d.paused === "" ? null : d.paused === "1" } });
       ok(f, "Saved.");
     });
+    // "Resume processing" on the paused worker line: the same option, set to running (wins over PAUSE_PROCESSING=1)
+    el.querySelector("#wkline").onclick = async ev => {
+      const b = ev.target.closest("button[data-resume]"); if (!b) return;
+      b.disabled = true; b.textContent = "Resuming…";
+      try {
+        await CS.app("PATCH", "settings", { options: { paused: false } });
+        const sel = fo.querySelector("select[name=paused]"); if (sel) sel.value = "0";
+        b.textContent = "Resumed: the worker picks it up within ~30 s";
+      } catch (e) { b.disabled = false; b.textContent = "Resume processing"; fo.querySelector(".cserr").textContent = CS.sentence(e.message); }
+    };
     // the generic CS.form focuses the first input; don't jump the page on the settings tab
     window.scrollTo(0, 0);
   }
@@ -193,6 +214,135 @@
       catch (e) { el.querySelector(".cserr").textContent = CS.sentence(e.message); }
     });
     CS.eventPicker(el.querySelector("#picker"), { showFollowed: false, onFollow: () => events(el) });
+  }
+
+  // ---------------------------------------------------------------- server (.env)
+  // A few infrastructure settings from the server's .env. The api can't read or write .env: it asks the host-side updater
+  // (same request file as Updates, action "env"), which writes .env, recreates the containers that use it, waits for
+  // them to be healthy and puts the old .env back if they aren't. The keys and their kinds come from the updater
+  // (ENV_KEYS in deploy/updater/cs-updater.py); labels and help live here. Keys without a label still show (raw name).
+  const ENV_UI = [
+    ["Tracking", [
+      ["GPU_IDS", "Graphics cards for the worker + recorder", "Host card numbers (nvidia-smi -L): 0, 1 or 0,1. Inside the containers they're renumbered from 0."],
+      ["PROCESSORS_GPU0", "Extra tracking jobs on card 0", "Each job tracks one match at a time: ~300 MB of graphics memory and 8-10 CPU cores. 0 = none."],
+      ["PROCESSORS_GPU1", "Extra tracking jobs on card 1", "Same, on card 1 (on atomosserver card 1 is also used for experiments and training)."],
+      ["WORKER_TRACK", "Main worker tracks matches too", "auto: only while no extra job is running. 1: always. 0: never (leave it to the extra jobs)."],
+      ["WORKER_MEM_LIMIT", "Worker memory cap", "e.g. 12g. The container is stopped and restarted if it goes over."],
+      ["PROCESSOR_MEM_LIMIT", "Memory cap per extra job", "e.g. 6g."]]],
+    ["Videos", [
+      ["MEDIA_PROXIES", "Small preview copies for offline clients", "480p copies of kept match videos that the Cyber-Scout Client and app download."],
+      ["PROXY_ENCODER", "Preview encoder", "auto: the graphics card's video encoder (NVENC) if it works, else the CPU (slower, 2 threads)."],
+      ["PROXY_GPU", "Card for preview encoding", "As the worker container numbers them: with one card in GPU_IDS that is 0."],
+      ["YT_FORCE_IPV4", "Download YouTube over IPv4 only", "Keep on where YouTube bot-checks the server's IPv6 address."],
+      ["CS_PROBE_LINKS", "Check links pasted on the Video page", "One quick request to see that the address answers."],
+      ["CS_URL_ALLOW", "Private hosts allowed as video sources", "Comma separated host names, IPs or CIDRs, e.g. an OBS server on the team network (10.0.0.20)."]]],
+    ["Livestream recorder", [
+      ["LIVESTREAM", "Record competition livestreams", "Records each followed event's stream during its dates and cuts matches out of it."],
+      ["LIVE_BUDGET_GB", "Disk budget per stream (GB)", "Old segments are deleted past this."],
+      ["LIVE_MIN_FREE_GB", "Keep this much disk free (GB)", "Old segments of finished streams are deleted to keep it."],
+      ["RECORDER_MEM_LIMIT", "Recorder memory cap", "e.g. 8g."]]],
+    ["Server", [
+      ["TZ", "Time zone", "e.g. America/Los_Angeles. Used for logs and the recorder's event dates."],
+      ["SESSION_IDLE_DAYS", "Sign out after this many days unused", ""],
+      ["SESSION_MAX_DAYS", "Sign out after this many days in any case", ""]]],
+  ];
+  let srvTimer = 0;
+  async function server(el) {
+    clearTimeout(srvTimer);
+    el.innerHTML = `<div class="card" id="srv" style="max-width:820px"><h2>Server settings ${CS.help("These come from the <span class=\"code\">.env</span> file in the Cyber-Scout folder on the server. The web app can't edit that file itself: it asks the updater (a small program on the server), which saves the change, restarts the containers that use it, checks that everything comes back healthy, and puts the old file back by itself if not. The previous file is kept in <span class=\"code\">updater/env-backups/</span>.", "How server settings work")}</h2>
+      <div class="note" style="margin:0 0 12px">To pause or resume match processing, use <a href="#/admin/settings">Settings → Processing</a>: that applies right away, without a restart.</div>
+      <div id="srvbody"><div class="muted">Loading…</div></div>
+      <div class="cserr" aria-live="polite" id="srverr"></div></div>`;
+    const body = el.querySelector("#srvbody"), card = el.querySelector("#srv");
+    const err = t => { el.querySelector("#srverr").textContent = t ? CS.sentence(t) : ""; };
+    let st = null, offline = 0, draft = {}, sent = false, showProg = false;   // sent: waiting for our change to finish
+
+    const label = k => { for (const [, rows] of ENV_UI) for (const r of rows) if (r[0] === k) return r; return [k, k, ""]; };
+    const groups = () => {
+      const known = new Set(ENV_UI.flatMap(g => g[1].map(r => r[0])));
+      const extra = Object.keys(st.schema).filter(k => !known.has(k));
+      return [...ENV_UI.map(([g, rows]) => [g, rows.map(r => r[0]).filter(k => st.schema[k])]), ["Other", extra]].filter(g => g[1].length);
+    };
+    const val = k => k in draft ? draft[k] : (st.values[k] ?? "");
+    function field(k) {
+      const sp = st.schema[k], v = val(k), dflt = `default (${sp.default === "" ? "none" : sp.default})`, id = "env_" + k;
+      const opts = (list, names) => `<option value="" ${v === "" ? "selected" : ""}>${esc(dflt)}</option>` + list.map((o, i) => `<option value="${esc(o)}" ${v === o ? "selected" : ""}>${esc(names ? names[i] : o)}</option>`).join("");
+      if (sp.kind === "bool") return `<select class="csin" id="${id}" data-k="${esc(k)}">${opts(["1", "0"], ["on", "off"])}</select>`;
+      if (sp.kind === "choice") return `<select class="csin" id="${id}" data-k="${esc(k)}">${opts(sp.choices)}</select>`;
+      if (sp.kind === "int") return `<input class="csin" id="${id}" data-k="${esc(k)}" type="number" inputmode="numeric" min="${sp.min}" max="${sp.max}" step="1" placeholder="${esc(dflt)}" value="${esc(v)}">`;
+      return `<input class="csin" id="${id}" data-k="${esc(k)}" spellcheck="false" autocapitalize="none" autocomplete="off" placeholder="${esc(dflt)}" value="${esc(v)}">`;
+    }
+    const changed = () => Object.keys(draft).filter(k => (draft[k] || "") !== (st.values[k] ?? ""));
+
+    function render() {
+      if (!st) { body.innerHTML = `<div class="muted">The server isn't answering${offline ? " (restarting?)" : ""}. Retrying…</div>`; return; }
+      if (!st.installed) {
+        body.innerHTML = `<div class="note" style="margin:0 0 10px"><b>The updater isn't installed on this server</b> (or isn't running), so these settings can only be changed by hand in <span class="code">.env</span>.</div>
+          <div class="small">Install it once, on the server, in the Cyber-Scout folder (e.g. <span class="code">/opt/cyber-scout</span>):</div>
+          <div style="margin:6px 0"><span class="code">sudo ./app/deploy/updater/install-updater.sh</span></div>
+          <div class="muted small">It only needs the docker group, not root, to run. Details: app/deploy/updater/README.md.</div>`;
+        return;
+      }
+      if (!st.supported) {
+        body.innerHTML = `<div class="note" style="margin:0"><b>The updater on the server is an older version</b> that can't change settings. Re-run <span class="code">sudo ./app/deploy/updater/install-updater.sh</span> in the Cyber-Scout folder on the server.</div>`;
+        return;
+      }
+      const r = st.result, dirty = changed(), busy = st.busy;
+      const keepFocus = document.activeElement && document.activeElement.dataset && document.activeElement.dataset.k;
+      body.innerHTML = `${st.error ? `<div class="cserr" style="margin-bottom:8px">${esc(CS.sentence(st.error))}</div>` : ""}
+        <form id="envf" novalidate>${groups().map(([g, keys]) => `<fieldset class="envgrp"><legend>${esc(g)}</legend>${keys.map(k => { const [, t, h] = label(k);
+          return `<div class="envrow${dirty.includes(k) ? " dirty" : ""}"><label for="env_${esc(k)}"><div>${esc(t)} ${h ? CS.help(esc(h), t) : ""}</div><div class="k">${esc(k)}${st.schema[k].api ? " · also restarts the api" : ""}</div></label>${field(k)}</div>`; }).join("")}</fieldset>`).join("")}
+          <div class="row" style="display:flex;flex-wrap:wrap;gap:8px;align-items:center">
+            <button type="submit" class="primary" ${busy || !dirty.length ? "disabled" : ""}>${dirty.length ? `Save ${dirty.length} change${dirty.length > 1 ? "s" : ""} and restart` : "No changes"}</button>
+            ${dirty.length && !busy ? `<button type="button" data-undo>Undo</button>` : ""}
+            ${st.other_task ? `<span class="muted small">The updater is busy with an update; try again when it's done.</span>` : ""}</div></form>
+        ${st.running ? `<div style="margin-top:12px"><b>Saving and restarting…</b>${offline ? ` <span class="muted small">the site is restarting; this page reconnects by itself</span>` : ""}</div>` : ""}
+        ${(st.running || (r && showProg)) && st.progress.length ? `<div class="small" style="margin-top:8px;max-height:14em;overflow:auto;font-family:var(--mono);background:var(--surface-2);border-radius:var(--r-tag);padding:6px 8px" id="srvprog">${st.progress.map(l => `<div>${esc(l)}</div>`).join("")}</div>` : ""}
+        ${!st.running && r && r.message ? `<div class="${r.ok ? "csok" : "cserr"}" style="margin-top:8px">${esc(r.message)} <span class="muted small">${esc(when(r.at))}</span></div>` : ""}`;
+      const pr = body.querySelector("#srvprog"); if (pr) pr.scrollTop = pr.scrollHeight;
+      if (keepFocus) { const f = body.querySelector(`[data-k="${window.CSS.escape(keepFocus)}"]`); if (f) f.focus(); }
+    }
+
+    async function poll() {
+      clearTimeout(srvTimer);
+      if (!card.isConnected) return;
+      try { st = await CS.app("GET", "admin/server-env"); offline = 0; err(""); }
+      catch (e) {
+        if (e.status === 401 || e.status === 403) { err(e.message); return; }
+        offline++;
+      }
+      if (!card.isConnected) return;
+      if (st && sent && !st.running) { draft = {}; sent = false; }     // done: the values now come from the new .env
+      render();
+      if ((st && st.running) || offline) srvTimer = setTimeout(poll, offline ? 3000 : 2500);
+    }
+
+    body.addEventListener("input", ev => {
+      const k = ev.target.dataset && ev.target.dataset.k; if (!k || !st) return;
+      draft[k] = ev.target.value.trim();
+      const row = ev.target.closest(".envrow"); if (row) row.classList.toggle("dirty", (draft[k] || "") !== (st.values[k] ?? ""));
+      const n = changed().length, b = body.querySelector("#envf button[type=submit]");
+      if (b) { b.disabled = st.busy || !n; b.textContent = n ? `Save ${n} change${n > 1 ? "s" : ""} and restart` : "No changes"; }
+    });
+    body.addEventListener("click", ev => { if (ev.target.closest("[data-undo]")) { draft = {}; err(""); render(); } });
+    body.addEventListener("submit", async ev => {
+      ev.preventDefault(); if (!st) return;
+      const keys = changed(); if (!keys.length) return;
+      const api = keys.some(k => st.schema[k].api);
+      const lines = keys.map(k => `  ${k}: ${st.values[k] ?? "(default)"} → ${draft[k] || "(default)"}`).join("\n");
+      if (!confirm(`Change these server settings?\n\n${lines}\n\nRestarts the worker, the recorder${api ? ", the api" : ""} and any extra tracking jobs: a match being tracked is redone, and a livestream recording has a gap of a few seconds${api ? "; the site blinks while the api restarts" : ""}.\nIf the app doesn't come back healthy, the previous .env is put back by itself.`)) return;
+      const b = body.querySelector("#envf button[type=submit]"); if (b) { b.disabled = true; b.textContent = "Asking the updater…"; }
+      err("");
+      try {
+        await CS.app("POST", "admin/server-env", { changes: Object.fromEntries(keys.map(k => [k, draft[k] || null])) });
+        sent = showProg = true;
+      } catch (e) {
+        err(e.message);
+        const m = /^([A-Z][A-Z0-9_]+) /.exec(e.message || ""), f = m && body.querySelector(`[data-k="${m[1]}"]`); if (f) f.focus();
+      }
+      await poll();
+    });
+    await poll();
   }
 
   // ---------------------------------------------------------------- updates
@@ -232,10 +382,10 @@
       }
       const cur = st.current, n = st.changelog.length + (st.changelog_more || 0), r = st.result;
       const doing = st.pending ? `Waiting for the updater to start (${esc(st.pending.action)})…`
-        : st.state === "checking" ? "Checking for updates…" : st.state === "applying" ? (st.action === "rollback" ? "Rolling back…" : "Updating…") : "";
+        : st.state === "checking" ? "Checking for updates…" : st.state === "applying" ? (st.action === "rollback" ? "Rolling back…" : st.action === "env" ? "Changing server settings (Admin → Server)…" : "Updating…") : "";
       body.innerHTML = `<div style="margin-bottom:8px">Version ${ver(cur)}${cur && cur.local ? ` <span class="pill" title="app/ on the server has changes that aren't in the published code">local changes</span>` : ""}
           ${cur && cur.subject ? `<div class="muted small">${esc(cur.subject)}</div>` : ""}</div>
-        ${st.paused ? `<div class="note" style="margin:0 0 8px">Match processing is paused on the server (PAUSE_PROCESSING=1); it stays paused after an update.</div>` : ""}
+        ${CS.processing && CS.processing.paused ? `<div class="note" style="margin:0 0 8px">Match processing is paused; it stays paused after an update.</div>` : ""}
         ${n ? `<div style="margin:12px 0 6px"><b>${n} update${n === 1 ? "" : "s"} available</b>${st.latest ? ` → ${ver(st.latest)}` : ""} <span class="muted small">checked ${esc(when(st.checked_at))}</span></div>
           <ul class="small" style="margin:0 0 8px;padding-left:1.2em;max-height:14em;overflow:auto">${st.changelog.map(c => `<li><span class="code">${esc(c.short)}</span> ${esc(c.subject || "")} <span class="muted">${esc(day(c.date))}</span></li>`).join("")}
           ${st.changelog_more ? `<li class="muted">… and ${st.changelog_more} older</li>` : ""}</ul>

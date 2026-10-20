@@ -3560,6 +3560,64 @@
     }
    }
   },
+  "/app/v1/admin/server-env": {
+   "get": {
+    "tags": [
+     "admin"
+    ],
+    "summary": "The .env settings an admin may change from the web app, with their values (admin)",
+    "operationId": "get_server_env_app_v1_admin_server_env_get",
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ServerEnvStatus"
+        }
+       }
+      }
+     }
+    }
+   },
+   "post": {
+    "tags": [
+     "admin"
+    ],
+    "summary": "Ask the host updater to change .env settings and restart what uses them (admin); puts the old .env back by itself if the app doesn't come up healthy",
+    "operationId": "post_server_env_app_v1_admin_server_env_post",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/EnvIn"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "202": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
   "/app/v1/info": {
    "get": {
     "tags": [
@@ -5136,6 +5194,33 @@
     ],
     "title": "DoneIn"
    },
+   "EnvIn": {
+    "properties": {
+     "changes": {
+      "additionalProperties": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ]
+      },
+      "type": "object",
+      "maxProperties": 40,
+      "minProperties": 1,
+      "title": "Changes",
+      "description": "KEY -> new value; null or \"\" = remove it (default)"
+     }
+    },
+    "additionalProperties": false,
+    "type": "object",
+    "required": [
+     "changes"
+    ],
+    "title": "EnvIn"
+   },
    "EventHit": {
     "properties": {
      "key": {
@@ -6086,6 +6171,18 @@
       ],
       "title": "Hubcam",
       "description": "optional driver-station camera pass (~1-2 min/match extra)"
+     },
+     "paused": {
+      "anyOf": [
+       {
+        "type": "boolean"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Paused",
+      "description": "pause match processing and site builds (null = PAUSE_PROCESSING in .env); the worker and processors follow it on their next check"
      }
     },
     "additionalProperties": false,
@@ -6740,6 +6837,40 @@
     "type": "object",
     "title": "SecurityPatch"
    },
+   "ServerEnvStatus": {
+    "properties": {
+     "installed": {
+      "type": "boolean",
+      "title": "Installed"
+     },
+     "supported": {
+      "type": "boolean",
+      "title": "Supported",
+      "description": "false: the installed updater is older and can't change .env"
+     },
+     "schema": {
+      "additionalProperties": true,
+      "type": "object",
+      "title": "Schema",
+      "description": "KEY -> {kind, default, api, min/max, choices}"
+     },
+     "values": {
+      "additionalProperties": true,
+      "type": "object",
+      "title": "Values",
+      "description": "KEY -> value in .env, null = not set (the default applies)"
+     }
+    },
+    "additionalProperties": true,
+    "type": "object",
+    "required": [
+     "installed",
+     "supported",
+     "schema",
+     "values"
+    ],
+    "title": "ServerEnvStatus"
+   },
    "SessionOut": {
     "properties": {
      "setup_required": {
@@ -6866,7 +6997,7 @@
        }
       ],
       "title": "Tba Key Hint",
-      "description": "admin only: '\u2022\u2022\u2022\u2022abcd'"
+      "description": "admin only: '••••abcd'"
      },
      "setup_complete": {
       "type": "boolean",

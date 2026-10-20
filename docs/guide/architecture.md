@@ -197,7 +197,8 @@ null) at the top of every main-loop pass: every 30 s while it waits, once per pa
 processors and the recorder don't write it. `server/workerstatus.py` reads it for `GET /app/v1/session` →
 `processing: {paused, worker_seen, reason, why}` (signed-in users only; missing file = unknown; older than 1 h =
 `paused: null`). The web app shows "Processing is paused on the server" / "The worker hasn't checked in since …"
-from it ([web.md](web.md) §4.7). Reporting only: `PAUSE_PROCESSING` still lives in `.env` and is read by the worker.
+from it ([web.md](web.md) §4.7). The Admin switch (worker option `paused` in `worker.json`) wins over
+`PAUSE_PROCESSING` in `.env`; the worker reports which one paused it (`paused_by`).
 
 ### Recorder → worker: livestream records (`MEDIA/live/<ev>/<video id>/matches/*.json`)
 
@@ -502,7 +503,7 @@ the compose file, and as `env_file` for **worker and recorder only**.
 | `TBA_KEY` | worker, epa, livestream | — | fallback when `worker.json` has none (`X_TBA_AUTH_KEY` also accepted by `strategy/epa.py`) |
 | `EVENTS` | worker, liveingest | — | comma list; fallback when events were never managed in the app |
 | `POLL_SECONDS` | worker | `120` | TBA poll interval (Admin option `poll_seconds` wins) |
-| `PAUSE_PROCESSING` | worker | unset | `1`: the loop only waits. **No matches and no site rebuilds.** Video-page jobs still run. The recorder is unaffected. |
+| `PAUSE_PROCESSING` | worker | unset | `1`: the loop only waits. **No matches and no site rebuilds.** Video-page jobs still run. The recorder is unaffected. Admin → Settings → Processing overrides it without a restart. |
 | `ONCE`, `MAX_NEW` | worker | unset | one sync pass and exit; cap new matches per pass |
 | `GPU_DEVICE` | detector, ocr, liveingest | `0` | CUDA device id inside the container (Admin `gpu_device` wins) |
 | `FORCE_CPU` | detector, ocr | unset | `1` = CPU only (cpu override, Admin `cpu_only`) |

@@ -36,7 +36,9 @@ samdev-7/autoscout (MIT, credited).
 - **Ports:** 7560 = the app (also public via a Cloudflare tunnel as https://scout.grantrindal.dev), 7570 = design lab,
   7580 = demo + downloads site (`cyber-scout-demo` nginx container; serves get.sh/get.ps1, installers, code tarball,
   robot.onnx, client builds, APK). **8790 is NOT ours** (owner's "jav3" app) — don't touch.
-- `PAUSE_PROCESSING=1` is set in `.env` (worker idles, still runs Video-page jobs). Remove it before a competition.
+- `PAUSE_PROCESSING=1` is set in `.env` (worker idles: no matches, no site builds; Video-page jobs still run). Before a
+  competition: Admin → Settings → **Resume processing** (live override, no restart). Admin → Server edits other
+  allowlisted `.env` keys through the host updater (`deploy/updater/`, must be installed).
 - **Deploy a change:** commit → `git archive HEAD | ssh atomosserver '…extract to /mnt/nas/autoscout-scratch/deploy…;
   rsync -a --delete --exclude data deploy/ /opt/stacks/cyber-scout/app/; cp app/deploy/docker-compose*.yml .;
   GIT_SHA=<sha> docker compose build <svcs> && GIT_SHA=<sha> docker compose up -d <svcs>'`. Back up `data/app.db` to

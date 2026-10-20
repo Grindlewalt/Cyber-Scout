@@ -19,6 +19,8 @@ class Options(BaseModel):
     gpu_device: int | None = Field(None, ge=0, le=15, description="CUDA device index inside the worker container")
     cpu_only: bool | None = Field(None, description="force CPU inference (no GPU)")
     hubcam: bool | None = Field(None, description="optional driver-station camera pass (~1-2 min/match extra)")
+    paused: bool | None = Field(None, description="pause match processing and site builds (null = PAUSE_PROCESSING "
+                                                   "in .env); the worker and processors follow it on their next check")
 
 
 class SettingsOut(BaseModel):

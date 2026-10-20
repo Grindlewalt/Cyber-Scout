@@ -140,6 +140,13 @@ app falls back to the matching `.env` value.
 | `DASH_TEAM`, `DASH_GOAL`, `DASH_AWARD_CONTENDER`, `DCMP_CAPACITY` | worker | strategy perspective. `DASH_TEAM` defaults to `frc4911`, and the Admin team number does **not** change it |
 | `*_MEM_LIMIT` | compose | per-container caps |
 
+**Admin → Server** changes the allowlisted keys (`ENV_KEYS` in `deploy/updater/cs-updater.py`: `GPU_IDS`,
+`PROCESSORS_GPU0/1`, `WORKER_TRACK`, `*_MEM_LIMIT` of worker / processors / recorder, `MEDIA_PROXIES`,
+`PROXY_ENCODER`, `PROXY_GPU`, `YT_FORCE_IPV4`, `CS_PROBE_LINKS`, `CS_URL_ALLOW`, `LIVESTREAM`, `LIVE_BUDGET_GB`,
+`LIVE_MIN_FREE_GB`, `TZ`, `SESSION_IDLE_DAYS`, `SESSION_MAX_DAYS`) through the host updater, which recreates the
+containers and puts the old `.env` back if they don't come up healthy (deploy/updater/README.md "env"). It needs the
+updater installed.
+
 The full variable list, including tuning knobs, is in [architecture.md §7](architecture.md#7-environment-variables).
 API-only variables reach the api container through an explicit allowlist in `deploy/docker-compose.yml` (no
 `env_file`): `SESSION_IDLE_DAYS`, `SESSION_MAX_DAYS`, `PASSWORD_MIN`, `MEMBER_PASSWORD_MIN`, `SETUP_CODE_REQUIRED` and `COOKIE_SECURE`, each defaulting to the
@@ -155,14 +162,18 @@ options null.
 ### `PAUSE_PROCESSING=1`
 
 `worker.main()` checks it on every loop iteration and just logs `waiting: match processing paused
-(PAUSE_PROCESSING=1)`. That means:
+(PAUSE_PROCESSING=1)`. **Admin → Settings → Processing → Match processing** (worker option `paused`: running /
+paused / default) overrides it from the app: the worker and processors re-read `worker.json` every pass (within
+~30 s while waiting), no restart. A paused worker line in Admin → Settings has a **Resume processing** button
+(sets `paused: false`). The log then says `(Admin → Settings)` and `worker-status.json` has `paused_by: "app"`. That
+means:
 
 * **no new matches are processed** and **the site is not rebuilt** (`build_site` only runs inside `sync()`), so
   dashboards, rankings, schedule, selection and scout snapshots all stay as they are;
 * the Video-page job thread (frame grabs, layout suggestions, calibration fits) **still runs**;
 * the **recorder is not affected**. It records whenever a followed event with a livestream source is within its
   dates;
-* the updater never edits `.env`, so the pause survives updates;
+* updates never edit `.env`, so the pause survives them (and the Admin switch lives in the database);
 * the web app **says so**: the worker writes `data/worker-status.json` (`{at, paused, reason}`) on every loop pass
   (every 30 s while waiting), the api returns it in `/app/v1/session` → `processing`, and signed-in pages show
   "Processing is paused on the server" (admins get how to turn it back on), Matches says "not tracked (paused)",
@@ -504,8 +515,8 @@ tail -f updater/update.log               # updater (if installed)
      kept as `.bak-<ts>`, and `pose_latest.json` is set aside).
 3. **The worker skips every match of an event without `camera.json`** (data dir or repo `events/<ev>/`), unless
    a trackable livestream clip exists. Calibrate before the first match if you can.
-4. **Unpause** if needed: remove `PAUSE_PROCESSING=1` from `.env`, then run `docker compose up -d worker`.
-   Changing `.env` needs a container recreate; a restart is not enough.
+4. **Unpause** if needed: Admin → Settings → **Resume processing** (no restart). By hand: remove
+   `PAUSE_PROCESSING=1` from `.env`, then run `docker compose up -d worker` (a restart is not enough).
 5. **Per-event video preferences** (optional): `data/events/<ev>/event.json` with `prefer` (default `^Wide
    Match`), `reject` (default `^Match \d`), `allow_channels` (default `["FIRSTRoboticsCompetition"]`) and
    `search_title`. Sources marked on the Video page override these through `sources.video_config()`.
@@ -519,7 +530,8 @@ The legacy way still works: `.env` `EVENTS=2026xxx`, used only while no events w
 
 For an event with **no per-match uploads, only a livestream** (TBA lists the event, teams and matches). In order:
 
-1. **Unpause**: remove `PAUSE_PROCESSING=1` from `.env`, `docker compose up -d worker recorder`.
+1. **Unpause**: Admin → Settings → **Resume processing** (or remove `PAUSE_PROCESSING=1` from `.env`,
+   `docker compose up -d worker recorder`).
 2. **Admin → Events → add** the event key (e.g. `2026wagg`).
 3. **Video page → Match video → Livestream only.** Uploads are never looked up from now on; the checklist under it
    says what is missing.

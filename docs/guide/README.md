@@ -277,6 +277,7 @@ overlay, start/end time, clip path) under `MEDIA/live/<ev>/<video>/matches/`. It
 **v1 / v2** — tracker generations (see Identity); also "V2=1" enables the FUEL/shots/analytics enrichment.
 
 **PAUSE_PROCESSING** — `.env` flag; `1` makes the worker idle entirely (production is paused at time of writing).
+Admin → Settings → Processing overrides it live (worker option `paused`).
 The worker reports it in `data/worker-status.json`; the app shows a "Processing is paused" notice and says
 "not tracked (paused)" / "data as of" instead of "waiting" / "now".
 

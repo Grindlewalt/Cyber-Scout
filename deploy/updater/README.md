@@ -58,9 +58,21 @@ Removing the units keeps `<stack>/updater/` (state, log, DB backups, key); delet
   `up -d` and a health check. It reports `rolled_back`, plus the last log lines of the container that failed.
 * **rollback**: goes back to the previous successful version. If its images are still tagged `:cs-rollback`,
   nothing is rebuilt.
-* It never edits `.env`, so `PAUSE_PROCESSING=1` still applies after the restart. It writes nothing in `data/`
-  except the status file; the database backup goes to `updater/backups/`. Only one run happens at a time
-  (`flock`).
+* An update never edits `.env` (only **env** below does). It writes nothing in `data/` except the status file; the
+  database backup goes to `updater/backups/`. Only one run happens at a time (`flock`).
+* **env** (Admin → Server): changes a few `.env` keys. Only the keys in `ENV_KEYS` (`cs-updater.py`) can be named:
+  GPU cards and extra tracking jobs, memory caps, preview videos, YouTube over IPv4, link checks / allowed private
+  hosts, the livestream recorder and its disk budget, time zone, session lengths. Never secrets, ports, paths, user
+  ids or compose files. Each value is checked against its kind (on/off, a number in range, a choice, or a fixed
+  format such as `0,1` or `12g`). The request carries `"env": {KEY: value | null}` (null = remove the line: the
+  compose default applies). The updater saves the current `.env` to `updater/env-backups/` (10 kept), rewrites only
+  those lines (comments and everything else stay; new keys go at the end under a marker comment), runs
+  `docker compose up -d`, and waits for health. If anything fails it puts the old `.env` back and recreates again.
+  The status file reports the allowlisted keys' values (`env`), and the run's own `env_progress` / `env_result`;
+  the update's result is left alone. From a shell: `cs-updater.py --stack DIR env PROCESSORS_GPU1=2 TZ=`.
+  Pausing processing is not here: it's a live switch in Admin → Settings (no restart).
+* The health check waits for every container of every service that should run (a processor service scaled to 0 has
+  none; one scaled to 2 has two) and ignores leftover `docker compose run` containers.
 * **First run on a copied `app/`** (rsync or `git archive`): `app/` becomes a git checkout without changing any
   file. If its contents match a published commit exactly, that commit is used. Otherwise the files are saved as
   a local commit on top of the closest published commit. Later hand edits to tracked files are saved the same

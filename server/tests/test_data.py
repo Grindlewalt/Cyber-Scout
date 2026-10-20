@@ -25,7 +25,7 @@ def test_wizard_flow(admin, data):
     admin.patch("/settings", {"options": {"gpu_device": 1, "cpu_only": False}})
     admin.patch("/settings", {"options": {"hubcam": True}})          # partial update keeps the others
     wc = json.loads((data / "config" / "worker.json").read_text())
-    assert wc["options"] == {"gpu_device": 1, "cpu_only": False, "hubcam": True, "poll_seconds": None}
+    assert wc["options"] == {"gpu_device": 1, "cpu_only": False, "hubcam": True, "poll_seconds": None, "paused": None}
     assert admin.delete("/events/2026wasam").status_code == 204
     wc = json.loads((data / "config" / "worker.json").read_text())
     assert wc["events"] == []                                          # configured-but-empty: worker idles

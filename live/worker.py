@@ -57,6 +57,7 @@ MEDIA = os.environ.get("MEDIA", "/media")         # kept match videos, served at
 KEEP_VIDEO = os.environ.get("KEEP_VIDEO", "1") == "1"
 ID_CONF_MIN = float(os.environ.get("ID_CONF_MIN", "0.5"))   # below: shots/frames are not credited to a team
 HUBCAM = os.environ.get("HUBCAM", "0") == "1"   # optional station-camera pass (~1-2 min/match extra)
+PAUSED = [os.environ.get("PAUSE_PROCESSING") == "1", "env"]   # [paused, "app" | "env"]: Admin switch, else .env
 MAX_ATTEMPTS = 3
 VPLAN_S = float(os.environ.get("VPLAN_SECONDS", "60"))   # per poll: time for checking new candidate uploads (video plan)
 VPLAN_N = int(os.environ.get("VPLAN_MAX", "12"))         # ... and at most this many uploads
@@ -1290,7 +1291,7 @@ def process_only():
                 os.environ["GPU_DEVICE"] = gpu         # this instance's card, whatever Admin's gpu_device says
             if tidy:
                 _tidy_claims(events); tidy = False
-            why = ("match processing paused (PAUSE_PROCESSING=1)" if os.environ.get("PAUSE_PROCESSING") == "1" else
+            why = (paused_why() if PAUSED[0] else
                    "no events followed" if not events else
                    f"no detector model ({MODEL})" if not os.path.exists(MODEL) else
                    f"{fails} failed matches in a row: paused until {time.strftime('%H:%M', time.localtime(pause_until))}"
@@ -1371,12 +1372,14 @@ def _setenv(k, v):
 
 def load_config():
     """-> (tba_key, events). App settings (DATA/config/worker.json, see server/workerconf.py) win; anything unset
-    there falls back to the .env (TBA_KEY, EVENTS, POLL_SECONDS, HUBCAM, GPU_DEVICE). Called every poll, so a
-    settings change applies on the next poll without a restart. Also updates POLL / HUBCAM and the env that
+    there falls back to the .env (TBA_KEY, EVENTS, POLL_SECONDS, HUBCAM, GPU_DEVICE, PAUSE_PROCESSING). Called every
+    poll, so a settings change applies on the next poll without a restart. Also updates POLL / HUBCAM and the env that
     downstream code reads (TBA_KEY for event_ctx + strategy, GPU_DEVICE / FORCE_CPU for the detector)."""
     global POLL, HUBCAM
     c = jload(WORKER_CONF, {}) or {}
     o = c.get("options") or {}
+    PAUSED[:] = [bool(o["paused"]), "app"] if o.get("paused") is not None else \
+        [os.environ.get("PAUSE_PROCESSING") == "1", "env"]
     key = c.get("tba_key") or _ENV0["TBA_KEY"] or ""
     events = c.get("events")
     if events is None:
@@ -1441,7 +1444,7 @@ BEAT_S = 120
 
 
 def status_beat(reason):
-    """DATA/worker-status.json {at, paused, reason}: written every pass (every 30 s while waiting), so the web app can
+    """DATA/worker-status.json {at, paused, reason, paused_by}: written every pass (every 30 s while waiting), so the web app can
     say "processing is paused" / when the worker last checked in (GET app/v1/session -> processing).  A daemon thread
     re-writes it every BEAT_S with the last reason, so an hour-long pass (a tracking backlog) never reads as stale."""
     _BEAT["reason"] = reason
@@ -1455,10 +1458,15 @@ def status_beat(reason):
         _BEAT["thr"].start()
 
 
+def paused_why():
+    return "match processing paused (" + ("Admin → Settings" if PAUSED[1] == "app" else "PAUSE_PROCESSING=1") + ")"
+
+
 def _status_write():
     r = _BEAT["reason"]
     try:
-        jsave(os.path.join(DATA, "worker-status.json"), dict(at=time.time(), paused=r == "paused", reason=r))
+        jsave(os.path.join(DATA, "worker-status.json"), dict(at=time.time(), paused=r == "paused", reason=r,
+                                                             paused_by=PAUSED[1] if r == "paused" else None))
     except OSError:
         pass
 
@@ -1477,9 +1485,9 @@ def main():
     tba, waiting = None, None
     while True:
         key, events = load_config()
-        reason = ("paused" if os.environ.get("PAUSE_PROCESSING") == "1" else "no_key" if not key else
+        reason = ("paused" if PAUSED[0] else "no_key" if not key else
                   "no_events" if not events else None)
-        why = {"paused": "match processing paused (PAUSE_PROCESSING=1)",
+        why = {"paused": paused_why(),
                "no_key": "no TBA key (finish setup in the web app, or set TBA_KEY)",
                "no_events": "no events followed (add one in the web app, or set EVENTS)"}.get(reason)
         status_beat(reason)

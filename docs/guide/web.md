@@ -68,7 +68,7 @@ Files (sizes at `c64b813`):
 | `setup.js` | 562 | session (+ 60 s poll), `CS.app`, `CS.form`, roles, login, account, TBA event picker, first-run wizard |
 | `sync.js` | 1248 | offline layer and Client mode: cached reads, outbox, connection pill / sheet, offline copies (`docs/SYNC.md` part 3) |
 | `sw.js` | 264 | service worker (browser mode, https only): cache, offline copies, Background Sync of the outbox |
-| `admin.js` | 293 | Admin: Teammates, Settings (+ worker status line), Events, Updates |
+| `admin.js` | 443 | Admin: Teammates, Settings (+ worker status line, pause switch), Events, Server (.env via the updater), Updates |
 | `audit.js` | 242 | Activity (audit log in sentences, lockdown, sign-in policy) and Identity-fixes queue (+ nav badge) |
 | `notes.js` | 356 | `CS.notes` (Notes card on the team and match pages) and `CS.idFix` ("Wrong team?" identity-fix form on the match page) |
 | `sources.js` | 1444 | Video setup: per-video cards, link checks, TBA webcasts, layout box editor, calibration wizard; livestream recorder status |
@@ -706,9 +706,9 @@ are buttons with a × remove, Enter places, Delete removes).
 recording/waiting/error), `card()` (state, behind-live, analyser lag, last match + clip, tracking from stream or
 uploads, disk, recent errors).
 
-### `admin.js` — Admin (`#/admin[/users|settings|events|updates]`, admin)
+### `admin.js` — Admin (`#/admin[/users|settings|events|server|updates]`, admin)
 
-Tabs Teammates / Settings / Competitions / Updates (the tab row scrolls on phones with the current tab in view).
+Tabs Teammates / Settings / Competitions / Server / Updates (the tab row scrolls on phones with the current tab in view).
 
 - **Teammates** (full width): `GET users`; create (`POST users`, generated passwords via `CS.genPassword`), change
   role, disable/enable, reset password, delete (`PATCH/DELETE users/<id>`). Shows "no password: can't sign in"
@@ -720,13 +720,20 @@ Tabs Teammates / Settings / Competitions / Updates (the tab row scrolls on phone
   (`PUT settings/tba-key`, shows only the hint), a **worker status line** from `CS.processing` (paused with
   `CS.PAUSE_HOW` / running / waiting for a TBA key / idle / not heard from / unknown, with the last check time;
   redrawn on `cs:processing`), processing options (`PATCH settings {options: {poll_seconds, gpu_device, cpu_only,
-  hubcam}}`; blank = `.env` default; applied by the worker on its next poll).
+  hubcam, paused}}`; blank = `.env` default; applied by the worker on its next poll). "Match processing" (paused)
+  overrides `PAUSE_PROCESSING`; a paused worker line has **Resume processing** (`paused: false`).
+- **Server**: `.env` keys through the host updater. Polls `GET admin/server-env` while a change runs (2.5 s; 3 s while
+  the api restarts). Not installed / updater v1 → install hint. Fields come from the updater's schema, labels and
+  help from `ENV_UI` in admin.js (a key without a label shows its raw name under "Other"); blank = the default
+  (placeholder shows it). Changed rows are tinted; Save asks to confirm (lists old → new and what restarts) and posts
+  only the changed keys (`POST admin/server-env {changes}`); progress log + result (incl. "previous .env is back").
 - **Competitions** (`events`): followed competitions (Open / Video setup buttons / Unfollow) + `CS.eventPicker`.
 - **Updates**: polls `GET admin/update` (every 2.5 s while busy, 3 s while the server is unreachable during a
   restart). Not installed → instructions to run `install-updater.sh`. Installed → current version (+ "local
   changes"), changelog, what restarts (worker heavy/light, api, web), disk needed vs free, buttons Check / Update now
   / Roll back to <prev> (`POST admin/update/check|apply|rollback`, apply body `{ytdlp}`), optional "also update
-  yt-dlp", progress log, result, and "Reload the page" once the version changed. Notes `PAUSE_PROCESSING=1`.
+  yt-dlp", progress log, result, and "Reload the page" once the version changed. Notes a paused worker
+  (`CS.processing`). An Admin → Server run shows as "Changing server settings".
 
 ### `audit.js` — Activity (`#/activity`, admin) and Identity fixes (`#/fixes`, strategist+)
 

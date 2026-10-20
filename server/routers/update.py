@@ -1,8 +1,11 @@
-"""Admin -> Updates: one-click update of the whole stack, done by a HOST-side updater (deploy/updater/).
+"""Admin -> Updates and Admin -> Server: one-click update of the whole stack and a few .env settings, both done by a
+HOST-side updater (deploy/updater/).
 
-The api never runs git or docker and has no docker socket. It only
-  * writes data/config/update-request.json with a fixed schema: {"v":1, "action": check|apply|rollback,
-    "nonce": <32 hex>, "at": <unix s>, "by": {"id", "name"}, "ytdlp": bool} -- no commands, URLs, refs or paths;
+The api never runs git or docker, has no docker socket and can't read .env. It only
+  * writes data/config/update-request.json with a fixed schema: {"v":1, "action": check|apply|rollback|env,
+    "nonce": <32 hex>, "at": <unix s>, "by": {"id", "name"}, "ytdlp": bool[, "env": {KEY: value|null}]} -- no
+    commands, URLs, refs or paths; "env" only with keys the updater lists (ENV_KEYS there), each value checked here
+    against the same kinds (ENV_FORMATS = the updater's) and again by the updater;
   * reads data/config/update-status.json, written by the updater (progress, result, heartbeat), and passes on only
     known fields with checked types (the file lives in data/, which the worker container can also write).
 The updater (systemd path + timer units, running as the stack's owner) validates the request again and is the only
@@ -23,11 +26,21 @@ router = APIRouter(tags=["admin"])
 
 REQUEST_FILE, STATUS_FILE = "update-request.json", "update-status.json"
 STATES = ("idle", "checking", "ready", "applying", "done", "failed", "rolled_back")
+ACTIONS = ("check", "apply", "rollback", "env")
 HEARTBEAT_STALE = 180          # the updater's timer beats every ~60 s (every 15 s while it works)
 PENDING_STALE = 900            # the updater ignores requests older than this
 MAX_STATUS_BYTES = 512 * 1024
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 NONCE_RE = re.compile(r"^[0-9a-f]{32}$")
+# Admin -> Server: value formats, the same regexes as ENV_FORMATS in deploy/updater/cs-updater.py (test_server_env)
+ENV_FORMATS = {
+    "gpus": r"\A\d{1,2}(?:,\d{1,2}){0,7}\Z",
+    "mem": r"\A[1-9]\d{0,5}[mg]\Z",
+    "tz": r"\A[A-Za-z][A-Za-z0-9_+-]{0,30}(?:/[A-Za-z0-9_+-]{1,30}){0,2}\Z",
+    "hosts": r"\A[A-Za-z0-9.:-]{1,100}(?:/\d{1,3})?(?:,[A-Za-z0-9.:-]{1,100}(?:/\d{1,3})?){0,19}\Z",
+}
+ENV_KINDS = ("bool", "int", "choice", *ENV_FORMATS)
+ENV_KEY_RE = re.compile(r"^[A-Z][A-Z0-9_]{0,40}$")
 INSTALL_HINT = ("On the server, in the Cyber-Scout folder (e.g. /opt/cyber-scout): "
                 "sudo ./app/deploy/updater/install-updater.sh   (or re-run install.sh and answer yes to the updater)")
 
@@ -79,6 +92,37 @@ def _commit(v):
     return out
 
 
+def _env_schema(v):
+    """The updater's list of changeable .env keys -> checked copy (unknown kinds / odd entries dropped)."""
+    out = {}
+    for k, sp in (v.items() if isinstance(v, dict) else []):
+        if len(out) >= 40 or not isinstance(k, str) or not ENV_KEY_RE.match(k) or not isinstance(sp, dict) \
+                or sp.get("kind") not in ENV_KINDS:
+            continue
+        e = {"kind": sp["kind"], "default": _s(sp.get("default"), 100) or "", "api": sp.get("api") is True}
+        if sp["kind"] == "int":
+            lo, hi = sp.get("min"), sp.get("max")
+            if type(lo) is not int or type(hi) is not int or lo > hi:
+                continue
+            e.update(min=lo, max=hi)
+        if sp["kind"] == "choice":
+            ch = [c for c in sp["choices"][:12] if isinstance(c, str) and re.match(r"^[A-Za-z0-9._-]{1,20}$", c)] \
+                if isinstance(sp.get("choices"), list) else []
+            if not ch:
+                continue
+            e["choices"] = ch
+        out[k] = e
+    return out
+
+
+def _env(v):
+    if not isinstance(v, dict):
+        return None
+    schema = _env_schema(v.get("schema"))
+    vals = v.get("values") if isinstance(v.get("values"), dict) else {}
+    return {"schema": schema, "values": {k: _s(vals.get(k), 600) for k in schema}, "error": _s(v.get("error"), 200)}
+
+
 def parse_status(raw, t_now=None):
     """The updater's status file -> the API's view. Unknown fields dropped, types checked, sizes capped."""
     t_now = t_now or time.time()
@@ -97,7 +141,7 @@ def parse_status(raw, t_now=None):
         "heartbeat": hb,
         "updater_version": _s(raw.get("updater_version"), 20),
         "state": st,
-        "action": raw.get("action") if raw.get("action") in ("check", "apply", "rollback") else None,
+        "action": raw.get("action") if raw.get("action") in ACTIONS else None,
         "branch": _s(raw.get("branch"), 100),
         "current": _commit(raw.get("current")),
         "latest": _commit(raw.get("latest")),
@@ -124,13 +168,21 @@ def parse_status(raw, t_now=None):
         "paused": raw.get("paused") is True,
         "ytdlp_pinned": _s(yt.get("pinned"), 40) if yt else None,
         "ytdlp_allowed": raw.get("ytdlp_allowed") is True,
+        "features": [f for f in raw.get("features")[:20] if isinstance(f, str)] if isinstance(raw.get("features"), list)
+        else [],
+        "env": _env(raw.get("env")),
+        "env_progress": [x[:400] for x in (raw.get("env_progress") or [])[-150:] if isinstance(x, str)]
+        if isinstance(raw.get("env_progress"), list) else [],
+        "env_result": None if not isinstance(raw.get("env_result"), dict) else {
+            "ok": raw["env_result"].get("ok") is True, "message": _s(raw["env_result"].get("message"), 1200),
+            "at": _num(raw["env_result"].get("at")), "rolled_back": raw["env_result"].get("rolled_back") is True},
     }
 
 
 def _pending(t_now):
     """The request the api wrote that the updater hasn't consumed yet (it deletes the file when it picks it up)."""
     req = _read_json(_paths()[0], 4096)
-    if isinstance(req, dict) and req.get("action") in ("check", "apply", "rollback") \
+    if isinstance(req, dict) and req.get("action") in ACTIONS \
             and isinstance(req.get("at"), (int, float)) and t_now - req["at"] < PENDING_STALE:
         return {"action": req["action"], "at": req["at"]}
     return None
@@ -200,3 +252,93 @@ def post_apply(body: ApplyIn, request: Request, user: User = Depends(require_rol
 @router.post("/admin/update/rollback", status_code=202, summary="Ask the host updater to go back to the previous version (admin)")
 def post_rollback(request: Request, user: User = Depends(require_role("admin")), db=Depends(DB.get_db)):
     return _request(request, user, db, "rollback")
+
+
+# ---------------------------------------------------------------- Admin -> Server (.env settings)
+def env_check(spec, key, v):
+    """Value for `key` (spec from the updater's schema) -> normalized (None = back to the default). Same rules as
+    env_check in cs-updater.py, which checks the request again."""
+    if v is None or v == "":
+        return None
+    kind = spec["kind"]
+    if len(v) <= 600 and (kind == "bool" and v in ("0", "1") or kind == "choice" and v in spec["choices"]):
+        return v
+    if kind == "int" and re.fullmatch(r"\d{1,7}", v) and spec["min"] <= int(v) <= spec["max"]:
+        return str(int(v))
+    if kind in ENV_FORMATS and len(v) <= 600 and re.match(ENV_FORMATS[kind], v):
+        return v
+    hint = {"bool": "0 or 1", "int": f"a whole number from {spec.get('min')} to {spec.get('max')}",
+            "choice": "one of " + ", ".join(spec.get("choices") or []), "gpus": "card numbers like 0, 1 or 0,1",
+            "mem": "a size like 12g or 768m", "tz": "a time zone like America/Los_Angeles",
+            "hosts": "host names, IPs or CIDRs separated by commas"}.get(kind, "a valid value")
+    raise HTTPException(422, f"{key} must be {hint}.")
+
+
+def server_env_status():
+    st = current_status()
+    env = st.get("env") or {}
+    mine = st.get("action") == "env" or (st["pending"] or {}).get("action") == "env"
+    busy = st["state"] in ("checking", "applying") or bool(st["pending"])
+    return {"installed": st["installed"], "supported": "env" in st.get("features", []),
+            "install_hint": st["install_hint"], "busy": busy, "running": busy and mine, "other_task": busy and not mine,
+            "schema": env.get("schema") or {}, "values": env.get("values") or {}, "error": env.get("error"),
+            "progress": st.get("env_progress") or [], "result": st.get("env_result")}
+
+
+class ServerEnvStatus(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    installed: bool
+    supported: bool = Field(description="false: the installed updater is older and can't change .env")
+    schema_: dict = Field(alias="schema", description="KEY -> {kind, default, api, min/max, choices}")
+    values: dict = Field(description="KEY -> value in .env, null = not set (the default applies)")
+
+
+@router.get("/admin/server-env", response_model=ServerEnvStatus, response_model_by_alias=True,
+            summary="The .env settings an admin may change from the web app, with their values (admin)")
+def get_server_env(user: User = Depends(require_role("admin"))):
+    return server_env_status()
+
+
+class EnvIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    changes: dict[str, str | None] = Field(description="KEY -> new value; null or \"\" = remove it (default)",
+                                           min_length=1, max_length=40)
+
+
+@router.post("/admin/server-env", status_code=202,
+             summary="Ask the host updater to change .env settings and restart what uses them (admin); "
+                     "puts the old .env back by itself if the app doesn't come up healthy")
+def post_server_env(body: EnvIn, request: Request, user: User = Depends(require_role("admin")),
+                    db=Depends(DB.get_db)):
+    wait = limiter.hit(user.id, "update")
+    if wait:
+        raise HTTPException(429, f"slow down: try again in {wait}s", headers={"Retry-After": str(wait)})
+    st = server_env_status()
+    if not st["installed"]:
+        raise HTTPException(409, "The updater isn't installed on the server (or isn't running). " + INSTALL_HINT)
+    if not st["supported"]:
+        raise HTTPException(409, "The updater on the server is too old to change settings: re-run "
+                                 "./app/deploy/updater/install-updater.sh on the server after updating.")
+    if st["busy"]:
+        raise HTTPException(409, "The updater is busy (an update or a settings change); wait for it to finish.")
+    schema, cur = st["schema"], st["values"]
+    changes = {}
+    for k, v in body.changes.items():
+        if k not in schema:
+            raise HTTPException(422, f"{k} can't be changed from the web app.")
+        v = env_check(schema[k], k, v.strip() if isinstance(v, str) else v)
+        if v != cur.get(k):
+            changes[k] = v
+    if not changes:
+        raise HTTPException(400, "Nothing changed.")
+    nonce = secrets.token_hex(16)
+    req = {"v": 1, "action": "env", "nonce": nonce, "at": time.time(),
+           "by": {"id": int(user.id), "name": (user.display_name or f"admin #{user.id}")[:64]}, "ytdlp": False,
+           "env": changes}
+    if len(json.dumps(req)) > 4000:
+        raise HTTPException(422, "Too much at once: change fewer settings.")
+    with DB.tx(db):
+        audit.record(db, request, user, "server.env", ",".join(sorted(changes)), None,
+                     {k: cur.get(k) for k in changes}, dict(changes))
+        atomic_write_json(_paths()[0], req)
+    return {"queued": "env", "nonce": nonce, "changes": changes}

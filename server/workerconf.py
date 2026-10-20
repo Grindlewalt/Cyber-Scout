@@ -4,7 +4,8 @@
      "tba_key": "..." | null,            # null -> worker falls back to its TBA_KEY env
      "events": ["2026wasam", ...] | null, # null -> never configured in the app -> worker uses EVENTS env
      "team_number": 4911 | null, "season_goal": "DCMP" | null,
-     "options": {"poll_seconds": 120 | null, "gpu_device": 0 | null, "cpu_only": bool | null, "hubcam": bool | null}}
+     "options": {"poll_seconds": 120 | null, "gpu_device": 0 | null, "cpu_only": bool | null, "hubcam": bool | null,
+                 "paused": bool | null}}           # paused null -> PAUSE_PROCESSING in the worker's .env
 
 Written atomically with mode 0600 (it holds the TBA key); the data dir is the only place secrets live.
 """
@@ -14,7 +15,7 @@ from . import db as DB
 from .config import cfg
 from .security import atomic_write_json
 
-OPTION_KEYS = ("poll_seconds", "gpu_device", "cpu_only", "hubcam")
+OPTION_KEYS = ("poll_seconds", "gpu_device", "cpu_only", "hubcam", "paused")
 
 
 def build(db) -> dict:

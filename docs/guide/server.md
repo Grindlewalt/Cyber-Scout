@@ -46,7 +46,7 @@ Everything below was read from the code at the commit named in `docs/guide/READM
 | `server/routers/scouting.py` | picklists (+ version history), notes (soft delete / hide), identity overrides + approval queue |
 | `server/routers/admin.py` | `/admin/security` (lockdown, passwordless, review mode), `/admin/sessions/revoke`, `/audit` list / revert |
 | `server/routers/sources.py` | Video page: sources, layout boxes, calibration wizard, jobs, livestream status (logic in `live/sources.py`, `live/layout.py`) |
-| `server/routers/update.py` | `/admin/update*`: writes `update-request.json`, parses `update-status.json` |
+| `server/routers/update.py` | `/admin/update*` and `/admin/server-env`: writes `update-request.json`, parses `update-status.json` |
 | `server/openapi.json` | committed snapshot of the schema (regenerated in the cleanup pass) |
 | `server/Dockerfile` | `python:3.12-slim`; installs `requirements.txt`; copies `server/` plus `live/sources.py` and `live/layout.py`; deletes `server/tests`; HEALTHCHECK on `/app/v1/health` |
 | `server/entrypoint.sh` | root phase (refuse symlinked `$DATA` / `$DATA/config`, `mkdir -p $DATA/config`, `chown -h` a fixed list of files) then `setpriv --reuid=$PUID --regid=$PGID --clear-groups --no-new-privs` uvicorn, 1 process, no access log, no server header |
@@ -586,7 +586,9 @@ done, failed, rolled_back`), `action`, `branch`, `current` / `latest` / `previou
 subject, local?}`), `checked_at`, `changelog[]` (<= 200), `changelog_more`, `touches {worker: heavy|light, api,
 web, compose}`, `disk {free_gb, need_gb, ok}`, `progress[]` (last 150 lines), `result {action, ok, message, at}`,
 `request_nonce`, `rejected {at, reason}`, `started_at`, `finished_at`, `paused`, `ytdlp_pinned`,
-`ytdlp_allowed`. The API adds `pending` (an unconsumed request < 15 min old) and `install_hint`.
+`ytdlp_allowed`, `features` (updater v2: `["env"]`), `env {schema, values, error}`, `env_progress[]`,
+`env_result {ok, message, at, rolled_back}`. The API adds `pending` (an unconsumed request < 15 min old) and
+`install_hint`.
 
 | method | path | limits | audit | what |
 |---|---|---|---|---|
@@ -594,6 +596,8 @@ web, compose}`, `disk {free_gb, need_gb, ok}`, `progress[]` (last 150 lines), `r
 | POST | `/admin/update/check` | update 6/min, 60/h | `update.check` | 202 `{queued, nonce}` |
 | POST | `/admin/update/apply` | same | `update.apply` | body `{ytdlp: StrictBool = false}` (`extra=forbid`) |
 | POST | `/admin/update/rollback` | same | `update.rollback` | 409 when there is no `previous` |
+| GET | `/admin/server-env` | | | Admin → Server: `{installed, supported, busy, running, other_task, schema, values, error, progress, result, install_hint}`; `schema` = the updater's `ENV_KEYS` (kinds bool / int / choice / gpus / mem / tz / hosts, checked copy), `values` = those keys in `.env` (null = unset) |
+| POST | `/admin/server-env` | same as update | `server.env` (before/after values) | body `{changes: {KEY: str \| null}}` (`extra=forbid`); keys must be in `schema`, values match `ENV_FORMATS` (same regexes as the updater; `test_server_env` keeps them equal); unchanged keys dropped, nothing left → 400; writes `{..., action: "env", env: {...}}` → 202 `{queued, nonce, changes}`; 409 not installed / updater v1 / busy |
 
 All three POSTs return 409 when the updater isn't installed / heartbeat stale (with the install hint), a task is
 `checking` / `applying`, a request is already pending, or `ytdlp` is asked for but `ytdlp_allowed` is false.

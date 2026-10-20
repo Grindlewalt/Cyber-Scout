@@ -615,21 +615,22 @@ CS.markActive = k => { shellKey = k; document.querySelectorAll("[data-navkey]").
 })();
 
 // ---- processing state (server: GET app/v1/session -> processing, from the worker's live/worker.py status_beat)
-// CS.processing = {paused: bool|null, worker_seen: unix|null, reason, why} | undefined before the first session answer.
+// CS.processing = {paused: bool|null, paused_by: "app"|"env"|null, worker_seen: unix|null, reason, why} | undefined before
+// the first session answer.
 // setup.js sets it from every session check (and a 60 s poll); pages read it (guard for undefined) and listen to the
 // window event "cs:processing" (fired when paused / the reason / worker-stale changes). The notice above #app says it once.
 const STALE_S = 3600;
 const workerStale = p => !!(p && p.worker_seen && p.paused !== true && Date.now() / 1000 - p.worker_seen > STALE_S);
 const sinceTxt = ts => { const s = Date.now() / 1000 - ts; return s < 90 ? "just now" : s < 5400 ? `${Math.round(s / 60)} min ago` : CS.fmtWhen(ts); };
 CS.setProcessing = p => {
-  const v = p && typeof p === "object" ? { paused: p.paused ?? null, worker_seen: p.worker_seen ?? null, reason: p.reason ?? null, why: p.why ?? null } : null;
+  const v = p && typeof p === "object" ? { paused: p.paused ?? null, paused_by: p.paused_by ?? null, worker_seen: p.worker_seen ?? null, reason: p.reason ?? null, why: p.why ?? null } : null;
   const sig = x => x ? [x.paused, x.reason, workerStale(x)].join("|") : "";
   const ch = sig(v) !== sig(CS.processing);
   CS.processing = v;
   renderNotice();
   if (ch) dispatchEvent(new CustomEvent("cs:processing", { detail: v }));
 };
-const PAUSE_HOW = "To turn it back on: on the server, remove <span class=\"code\">PAUSE_PROCESSING=1</span> from the Cyber-Scout folder's <span class=\"code\">.env</span>, then restart the worker (<span class=\"code\">docker compose up -d worker</span>). Video page jobs still run while it's paused.";
+const PAUSE_HOW = "To turn it back on: <a href=\"#/admin/settings\">Admin → Settings</a> → Processing → <b>Resume processing</b>. The worker picks it up within about 30 seconds, no restart needed. Video page jobs still run while it's paused.";
 CS.PAUSE_HOW = PAUSE_HOW;
 function renderNotice() {
   let el = document.getElementById("gnotice");
