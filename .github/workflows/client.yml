@@ -74,6 +74,15 @@ jobs:
             echo "PYTHON=${{ steps.py.outputs.python-path }}" >> "$GITHUB_ENV"
           fi
 
+      # Clip only checks for an ffmpeg (the client's set-up installs imageio-ffmpeg; the runners have none):
+      # the same pin the client's own set-up uses, into the Python the tests run with
+      - name: ffmpeg for the Clip only tests
+        shell: bash
+        run: |
+          req=$(cd client && python -c "import csclient.procsetup as PS; print(next(r for r in PS.requirements({}, 'clip')[0] if r.startswith('imageio-ffmpeg')))")
+          python -m pip install --disable-pip-version-check "$req"
+          python -c "import imageio_ffmpeg; print(imageio_ffmpeg.get_ffmpeg_exe())"
+
       - name: Unit tests
         shell: bash
         run: python -m unittest discover -s client/tests -v

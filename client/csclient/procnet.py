@@ -29,10 +29,11 @@ class NetMeter:
         self.clip_bytes = None                   # typical clip size from the server (benchmark sample) / last job
 
     def add(self, d, n, secs, kind="clip"):
-        if n <= 0 or secs <= 0:
+        if n <= 0:
             return
+        # a small transfer can take "0 s" on Windows' ~16 ms time.time() clock: it still counts as a real transfer
         with self.lock:
-            self.samples.append((time.time(), d, int(n), float(secs), kind))
+            self.samples.append((time.time(), d, int(n), max(float(secs), 1e-3), kind))
 
     def rate(self, d, now=None):
         """bytes/s over the samples of the last WINDOW_S (at least 256 KB in total), else None."""

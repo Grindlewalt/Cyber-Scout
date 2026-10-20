@@ -155,8 +155,8 @@ class TestFailure(Base):
         self.assertEqual(P.released[0], (f"{EV}_qm1", True, "only 2 AprilTags found"))
         self.assertNotIn(f"{EV}_qm1", P.uploads)
         self.assertIn(f"{EV}_qm1", P.claim_bodies[-1]["skip"])
-        s = self.pstatus()
-        self.assertEqual((s["failed"], s["done"]), (1, 1))
+        # the server lists qm2 as completed before the client's own count goes up
+        self.assertTrue(wait_for(lambda: (self.pstatus()["failed"], self.pstatus()["done"]) == (1, 1)), self.pstatus())
 
 
 class TestLostClaim(Base):

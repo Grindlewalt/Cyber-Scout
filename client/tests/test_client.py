@@ -118,12 +118,20 @@ class Base(unittest.TestCase):
         return d
 
     def sync(self, **kw):
+        """Sync now and wait for a cycle that started after this call (one already running may predate the test's
+        last change on the server) and for every started cycle to finish."""
         e = self.app.engine
-        n = e.cycles
+        n = e.cycles_started
         code, d = self.c.req("POST", "/client/v1/sync", kw)
         self.assertEqual(code, 202, d)
-        self.wait(lambda: e.cycles > n and not e.syncing, "sync cycle", timeout=40)
+        self.wait(lambda: e.cycles_started > n and e.cycles == e.cycles_started and not e.syncing, "sync cycle",
+                  timeout=40)
         return self.status()
+
+    def settle(self):
+        """No sync cycle running or asked for (e.g. the one a reconnect kicks off)."""
+        e = self.app.engine
+        self.wait(lambda: not e.requests and not e.syncing and e.cycles == e.cycles_started, "sync idle", timeout=40)
 
     def status(self):
         code, d = self.c.req("GET", "/client/v1/status")
@@ -430,6 +438,7 @@ class TestFailover(Base):
         # writes and syncs go through the alternate with the same session
         code, d = self.c.req("POST", f"/app/v1/events/{EV}/notes", {"text": "via alt"})
         self.assertEqual(code, 201, d)
+        self.settle()                                      # the sync the reconnect kicked off: before the change below
         self.fs.state.put(f"api/{EV}/m/qm3.json", b'{"m":3}')
         n = len(self.bundle_requests())
         self.sync()

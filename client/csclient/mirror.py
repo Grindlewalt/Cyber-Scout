@@ -200,7 +200,7 @@ class WebMirror:
             shutil.rmtree(tmp, ignore_errors=True)
             raise
         final = os.path.join(self.web_dir, dirname)
-        os.replace(tmp, final)
+        replace_retry(tmp, final)                     # Windows: a scanner may still hold a just-written file
         old = self.current.get("dir")
         self.current = {"version": version, "dir": dirname, "fetched_at": time.time(), "files": n, "bytes": total}
         write_json(os.path.join(self.web_dir, "current.json"), self.current)
