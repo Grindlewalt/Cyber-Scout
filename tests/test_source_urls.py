@@ -232,3 +232,77 @@ def test_recorder_guarded(monkeypatch):
     with pytest.raises(RuntimeError):
         r.resolve()
     assert len(cap.argv) == 1
+
+
+# ---- UX audit SETUP-6 / 32: what an admin may paste, and the sentences it gets back
+@pytest.mark.parametrize("url, says", [
+    ("https://vimeo.com/123456", "vimeo.com isn't YouTube or Twitch"),
+    ("https://example.com/", "example.com isn't YouTube or Twitch"),
+    ("example.com/video.mp4", "example.com isn't YouTube or Twitch"),
+    ("not a url", "That isn't a link"),
+    ("", "Paste a link first"),
+    ("youtube.com", "That YouTube link"),
+    ("https://www.youtube.com/watch?v=short", "That YouTube link"),
+    ("twitch.tv", "That Twitch link"),
+    ("javascript:alert(1)", "That isn't a YouTube or Twitch link"),
+    ("http://lan.example.com/x.m3u8", "private network"),
+    ("/etc/passwd", "media or data folder"),
+])
+def test_pasted_links_refused_with_a_sentence(url, says):
+    with pytest.raises(ValueError) as e:
+        SRC.add({"sources": []}, url)
+    assert says in str(e.value)
+
+
+def test_pasted_links_accepted():
+    doc = {"sources": []}
+    for u in ("https://www.twitch.tv/firstwa_red1", "youtube.com/@FIRSTWashington/live", "dQw4w9WgXcQ",
+              "https://cdn.example.com/live/index.m3u8", "https://cdn.example.com/v/match.MP4"):
+        SRC.add(doc, u)
+    assert len(doc["sources"]) == 5
+    with pytest.raises(ValueError, match="already on this page"):
+        SRC.add(doc, "twitch.tv/firstwa_red1")
+
+
+def test_webcast_names_carry_the_channel():
+    ev = {"webcasts": [{"type": "twitch", "channel": "firstwa_red2"}, {"type": "twitch", "channel": "firstwa_red1", "date": "2026-10-18"}]}
+    found = SRC.discover("2026wagg", ev, [], meta_fn=lambda v: None)
+    assert [s["label"] for s in found] == ["Event webcast · Twitch firstwa_red2", "Event webcast · Twitch firstwa_red1, 2026-10-18"]
+    # a stored source with the old automatic name is renamed by the next discovery; an admin's own name is kept
+    doc = {"sources": [dict(found[0], label="Event webcast (twitch)"), dict(found[1], label="Red 1 (the wide one)")]}
+    SRC.merge(doc, found)
+    assert [s["label"] for s in doc["sources"]] == ["Event webcast · Twitch firstwa_red2", "Red 1 (the wide one)"]
+    assert SRC.display_label({"origin": "tba", "label": "Event webcast (twitch)", "url": "https://www.twitch.tv/firstwa_red1",
+                              "webcast": {"type": "twitch", "channel": "firstwa_red1"}}) == "Event webcast · Twitch firstwa_red1"
+    L = SRC.webcast_list(ev, {"sources": [{"id": "x", "url": "https://www.twitch.tv/firstwa_red1", "dismissed": True}]})
+    assert [(w["source"], w["dismissed"]) for w in L] == [(None, False), ("x", True)]
+
+
+class _Resp:
+    def __init__(self, ct): self.headers = {"Content-Type": ct}
+    def __enter__(self): return self
+    def __exit__(self, *a): return False
+
+
+class _Opener:
+    def __init__(self, out): self.out, self.reqs = out, []
+    def open(self, req, timeout=None):
+        self.reqs.append((req.get_method(), req.full_url))
+        if isinstance(self.out, Exception): raise self.out
+        return _Resp(self.out)
+
+
+def test_probe_http(monkeypatch):
+    import urllib.error
+    monkeypatch.delenv("CS_PROBE_LINKS", raising=False)
+    u = "https://cdn.example.com/v/match.mp4"
+    nf = _Opener(urllib.error.HTTPError(u, 404, "Not Found", {}, None))
+    assert "404" in SRC.probe_http(u, opener=nf) and nf.reqs == [("HEAD", u)]
+    assert "web page" in SRC.probe_http(u, opener=_Opener("text/html; charset=utf-8"))
+    assert SRC.probe_http(u, opener=_Opener("video/mp4")) is None
+    assert SRC.probe_http(u, opener=_Opener(urllib.error.HTTPError(u, 403, "Forbidden", {}, None))) is None   # signed URLs
+    assert SRC.probe_http(u, opener=_Opener(urllib.error.HTTPError(u, 302, "Found", {}, None))) is None       # not followed
+    assert SRC.probe_http(u, opener=_Opener(OSError("down"))) is None
+    assert SRC.probe_http("http://lan.example.com/x.mp4", opener=nf) is None and len(nf.reqs) == 1           # private: never fetched
+    monkeypatch.setenv("CS_PROBE_LINKS", "0")
+    assert SRC.probe_http(u, opener=nf) is None and len(nf.reqs) == 1

@@ -83,7 +83,9 @@ def _job(ev, kind, params, user):
 # ------------------------------------------------------------------ sources
 class SourceIn(BaseModel):
     url: str = Field(..., max_length=2000, description="YouTube/Twitch URL (video, livestream, playlist, channel), "
-                                                        "direct .mp4/.m3u8 URL, or a file path under the media/data dir")
+                                                        "direct video URL (.mp4/.m3u8/...: checked with one HEAD "
+                                                        "request), or a file path under the media/data dir; any other "
+                                                        "web page is refused (422, a sentence for the admin)")
     role: str = Field("wide", description="wide | dynamic | alliance-side")
     label: str | None = Field(None, max_length=200, description="null: a short name from the link")
     primary: bool = False
@@ -118,6 +120,7 @@ def list_sources(ev: str = Depends(valid_event), user: User = Depends(require_ro
     for s in doc.get("sources", []):
         s["has_layout"] = s["id"] in (lay.get("sources") or {})
         s["n_videos"] = len(s.get("videos") or {})
+        s["label"] = S.display_label(s)               # an old TBA webcast name gets its channel
         s["has_frame"] = os.path.exists(os.path.join(_evd(ev), "frames", f"{s['id']}.jpg"))
         s["dynamic_on"] = S.dynamic_on(s)
         if s.get("kind") in S.AUTO_KINDS:
@@ -327,6 +330,22 @@ def discover(ev: str = Depends(valid_event), user: User = Depends(require_role("
                                  "_matches": slim, "full": True}, user)
 
 
+@router.get("/events/{ev}/sources/webcasts", summary="The event's webcasts listed on TBA, to add on the Video page (admin)")
+def tba_webcasts(ev: str = Depends(valid_event), user: User = Depends(require_role("admin")), db=Depends(DB.get_db)):
+    """webcasts: TBA's YouTube / Twitch streams for the event, with `source` = the id of the source that already has
+    that link (null: not added yet) and `dismissed`.  No TBA key or TBA unreachable: an empty list and a `note`
+    (the page just doesn't offer any), never an error."""
+    S, _ = _mods()
+    key = DB.get_setting(db, "tba_key")
+    if not key:
+        return dict(event=ev, webcasts=[], note="no TBA key")
+    try:
+        e = tba_call(key, f"/event/{ev}", ttl=600) or {}
+    except HTTPException as x:
+        return dict(event=ev, webcasts=[], note=f"TBA: {x.detail}")
+    return dict(event=ev, webcasts=S.webcast_list(e, _doc(ev)))
+
+
 @router.post("/events/{ev}/sources", status_code=201, summary="Add a pasted source (admin)")
 def add_source(body: SourceIn, ev: str = Depends(valid_event), user: User = Depends(require_role("admin")),
                db=Depends(DB.get_db)):
@@ -337,10 +356,20 @@ def add_source(body: SourceIn, ev: str = Depends(valid_event), user: User = Depe
                   station=body.station, live=body.live)
     except ValueError as e:
         raise HTTPException(422, str(e))
+    _probe_or_422(S, s)
     _save(ev, doc)
     if s["kind"] == "per_match":
         s["job"] = _index_job(ev, s, user, db)
     return s
+
+
+def _probe_or_422(S, s):
+    """A direct http(s) video address: one HEAD request before it is saved, so a dead link or a web page is refused
+    with a sentence instead of failing later in a frame grab (YouTube / Twitch / files are not probed)."""
+    if s.get("provider") == "http":
+        why = S.probe_http(s["url"])
+        if why:
+            raise HTTPException(422, why)
 
 
 def _index_job(ev, s, user, db):
@@ -366,7 +395,7 @@ def patch_source(sid: str, body: SourcePatch, request: Request, ev: str = Depend
     before = (S.get(doc, sid) or {}).get("dynamic")
     try:
         if url is not None:
-            S.set_url(doc, sid, url, by, live=live)
+            _probe_or_422(S, S.set_url(doc, sid, url, by, live=live))
         if "dynamic" in body.model_fields_set:          # explicit null = back to auto
             S.set_dynamic(doc, sid, body.dynamic, by)
         s = S.update(doc, sid, patch, by)
@@ -617,6 +646,7 @@ def _calib_status(ev, target):
                        calib=c.get("calib") if isinstance(c.get("calib"), dict) else None,
                        tag_rms=c.get("tag_rms"), mtime=os.path.getmtime(p))
             break
+    out["has_frame"] = os.path.exists(os.path.join(_evd(ev), "frames", f"calib_{target}.jpg"))   # the wizard's frame
     w = os.path.join(_evd(ev), "calib_wizard", f"{target}.json")
     if os.path.exists(w):
         try:

@@ -4,6 +4,12 @@ import pytest
 from server.routers import sources as R
 
 
+@pytest.fixture(autouse=True)
+def no_probe(monkeypatch):
+    """No HEAD requests to the internet from tests (direct video links are probed before they're saved)."""
+    monkeypatch.setenv("CS_PROBE_LINKS", "0")
+
+
 @pytest.fixture
 def no_dns(monkeypatch):
     if R.SRC is None:

@@ -41,7 +41,7 @@ Match video mode (video_mode): "auto" = per-match uploads (TBA links, channel sc
 when it is trackable (unchanged behaviour); "livestream" = offseason / no uploads: TBA only gives the match list
 (and lineups, results), every match is tracked from the recorded livestream (a fixed wide view), never an upload.
 """
-import hashlib, ipaddress, json, os, re, socket, subprocess, threading, time, traceback, urllib.parse, urllib.request
+import hashlib, ipaddress, json, os, re, socket, subprocess, threading, time, traceback, urllib.error, urllib.parse, urllib.request
 
 ROLES = ("wide", "dynamic", "alliance-side")
 KINDS = ("per_match", "livestream", "video", "file")
@@ -302,6 +302,55 @@ def webcast_url(w):
     return None
 
 
+# the old automatic name of a TBA webcast source: two webcasts of one event got the same name
+LEGACY_WEBCAST_LABEL = re.compile(r"^Event webcast \([a-z0-9_ ]{0,20}(, [^)]{0,40})?\)$")
+
+
+def webcast_label(w, url=None):
+    """TBA webcast -> "Event webcast · Twitch firstwa_red1" (with its day when TBA gives one): the channel is in
+    the name, so two webcasts of one event never look the same."""
+    u = url or webcast_url(w)
+    name = None
+    if u:
+        try:
+            name = default_label(classify_url(u))
+        except ValueError:
+            name = None
+    name = name or " ".join(x for x in (str(w.get("type") or "webcast").title(), str(w.get("channel") or "")) if x)
+    return f"Event webcast · {name}" + (f", {w['date']}" if w.get("date") else "")
+
+
+def display_label(s):
+    """A source's name for the Video page: a TBA webcast still carrying the old automatic name gets its channel."""
+    lab = s.get("label") or ""
+    if s.get("origin") == "tba" and isinstance(s.get("webcast"), dict) and LEGACY_WEBCAST_LABEL.match(lab):
+        return webcast_label(s["webcast"], s.get("url"))
+    return lab
+
+
+def webcast_list(event, doc=None):
+    """TBA /event webcasts (YouTube / Twitch only, canonical URLs, each once) -> [{url, label, provider, kind,
+    channel, date, source (id of the source that already has this link, else None), dismissed}]: the Video page
+    offers the ones not added yet next to its paste box."""
+    have = {s.get("url"): s for s in (doc or {}).get("sources", []) if s.get("url")}
+    out, seen = [], set()
+    for w in (event or {}).get("webcasts") or []:
+        if not isinstance(w, dict): continue
+        u = webcast_url(w)
+        if not u: continue
+        try:
+            c = classify_url(u)
+        except ValueError:
+            continue
+        if c["url"] in seen: continue
+        seen.add(c["url"])
+        s = have.get(c["url"])
+        out.append(dict(url=c["url"], label=webcast_label(w, c["url"]), provider=c["provider"], kind=c["kind"],
+                        channel=str(w.get("channel") or "")[:100], date=w.get("date") if isinstance(w.get("date"), str) else None,
+                        source=s["id"] if s else None, dismissed=bool(s and s.get("dismissed"))))
+    return out
+
+
 # ---------------------------------------------------------------- titles / matches
 def oembed(vid, timeout=10):
     """YouTube title + channel without yt-dlp (works in the slim API container)."""
@@ -367,8 +416,7 @@ def discover(ev, event, matches, meta_fn=oembed, meta_cache=None, sample=10, log
         u = c["url"]
         out.append(dict(id=f"tba-webcast-{i}", origin="tba", kind="livestream", provider=(w.get("type") or "").lower(),
                         url=u, role="dynamic", coverage={"mode": "all"}, enabled=True, auto=True,
-                        label=f"Event webcast ({w.get('type')}{', ' + w['date'] if w.get('date') else ''})",
-                        sample=dict(video=c.get("video") or u, t=None), webcast=w))
+                        label=webcast_label(w, u), sample=dict(video=c.get("video") or u, t=None), webcast=w))
     withv = sorted([m for m in matches or [] if _yt_videos(m)], key=_order)
     if withv:
         pick = withv if full else [withv[int(round(i))] for i in
@@ -454,6 +502,8 @@ def merge(doc, found):
             vids = dict(old.get("videos") or {}); vids.update(s.get("videos") or {})
             old.update(s); old.update(keep)
             if vids: old["videos"] = vids
+            if s.get("label") and LEGACY_WEBCAST_LABEL.match(old.get("label") or ""):
+                old["label"] = s["label"]                  # "Event webcast (twitch)" -> names its channel
         elif s.get("url") and s["url"] in urls:
             continue
         else:
@@ -464,18 +514,91 @@ def merge(doc, found):
     return doc
 
 
+# ---- what an admin may paste on the Video page, and the sentences it gets back (web/sources.js mirrors the
+# first check so the obvious mistakes are caught before a request)
+LINK_EXAMPLES = "youtube.com/@FIRSTWashington/live or twitch.tv/firstwa_red1"
+NOT_VIDEO_LINK = f"That isn't a YouTube or Twitch link. Paste the event's stream or video link, e.g. {LINK_EXAMPLES}."
+MEDIA_EXT = (".m3u8", ".mp4", ".m4v", ".mov", ".mkv", ".webm", ".ts", ".flv")
+
+
+def link_problem(url, err):
+    """classify_url's error for a pasted link -> one sentence an admin can act on."""
+    u, e = (url if isinstance(url, str) else "").strip(), str(err)
+    if not u: return "Paste a link first."
+    if "unrecognised YouTube" in e:
+        return ("That YouTube link doesn't point at a stream, video, playlist or channel. Open the stream on YouTube "
+                "and copy the address from there, e.g. youtube.com/@FIRSTWashington/live or a youtube.com/watch?v=… link.")
+    if "unrecognised Twitch" in e:
+        return "That Twitch link doesn't name a channel or a video: use twitch.tv/<channel> (e.g. twitch.tv/firstwa_red1) or twitch.tv/videos/<number>."
+    if "spaces" in e and not re.search(r"https?://", u):
+        return f"That isn't a link. {NOT_VIDEO_LINK.split('. ', 1)[1]}"
+    if re.search(r"user name|invalid port|invalid host|has no host|spaces|control", e):
+        return "That link isn't valid: copy it again from the browser's address bar."
+    if u.startswith("/"): return "That file path isn't valid: use the full path of a video under the server's media folder."
+    h = u.split("://", 1)[-1].split("/", 1)[0].split("?", 1)[0].lower().removeprefix("www.")
+    return f"{h} isn't YouTube or Twitch. {NOT_VIDEO_LINK.split('. ', 1)[1]}" if "." in h and _HOST_RE.match(h) else NOT_VIDEO_LINK
+
+
 def _checked(url, live=None):
-    """classify_url + the same checks as a pasted source (allowed file roots, public http hosts).  live=True turns
-    a YouTube video link into a livestream (a watch link of a stream that is live / scheduled: the recorder
-    records it); a channel /live link or a Twitch channel is a livestream anyway, a Twitch /videos/ link a VOD."""
-    c = classify_url(url)
+    """classify_url + the same checks as a pasted source (allowed file roots, public http hosts), with errors an
+    admin can act on.  Accepted: YouTube / Twitch links, a file under the media / data dirs, and a direct
+    http(s) video address (.mp4, .m3u8, ... on a public host, or one allowed by CS_URL_ALLOW); any other web
+    page (vimeo.com, a site's home page) is refused, it can't be tracked.  live=True turns a YouTube video link
+    into a livestream (a watch link of a stream that is live / scheduled: the recorder records it); a channel
+    /live link or a Twitch channel is a livestream anyway, a Twitch /videos/ link a VOD."""
+    try:
+        c = classify_url(url)
+    except ValueError as e:
+        raise ValueError(link_problem(url, e)) from None
     if c["kind"] == "file" and not file_allowed(c["url"]):
-        raise ValueError("file sources must be under the media or data directory")
+        raise ValueError("Files must be in the server's media or data folder (e.g. /media/2026wasam/qm1.mp4).")
     if c["provider"] == "http":
-        safe_public_url(c["url"], cache_s=0)       # private / loopback / docker / Tailscale hosts: refused
+        p = urllib.parse.urlsplit(c["url"])
+        host = (p.hostname or "").removeprefix("www.")
+        if not p.path.lower().endswith(MEDIA_EXT):
+            raise ValueError(f"{host} isn't YouTube or Twitch. Paste the event's stream or video link from YouTube or "
+                             f"Twitch (a direct video address ending in .mp4 or .m3u8 works too).")
+        try:
+            safe_public_url(c["url"], cache_s=0)   # private / loopback / docker / Tailscale hosts: refused
+        except ValueError as e:
+            if "cannot resolve" in str(e):
+                raise ValueError(f"Couldn't find {host}: check the link.") from None
+            raise ValueError(f"{host} is on a private network, which the server doesn't fetch from. Use the public "
+                             "link (or the server's admin can allow that host with CS_URL_ALLOW).") from None
     if live and c["kind"] == "video" and c["provider"] == "youtube":
         c = dict(c, kind="livestream")
     return c
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *a, **k):
+        return None                                # a redirect is answered as an HTTPError 3xx: not followed
+
+
+def probe_http(url, timeout=5.0, opener=None):
+    """A direct http(s) video address pasted on the Video page -> None when it looks usable (or can't be checked
+    from here), else a sentence for the admin: the address answers 404 / 410, or it is a web page, not a video.
+    One HEAD request to a host safe_public_url already passed; redirects are not followed.  CS_PROBE_LINKS=0
+    switches it off."""
+    if os.environ.get("CS_PROBE_LINKS", "1") == "0": return None
+    try:
+        safe_public_url(url)
+    except ValueError:
+        return None
+    req = urllib.request.Request(url, method="HEAD", headers={"User-Agent": "cyber-scout"})
+    try:
+        with (opener or urllib.request.build_opener(_NoRedirect)).open(req, timeout=timeout) as r:
+            ct = (r.headers.get("Content-Type") or "").lower()
+    except urllib.error.HTTPError as e:
+        if e.code in (404, 410):
+            return f"That address answers “{e.code} {'Not Found' if e.code == 404 else 'Gone'}”: there's no video there. Check the link."
+        return None
+    except Exception:
+        return None
+    if ct.startswith("text/html"):
+        return ("That address is a web page, not a video file or stream. Paste the YouTube or Twitch link instead "
+                "(or the direct .mp4 / .m3u8 address).")
+    return None
 
 
 def default_label(c):
@@ -498,7 +621,8 @@ def add(doc, url, role="wide", label=None, coverage=None, by=None, primary=False
     c = _checked(url, live)
     for o in doc.get("sources", []):
         if o.get("url") == c["url"] and not o.get("dismissed"):    # a removed TBA copy of the link doesn't count
-            raise ValueError("that link is already listed" + (" (from TBA): change what it is instead" if o.get("origin") == "tba" else ""))
+            raise ValueError("That link is already on this page" + (" (from TBA): change “What it is” on its card instead."
+                                                                    if o.get("origin") == "tba" else "."))
     if role not in ROLES: raise ValueError(f"role must be one of {ROLES}")
     if station not in (None, *STATIONS): raise ValueError(f"station must be one of {STATIONS}")
     sid = base = "url-" + hashlib.sha1(c["url"].encode()).hexdigest()[:8]
@@ -525,7 +649,7 @@ def set_url(doc, sid, url, by=None, live=None):
     if s.get("origin") != "admin": raise ValueError("this link comes from TBA: remove it and add yours instead")
     c = _checked(url, live)
     if any(o is not s and o.get("url") == c["url"] and not o.get("dismissed") for o in doc.get("sources", [])):
-        raise ValueError("that link is already listed")
+        raise ValueError("That link is already on this page.")
     old, auto = s.get("url"), {"", s.get("url")}
     try: auto.add(default_label(classify_url(old)))
     except (ValueError, TypeError): pass
