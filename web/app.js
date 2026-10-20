@@ -608,6 +608,8 @@ CS.markActive = k => { shellKey = k; document.querySelectorAll("[data-navkey]").
   .mt-bar .chip { min-height: 36px; font-size: var(--fs-foot); }
   .mt-q { flex: 1 1 200px; max-width: 320px; margin-left: auto; } .mt-q .csin { min-height: 36px; }
   .mt-none { padding: var(--sp-4) 0 var(--sp-2); }
+  .timectl .tc-short { display: none; }
+  @media (max-width: 760px) { .timectl.static .tc-long { display: none; } .timectl.static .tc-short { display: inline; } .timectl.static { padding-right: 4px; } }
   @media (pointer: coarse) { .mt-bar .chip, .mt-q .csin, #gnotice .gn-x { min-height: 44px; } }`;
   document.head.appendChild(st);
 })();
@@ -941,7 +943,7 @@ async function renderTimebar(p, ev) {
   if (seq !== tbSeq) return;
   if (!evj) { el.innerHTML = ""; return; }                                        // not built yet: its page says so
   const lab = latestLabel(ev);
-  const latestTag = () => `<div class="timectl static"><span class="tc-tag">${lab}</span>${CS.help(`<span class="hl">This page uses everything posted so far${lab === "Latest data" ? "" : " (the competition is over)"}, not a replay time.</span><span class="hl">To see the event as it was at a moment, use the time control on the Dashboard, Selection or Picklist.</span>${CS.processing && CS.processing.paused ? `<span class="hl">Processing is paused on the server: nothing new is added until it's turned back on.</span>` : ""}`, "About the data on this page")}</div>`;
+  const latestTag = () => `<div class="timectl static"><span class="tc-tag"><span class="tc-long">${lab}</span><span class="tc-short">${lab === "Latest data" ? "Latest" : "Final"}</span></span>${CS.help(`<span class="hl">This page uses everything posted so far${lab === "Latest data" ? "" : " (the competition is over)"}, not a replay time.</span><span class="hl">To see the event as it was at a moment, use the time control on the Dashboard, Selection or Picklist.</span>${CS.processing && CS.processing.paused ? `<span class="hl">Processing is paused on the server: nothing new is added until it's turned back on.</span>` : ""}`, "About the data on this page")}</div>`;
   if (ts === undefined) { el.innerHTML = latestTag(); return; }
   CS.asofSet(ev, ts);
   const times = await eventTimes(ev, k === "selection" ? "selection" : "dash"); if (seq !== tbSeq) return;

@@ -70,6 +70,7 @@
   .evctl select { min-height: 40px; font-size: var(--fs-body); }
   .evctl #evkey { flex: 1 1 220px; max-width: 340px; }
   @media (max-width: 480px) { .evrow .pill { display: none; } }
+  @media (pointer: coarse) { .cmp-hit .cmp-btn, .evrow button, .csform .pwrow .pwshow { min-height: 44px; } }
   /* wizard: video step */
   .vsl { display: grid; margin: var(--sp-2) 0 0; border-top: 1px solid var(--line); }
   .vsr { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) auto; gap: var(--sp-1) var(--sp-4); align-items: center; padding: var(--sp-3) 0; border-bottom: 1px solid var(--line); }
