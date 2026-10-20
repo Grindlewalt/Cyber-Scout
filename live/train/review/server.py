@@ -3,8 +3,9 @@
     python live/train/review/server.py PROJECT_DIR [--host 127.0.0.1] [--port 7590] [--token T]
 
 or `serve(project_dir, ...)` (cstrain.py review). Reads frames/index.jsonl, labels/auto, labels/import; writes only
-labels/review/<id>.json (temp file + rename). Every request needs the token: `?token=` on the first visit sets a
-cookie, then the URL is clean. Meant for the LAN / Tailscale, never the public tunnel.
+labels/review/<id>.json (temp file + rename; DELETE removes one, for the UI's "Undo" of a save). Every request needs
+the token (except the stylesheet and font of the "no token" page): `?token=` on the first visit sets a cookie, then
+the URL is clean. Meant for the LAN / Tailscale, never the public tunnel.
 """
 import argparse, hmac, http.cookies, json, os, random, re, secrets, socket, sys, tempfile, threading, time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -13,7 +14,8 @@ from urllib.parse import parse_qs, urlsplit
 HERE = os.path.dirname(os.path.abspath(__file__))
 FONT = os.path.normpath(os.path.join(HERE, "..", "..", "..", "web", "fonts", "instrument-sans.woff2"))
 ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
-STATUSES = ("ok", "fixed", "skip", "bad")
+STATUSES = ("ok", "fixed", "skip", "bad")      # the UI saves ok / fixed / bad; skip = files from before Skip saved nothing
+VIEWS = ("F", "M", "?")
 QUEUES = ("uncertain", "gold", "random", "mine", "all")
 MID = (0.25, 0.6)              # "mid-confidence" teacher boxes, for the uncertain queue's tie-break
 MAX_BOXES = 500
@@ -22,6 +24,19 @@ PALETTE = ["#ff7a00", "#00c2b2", "#ff3ea5", "#8b6cff", "#b5d800", "#0a9cff", "#f
 STATIC = {"/": ("index.html", "text/html; charset=utf-8"),
           "/review.js": ("review.js", "text/javascript; charset=utf-8"),
           "/review.css": ("review.css", "text/css; charset=utf-8")}
+PUBLIC = ("/review.css", "/font.woff2")                 # no secrets: the "no token" page is styled with them
+ICON = ("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cdefs%3E%3ClinearGradient "
+        "id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%23ff7a00'/%3E%3Cstop offset='.5' "
+        "stop-color='%23ff3ea5'/%3E%3Cstop offset='1' stop-color='%230a9cff'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect "
+        "width='32' height='32' rx='8' fill='url(%23g)'/%3E%3Crect x='7.5' y='9.5' width='17' height='13' rx='1.5' "
+        "fill='none' stroke='%23fff' stroke-width='3'/%3E%3C/svg%3E")
+NO_TOKEN = """<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark"><title>Label review</title><link rel="icon" href="%s">
+<link rel="stylesheet" href="/review.css"><body class="gate"><main class="gate-card">
+<span class="mark" aria-hidden="true"></span><h1>This review link is incomplete or has expired</h1>
+<p>Ask your mentor for the review link. It is the whole address, ending in <code>?token=</code> and a code.</p>
+<p class="gate-sub">A link you opened before on this device stops working after 30 days, in a private window, or when
+the review server restarts with a new code.</p></main></body></html>""" % ICON
 IMG_TYPES = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".webp": "image/webp"}
 HEADERS = {
     "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer", "X-Frame-Options": "DENY",
@@ -126,6 +141,15 @@ class DirCache:
             self.stamp[k] = (st.st_mtime_ns, st.st_size)
         except OSError:
             pass
+
+
+def clean_name(s):
+    """A reviewer name as stored: letters, digits, space . @ ' - _ (the UI applies the same rule as you type)."""
+    return re.sub(r"[^\w .@'-]", "", str(s or "")).strip()[:40]
+
+
+def _natural(s):
+    return [int(t) if t.isdigit() else t.lower() for t in re.split(r"(\d+)", s)]
 
 
 def _review_summary(d):
@@ -233,6 +257,7 @@ class Project:
             ids = [i for i in ids if i not in rev]
             random.Random(int(seed)).shuffle(ids)
         elif q == "mine":
+            by = clean_name(by)
             ids = [i for i in ids if i in rev and (not by or rev[i]["by"] == by)]
             ids = sorted(ids, key=lambda i: -rev[i]["at"])
         total = len(ids)
@@ -280,7 +305,7 @@ class Project:
             ev = str(r.get("event") or "")
             events.setdefault(ev, set()).add(str(r.get("match") or ""))
         return {"name": self.meta.get("name") or os.path.basename(self.root), "classes": self.classes(),
-                "colors": self.colors(), "events": {e: sorted(m) for e, m in sorted(events.items())},
+                "colors": self.colors(), "events": {e: sorted(m, key=_natural) for e, m in sorted(events.items())},
                 "splits": sorted({str(self.frames[i].get("split") or "") for i in self.order}),
                 "views": sorted({str(self.frames[i].get("view") or "") for i in self.order})}
 
@@ -292,7 +317,7 @@ class Project:
         status = body.get("status")
         if status not in STATUSES:
             raise ValueError("status must be one of " + ", ".join(STATUSES))
-        by = re.sub(r"[^\w .@'-]", "", str(body.get("by") or "")).strip()[:40]
+        by = clean_name(body.get("by"))
         if not by:
             raise ValueError("reviewer name required")
         raw = body.get("boxes") or []
@@ -329,11 +354,34 @@ class Project:
                            for k, v in ((k, d.get(k) or 0) for k in ("added", "removed", "moved"))}
         if isinstance(body.get("conf"), (int, float)) and 0 <= body["conf"] <= 1:
             rec["conf"] = round(float(body["conf"]), 3)
+        h = body.get("hidden")                    # auto boxes the slider left out of this save (the UI says so)
+        if isinstance(h, int) and not isinstance(h, bool) and 0 <= h <= MAX_BOXES:
+            rec["hidden"] = h
+        v = body.get("view")                      # the reviewer's correction of the index's F / M / ? tag
+        if v is not None:
+            if v not in VIEWS:
+                raise ValueError("view must be one of " + ", ".join(VIEWS))
+            rec["view"] = v
         path = os.path.join(self.root, "labels", "review", i + ".json")
         with self.lock:
             write_json_atomic(path, rec)
             self.review.put(i, rec)
         return rec
+
+    def delete_review(self, i):
+        """Back to unreviewed (the UI's Undo of a save that had no earlier review). -> whether a file was removed."""
+        if i not in self.frames:
+            raise KeyError(i)
+        path = os.path.join(self.root, "labels", "review", i + ".json")
+        with self.lock:
+            try:
+                os.unlink(path)
+                gone = True
+            except FileNotFoundError:
+                gone = False
+            self.review.items.pop(i, None)
+            self.review.stamp.pop(i, None)
+        return gone
 
 
 def make_handler(project, token, cookie_name):
@@ -393,11 +441,9 @@ def make_handler(project, token, cookie_name):
                 ck = "%s=%s; Path=/; HttpOnly; SameSite=Strict; Max-Age=2592000" % (cookie_name, token)
                 return self._send(302, b"", "text/plain", {"Location": path or "/", "Set-Cookie": ck,
                                                              "Cache-Control": "no-store"})
-            if not self._authed(qs):
+            if not self._authed(qs) and path not in PUBLIC:
                 if path == "/":
-                    return self._send(401, "<!doctype html><meta charset=utf-8><title>Label review</title>"
-                                      "<p style='font:16px system-ui;margin:3em'>Open the link with <code>?token=</code> "
-                                      "that the review server printed when it started.</p>", "text/html; charset=utf-8")
+                    return self._send(401, NO_TOKEN, "text/html; charset=utf-8", {"Cache-Control": "no-store"})
                 return self._err(401, "token required")
             try:
                 if path in STATIC:
@@ -460,16 +506,37 @@ def make_handler(project, token, cookie_name):
                 data = f.read()
             self._send(200, data, IMG_TYPES[os.path.splitext(p)[1].lower()], hdr)
 
-        # ---- POST
-        def do_POST(self):
-            path, qs = self._route()
+        # ---- POST / DELETE
+        def _write_refused(self, qs):
+            """Answers 401 / 403 and returns True when a write must not go ahead."""
             if not self._authed(qs):
-                return self._err(401, "token required")
-            if (self.headers.get("Content-Type") or "").split(";")[0].strip() != "application/json":
-                return self._err(415, "json only")
+                self._err(401, "token required")
+                return True
             origin = self.headers.get("Origin")
             if origin and urlsplit(origin).netloc != (self.headers.get("Host") or ""):
-                return self._err(403, "cross-origin")
+                self._err(403, "cross-origin")
+                return True
+            return False
+
+        def do_DELETE(self):
+            path, qs = self._route()
+            if self._write_refused(qs):
+                return
+            m = re.match(r"^/api/review/([^/]+)$", path)
+            if not m or not ID_RE.match(m.group(1)):
+                return self._err(404, "not found")
+            try:
+                gone = project.delete_review(m.group(1))
+            except KeyError:
+                return self._err(404, "no such frame")
+            self._send(200, {"id": m.group(1), "deleted": gone})
+
+        def do_POST(self):
+            path, qs = self._route()
+            if self._write_refused(qs):
+                return
+            if (self.headers.get("Content-Type") or "").split(";")[0].strip() != "application/json":
+                return self._err(415, "json only")
             m = re.match(r"^/api/review/([^/]+)$", path)
             if not m or not ID_RE.match(m.group(1)):
                 return self._err(404, "not found")

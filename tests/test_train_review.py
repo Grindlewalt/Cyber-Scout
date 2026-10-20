@@ -219,3 +219,60 @@ def test_http_queue_and_frame(srv, proj):
     assert req(s, "GET", "/api/frame/zzz", headers=AUTH)[0] == 404
     for path in ("/review.js", "/review.css"):
         assert req(s, "GET", path, headers=AUTH)[0] == 200
+
+
+# ---- review UI support: undo (DELETE), view correction, hidden count, names, match order, the no-token page
+def test_delete_review_for_undo(srv, proj):
+    s, project, _ = srv
+    path = os.path.join(proj, "labels", "review", "f1.json")
+    assert req(s, "POST", "/api/review/f1", {"status": "bad", "by": "Ann", "boxes": []}, AUTH)[0] == 200
+    assert "f1" not in [x["id"] for x in project.queue("uncertain")["items"]]
+    assert req(s, "DELETE", "/api/review/f1")[0] == 401
+    assert req(s, "DELETE", "/api/review/f1", headers=dict(AUTH, Origin="http://evil.example"))[0] == 403
+    assert os.path.exists(path)
+    st, _, body = req(s, "DELETE", "/api/review/f1", headers=AUTH)
+    assert st == 200 and json.loads(body) == {"id": "f1", "deleted": True} and not os.path.exists(path)
+    assert "f1" in [x["id"] for x in project.queue("uncertain")["items"]]           # unreviewed again, at once
+    assert json.loads(req(s, "DELETE", "/api/review/f1", headers=AUTH)[2])["deleted"] is False
+    assert req(s, "DELETE", "/api/review/nope", headers=AUTH)[0] == 404
+    assert req(s, "DELETE", "/api/review/..%2Fx", headers=AUTH)[0] == 404
+
+
+def test_view_and_hidden_are_kept(srv, proj):
+    s, _, _ = srv
+    post = lambda b: req(s, "POST", "/api/review/f1", dict({"status": "ok", "by": "a", "boxes": []}, **b), AUTH)[0]
+    assert post({"view": "M", "hidden": 3}) == 200
+    rec = json.load(open(os.path.join(proj, "labels", "review", "f1.json")))
+    assert rec["view"] == "M" and rec["hidden"] == 3
+    assert post({"view": "X"}) == 400
+    assert post({"hidden": -1, "view": None}) == 200
+    rec = json.load(open(os.path.join(proj, "labels", "review", "f1.json")))
+    assert "hidden" not in rec and "view" not in rec
+
+
+def test_mine_uses_the_stored_name_and_natural_match_order(proj):
+    _review(proj, "f1", by="ann")
+    p = rs.Project(proj)
+    assert [x["id"] for x in p.queue("mine", by="ann!")["items"]] == ["f1"]           # "ann!" is stored as "ann"
+    assert rs.clean_name(" ann<b>! ") == "annb"
+    with open(os.path.join(proj, "frames", "index.jsonl"), "a") as f:
+        for m in ("qm10", "qm2", "sf1m1"):
+            f.write(json.dumps(_frame("m" + m, match=m)) + "\n")
+    p.refresh(force=True)
+    assert p.info()["events"]["2026x"] == ["qm1", "qm2", "qm10", "sf1m1"]
+
+
+def test_no_token_page_is_for_students(srv):
+    s, _, _ = srv
+    st, h, body = req(s, "GET", "/")
+    assert st == 401 and b"Ask your mentor" in body and b"review.css" in body and "no-store" in h["Cache-Control"]
+    assert req(s, "GET", "/review.css")[0] == 200                                     # styles the page above
+    assert req(s, "GET", "/review.js")[0] == 401 and req(s, "GET", "/api/stats")[0] == 401
+
+
+def test_empty_overlay_never_takes_the_pointer():
+    """The empty-state layer covers the canvas: `display: flex` beats the hidden attribute unless [hidden] is restated,
+    and it must let pointer events through (it once swallowed every draw, drag, wheel and pinch)."""
+    css = open(os.path.join(ROOT, "live", "train", "review", "review.css")).read()
+    rule = lambda sel: css.split("\n" + sel + " {", 1)[1].split("}", 1)[0]
+    assert "display: none" in rule(".empty[hidden]") and "pointer-events: none" in rule(".empty")

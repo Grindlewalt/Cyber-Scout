@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="light dark">
 <title>Label review</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%23ff7a00'/%3E%3Cstop offset='.5' stop-color='%23ff3ea5'/%3E%3Cstop offset='1' stop-color='%230a9cff'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='32' height='32' rx='8' fill='url(%23g)'/%3E%3Crect x='7.5' y='9.5' width='17' height='13' rx='1.5' fill='none' stroke='%23fff' stroke-width='3'/%3E%3C/svg%3E">
 <link rel="stylesheet" href="/review.css">
 <script src="/review.js" defer></script>
 </head>
@@ -15,7 +16,7 @@
     <div class="brand-t"><b>Label review</b><span id="projName">…</span></div>
   </div>
   <nav class="queues" id="queues" aria-label="Queue">
-    <button data-q="uncertain" class="q on" title="Most uncertain teacher output first">Uncertain</button>
+    <button data-q="uncertain" class="q on" title="Frames the models are least sure about, first">Uncertain</button>
     <button data-q="gold" class="q" title="Unreviewed test / val frames: the gold set the model is scored on">Gold set</button>
     <button data-q="random" class="q" title="Unreviewed, shuffled">Random</button>
     <button data-q="mine" class="q" title="Frames you reviewed, newest first">Mine</button>
@@ -29,8 +30,8 @@
   <div class="tools">
     <label class="who" title="Your name goes on every label you save"><span>Reviewer</span>
       <input id="who" maxlength="40" placeholder="your name" autocomplete="nickname" spellcheck="false"></label>
-    <button id="themeBtn" class="ib" title="Theme: system / light / dark" aria-label="Theme">◐</button>
-    <button id="helpBtn" class="ib" title="Keyboard shortcuts (?)" aria-label="Keyboard shortcuts">?</button>
+    <button id="themeBtn" class="ib" title="Theme: system / light / dark" aria-label="Theme"></button>
+    <button id="helpBtn" class="ib txt" title="What to box, and the keyboard shortcuts (?)" aria-label="Guide: what to box and shortcuts"><b aria-hidden="true">?</b> Guide</button>
   </div>
 </header>
 
@@ -38,7 +39,7 @@
   <section class="stage-wrap">
     <div class="stagebar">
       <div class="classes" id="classes" role="radiogroup" aria-label="Class for new boxes"></div>
-      <label class="conf" title="Teacher boxes under this confidence are hidden and left out when you accept">
+      <label class="conf" id="confWrap" title="Auto boxes under this confidence are hidden, and left out when you save (the side panel counts them). Starts at 0.25 on every visit.">
         <span>Hide auto under</span>
         <input id="conf" type="range" min="0" max="0.95" step="0.05" value="0.25">
         <output id="confOut">0.25</output>
@@ -51,9 +52,22 @@
       </div>
     </div>
     <div class="stage" id="stage">
-      <canvas id="cv" aria-label="Frame with boxes; drag to draw a box"></canvas>
-      <div class="empty" id="empty" hidden></div>
+      <canvas id="cv" tabindex="0" aria-label="Frame with boxes: drag to draw a box, drag a box to move it, [ and ] select boxes"></canvas>
+      <div class="empty" id="empty" hidden><p id="emptyMsg"></p><button id="clearFilters" class="mid" hidden>Clear filters</button></div>
+      <div class="hud">
+        <p class="note" id="note" hidden></p>
+        <div class="toast" id="toast" role="status" aria-live="polite"><span id="toastMsg"></span><button id="toastUndo" class="tb" hidden>Undo</button></div>
+      </div>
       <div class="spin" id="spin" hidden></div>
+      <div class="confirm" id="confirm" role="alertdialog" aria-modal="true" aria-labelledby="cfT" aria-describedby="cfD" tabindex="-1" hidden>
+        <h2 id="cfT">No robots in this frame?</h2>
+        <p id="cfD">Saving it with no boxes teaches the model that nothing here is a robot. Any robot you can see but did not box is learned as background.</p>
+        <p class="cf-extra" id="cfExtra" hidden></p>
+        <div class="row">
+          <button id="cfYes" class="mid go">No robots here <kbd>N</kbd></button>
+          <button id="cfNo" class="mid">Cancel <kbd>Esc</kbd></button>
+        </div>
+      </div>
     </div>
   </section>
 
@@ -68,25 +82,23 @@
     </div>
 
     <div class="card actions">
-      <button id="accept" class="big go" title="Accept (A / Enter)"><span>Accept</span><kbd>A</kbd></button>
+      <button id="accept" class="big go" title="Accept (A / Enter): saves the boxes shown (ok if unchanged, fixed if edited)"><span>Accept</span><kbd>A</kbd></button>
       <div class="row">
-        <button id="prev" class="mid" title="Previous (←)">← Prev</button>
-        <button id="next" class="mid" title="Next without saving (→)">Next →</button>
+        <button id="prev" class="mid" title="Previous frame (←)">← Prev</button>
+        <button id="skip" class="mid" title="Skip for now (S or →): saves nothing, the frame stays in the queue for later">Skip <kbd>S</kbd></button>
+        <button id="bad" class="mid warn" title="Bad frame (B): replay, graphics, black or unusable. Saved as bad: kept out of training">Bad <kbd>B</kbd></button>
       </div>
       <div class="row">
-        <button id="skip" class="mid" title="Skip: not training data for now (S)">Skip <kbd>S</kbd></button>
-        <button id="bad" class="mid warn" title="Bad frame: replay, graphics, black (B)">Bad <kbd>B</kbd></button>
-      </div>
-      <div class="row">
-        <button id="undo" class="mid" title="Undo (Ctrl+Z)">Undo</button>
-        <button id="reset" class="mid" title="Back to the auto boxes (R)">Reset</button>
+        <button id="undo" class="mid" title="Undo the last box edit (Ctrl+Z)">Undo</button>
+        <button id="reset" class="mid" title="Back to the frame's original boxes, imported or auto (R)">Reset</button>
         <button id="del" class="mid" title="Delete the selected box (Delete)">Delete box</button>
       </div>
-      <p class="diffline" id="diffLine"></p>
     </div>
 
     <div class="card boxes">
       <h3>Boxes <span id="nBoxes">0</span></h3>
+      <p class="diffline" id="diffLine"></p>
+      <div class="drafts" id="drafts" hidden></div>
       <ol id="boxList"></ol>
     </div>
 
@@ -95,40 +107,58 @@
       <div class="big-n"><b id="pReviewed">0</b><span>/ <span id="pTotal">0</span> reviewed</span></div>
       <div class="bars" id="pSplits"></div>
       <div class="chips" id="pStatus"></div>
+      <p class="diffline" id="pMine"></p>
       <p class="diffline" id="pDiff"></p>
     </div>
   </aside>
 </main>
 
-<div class="toast" id="toast" role="status" aria-live="polite"></div>
-
 <div class="help" id="help" hidden>
   <div class="help-card" role="dialog" aria-modal="true" aria-labelledby="helpT">
-    <h2 id="helpT">Shortcuts</h2>
+    <h2 id="helpT">What to box</h2>
+    <p class="conv">The team's convention. Ask the lead mentor if unsure.</p>
+    <ul class="rules">
+      <li><b>Every robot you can see:</b> one box around the whole visible robot, bumpers included, tight to its edges.</li>
+      <li><b>Partly hidden</b> (behind the hub, a referee or another robot): box the part you can see.</li>
+      <li><b>Cut off at the edge of the frame:</b> box it up to the edge.</li>
+      <li><b>Never box as a robot:</b> people, carts, field structures (hub, walls, corrals) or the team icons in the score overlay.</li>
+      <li><b>Not sure</b> about robots off the field (the queue line) or close-ups from the broadcast? Ask the lead mentor, or <b>Skip</b> the frame.</li>
+    </ul>
+    <h3>The buttons</h3>
+    <dl class="verbs">
+      <dt>Accept <kbd>A</kbd></dt><dd>Saves the boxes you see. Nothing to box? Accept, then confirm “No robots here” with <kbd>N</kbd>.</dd>
+      <dt>Skip <kbd>S</kbd></dt><dd>Come back later: saves nothing, the frame stays in the queue (it comes back when you reload).</dd>
+      <dt>Bad <kbd>B</kbd></dt><dd>Replay, graphics, black or unusable: saved as bad and kept out of training. Undo in the message, or go back and Accept.</dd>
+    </dl>
+    <ul class="legend">
+      <li><span class="lg auto"></span><span>Auto: the models' boxes, tagged with their confidence (.73)</span></li>
+      <li><span class="lg guess"></span><span>Guess: a bumper-colour proposal. Not saved unless you keep it (<kbd>K</kbd>, the Keep button, or move it)</span></li>
+      <li><span class="lg rev"></span><span>Solid: reviewed, imported, or drawn by you</span></li>
+    </ul>
+    <h3>Shortcuts</h3>
     <div class="help-cols">
       <dl>
         <dt><kbd>A</kbd> <kbd>Enter</kbd></dt><dd>Accept and go on (ok if unchanged, fixed if edited)</dd>
-        <dt><kbd>S</kbd></dt><dd>Skip: leave it out of training</dd>
-        <dt><kbd>B</kbd></dt><dd>Bad frame (replay, graphics, black)</dd>
-        <dt><kbd>←</kbd> <kbd>→</kbd></dt><dd>Previous / next without saving</dd>
+        <dt><kbd>S</kbd> <kbd>→</kbd></dt><dd>Skip for now (saves nothing)</dd>
+        <dt><kbd>←</kbd></dt><dd>Previous frame</dd>
+        <dt><kbd>B</kbd></dt><dd>Bad frame: keep it out of training</dd>
         <dt><kbd>1</kbd>–<kbd>9</kbd></dt><dd>Class for new boxes (and the selected box)</dd>
-        <dt><kbd>Tab</kbd></dt><dd>Select the next box</dd>
+        <dt><kbd>[</kbd> <kbd>]</kbd></dt><dd>Select the previous / next box</dd>
+        <dt>Arrows</dt><dd>With a box selected: nudge it (<kbd>Shift</kbd>: 10 px)</dd>
         <dt><kbd>Delete</kbd></dt><dd>Delete the selected box</dd>
-        <dt><kbd>Alt</kbd>+arrows</dt><dd>Nudge the selected box (Shift: 10 px)</dd>
+        <dt><kbd>K</kbd></dt><dd>Keep the selected bumper guess as a robot</dd>
       </dl>
       <dl>
-        <dt>Drag</dt><dd>On empty space: draw a box. On a box: move. On a handle: resize</dd>
-        <dt><kbd>Z</kbd></dt><dd>Zoom in at the pointer / back to fit</dd>
-        <dt>Wheel / pinch</dt><dd>Zoom; <kbd>Space</kbd>+drag, right-drag or two fingers: pan</dd>
-        <dt><kbd>F</kbd></dt><dd>Fit the frame</dd>
+        <dt>Drag</dt><dd>On empty space: draw a box. On a box: move it. On a handle: resize. <kbd>Shift</kbd>+drag: draw, even on a box</dd>
+        <dt>Pinch, <kbd>Ctrl</kbd>+scroll</dt><dd>Zoom (a mouse wheel zooms too)</dd>
+        <dt>Trackpad scroll</dt><dd>Pan when zoomed in; also <kbd>Space</kbd>+drag, right-drag or two fingers</dd>
+        <dt><kbd>Z</kbd> / <kbd>F</kbd></dt><dd>Zoom in at the pointer / fit the frame</dd>
         <dt><kbd>H</kbd> (hold)</dt><dd>Hide all boxes</dd>
-        <dt><kbd>R</kbd></dt><dd>Reset to the auto boxes</dd>
-        <dt><kbd>Ctrl</kbd>+<kbd>Z</kbd></dt><dd>Undo (<kbd>Shift</kbd>: redo)</dd>
+        <dt><kbd>R</kbd></dt><dd>Reset to the original boxes</dd>
+        <dt><kbd>Ctrl</kbd>+<kbd>Z</kbd></dt><dd>Undo (<kbd>Shift</kbd>: redo); right after a save: undo the save</dd>
         <dt><kbd>Esc</kbd></dt><dd>Deselect / close this</dd>
       </dl>
     </div>
-    <p class="legend"><span class="lg auto"></span>auto (teacher, with confidence) <span class="lg imp"></span>imported
-      <span class="lg rev"></span>reviewed / edited</p>
     <button id="helpClose" class="mid">Close</button>
   </div>
 </div>
