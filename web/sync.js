@@ -896,7 +896,7 @@
     const b = e.target.closest && e.target.closest("[data-sugg]"); if (!b) return;
     const f = b.closest("form, .cx-v"), i = f && f.querySelector("input"); if (i) { i.value = b.dataset.sugg; i.focus(); }
   });
-  const CLIENT_START = `Start it again: open <b>Cyber-Scout Client</b> (or run <span class="code">python3 client/cyberscout_client.py</span> in its folder), then reload this page. Your data and the changes you made are kept on this computer.`;
+  const CLIENT_START = `Start it again: open “Cyber-Scout Client” (or run <span class="code">python3 client/cyberscout_client.py</span> in its folder), then reload this page. Your data and the changes you made are kept on this computer.`;
   /** bytes the Client keeps (the same total in the sheet and in Settings) */
   const clientBytes = st => { const g = (st && st.storage) || {}, ev = (st && st.events) || [];
     const data = g.api_bytes != null ? g.api_bytes : ev.reduce((a, e) => a + (e.bytes || 0), 0), media = g.media_bytes != null ? g.media_bytes : ev.reduce((a, e) => a + (e.media_bytes || 0), 0);
@@ -1077,7 +1077,7 @@
       if (st.server && s !== st.server) {
         // queued changes belong to the server they were written for: the Client keeps them for it, never sends them
         // to the new one (CLIENT-24)
-        const q = n ? ` ${plural(n, "change")} still waiting for ${S.host(st.server)} stay on this computer: they're sent only to ${S.host(st.server)}, when you switch back to it.` : "";
+        const q = n ? ` ${plural(n, "change")} still waiting for ${S.host(st.server)} ${n === 1 ? "stays" : "stay"} on this computer: ${n === 1 ? "it's" : "they're"} sent only to ${S.host(st.server)}, when you switch back to it.` : "";
         if ((st.signed_in || n) && !confirm(`Switch to ${S.host(s)}?${q}${st.signed_in ? ` You'll sign in again on ${S.host(s)}.` : ""}`)) return;
       }
       try { await putConfig({ server: s }); say("good", `${CS.icon("check", "ico")}<span>Saved. ${S.status && S.status.signed_in ? "Syncing…" : "Now sign in."}</span>`); if (S.status && !S.status.signed_in && CS.reauth) setTimeout(CS.reauth, 600); }
