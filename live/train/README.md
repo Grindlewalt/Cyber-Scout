@@ -27,7 +27,8 @@ $TRAIN_DIR/<project>/
   cameras/<event>.json     the event's camera.json, copied at harvest (ROI crops, bglabel)
   labels/auto/<id>.json    teacher pseudo-labels: boxes [{c, b: [x0,y0,x1,y1] px, p, n, src}], u (0..1), teacher
   labels/import/<id>.json  human labels from an imported public set
-  labels/review/<id>.json  human gold from the review UI: boxes, status ok | fixed | skip | bad, by, at
+  labels/review/<id>.json  human gold from the review UI: boxes, status ok | fixed | bad (skip: older files), by, at,
+                           diff, conf, hidden (auto boxes the slider left out), view (the reviewer's F / M fix)
   datasets/<name>/         YOLO layout (hard links), data.yaml, manifest.json
   runs/<name>/             ultralytics run, cstrain.json, report.json (eval)
   models/<name>/           robot.onnx (production format), robot.pt, card.json
@@ -62,13 +63,38 @@ lands in one split, a hash of event/match), so near-identical neighbouring frame
    median plate; on program feeds it over-proposes, so it is skipped there); they are never labels, they only flag
    the frame for review. `.onnx` teachers run through `live/detector.py` exactly like the worker.
 5. **review** — `$T review --project P --host 0.0.0.0` on the training box, then open the printed token URL from the
-   LAN / Tailscale (never through the public tunnel). No `--token` = a random one; the first visit sets a cookie;
-   curl sends `X-Review-Token`. Queues: **Uncertain** (by `u`), **Gold set** (unreviewed test, then val frames: the
-   only honest yardstick), **Random**, **Mine**, **All**, with event / match / split filters. Also
-   `python live/train/review/server.py PROJECT --host 0.0.0.0 --port 7590 [--token T]`.
+   LAN / Tailscale (never through the public tunnel). No `--token` = a random one; the first visit sets a cookie
+   (30 days); curl sends `X-Review-Token`. A student without the cookie gets "ask your mentor for the review link".
+   Also `python live/train/review/server.py PROJECT --host 0.0.0.0 --port 7590 [--token T]`.
+   - **Queues:** **Uncertain** (by `u`; frames with no labels at all first, imported human labels last), **Gold set**
+     (unreviewed test, then val frames: the only honest yardstick), **Random**, **Mine**, **All**, with event / match /
+     split filters. The frame card shows how many are left and how many you saved this session.
+   - **What to box** (the Guide button; the team's convention, ask the lead mentor if unsure): one box around the
+     whole visible robot, bumpers included, tight to its edges; partly hidden robots: the visible part; cut off by the
+     frame edge: up to the edge; never people, carts, field structures or the score overlay's team icons. Robots off
+     the field (queue line) and broadcast close-ups: ask the lead mentor, or Skip.
+   - **Accept** (`A`) saves the boxes shown: `ok` if unchanged, `fixed` if edited. Saving **no boxes** needs a second,
+     separate confirmation ("No robots here", `N`): an empty frame teaches the model that nothing in it is a robot.
+     **Skip** (`S` / `→`) saves nothing: the frame stays in the queue and comes back after a reload. **Bad** (`B`)
+     saves `bad`: replay, graphics, black or unusable, kept out of training. Every save's message has **Undo** (also
+     `Ctrl+Z` while it shows): the review file goes back to what it was (or is deleted) and the frame reopens with
+     your edits. A frame marked bad (or an old `skip`) reopens on its imported / auto boxes, so Accept keeps them.
+   - **Hide auto under** (starts at 0.25 every visit) hides teacher boxes below it, and a save leaves them out: the
+     side panel says how many, auto boxes from 0.25 up that the slider hides count as `removed`, and the review file
+     records `hidden` (how many were left out) and `conf`.
+   - **Bumper guesses** (bglabel proposals, grey dotted "guess?") are never saved unless the reviewer keeps one (`K`,
+     the Keep button, or moving / resizing it), which saves it as a drawn box.
+   - Leaving a frame with unsaved edits (Skip, Prev, a queue or filter change) keeps them as a **draft** in the page
+     (listed in the side panel; closing the page asks first). Held keys never save: `A` / `B` / `N` ignore auto-repeat.
+   - **View**: the Fixed / Moving toggle corrects a wrong camera tag; it is saved as `view` in the review file (only
+     when it differs from the index). *build / eval still read the index's `view`.*
+   - Touch (iPad): one finger draws / moves, two fingers pinch and pan; Undo, Reset and Delete box stay in the bottom
+     bar. Trackpad: pinch zooms, two-finger scroll pans when zoomed in; a mouse wheel zooms. `Shift`+drag draws a box
+     even when it starts inside another box.
 6. **build** — `$T build d1 --project P --test-events 2026wagg --dup review=3`. Labels per frame: review
-   (`ok` / `fixed`) > import > auto (boxes with `p >= --auto-min-conf` 0.45). A review marked `skip` / `bad`
-   drops the frame (extra review fields such as `diff`, `conf` are ignored). For **train** only, auto frames are left
+   (`ok` / `fixed`) > import > auto (boxes with `p >= --auto-min-conf` 0.45). A review marked `bad` (or `skip`, written
+   before Skip stopped saving) drops the frame (extra review fields such as `diff`, `conf`, `hidden`, `view` are
+   ignored). For **train** only, auto frames are left
    out when a box sits just under the bar (`--auto-mid` 0.3 ≤ p < 0.45: probably a robot the model would learn as
    background), when an unreviewed bglabel proposal is in them, or when `u > --auto-max-u` (off). Val / test keep every
    frame (filtering them would flatter the model). Public sets go to train (`--public-val` keeps their val split).
