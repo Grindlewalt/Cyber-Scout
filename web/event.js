@@ -420,8 +420,9 @@ async function picklistPane(el, d, ev) {
   async function poll() {
     if (!plShared() || document.hidden || !el.isConnected || busy()) return;
     if ((plSt[ev] || {}).k !== "saved" || plTimers[ev] || plChain[ev]) return;
-    let r; try { r = await CS.app("GET", plPath(ev)); } catch (e) { return; }
     const m = plMeta[ev] || {};
+    // no team list yet: ask the list endpoint (an empty list, not a 404 in the console every 20 s)
+    let r; try { r = m.version == null ? ((await CS.app("GET", `events/${ev}/picklists`)) || []).find(x => x.name === PL_NAME) : await CS.app("GET", plPath(ev)); } catch (e) { return; }
     if (!r || r.version == null || r.version === m.version || (plSt[ev] || {}).k !== "saved" || plTimers[ev] || plChain[ev] || !el.isConnected) return;
     plAdopt(ev, r); use(r.data); fresh = { at: r.updated_at }; hist.items = null;
     render();
