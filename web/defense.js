@@ -57,6 +57,7 @@
   .dx-cb{padding:var(--sp-2) var(--sp-3) var(--sp-3);font-size:12.5px;display:flex;flex-direction:column;gap:4px}
   .dx-ct{display:flex;justify-content:space-between;gap:6px;align-items:center}
   .dx-ct b{font-variant-numeric:tabular-nums}
+  .dx-dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin:0 4px 0 2px;vertical-align:0;box-shadow:0 0 0 1px color-mix(in srgb,var(--ink) 25%,transparent)}
   .dx-cs{color:var(--muted);font-size:12px}
   .dx-ce{display:flex;gap:8px;align-items:center;font-variant-numeric:tabular-nums;font-size:12px;flex-wrap:wrap}
   .dx-cl{display:flex;gap:8px;align-items:center;font-size:12.5px}
@@ -220,8 +221,14 @@
       <span class="hl"><b>This event:</b> ${G.n ?? 0} episodes detected · ${G.tested ?? 0} with ≥ 2 pts at stake (testable) · ${G.succ ?? 0} clearly reduced output · ${G.sig ?? 0} significant after multiple testing · defended output ${pc(G.ratio)} of expected (${G.ratio_ci ? pc(G.ratio_ci[0]) + "–" + pc(G.ratio_ci[1]) : "–"}, bootstrap 90%)${EVR ? ` · placebo-controlled retention ${pc(EVR.est)} (${pc(EVR.lo)}–${pc(EVR.hi)}) over ${TM.placebo_windows} placebo windows` : ""} · placebo windows score ${pc(PL.pooled_ratio)} with ${pc(PL.rate)} false "clearly reduced" calls (calibration).</span>
       <span class="hl"><b>Read per-team numbers as anecdotes until n ≥ 3.</b> ${TM.discoveries ?? 0} of ${TM.tests ?? 0} team estimates are significant after multiple testing.</span>
       <span class="hl"><b>Matches used (${(d.matches || []).length} verified):</b> ${esc((d.matches || []).map(shortKey).join(", "))}.</span>`;
-    const evLine = `Defended scorers kept <b>${EVR ? pc(EVR.est) : pc(G.ratio)}</b> of their expected output across the event <span class="muted">(${EVR ? `${pc(EVR.lo)}–${pc(EVR.hi)}, placebo-controlled` : G.ratio_ci ? `${pc(G.ratio_ci[0])}–${pc(G.ratio_ci[1])}` : ""}; ${G.tested ?? 0} testable episodes)</span>${TM.discoveries === 0 ? `; no single team's effect is significant yet` : ""}. ${CS.help(evHelp, "How the defense numbers are measured")}`;
-    const effHelp = `<span class="hl">Each clip is a top-down replay of the episode: the <b style="color:${C_D}">defender</b> and the <b style="color:${C_T}">target</b> are circled, the yellow strip on the time bar is the episode. Click a clip to pause.</span>
+    // the event-wide claim needs evidence behind it: below 3 testable episodes there is no headline number (MATCH-17, SETUP-11);
+    // an interval that still includes "no effect" says so; the interval is only printed when there is one
+    const nT = G.tested ?? 0, eps_ = n => `${n} testable episode${n === 1 ? "" : "s"}`;
+    const ci = EVR ? [EVR.lo, EVR.hi] : G.ratio_ci || null, est = EVR ? EVR.est : G.ratio;
+    const evLine = nT < 3 || est == null
+      ? `<b>Too few defended episodes to say how much defense slows scorers here</b> <span class="muted">(${eps_(nT)}${nT ? "; at least 3 are needed for an estimate" : ""})</span>. The clips below are single examples, not a measurement. ${CS.help(evHelp, "How the defense numbers are measured")}`
+      : `Defended scorers kept <b>${pc(est)}</b> of their expected output across the event <span class="muted">(${ci ? `${pc(ci[0])}–${pc(ci[1])}${EVR ? ", placebo-controlled" : ""}; ` : ""}${eps_(nT)}${ci && ci[1] >= 1 ? "; not significant: the range includes no effect" : ""})</span>${TM.discoveries === 0 ? `; no single team's effect is significant yet` : ""}. ${CS.help(evHelp, "How the defense numbers are measured")}`;
+    const effHelp = `<span class="hl">Each clip is a top-down replay of the episode: the <i class="dx-dot" style="background:${C_D}" aria-hidden="true"></i><b>defender</b> and the <i class="dx-dot" style="background:${C_T}" aria-hidden="true"></i><b>target</b> are circled, the yellow strip on the time bar is the episode. Click a clip to pause.</span>
       <span class="hl"><b>Effect bar:</b> the grey band is the 90% range of the target's points in comparable undefended windows of the same length, the tick is their mean (expected), the dot is what it actually scored while defended (green = below the band).</span>
       <span class="hl"><b>Clearly reduced</b> = ≥ 2 points expected, ≤ 50% scored, one-sided p ≤ 0.10; <b>✓ significant</b> = p ≤ 0.05 and Benjamini-Hochberg q ≤ 0.2 across all testable episodes. With ~2 matches per team single episodes are noisy: on placebo windows the "clearly reduced" rule fires ${pc(PL.rate)} of the time. Inactive-hub episodes are judged on shot attempts.</span>`;
 
@@ -256,7 +263,7 @@
     function cardHTML(x) {
       return `<div class="dx-clip ${x.verdict === "success" ? "success" : ""}${focus === x.id ? " focus" : ""}" id="dx-${x.id}">
         <canvas data-id="${x.id}" title="click to pause"></canvas>
-        <div class="dx-cb"><div class="dx-ct"><span><b style="color:${C_D}">${tn(x.defender)}</b> on <b style="color:${C_T}">${tn(x.target)}</b></span>${vpill(x)}</div>
+        <div class="dx-cb"><div class="dx-ct"><span><i class="dx-dot" style="background:${C_D}" aria-hidden="true"></i><b>${tn(x.defender)}</b> on <i class="dx-dot" style="background:${C_T}" aria-hidden="true"></i><b>${tn(x.target)}</b></span>${vpill(x)}</div>
           <div class="dx-cs">${x.m} · ${SH(x.shift)}${x.active ? "" : " (hub inactive)"} · ${f1(x.dur)} s · ${x.method} · ${H(x.zone)} ${x.side}${x.double ? " · double-team" : ""}${x.maybe_collecting ? ` · <span class="dx-v warn" title="defender spent most of the episode in the target's outpost corner with little contact: it may have been collecting spilled fuel rather than defending">maybe collecting</span>` : ""}</div>
           <div class="dx-ce">${effGlyph(x.effect)}<span>${effText(x.effect)}</span></div>
           <div class="dx-cl"><a href="#/${ev}/a/${x.key}?t=${f1(x.clip.v0)}">Watch at ${f1(x.t_match, 0)} s</a>
@@ -289,7 +296,8 @@
           <span class="hl">${meas ? "Measured: defense reliably cuts this team's output." : `Not significant: use the event-wide ${EVR ? pc(EVR.est) : ""} (an assumption) rather than this team's own number.`}</span>`
         : `<span class="hl">Fewer than 3 testable episodes: no team-specific estimate${EVR ? `; plan with the event-wide placebo-controlled retention ${pc(EVR.est)} (${pc(EVR.lo)}–${pc(EVR.hi)}), an assumption` : ""}.</span>`;
       const base = `<span class="hl">Baseline: ${B.pts_per_active_s != null ? f1(B.pts_per_active_s * 60) : "–"} pts per active-hub minute over ${f1(B.active_s, 0)} s of free active time (${f1(B.free_s, 0)} s free teleop). Defended: ${R.n} episodes, output ${pc(R.ratio)} of expected${R.ci ? ` (90% CI ${pc(R.ci[0])}–${pc(R.ci[1])})` : ""}.</span>`;
-      const defs = (t.defenders || []).filter(x => x.tested).sort((a, b) => (a.ratio ?? 9) - (b.ratio ?? 9)).slice(0, 3);
+      const defs = (t.defenders || []).filter(x => x.tested >= 3).sort((a, b) => (a.ratio ?? 9) - (b.ratio ?? 9)).slice(0, 3);
+      const thin = (t.defenders || []).filter(x => x.tested && x.tested < 3);
       const row = (k, p) => `<tr><td>${H(k)}</td><td class="num">${p.n}</td><td class="num">${p.tested}</td><td class="num">${p.succ}${p.sig ? ` (${p.sig}✓)` : ""}</td><td class="num">${p.obs}/${f1(p.exp)}</td><td class="num">${pc(p.ratio)}</td></tr>`;
       const tbl = (title, obj) => { const e2 = Object.entries(obj || {}).filter(([, p]) => p.n); return e2.length ? `<div class="tablewrap"><table class="dx-tbl"><thead><tr><th>${title}</th><th class="num" title="episodes">Ep.</th><th class="num" title="testable episodes">Test.</th><th class="num" title="clearly reduced">Clear</th><th class="num">Pts obs/exp</th><th class="num">Output</th></tr></thead><tbody>${e2.map(([k, p]) => row(k, p)).join("")}</tbody></table></div>` : ""; };
       el.innerHTML = `<section class="card dx-ans" aria-labelledby="dxAnsH">
@@ -298,13 +306,16 @@
         <div class="dx-ret"><div class="dx-retn"><b>${rr ? pc(rr.est) : pc(R.ratio)}</b><span>of its scoring kept when defended</span></div>
           <div class="dx-retb">${retBar(rr, R.ratio ?? 1)}<div class="dx-rett">${rr ? `90% range ${pc(rr.lo)}–${pc(rr.hi)}` : `raw, ${R.tested ?? 0} testable episode${R.tested === 1 ? "" : "s"}`} ${tag} ${CS.help(retHelp + base, "How sure is this?")}</div></div></div>
         ${(t.advice || []).length ? `<ul class="dx-adv">${t.advice.map(a => `<li>${H(a)}</li>`).join("")}</ul>` : ""}
-        ${defs.length ? `<div class="dx-defs"><span class="muted">Defenders that slowed it most:</span> ${defs.map(x => `<b>${tn(x.team)}</b> <span class="muted">${pc(x.ratio)} kept, ${x.tested} testable</span>`).join(" · ")}</div>` : ""}
+        ${defs.length ? `<div class="dx-defs"><span class="muted">Defenders that slowed it most:</span> ${defs.map(x => `<b>${tn(x.team)}</b> <span class="muted">${pc(x.ratio)} kept, ${x.tested} testable</span>`).join(" · ")}</div>`
+          : thin.length ? `<div class="dx-defs"><span class="muted">Defended by</span> ${thin.map(x => `<b>${tn(x.team)}</b>`).join(", ")} <span class="muted">(${thin.length === 1 ? "only" : "each"} fewer than 3 testable episodes: too few to rank who slowed it most)</span></div>` : ""}
         <details class="dx-more2"><summary>By method, place and hub state</summary><div class="dx-3">${tbl("Method", t.by_method)}${tbl("Where", t.by_zone)}${tbl("Hub state", t.by_state)}</div></details>
       </section>`;
     }
     function overview() {
       const rows = Object.entries(RET).filter(([k]) => (d.targets || {})[k]).sort((a, b) => a[1].est - b[1].est);
       const X = v => Math.max(0, Math.min(100, v / 1.5 * 100)).toFixed(1);
+      if (!rows.length) return `<section class="card dx-ans"><div class="dx-ah"><h2>Who is easiest to slow down</h2></div>
+        <p class="muted">No team has 3 or more testable defended episodes yet, so there's no per-team estimate.${targets.length ? " Pick a team above to see the episodes that were found." : ""}</p></section>`;
       return `<section class="card dx-ans"><div class="dx-ah"><h2>Who is easiest to slow down</h2>${CS.help("Teams with at least 3 testable defended episodes, lowest placebo-controlled retention first. The bar is the 90% range; the tick at 100% means defense made no difference. Wide bars are honest: most teams have only a few episodes.", "How to read this list")}</div>
         <ol class="dx-rank">${rows.slice(0, 8).map(([k, r]) => `<li><button type="button" data-pick="${H(k)}"><span class="dx-rk">${tn(k)}</span><span class="dx-nick muted">${H(nick[k] || "")}</span>
           <span class="dx-rb sm" aria-hidden="true"><i class="rg" style="left:${X(r.lo)}%;width:${Math.max(1, X(r.hi) - X(r.lo))}%"></i><i class="one" style="left:${X(1)}%"></i><i class="mn" style="left:${X(r.est)}%"></i></span>
