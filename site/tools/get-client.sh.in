@@ -60,7 +60,7 @@ main() {
     rm -f "$PLIST"
     if user_systemd; then systemctl --user disable "$UNIT" >/dev/null 2>&1 || true; rm -f "$UDIR/$UNIT"
       systemctl --user daemon-reload >/dev/null 2>&1 || true; fi
-    rm -f "$BIN"; rmdir "$DIR/logs" "$DIR" 2>/dev/null || true
+    rm -f "$BIN" "$LOG"; rmdir "$DIR/logs" "$DIR" 2>/dev/null || true
     bold "Removed the Cyber-Scout Client."
     info "Its data folder stays: $DDIR (your local copy of the server's data and any changes not sent yet)."
     return 0
@@ -156,9 +156,11 @@ main() {
 stop_running() {
   if [ "$OS" = Darwin ]; then launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
   elif user_systemd; then systemctl --user stop "$UNIT" 2>/dev/null || true; fi
-  local pids; pids="$(pgrep -f "$BIN" 2>/dev/null || true)"          # one started by hand / --no-autostart
+  # one started by hand / --no-autostart: the command line must start with the program (never a shell mentioning it)
+  local re pids; re="^$(printf '%s' "$BIN" | sed 's/[][\.*^$+?(){}|]/\\&/g')( |\$)"
+  pids="$(pgrep -f "$re" 2>/dev/null || true)"
   [ -z "$pids" ] || kill $pids 2>/dev/null || true
-  for _ in $(seq 1 20); do pgrep -f "$BIN" >/dev/null 2>&1 || break; sleep 0.25; done
+  for _ in $(seq 1 20); do pgrep -f "$re" >/dev/null 2>&1 || break; sleep 0.25; done
 }
 user_systemd() { have systemctl && systemctl --user show-environment >/dev/null 2>&1; }
 need() { [ $# -ge 2 ] || die "$1 needs a value"; }
