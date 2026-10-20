@@ -1153,8 +1153,8 @@ def env_values(text):
 
 def env_edit(text, changes):
     """.env text with `changes` applied: a key's last assignment is replaced (earlier duplicates dropped), a None value
-    removes the key (back to the compose default), a new key is appended under ENV_MARK. Comments and every other
-    line stay as they are."""
+    removes the key (back to the compose default), a new key is appended under ENV_MARK (dropped again once nothing is
+    left under it). Comments and every other line stay as they are."""
     lines = text.splitlines()
     where = {}
     for i, line in enumerate(lines):
@@ -1173,6 +1173,10 @@ def env_edit(text, changes):
         if ENV_MARK not in out:
             out += ([""] if out and out[-1].strip() else []) + [ENV_MARK]
         out += new
+    if out and out[-1] == ENV_MARK:                         # nothing left under it: back to the file as it was
+        out.pop()
+        if out and not out[-1].strip():
+            out.pop()
     return "\n".join(out) + "\n" if out else ""
 
 

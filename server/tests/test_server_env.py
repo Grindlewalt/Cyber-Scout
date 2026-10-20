@@ -168,6 +168,12 @@ def test_env_values_and_edit():
     assert UPD.env_edit(ENV_TEXT, {}) == ENV_TEXT
     assert UPD.env_edit("", {"TZ": "UTC"}) == UPD.ENV_MARK + "\nTZ=UTC\n"
     assert UPD.env_edit("TZ=UTC\n", {"TZ": None}) == ""
+    # the last Admin-set key removed: the marker (and the blank line before it) go too, so .env is as it was
+    base = "TZ=UTC\nPUID=1000\n"
+    added = UPD.env_edit(base, {"YT_FORCE_IPV4": "1"})
+    assert added == base + "\n" + UPD.ENV_MARK + "\nYT_FORCE_IPV4=1\n"
+    assert UPD.env_edit(added, {"YT_FORCE_IPV4": None}) == base
+    assert UPD.env_edit(UPD.ENV_MARK + "\nX=1\n", {"X": None}) == ""
 
 
 def test_updater_env_requests():
