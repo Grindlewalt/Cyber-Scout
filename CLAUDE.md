@@ -46,7 +46,9 @@ samdev-7/autoscout (MIT, credited).
 - Root disk: 337 GB free since the Oct 2026 outage (was ~4 GB). Still don't change the big `pip install` line in the
   root Dockerfile without need (3.3 GB layer); keep big data on `/mnt/nas` (now a local 7.3 TB disk). After builds remove only *our*
   dangling images (check `docker history` for live/, /srv, nginx html) — **never `docker image prune -f`** (host-wide).
-- Downloads site refresh: `bash site/tools/publish_downloads.sh http://10.0.0.58:7580 atomosserver /mnt/nas/autoscout-scratch/demo-site 7580`.
+- Downloads site refresh: `CS_SERVER_URL=http://10.0.0.58:7560 bash site/tools/publish_downloads.sh http://10.0.0.58:7580 atomosserver /mnt/nas/autoscout-scratch/demo-site 7580`.
+  One-liners: server `curl -fsSL http://10.0.0.58:7580/downloads/get.sh | bash`, Client `…/downloads/get-client.sh | bash`
+  (Windows: `irm …/get.ps1 | iex`, `irm …/get-client.ps1 | iex`).
 - Updater (Admin → Updates) is stubbed: needs a read-only GitHub deploy key — ask the owner before adding one.
 
 ## Rules

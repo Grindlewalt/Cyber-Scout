@@ -77,7 +77,7 @@ sets them). JSON compresses well (gzip makes the demo's data about a fifth of it
 ## Deploy notes
 
 * Publish (builds `downloads/`, rsyncs the site, copies the model, restarts the container):
-  `bash site/tools/publish_downloads.sh http://10.0.0.58:7580 atomosserver /mnt/nas/autoscout-scratch/demo-site 7580`.
+  `CS_SERVER_URL=http://10.0.0.58:7560 bash site/tools/publish_downloads.sh http://10.0.0.58:7580 atomosserver /mnt/nas/autoscout-scratch/demo-site 7580`.
   The site address is required (no default) and is baked into `get.sh` / `get.ps1` together with the SHA-256 of
   `install.sh` / `install.ps1`, the code tarball and `robot.onnx`, which the wrappers check before running anything.
   The site is LAN-only: the one-liners work where that address is reachable (the shop network or a VPN). The page
@@ -86,7 +86,8 @@ sets them). JSON compresses well (gzip makes the demo's data about a fifth of it
   program is listening on (8790 on atomosserver is not ours).
 * `downloads/` holds: `cyberscout-client-windows-x64.exe`, `cyberscout-client-macos-arm64`,
   `cyberscout-client-macos-x64`, `cyberscout-client-linux-x64`, `cyberscout-android.apk` (from `client/dist/`,
-  `client/dist/ci/`, `android/build/`), `install.sh`, `install.ps1`, `get.sh`, `get.ps1`, `cyberscout-src.tar.gz`,
+  `client/dist/ci/`, `android/build/`), `install.sh`, `install.ps1`, `get.sh`, `get.ps1`, `get-client.sh`,
+  `get-client.ps1` (from `tools/get-client.*.in`; `CS_SERVER_URL` presets the team server), `cyberscout-src.tar.gz`,
   `robot.onnx` (copied on the server), `SHA256SUMS`, `VERSION` (`<commit> <commit date> <site>`), `README.txt`.
   Download cards of files that aren't there grey out; the others show their size.
 * The demo is public and has no sign-in: it only contains data already public on TBA / YouTube plus Cyber-Scout's

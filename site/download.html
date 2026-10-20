@@ -102,7 +102,28 @@
 
   <section class="wrap dl-sec" id="client" aria-labelledby="client-h">
     <h2 id="client-h">Cyber-Scout Client for laptops</h2>
-    <p class="lead">The same web app with a full local copy of your server's data. One file, nothing to install, no Python needed.</p>
+    <p class="lead">The same web app with a full local copy of your server's data. One file, no Python needed. The one-line install below does every step on this page for you.</p>
+    <div style="margin:0 0 28px">
+        <div class="oses" role="tablist" aria-label="Client: operating system">
+          <button type="button" role="tab" id="gt-macos" aria-controls="gp-macos" aria-selected="true" data-os="macos">macOS</button>
+          <button type="button" role="tab" id="gt-windows" aria-controls="gp-windows" aria-selected="false" tabindex="-1" data-os="windows">Windows</button>
+          <button type="button" role="tab" id="gt-linux" aria-controls="gp-linux" aria-selected="false" tabindex="-1" data-os="linux">Linux</button>
+        </div>
+        <div class="cmd-panel" role="tabpanel" id="gp-macos" aria-labelledby="gt-macos">
+          <div class="cmd"><code class="js-cmd" data-one="sh" data-prompt="$" data-cmd="curl -fsSL {SITE}/downloads/get-client.sh | bash">curl -fsSL /downloads/get-client.sh | bash</code><button type="button" class="copy" aria-label="Copy the macOS Client install command"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V6a2 2 0 0 1 2-2h9"/></svg><svg class="ok" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg><span>Copy</span></button></div>
+          <p class="cmd-note">In Terminal. Picks the build for this Mac (Apple silicon or Intel), checks it, installs it to <code>~/CyberScout</code>, starts it at login and opens it. No security prompts to click through.</p>
+        </div>
+        <div class="cmd-panel" role="tabpanel" id="gp-windows" aria-labelledby="gt-windows" hidden>
+          <div class="cmd"><code class="js-cmd" data-one="ps1" data-prompt="PS>" data-cmd="irm {SITE}/downloads/get-client.ps1 | iex">irm /downloads/get-client.ps1 | iex</code><button type="button" class="copy" aria-label="Copy the Windows Client install command"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V6a2 2 0 0 1 2-2h9"/></svg><svg class="ok" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg><span>Copy</span></button></div>
+          <p class="cmd-note">In PowerShell. Checks the build, installs it to your user folder (no admin rights), starts it at sign-in (minimized) and opens it. No SmartScreen prompt.</p>
+        </div>
+        <div class="cmd-panel" role="tabpanel" id="gp-linux" aria-labelledby="gt-linux" hidden>
+          <div class="cmd"><code class="js-cmd" data-one="sh" data-prompt="$" data-cmd="curl -fsSL {SITE}/downloads/get-client.sh | bash">curl -fsSL /downloads/get-client.sh | bash</code><button type="button" class="copy" aria-label="Copy the Linux Client install command"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V6a2 2 0 0 1 2-2h9"/></svg><svg class="ok" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg><span>Copy</span></button></div>
+          <p class="cmd-note">In a terminal, x86_64. Installs it to <code>~/CyberScout</code>, starts it at login (a systemd user service) and opens it.</p>
+        </div>
+        <p class="vh" aria-live="polite" id="copy-status"></p>
+    </div>
+    <p class="reach" style="margin:0 0 16px">By hand instead: download the file for your computer and follow the steps under it.</p>
     <div class="files">
       <a class="file" href="downloads/cyberscout-client-windows-x64.exe" download><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8M12 17v4"/></svg><b>Windows</b><span>cyberscout-client-windows-x64.exe</span></a>
       <a class="file" href="downloads/cyberscout-client-macos-arm64" download><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="5" width="16" height="11" rx="1.5"/><path d="M2 19h20"/></svg><b>macOS, Apple silicon</b><span>cyberscout-client-macos-arm64</span></a>

@@ -10,15 +10,21 @@
 # the shop network (or a VPN into it). PORT defaults to SITE_URL's port. HOST defaults to atomosserver, REMOTE_DIR to
 # /mnt/nas/autoscout-scratch/demo-site.
 #
+# CS_SERVER_URL (optional, e.g. http://10.0.0.58:7560): the team's server. The Client one-liners preset it on a first
+# install, so a laptop only has to sign in. Unset: the Client asks for it (Settings, Connection).
+#
 # Builds site/downloads/ (gitignored, except README.txt) on this machine:
 #   install.sh, install.ps1                     server installers (Linux/macOS, Windows)
 #   get.sh, get.ps1                             one-line wrappers: download install.sh / install.ps1 and the code from
 #                                               SITE_URL, check their SHA-256 (baked in here), install with the model
+#   get-client.sh, get-client.ps1               one-line Client installs (from site/tools/get-client.*.in): this
+#                                               computer's build, SHA-256 checked, started at login, opened
 #   cyberscout-src.tar.gz                       the code at the current commit (git archive HEAD)
 #   cyberscout-client-*                         Client builds found in client/dist/ (and client/dist/ci/)
 #   cyberscout-android.apk                      if android/build/ has it
 #   SHA256SUMS, VERSION ("<commit> <commit date> <SITE_URL>"), README.txt (written last: lists what is there)
-# then rsyncs site/ to HOST:REMOTE_DIR, copies the detector model (robot.onnx) there from the server's own stack,
+# then rsyncs site/ to HOST:REMOTE_DIR, copies the detector model (robot.onnx) there from the server's own stack
+# (CS_MODEL_SRC on HOST, else /opt/cyber-scout or /opt/stacks/cyber-scout; else the copy already published stays),
 # and (re)starts a read-only nginx container serving it on PORT with site/tools/nginx.conf. It refuses a PORT that
 # something other than its own container is listening on.
 set -euo pipefail
@@ -59,8 +65,13 @@ write_listing() {
     echo "  Linux / macOS:        curl -fsSL $s/downloads/get.sh | bash"
     echo "  Windows (PowerShell): irm $s/downloads/get.ps1 | iex"
     echo
+    echo "One-line Client install (installs, starts at login, opens it${CS_SERVER_URL:+; connects to $CS_SERVER_URL}):"
+    echo "  macOS / Linux:        curl -fsSL $s/downloads/get-client.sh | bash"
+    echo "  Windows (PowerShell): irm $s/downloads/get-client.ps1 | iex"
+    echo
     for f in cyberscout-client-windows-x64.exe cyberscout-client-macos-arm64 cyberscout-client-macos-x64 \
-             cyberscout-client-linux-x64 cyberscout-android.apk install.sh install.ps1 get.sh get.ps1 robot.onnx \
+             cyberscout-client-linux-x64 cyberscout-android.apk install.sh install.ps1 get.sh get.ps1 get-client.sh \
+             get-client.ps1 robot.onnx \
              cyberscout-src.tar.gz SHA256SUMS; do
       case "$f" in
         *windows*) desc="Cyber-Scout Client, Windows 10/11 x64 (unsigned: the browser may ask to Keep it; SmartScreen > More info > Run anyway)" ;;
@@ -72,6 +83,8 @@ write_listing() {
         install.ps1) desc="server installer, Windows" ;;
         get.sh) desc="one-line server install, Linux and macOS (checks the installer and code SHA-256)" ;;
         get.ps1) desc="one-line server install, Windows (checks the installer and code SHA-256)" ;;
+        get-client.sh) desc="one-line Client install, macOS and Linux (checks the build's SHA-256; starts at login)" ;;
+        get-client.ps1) desc="one-line Client install, Windows (checks the build's SHA-256; starts at sign-in)" ;;
         robot.onnx) desc="the robot detector model (the installers download it with --model / -Model)" ;;
         SHA256SUMS) desc="SHA-256 of the files above" ;;
         *) desc="the source code at this version" ;;
@@ -79,7 +92,7 @@ write_listing() {
       { [ -z "$sha" ] || [ -f "$d/$f" ] || { [ "$f" = robot.onnx ] && [ -n "${MODEL_SHA:-}" ]; }; } && printf '  %-36s%s\n' "$f" "$desc"
     done
     echo
-    echo "macOS Client: in Terminal (Intel Macs: the -x64 file instead of -arm64):"
+    echo "macOS Client by hand (the one-liner above skips all of this): in Terminal (Intel Macs: -x64, not -arm64):"
     echo "  cd ~/Downloads"
     echo "  xattr -d com.apple.quarantine cyberscout-client-macos-arm64"
     echo "  chmod +x cyberscout-client-macos-arm64"
@@ -96,6 +109,11 @@ write_listing() {
   } > "$d/README.txt"
 }
 if [ "$LISTING_ONLY" = 1 ]; then mkdir -p "$DL"; write_listing "$DL"; echo "wrote $DL/README.txt"; exit 0; fi
+
+# ---- CS_SERVER_URL: optional team server for the Client one-liners
+CS_SERVER_URL="${CS_SERVER_URL:-}"; CS_SERVER_URL="${CS_SERVER_URL%/}"
+[ -z "$CS_SERVER_URL" ] || [[ "$CS_SERVER_URL" =~ ^https?://[A-Za-z0-9.:\[\]_-]+(/[A-Za-z0-9._~/-]*)?$ ]] ||
+  die "CS_SERVER_URL must look like http://10.0.0.58:7560, got: $CS_SERVER_URL"
 
 # ---- PORT: SITE's own port unless given; 8790 on atomosserver is another app (7580 is the site's)
 PORT="${PORT:-$SITE_PORT}"
@@ -118,9 +136,16 @@ echo "$SHA $DAY $SITE" > "$DL/VERSION"
 
 sum() { (sha256sum "$1" 2>/dev/null || shasum -a 256 "$1") | cut -d' ' -f1; }
 INSTALL_SH="$(sum "$DL/install.sh")"; INSTALL_PS1="$(sum "$DL/install.ps1")"; TARBALL="$(sum "$DL/cyberscout-src.tar.gz")"
-# model checksum comes from the server copy (the model itself is copied server-side below)
-MODEL_SHA="$(ssh "$HOST" 'sha256sum /opt/stacks/cyber-scout/data/models/robot.onnx' | cut -d' ' -f1)"
-[[ "$MODEL_SHA" =~ ^[0-9a-f]{64}$ ]] || die "couldn't read the model's SHA-256 on $HOST"
+# model: the server's own copy (copied server-side below), wherever the stack lives; else the one already published
+MODEL_SRC="$(ssh "$HOST" bash -s -- "$RDIR" "${CS_MODEL_SRC:-}" <<'FIND'
+for p in "$2" /opt/cyber-scout/data/models/robot.onnx /opt/stacks/cyber-scout/data/models/robot.onnx \
+         "$1/downloads/robot.onnx"; do [ -n "$p" ] && [ -f "$p" ] && { echo "$p"; exit 0; }; done
+FIND
+)"
+[ -n "$MODEL_SRC" ] || die "no robot.onnx on $HOST (set CS_MODEL_SRC=<path on $HOST>)"
+MODEL_SHA="$(ssh "$HOST" sha256sum "$MODEL_SRC" | cut -d' ' -f1)"
+[[ "$MODEL_SHA" =~ ^[0-9a-f]{64}$ ]] || die "couldn't read the model's SHA-256 on $HOST ($MODEL_SRC)"
+echo "model: $HOST:$MODEL_SRC"
 
 cat > "$DL/get.sh" <<EOF
 #!/usr/bin/env bash
@@ -141,7 +166,7 @@ fetch() {  # fetch NAME SHA256
 }
 fetch install.sh $INSTALL_SH
 fetch cyberscout-src.tar.gz $TARBALL
-bash "\$d/install.sh" --tarball "\$d/cyberscout-src.tar.gz" --model "\$SITE/downloads/robot.onnx" --model-sha256 $MODEL_SHA "\$@"
+CS_SITE="\$SITE" bash "\$d/install.sh" --tarball "\$d/cyberscout-src.tar.gz" --model "\$SITE/downloads/robot.onnx" --model-sha256 $MODEL_SHA "\$@"
 EOF
 cat > "$DL/get.ps1" <<EOF
 # Cyber-Scout server install from $SITE (code $SHA, $DAY).
@@ -165,18 +190,31 @@ cat > "$DL/get.ps1" <<EOF
       \$h = (Get-FileHash -LiteralPath \$p -Algorithm SHA256).Hash.ToLowerInvariant()
       if (\$h -ne \$want[\$f]) { throw "\$f\`: SHA-256 \$h isn't the published \$(\$want[\$f]): not running it" }
     }
+    \$env:CS_SITE = \$site                    # the installer's summary prints the Client one-liner from it
     & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path \$d 'install.ps1') -Tarball (Join-Path \$d 'cyberscout-src.tar.gz') -Model "\$site/downloads/robot.onnx" -ModelSha256 '$MODEL_SHA'
   } finally { Remove-Item -LiteralPath \$d -Recurse -Force -ErrorAction SilentlyContinue }
 }
 EOF
+csum() { [ -f "$DL/$1" ] && sum "$DL/$1" || true; }
+fill() {   # fill TEMPLATE OUT
+  sed -e "s|@SITE@|$SITE|g" -e "s|@SHA@|$SHA|g" -e "s|@DAY@|$DAY|g" -e "s|@SERVER@|$CS_SERVER_URL|g" \
+      -e "s|@SERVER_SHOWN@|${CS_SERVER_URL:-none, the Client asks}|g" \
+      -e "s|@SHA_macos_arm64@|$(csum cyberscout-client-macos-arm64)|g" -e "s|@SHA_macos_x64@|$(csum cyberscout-client-macos-x64)|g" \
+      -e "s|@SHA_linux_x64@|$(csum cyberscout-client-linux-x64)|g" \
+      -e "s|@SHA_windows_x64@|$(csum cyberscout-client-windows-x64.exe)|g" "$1" > "$2"
+  ! grep -q '@[A-Za-z_0-9]*@' "$2" || die "unfilled placeholder in $2"
+}
+fill site/tools/get-client.sh.in "$DL/get-client.sh"
+fill site/tools/get-client.ps1.in "$DL/get-client.ps1"
 ( cd "$DL" && shasum -a 256 * > SHA256SUMS.tmp && mv SHA256SUMS.tmp SHA256SUMS && echo "$MODEL_SHA  robot.onnx" >> SHA256SUMS )
 write_listing "$DL" "$SHA"                       # last: it lists only what is really there (and the model)
 
-rsync -a --delete "$ROOT/site/" "$HOST:$RDIR/"
-ssh "$HOST" bash -s -- "$RDIR" "$PORT" <<'REMOTE'
+rsync -a --delete --exclude /downloads/robot.onnx "$ROOT/site/" "$HOST:$RDIR/"
+ssh "$HOST" bash -s -- "$RDIR" "$PORT" "$MODEL_SRC" <<'REMOTE'
 set -e
-RDIR="$1"; PORT="$2"
-cp /opt/stacks/cyber-scout/data/models/robot.onnx "$RDIR/downloads/robot.onnx" && chmod 644 "$RDIR/downloads/robot.onnx"
+RDIR="$1"; PORT="$2"; MODEL_SRC="$3"
+[ "$MODEL_SRC" = "$RDIR/downloads/robot.onnx" ] || cp "$MODEL_SRC" "$RDIR/downloads/robot.onnx"
+chmod 644 "$RDIR/downloads/robot.onnx"
 mine="$(docker port cyber-scout-demo 80/tcp 2>/dev/null | sed -n 's/.*:\([0-9][0-9]*\)$/\1/p' | head -1)"
 if [ "$mine" != "$PORT" ] && ss -Hltn "sport = :$PORT" 2>/dev/null | grep -q .; then
   echo "port $PORT is already in use by something else on $(hostname): not touching it (the site keeps its port ${mine:-none})" >&2

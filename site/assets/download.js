@@ -34,28 +34,30 @@
   }
   var os = detect();
 
-  // OS tabs for the server command (a phone gets the Linux tab: the server goes on a computer)
-  var tabs = [].slice.call(document.querySelectorAll('.oses [role="tab"]'));
-  function select(tab, focus) {
-    tabs.forEach(function (t) {
-      var on = t === tab;
-      t.setAttribute("aria-selected", String(on));
-      t.tabIndex = on ? 0 : -1;
-      var panel = document.getElementById(t.getAttribute("aria-controls"));
-      if (panel) panel.hidden = !on;
+  // OS tabs, one group per .oses: the server command and the Client command (a phone gets each group's first tab)
+  [].forEach.call(document.querySelectorAll(".oses"), function (group) {
+    var tabs = [].slice.call(group.querySelectorAll('[role="tab"]'));
+    function select(tab, focus) {
+      tabs.forEach(function (t) {
+        var on = t === tab;
+        t.setAttribute("aria-selected", String(on));
+        t.tabIndex = on ? 0 : -1;
+        var panel = document.getElementById(t.getAttribute("aria-controls"));
+        if (panel) panel.hidden = !on;
+      });
+      if (focus) tab.focus();
+    }
+    tabs.forEach(function (t, i) {
+      t.addEventListener("click", function () { select(t); });
+      t.addEventListener("keydown", function (e) {
+        var j = e.key === "ArrowRight" ? i + 1 : e.key === "ArrowLeft" ? i - 1 : e.key === "Home" ? 0 : e.key === "End" ? tabs.length - 1 : null;
+        if (j === null) return;
+        e.preventDefault(); select(tabs[(j + tabs.length) % tabs.length], true);
+      });
     });
-    if (focus) tab.focus();
-  }
-  tabs.forEach(function (t, i) {
-    t.addEventListener("click", function () { select(t); });
-    t.addEventListener("keydown", function (e) {
-      var j = e.key === "ArrowRight" ? i + 1 : e.key === "ArrowLeft" ? i - 1 : e.key === "Home" ? 0 : e.key === "End" ? tabs.length - 1 : null;
-      if (j === null) return;
-      e.preventDefault(); select(tabs[(j + tabs.length) % tabs.length], true);
-    });
+    var start = tabs.filter(function (t) { return t.getAttribute("data-os") === os; })[0] || tabs[0];
+    if (start) select(start);
   });
-  var start = tabs.filter(function (t) { return t.getAttribute("data-os") === os; })[0] || tabs[0];
-  if (start) select(start);
 
   // highlight the Client build for this device. Macs: only Chromium browsers say which chip; Safari and Firefox
   // don't, so there it is "likely" Apple silicon (every Mac sold since 2021) and the note says how to check

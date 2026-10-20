@@ -716,6 +716,15 @@ elif [ "$OK" = 1 ] && [ "$EXISTING" = 1 ]; then
 else
   info "The one-time setup code is in $CODEF (until the admin account is created)."
 fi
+# installed with get.sh from a downloads site: each laptop gets the Client with one line, already pointed at this server
+if [ -n "${CS_SITE:-}" ] && [ "$CS_BIND" != 127.0.0.1 ] && [[ "$CS_SITE" =~ ^https?://[A-Za-z0-9.:\[\]_-]+$ ]]; then
+  SRV="http://${IP:-localhost}:$CS_PORT"
+  echo
+  bold "Laptops: the Cyber-Scout Client in one line (installs it, starts it at login, connects to this server):"
+  info "macOS / Linux:  curl -fsSL $CS_SITE/downloads/get-client.sh | bash -s -- --server $SRV"
+  info "Windows:        \$env:CS_SERVER='$SRV'; irm $CS_SITE/downloads/get-client.ps1 | iex"
+  info "Phones: open $SRV in the browser and add it to the home screen."
+fi
 
 # ---------------------------------------------------------------- one-click updates (optional host updater, Linux)
 UPD="$CS_DIR/app/deploy/updater/install-updater.sh"

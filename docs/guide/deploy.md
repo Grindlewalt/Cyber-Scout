@@ -663,7 +663,7 @@ port 7580 (not part of the compose stack; 8790 on that host is another app, neve
 tunnel. Publish from the Mac, in the repo:
 
 ```bash
-bash site/tools/publish_downloads.sh http://10.0.0.58:7580 atomosserver /mnt/nas/autoscout-scratch/demo-site 7580
+CS_SERVER_URL=http://10.0.0.58:7560 bash site/tools/publish_downloads.sh http://10.0.0.58:7580 atomosserver /mnt/nas/autoscout-scratch/demo-site 7580
 bash site/tools/publish_downloads.sh --listing-only [SITE_URL]     # only rewrite site/downloads/README.txt
 ```
 
@@ -674,12 +674,22 @@ bash site/tools/publish_downloads.sh --listing-only [SITE_URL]     # only rewrit
 * It builds `site/downloads/` locally (`install.sh`, `install.ps1`, `get.sh`, `get.ps1`, `cyberscout-src.tar.gz` =
   `git archive HEAD`, Client builds from `client/dist/` and `client/dist/ci/`, the APK from `android/build/`,
   `SHA256SUMS`, `VERSION` = `<commit> <commit date> <site>`, `README.txt` last), rsyncs `site/` to the remote dir,
-  takes `robot.onnx` and its SHA-256 from the server's own stack, and (re)starts the container with
+  takes `robot.onnx` and its SHA-256 from the server's own stack (`CS_MODEL_SRC`, else `/opt/cyber-scout` or
+  `/opt/stacks/cyber-scout`, else the copy already published, which the rsync keeps), and (re)starts the container with
   `site/tools/nginx.conf`. It **refuses a port** that anything but `cyber-scout-demo` is listening on.
 * **Checksummed one-liners:** `get.sh` / `get.ps1` download `install.sh` / `install.ps1` and the code tarball from the
   site, check each against the SHA-256 written in at publish time ("not running it" on a mismatch), then run the
   installer with `--tarball`, `--model <site>/downloads/robot.onnx` and `--model-sha256`. They say the site must be
   reachable when it isn't.
+* **Client one-liners:** `get-client.sh` (macOS / Linux) and `get-client.ps1` (Windows), filled in from
+  `site/tools/get-client.*.in` with the site, each build's SHA-256 and `CS_SERVER_URL` (the team server, optional).
+  They pick this computer's build, check it, install it (`~/CyberScout` / `%LOCALAPPDATA%\CyberScout`), preset the
+  server in the Client's `config.json` on a first install only, start it at login (LaunchAgent `com.cyberscout.client`
+  / systemd user service / Startup shortcut), wait for `127.0.0.1:7600` and open it. curl downloads carry no
+  quarantine flag and `Unblock-File` clears Windows' mark, so there's no Gatekeeper / SmartScreen prompt. Options:
+  `--server`, `--dir`, `--data`, `--port`, `--no-autostart`, `--no-open`, `--uninstall` (Windows: `$env:CS_SERVER`,
+  `CS_CLIENT_AUTOSTART=0`, `CS_CLIENT_UNINSTALL=1`). `get.sh` / `get.ps1` pass `CS_SITE` to the installer, whose
+  summary then prints both Client one-liners with `--server http://<this server>:<port>`.
 * **`CS_SITE`** overrides the baked-in address when the site is reached another way (e.g. Tailscale):
   `curl -fsSL <addr>/downloads/get.sh | CS_SITE=<addr> bash`, or `$env:CS_SITE='<addr>'; irm <addr>/downloads/get.ps1
   | iex`. The install page adds it to the commands by itself when opened at another address than the published one.

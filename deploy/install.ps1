@@ -663,6 +663,15 @@ if ($Code) {
   Write-Info "Open the site, enter the code and create the admin account. (Later: type `"$CodeFile`")"
 } elseif ($Ok -and $Existing) { Write-Info '(setup already done: sign in with your admin account)' }
 else { Write-Info "The one-time setup code is in $CodeFile (until the admin account is created)." }
+# installed with get.ps1 from a downloads site: each laptop gets the Client with one line, already pointed at this server
+if ($env:CS_SITE -and $Bind -ne '127.0.0.1' -and $env:CS_SITE -match '^https?://[A-Za-z0-9.:\[\]_-]+$') {
+  $Srv = "http://${Ip}:$Port"
+  Write-Host ''
+  Write-Bold 'Laptops: the Cyber-Scout Client in one line (installs it, starts it at sign-in, connects to this server):'
+  Write-Info "Windows:        `$env:CS_SERVER='$Srv'; irm $($env:CS_SITE)/downloads/get-client.ps1 | iex"
+  Write-Info "macOS / Linux:  curl -fsSL $($env:CS_SITE)/downloads/get-client.sh | bash -s -- --server $Srv"
+  Write-Info "Phones: open $Srv in the browser and add it to the home screen."
+}
 
 Write-Host ''
 Write-Info 'Other devices on your network: allow the port in Windows Firewall if Windows asks (Private networks).'

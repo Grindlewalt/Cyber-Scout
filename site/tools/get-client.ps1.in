@@ -1,0 +1,91 @@
+# Cyber-Scout Client install from @SITE@ (code @SHA@, @DAY@): Windows 10/11 x64.
+#   irm @SITE@/downloads/get-client.ps1 | iex
+# Downloads the Client from the site, checks it against the SHA-256 below (written when the site was published),
+# installs it to %LOCALAPPDATA%\CyberScout, starts it at sign-in (a shortcut in your Startup folder) and opens it in
+# the browser. Run it again to update. Settings, in the same PowerShell window before the command:
+#   $env:CS_SERVER = 'http://<your server>:7560'   your server, set on the first install (this site's default: @SERVER_SHOWN@)
+#   $env:CS_CLIENT_AUTOSTART = '0'                don't start it at sign-in (it still starts now)
+#   $env:CS_CLIENT_UNINSTALL = '1'                stop it, remove the program and the shortcut (the data folder stays)
+#   $env:CS_SITE = '<address>'                    you reached this site at another address
+# Generated from site/tools/get-client.ps1.in by site/tools/publish_downloads.sh.
+& {
+  $ErrorActionPreference = 'Stop'; $ProgressPreference = 'SilentlyContinue'
+  $site = if ($env:CS_SITE) { $env:CS_SITE.TrimEnd('/') } else { '@SITE@' }
+  $server = if ($env:CS_SERVER) { $env:CS_SERVER.TrimEnd('/') } else { '@SERVER@' }
+  $want = '@SHA_windows_x64@'
+  $dir = Join-Path $env:LOCALAPPDATA 'CyberScout'
+  $exe = Join-Path $dir 'cyberscout-client.exe'
+  $data = Join-Path $env:APPDATA 'CyberScout'
+  $lnk = Join-Path ([Environment]::GetFolderPath('Startup')) 'Cyber-Scout Client.lnk'
+
+  # a running Client (this install, or a copy started from Downloads) holds port 7600 and the data folder
+  function Stop-Client {
+    Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.ProcessName -like 'cyberscout-client*' } |
+      Stop-Process -Force -ErrorAction SilentlyContinue
+    Start-Sleep -Milliseconds 800
+  }
+
+  if ($env:CS_CLIENT_UNINSTALL -eq '1') {
+    Stop-Client
+    Remove-Item -LiteralPath $lnk, $exe -Force -ErrorAction SilentlyContinue
+    Write-Host 'Removed the Cyber-Scout Client.'
+    Write-Host "Its data folder stays: $data (your local copy of the server's data and any changes not sent yet)."
+    Remove-Item Env:CS_CLIENT_UNINSTALL -ErrorAction SilentlyContinue      # so the next run in this window installs
+    return
+  }
+  if (-not [Environment]::Is64BitOperatingSystem) { throw 'the Cyber-Scout Client needs 64-bit Windows' }
+  if (-not $want) { throw "this site has no Windows build of the Client yet: download it from $site once it's published" }
+  if ($server -and $server -notmatch '^https?://[A-Za-z0-9.:\[\]_-]+(/[A-Za-z0-9._~/-]*)?$') {
+    throw "CS_SERVER must look like http://10.0.0.58:7560 or https://scout.example.org, got: $server"
+  }
+
+  Write-Host "Cyber-Scout Client from $site" -ForegroundColor Cyan
+  New-Item -ItemType Directory -Force -Path $dir | Out-Null
+  $tmp = "$exe.download"
+  try { Invoke-WebRequest -UseBasicParsing -Uri "$site/downloads/cyberscout-client-windows-x64.exe" -OutFile $tmp }
+  catch { throw "couldn't download $site/downloads/cyberscout-client-windows-x64.exe`: is this computer on a network that can reach $site?" }
+  $h = (Get-FileHash -LiteralPath $tmp -Algorithm SHA256).Hash.ToLowerInvariant()
+  if ($h -ne $want) {
+    Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
+    throw "SHA-256 $h isn't the published $want`: not installing it"
+  }
+  Stop-Client
+  Move-Item -LiteralPath $tmp -Destination $exe -Force
+  Unblock-File -LiteralPath $exe
+  Write-Host "  installed $exe"
+
+  $cfg = Join-Path $data 'config.json'
+  if ($server) {
+    if (-not (Test-Path -LiteralPath $cfg)) {
+      New-Item -ItemType Directory -Force -Path $data | Out-Null
+      [IO.File]::WriteAllText($cfg, (@{ server = $server } | ConvertTo-Json -Compress))   # UTF-8, no BOM
+      Write-Host "  server: $server (change it later in the Client: Settings, Connection)"
+    } elseif ($env:CS_SERVER) {
+      Write-Host "  kept the server already set in the Client: change it there (Settings, Connection) to use $server"
+    }
+  }
+
+  if ($env:CS_CLIENT_AUTOSTART -ne '0') {
+    $sh = New-Object -ComObject WScript.Shell
+    $s = $sh.CreateShortcut($lnk)
+    $s.TargetPath = $exe; $s.Arguments = '--no-browser'; $s.WorkingDirectory = $dir
+    $s.WindowStyle = 7; $s.Description = 'Cyber-Scout Client'
+    $s.Save()
+    $how = 'starts when you sign in (a minimized window; Startup folder shortcut)'
+  } else { $how = "running now; start it again after a restart: $exe" }
+
+  Start-Process -FilePath $exe -WorkingDirectory $dir -WindowStyle Minimized    # it opens the browser itself
+  $url = 'http://127.0.0.1:7600/'
+  $up = $false
+  foreach ($i in 1..40) {
+    try { Invoke-WebRequest -UseBasicParsing -Uri $url -TimeoutSec 2 | Out-Null; $up = $true; break } catch { Start-Sleep -Milliseconds 500 }
+  }
+  Write-Host ''
+  if ($up) { Write-Host "Cyber-Scout Client is running: $url" -ForegroundColor Green }
+  else { Write-Host "Cyber-Scout Client is starting: $url (its window is minimized in the taskbar)" -ForegroundColor Yellow }
+  Write-Host "  $how"
+  if ($server) { Write-Host '  sign in with your Cyber-Scout account and it syncs with the server' }
+  else { Write-Host "  first: Settings, Connection: type your server's address (the server installer printed it)" }
+  Write-Host "  data: $data"
+  Write-Host "  update: run the same command again   remove: `$env:CS_CLIENT_UNINSTALL='1'; irm $site/downloads/get-client.ps1 | iex"
+}

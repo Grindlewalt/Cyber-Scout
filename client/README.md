@@ -20,6 +20,21 @@ Pure Python standard library (Python 3.9+), no dependencies. Standalone executab
 
 ## Install and run
 
+**One line** (from your team's downloads site, e.g. `http://10.0.0.58:7580`; it also shows these on its home page):
+
+```bash
+curl -fsSL http://<site>/downloads/get-client.sh | bash                 # macOS / Linux
+irm http://<site>/downloads/get-client.ps1 | iex                         # Windows (PowerShell)
+```
+
+It picks this computer's build, checks its SHA-256, installs it (`~/CyberScout`, Windows `%LOCALAPPDATA%\CyberScout`),
+presets the team server on a first install (the site's default, or `--server URL` / `$env:CS_SERVER`), starts it at
+login (macOS LaunchAgent `com.cyberscout.client`, Linux systemd user service, Windows Startup shortcut) and opens
+`http://127.0.0.1:7600/`: sign in and it syncs. No Gatekeeper / SmartScreen steps (a curl download isn't
+quarantined; the Windows script unblocks the file). Run it again to update; `bash -s -- --uninstall`
+(`$env:CS_CLIENT_UNINSTALL='1'`) removes it and keeps the data folder. The server installer, when run through
+`get.sh` / `get.ps1`, prints both lines with this server's address. Source: `site/tools/get-client.*.in`.
+
 **Standalone executable** (no Python needed): download the file for your computer from the GitHub release (or the
 `client` workflow's artifacts; see [Building](#building)) and run it. A terminal window opens with the address and
 the log, and the browser opens `http://127.0.0.1:7600/`.
