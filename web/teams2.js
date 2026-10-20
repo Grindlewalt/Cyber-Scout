@@ -61,6 +61,7 @@
   const FLAGS = x => flagChips({ flags: (x.flags || []).map(k => ({ k, text: k.replace(/_/g, " ") })) }, ["auto_not_tracked", "video_higher", "video_lower"]);
   async function listPage(ev) {
     css();
+    crumbs([[ev, `#/${ev}`], ["Spec sheets"]]);           // this page's title even if its data fails to load (MATCH-8)
     const [ix, e, scd] = await Promise.all([api(`${ev}/spec/index.json`), api(`${ev}/event.json`).catch(() => null), scoutData(ev)]);
     crumbs([[e ? e.name : ev, `#/${ev}`], ["Spec sheets"]]); $updated.textContent = "";
     let sk = "made_pm", sd = -1;
@@ -191,6 +192,7 @@
 
   // ------------------------------------------------------------------ spec page
   async function specPage(ev, team) {
+    crumbs([[ev, `#/${ev}`], ["Spec sheets", `#/${ev}/specs`], [num(team)]]);       // title before the data (MATCH-8)
     css();
     const [sp, e, sd] = await Promise.all([api(`${ev}/spec/${team}.json`), api(`${ev}/event.json`).catch(() => null), scoutData(ev)]);
     const TR = sp.truth || {}, TV = TR.video || {}, autoBad = (TR.flags || []).some(f => f.k === "auto_not_tracked");

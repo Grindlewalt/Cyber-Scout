@@ -560,6 +560,7 @@ a.tgt { font-weight: 750; text-decoration-color: currentColor; } a.tgt.red { col
     if (ts === "live") ts = null;          // #/<ev>/dash/live/<plan> = live view with a plan tab open
     S = { ev, ts, tab: 0, sort: S && S.ev === ev ? S.sort : { k: "bt", dir: -1 } };
     injectStyle();
+    crumbs([[ev, `#/${ev}`], ["Dashboard"]]);             // this page's title even if its data fails to load (MATCH-8)
     const liveP = ts ? Promise.resolve(null) : api(`${ev}/event.json`).catch(() => null);
     // recorder status in parallel with the page data (its only fallback is event.json, which api() shares)
     const lsP = !ts && CS.liveRecorder ? CS.liveRecorder.load(ev).catch(() => null) : Promise.resolve(null);

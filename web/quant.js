@@ -197,6 +197,7 @@ function section(id, title, body, note = "") {
 const spotTxt = xy => { if (!xy) return "–"; const x = xy[0] / 100, y = xy[1] / 100, d = 16.541 - x; return `${y < 2.7 ? "driver's left" : y > 5.4 ? "driver's right" : "centre"}, ${d < 0 ? 0 : d.toFixed(1)} m off own wall`; };
 const label_ = c => `n=${c.n}${c.of ? "/" + c.of : ""} (${(c.keys || []).map(shortKey).join(", ")})`;
 async function teamPage(ev, tk) {
+  crumbs([[ev, `#/${ev}`], [num(tk)]]);                // this page's title even if its data fails to load (MATCH-8)
   const [d, e, scd] = await Promise.all([getTeam(ev, tk), api(`${ev}/event.json`).catch(() => null), scoutData(ev)]);
   const SR = (scd && scd.by[tk]) || {}, SV = SR.video || {}, RT = SR.rating || {}, CV = SR.coverage || { n: 0, keys: [] };
   const vkeys = new Set(CV.keys || []), vshort = new Set((CV.keys || []).map(shortKey));

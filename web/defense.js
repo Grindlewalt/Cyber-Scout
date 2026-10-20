@@ -203,6 +203,7 @@
   // "who defends well?". Event-level statistics are one honest line with the details behind "?"; filters live in one popover.
   async function page(ev, target) {
     css();
+    crumbs([[ev, `#/${ev}`], ["Defense library"]]);       // this page's title even if its data fails to load (MATCH-8)
     const [d, e, scd] = await Promise.all([api(`${ev}/defense.json`), api(`${ev}/event.json`).catch(() => null), scoutData(ev)]);
     const mode = target === "defenders" ? "defenders" : "team";
     if (target === "defenders") target = "";
