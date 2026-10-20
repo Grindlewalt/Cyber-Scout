@@ -71,7 +71,9 @@
       return `Slow down: too many changes in a short time. Try again in ${w ? w[1] + " s" : "a minute"}.`;
     }
     if (e && e.status === 403) return "Your role can't do that.";
-    return (e && e.message) || "Something went wrong.";
+    if (e && (!e.status || e.status >= 502 || (e.data && e.data.offline))) return "Not connected to the server. Try again once the connection is back.";
+    const m = (e && e.message) || "Something went wrong.";
+    return m.charAt(0).toUpperCase() + m.slice(1);
   }
   CS.writeErr = errMsg;
   const DAY = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -88,6 +90,13 @@
   const full = ts => ts ? new Date(ts * 1000).toLocaleString() : "";
   const name = u => (u && u.display_name) || "someone";
   const counter = (n) => `${n} / ${NOTE_MAX}`;
+  // one phrasing per mode for "your change waits in the outbox" (sync.js); the inline message replaces sync.js's toast
+  const QMSG = () => (CS.sync && CS.sync.queuedMsg) ? CS.sync.queuedMsg() : "Saved on this device. It's sent when the connection to the server is back.";
+  const QUIET = { quiet: true };
+  // processing paused on the server (app.js CS.processing): the worker won't re-label anything until it's back on
+  const paused = () => !!(CS.processing && CS.processing.paused);
+  const relabel = () => paused() ? "Processing is paused on the server, so this match is re-labelled only once an admin turns processing back on."
+    : "The worker re-labels this match on its next pass (usually within a few minutes).";
   const cntCls = n => n > NOTE_MAX ? "nt-cnt over" : n > NOTE_MAX - 200 ? "nt-cnt warn" : "nt-cnt";
 
   // ================================================================ notes
@@ -109,11 +118,16 @@
     // notes written offline wait in the outbox (sync.js): shown here until they're sent
     const queued = () => CS.sync ? CS.sync.pending(it => it.method === "POST" && it.path === `events/${encodeURIComponent(ev)}/notes` && !!it.body
       && (team ? it.body.team === team : it.body.match === match)) : [];
-    const qItem = it => `<li class="nt-i nt-q"><div class="nt-m"><b>${H(name(CS.user))}</b><span class="nt-tag warn" title="Saved on this device. It's sent when the connection to the server is back.">waiting to send</span>
+    // ... and so do edits / deletes of existing notes: the newest one per note is drawn over the saved copy (CLIENT-4)
+    const queuedEdits = () => { const m = new Map();
+      for (const it of CS.sync ? CS.sync.pending(x => /^notes\/\d+$/.test(x.path || "") && (x.method === "PATCH" || x.method === "DELETE")) : []) m.set(+it.path.split("/")[1], it);
+      return m; };
+    const qItem = it => `<li class="nt-i nt-q"><div class="nt-m"><b>${H(name(CS.user))}</b><span class="nt-tag warn" title="${H(QMSG())}">waiting to send</span>
         <time datetime="${H(new Date(it.at).toISOString())}">${H(when(it.at / 1000))}</time></div><div class="nt-t">${H(it.body.text)}</div></li>`;
-    const onOutbox = () => { if (!el.isConnected) document.removeEventListener("cs:outbox", onOutbox); else if (!S.editing && !el.contains(document.activeElement)) load(); };
+    // (not while typing: a redraw would take the text box away)
+    const typing = () => { const a = document.activeElement; return !!a && el.contains(a) && /^(TEXTAREA|INPUT|SELECT)$/.test(a.tagName); };
+    const onOutbox = () => { if (!el.isConnected) document.removeEventListener("cs:outbox", onOutbox); else if (!S.editing && !typing()) load(); };
     document.addEventListener("cs:outbox", onOutbox);
-    const QMSG = "Saved on this device. It's sent when the connection to the server is back.";
     async function load() {
       try { S.list = await CS.app("GET", q()) || []; S.err = null; }
       catch (e) { S.list = []; S.err = e.status === 404 ? "Notes aren't available on this server." : !e.status || (e.data && e.data.offline) || e.status >= 502
@@ -126,9 +140,11 @@
       const b = m.querySelector("[data-undo]");
       if (b) b.onclick = () => act("restore", +b.dataset.undo, "Restored.");
     }
-    function item(n) {
+    function item(n, qe) {
       const mine = n.author && n.author.id === me(), rm = n.removed;
       const chips = [];
+      if (qe) { n = Object.assign({}, n, qe.method === "PATCH" && qe.body && typeof qe.body.text === "string" ? { text: qe.body.text } : {});
+        chips.push(`<span class="nt-tag warn" title="${H(QMSG())}">${qe.method === "DELETE" ? "delete" : "edit"} waiting to send</span>`); }
       if (team && n.match) chips.push(`<a class="nt-chip" href="#/${H(ev)}/m/${H(n.match)}">${H(shortKey(n.match))}</a>`);
       if (match && n.team) chips.push(`<a class="nt-chip team" href="#/${H(ev)}/t/${H(n.team)}">${H(num(n.team))}</a>`);
       if (n.updated_at && n.updated_at - n.created_at > 5 && !rm) chips.push(`<span class="nt-tag" title="edited ${H(full(n.updated_at))}${n.edited_by ? " by " + H(name(n.edited_by)) : ""}">edited${n.edited_by ? " by " + H(name(n.edited_by)) : ""}</span>`);
@@ -141,20 +157,24 @@
           <div class="nt-row"><span class="${cntCls(n.text.length)} nt-grow" aria-live="polite">${counter(n.text.length)}</span>
           <button type="button" data-cancel>Cancel</button><button type="submit" class="primary">Save</button></div></form></li>`;
       }
-      if (!rm && !locked()) {
+      if (!rm && !locked() && !qe) {
         if (mine) acts.push(`<button type="button" data-act="edit">Edit</button>`, `<button type="button" data-act="delete" class="danger">Delete</button>`);
         else if (CS.can("strategist")) acts.push(`<button type="button" data-act="hide">Hide</button>`);
       }
       if (rm && !locked() && CS.can("strategist")) acts.push(`<button type="button" data-act="restore">Restore</button>`);
-      return `<li class="nt-i${rm ? " nt-rm" : ""}" data-id="${n.id}"><div class="nt-m"><b>${H(name(n.author))}</b>
+      return `<li class="nt-i${rm || (qe && qe.method === "DELETE") ? " nt-rm" : ""}${qe ? " nt-q" : ""}" data-id="${n.id}"><div class="nt-m"><b>${H(name(n.author))}</b>
           <time datetime="${H(new Date(n.created_at * 1000).toISOString())}" title="${H(full(n.created_at))}">${H(when(n.created_at))}</time>${chips.join("")}</div>
         <div class="nt-t">${H(n.text)}</div>${acts.length ? `<div class="nt-a">${acts.join("")}</div>` : ""}</li>`;
     }
     function draw() {
-      const live = S.list.filter(n => !n.removed), canWrite = CS.can("scout"), qd = queued();
+      const live = S.list.filter(n => !n.removed), canWrite = CS.can("scout"), qd = queued(), qe = queuedEdits();
+      // offline: say so, and say how old the list is, instead of "none yet" over a list that may be missing notes (CLIENT-12)
+      const ri = CS.sync && CS.sync.readInfo ? CS.sync.readInfo(q()) : null, saved = !S.err && ri && ri.saved;
+      const head = S.err ? (qd.length ? `${qd.length} waiting to send · not connected` : "not connected")
+        : [live.length || (qd.length ? "" : "none yet"), qd.length ? `${qd.length} waiting to send` : ""].filter(Boolean).join(" · ");
       const keepFocus = document.activeElement && el.contains(document.activeElement) ? document.activeElement.id : null;
       const about = match && teams.length ? `<label class="nt-row"><span class="muted small">About</span><select id="ntAbout"><option value="">the whole match</option>${teams.map(t => `<option value="${H(t)}"${S.about === t ? " selected" : ""}>${H(num(t))}</option>`).join("")}</select></label>` : "";
-      el.innerHTML = `<div class="mv-sh"><h2 id="${hid}">Notes</h2><span class="muted small">${live.length || "none yet"}</span>${CS.help(help, "About notes")}
+      el.innerHTML = `<div class="mv-sh"><h2 id="${hid}">Notes</h2><span class="muted small">${H(String(head))}</span>${CS.help(help, "About notes")}
           ${CS.can("strategist") ? `<label class="nt-tools"><input type="checkbox" id="ntRm"${S.showRemoved ? " checked" : ""}> show hidden and deleted</label>` : ""}</div>
         ${!canWrite ? `<div class="nt-ro">Read-only: scouts, strategists and admins can write notes.</div>`
           : locked() ? `<div class="nt-ro">Read-only right now: an admin turned on lockdown.</div>`
@@ -163,7 +183,8 @@
             <div class="nt-row">${about}<span class="${cntCls(S.draft.length)} nt-grow" id="ntCnt" aria-live="polite">${counter(S.draft.length)}</span>
             <button type="submit" class="primary"${S.draft.trim() ? "" : " disabled"}>Add note</button></div></form>`}
         <div class="nt-msg" role="status" aria-live="polite"></div>
-        ${S.err ? `<div class="nt-ro">${H(S.err)}</div>` : ""}${qd.length || (!S.err && S.list.length) ? `<ul class="nt-list">${qd.map(qItem).join("")}${S.err ? "" : S.list.map(item).join("")}</ul>` : S.err ? "" : `<div class="muted small">No notes yet.</div>`}`;
+        ${S.err ? `<div class="nt-ro">${H(S.err)}</div>` : ""}${saved ? `<div class="nt-ro">Saved copy from ${H(when(ri.at / 1000))}: notes written since then show once the server can be reached.</div>` : ""}
+        ${qd.length || (!S.err && S.list.length) ? `<ul class="nt-list">${qd.map(qItem).join("")}${S.err ? "" : S.list.map(n => item(n, qe.get(n.id))).join("")}</ul>` : S.err ? "" : `<div class="muted small">No notes${saved ? " in the saved copy" : " yet"}.</div>`}`;
       wire();
       if (keepFocus) { const f = document.getElementById(keepFocus); if (f) f.focus(); }
     }
@@ -178,8 +199,8 @@
           S.busy = true; b.disabled = true;
           const body = { text: ta.value };
           if (team) body.team = team; else { body.match = match; if (S.about) body.team = S.about; }
-          try { const r = await CS.app("POST", `events/${encodeURIComponent(ev)}/notes`, body); S.draft = "";
-            if (r && r.queued) { draw(); msg("ok", QMSG); } else { await load(); msg("ok", "Note added."); } }
+          try { const r = await CS.app("POST", `events/${encodeURIComponent(ev)}/notes`, body, QUIET); S.draft = "";
+            if (r && r.queued) { draw(); msg("ok", QMSG()); } else { await load(); msg("ok", "Note added."); } }
           catch (x) { msg("err", errMsg(x)); b.disabled = false; }
           finally { S.busy = false; }
         };
@@ -197,8 +218,8 @@
         fe.querySelector("[data-cancel]").onclick = () => { S.editing = null; draw(); };
         fe.onsubmit = async e => {
           e.preventDefault();
-          try { const r = await CS.app("PATCH", `notes/${id}`, { text: ta.value }); S.editing = null;
-            if (r && r.queued) { draw(); msg("ok", "Edit " + QMSG.charAt(0).toLowerCase() + QMSG.slice(1)); } else { await load(); msg("ok", "Saved."); } }
+          try { const r = await CS.app("PATCH", `notes/${id}`, { text: ta.value }, QUIET); S.editing = null;
+            if (r && r.queued) { draw(); msg("ok", "Edit " + QMSG().charAt(0).toLowerCase() + QMSG().slice(1)); } else { await load(); msg("ok", "Saved."); } }
           catch (x) { msg("err", errMsg(x)); }
         };
       });
@@ -206,11 +227,11 @@
     async function act(a, id, okText) {
       try {
         if (a === "delete" || a === "hide") {
-          const r = await CS.app("DELETE", `notes/${id}`);
-          if (r && r.queued) { msg("ok", QMSG); return; }
+          const r = await CS.app("DELETE", `notes/${id}`, undefined, QUIET);
+          if (r && r.queued) { draw(); msg("ok", QMSG()); return; }
           await load(); msg("ok", a === "hide" ? "Note hidden: only strategists and admins can still see it." : "Note deleted.", id);
         } else if (a === "restore") {
-          const r = await CS.app("POST", `notes/${id}/restore`); if (r && r.queued) { msg("ok", QMSG); return; }
+          const r = await CS.app("POST", `notes/${id}/restore`, undefined, QUIET); if (r && r.queued) { msg("ok", QMSG()); return; }
           await load(); msg("ok", okText || "Note restored.");
         }
       } catch (x) { msg("err", errMsg(x)); }
@@ -233,9 +254,18 @@
     const sideTxt = d => ["red", "blue"].filter(a => d && d[a] && Object.keys(d[a]).length)
       .map(a => `${a}: ` + Object.entries(d[a]).map(([i, t]) => `${shown[i] != null ? `robot shown as ${H(shown[i])}` : `robot #${H(i)}`} → ${H(num(t))}`).join(", ")).join("; ") || "no fixes";
     async function load() {
-      try { S.ov = await CS.app("GET", `${base}/overrides`); } catch (e) { S.ov = null; S.loadErr = e.status === 404 ? null : errMsg(e); }
+      try { S.ov = await CS.app("GET", `${base}/overrides`); S.loadErr = null; }
+      catch (e) { S.ov = null; S.loadErr = e.status === 404 ? null : !e.status || e.status >= 502 || (e.data && e.data.offline)
+        ? "Not connected: the fixes already on the server show here once it can be reached." : errMsg(e); }
       draw();
     }
+    // fixes for this match still in the outbox (saved offline): listed as "waiting to send" (CLIENT-13)
+    const queuedFix = () => CS.sync ? CS.sync.pending(it => it.path === `${base}/overrides/${encodeURIComponent(match)}`) : [];
+    const onQ = () => { if (!el.isConnected) { document.removeEventListener("cs:outbox", onQ); removeEventListener("cs:processing", onQ); }
+      else if (S.open && !(el.contains(document.activeElement) && document.activeElement.tagName === "SELECT")) {
+        if (!queuedFix().length && S.msg && S.msg[2] === "queued") { S.msg = ["ok", "Sent to the server."]; load(); }      // (it went out)
+        else if (!queuedFix().length && S.loadErr) load(); else draw(); } };
+    document.addEventListener("cs:outbox", onQ); addEventListener("cs:processing", onQ);
     const direct = () => CS.can("strategist") || (S.ov && S.ov.mode === "direct");
     const changed = () => tracks.filter(t => S.sel[t.idx] && S.sel[t.idx] !== orig[t.idx]);
     function draw() {
@@ -249,16 +279,21 @@
         return `<label class="idfx-r${S.sel[t.idx] !== orig[t.idx] ? " chg" : ""}"><span><span class="sw" style="background:${H(t.color)}"></span>Robot shown as <b>${H(t.label)}</b>${t.tc != null ? ` <span class="muted">${Math.round(t.tc * 100)}%</span>` : ""}</span>
           <select data-idx="${H(t.idx)}" aria-label="Robot shown as ${H(t.label)} is really"${lk ? " disabled" : ""}>${t.team ? "" : `<option value="">unknown</option>`}${opts.map(k => `<option value="${H(k)}"${S.sel[t.idx] === k ? " selected" : ""}>${H(num(k))}</option>`).join("")}</select></label>`;
       };
-      const n = changed().length;
-      el.innerHTML = `<div class="idfx" role="group" aria-labelledby="idfxH"><h3 id="idfxH">Fix a robot's team ${CS.help(`<span class="hl">If a robot is labelled with the wrong team, pick the team it really is. Choosing a team that another robot of the alliance has swaps the two.</span><span class="hl">${direct() ? "Your fix is applied right away; the worker re-labels this match (and re-checks the rest of the event) on its next pass, within a few minutes." : "A strategist or admin approves scouts' fixes in Identity fixes; then the worker re-labels this match on its next pass."}</span><span class="hl">Use the video: the team number is on the bumpers. Fixed robots show a "manual" tag in Robots.</span>`, "How identity fixes work")}</h3>
+      const n = changed().length, qf = queuedFix();
+      // an applied fix the page doesn't show yet: the worker hasn't re-labelled the match (MATCH-13)
+      const lag = cur ? ["red", "blue"].flatMap(a => Object.entries(cur[a] || {}).map(([i, k]) => ({ t: tracks.find(x => String(x.idx) === i), k })))
+        .filter(x => x.t && x.k && x.t.team !== x.k) : [];
+      el.innerHTML = `<div class="idfx" role="group" aria-labelledby="idfxH"><h3 id="idfxH">Fix a robot's team ${CS.help(`<span class="hl">If a robot is labelled with the wrong team, pick the team it really is. Choosing a team that another robot of the alliance has swaps the two.</span><span class="hl">${direct() ? `Your fix is applied right away. ${paused() ? "Processing is paused on the server, so the worker re-labels this match (and re-checks the rest of the event) once an admin turns it back on." : "The worker re-labels this match (and re-checks the rest of the event) on its next pass, usually within a few minutes."}` : `A strategist or admin approves scouts' fixes in Identity fixes; then the worker re-labels this match on its next pass${paused() ? " (processing is paused on the server right now)" : ""}.`}</span><span class="hl">Use the video: the team number is on the bumpers. Fixed robots show a "manual" tag in Robots.</span>`, "How identity fixes work")}</h3>
         ${lk ? `<div class="nt-ro">Read-only right now: an admin turned on lockdown.</div>` : ""}
         <div class="idfx-g">${["red", "blue"].map(a => `<fieldset class="${a}"><legend>${a === "red" ? "Red" : "Blue"}</legend>${tracks.filter(t => t.alliance === a).map(row).join("")}</fieldset>`).join("")}</div>
-        ${cur || pend.length ? `<div class="idfx-p">
-          ${cur ? `<div><span><b>Applied for this match:</b> ${sideTxt(cur)}</span>${lk ? "" : `<button type="button" data-clear>${direct() ? "Clear fixes" : "Ask to clear"}</button>`}</div>` : ""}
+        ${cur || pend.length || qf.length ? `<div class="idfx-p">
+          ${qf.map(it => `<div><span><b>Waiting to send:</b> ${it.method === "DELETE" ? "clear this match's fixes" : sideTxt(it.body)} <span class="nt-tag warn" title="${H(QMSG())}">saved here</span></span></div>`).join("")}
+          ${cur ? `<div><span><b>Applied for this match:</b> ${sideTxt(cur)}${lag.length ? ` <span class="nt-tag warn" title="${H(relabel())}">not re-labelled yet</span>` : ""}</span>${lk ? "" : `<button type="button" data-clear>${direct() ? "Clear fixes" : "Ask to clear"}</button>`}</div>
+            ${lag.length ? `<div class="muted">This page still shows the old labels (${lag.map(x => `${H(x.t.label)} will show as ${H(num(x.k))}`).join(", ")}). ${H(relabel())}</div>` : ""}` : ""}
           ${pend.map(p => `<div data-rid="${H(p.id)}"><span><b>Waiting for review:</b> ${sideTxt(p.data)} · ${H(name(p.by))}, <span title="${H(full(p.at))}">${H(when(p.at))}</span>${p.stale ? ' <span class="nt-tag warn" title="the applied fixes changed since this was requested">changed since</span>' : ""}</span>
             ${lk ? "" : CS.can("strategist") ? `<button type="button" class="primary" data-dec="approve">Approve</button><button type="button" data-dec="reject">Reject</button>`
               : p.by && p.by.id === me() ? `<button type="button" data-dec="reject">Withdraw</button>` : ""}</div>`).join("")}</div>` : ""}
-        <div class="acts"><button type="button" class="primary" data-send${n && !lk ? "" : " disabled"}>${direct() ? "Apply fix" : "Send for review"}${n ? ` (${n})` : ""}</button>
+        <div class="acts"><button type="button" class="primary" data-send${n && !lk && !S.busy ? "" : " disabled"}>${S.busy ? "Sending…" : direct() ? "Apply fix" : "Send for review"}${n && !S.busy ? ` (${n})` : ""}</button>
           <button type="button" data-close>Close</button>${CS.can("strategist") ? `<a href="#/${H(ev)}/fixes">Identity fixes queue</a>` : ""}</div>
         <div class="nt-msg${S.msg ? " " + S.msg[0] : ""}" role="status" aria-live="polite">${S.msg ? `<span>${S.msg[1]}</span>` : ""}</div>
         ${S.loadErr ? `<div class="nt-ro">${H(S.loadErr)}</div>` : ""}</div>`;
@@ -279,8 +314,8 @@
       el.querySelectorAll("[data-dec]").forEach(b => b.onclick = async () => {
         const rid = b.closest("[data-rid]").dataset.rid, d = b.dataset.dec;
         try {
-          const r = await CS.app("POST", `${base}/override-requests/${encodeURIComponent(rid)}/${d}`);
-          S.msg = r && r.queued ? ["ok", "Saved on this device. It's sent when the connection to the server is back."] : ["ok", d === "approve" ? "Approved: the worker re-labels this match on its next pass." : CS.can("strategist") ? "Rejected." : "Withdrawn."];
+          const r = await CS.app("POST", `${base}/override-requests/${encodeURIComponent(rid)}/${d}`, undefined, QUIET);
+          S.msg = r && r.queued ? ["ok", H(QMSG())] : ["ok", d === "approve" ? `Approved. ${H(relabel())}` : CS.can("strategist") ? "Rejected." : "Withdrawn."];
         } catch (x) { S.msg = ["err", H(errMsg(x))]; }
         load();
       });
@@ -288,20 +323,24 @@
     async function submit(clear) {
       if (S.busy) return;
       if (clear && !confirm(direct() ? "Remove every identity fix for this match?" : "Ask a strategist to remove every identity fix for this match?")) return;
-      S.busy = true;
+      S.busy = true; draw();          // (no second tap while it's being sent, MATCH-25)
       try {
         let r;
-        if (clear) r = await CS.app("DELETE", `${base}/overrides/${encodeURIComponent(match)}`);
+        if (clear) r = await CS.app("DELETE", `${base}/overrides/${encodeURIComponent(match)}`, undefined, QUIET);
         else {
           const cur = (S.ov && S.ov.overrides && S.ov.overrides[match]) || {}, entry = { red: { ...(cur.red || {}) }, blue: { ...(cur.blue || {}) } };
           changed().forEach(t => { entry[t.alliance][String(t.idx)] = S.sel[t.idx]; });
-          r = await CS.app("PUT", `${base}/overrides/${encodeURIComponent(match)}`, entry);
+          r = await CS.app("PUT", `${base}/overrides/${encodeURIComponent(match)}`, entry, QUIET);
         }
         const queued = r && (r.status === "pending" || r.queued);
-        S.msg = r && r.queued ? ["ok", "Saved on this device. It's sent when the connection to the server is back; until then this match keeps its current labels."]
+        S.msg = r && r.queued ? ["ok", `${H(QMSG())} Until then this match keeps its current labels.`, "queued"]
           : queued ? ["ok", `Sent for review: a strategist or admin approves it in Identity fixes. Until then this match keeps its current labels.`]
-          : ["ok", clear ? "Fixes cleared. The worker re-labels this match on its next pass (a few minutes)." : "Fix applied. The worker re-labels this match on its next pass (a few minutes); reload this page after that."];
+          : ["ok", clear ? `Fixes cleared. ${H(relabel())}` : `Fix applied. ${H(relabel())} Reload this page after that to see the new labels.`];
+        // applied: the new teams are the baseline. Sent for review / waiting to send: back to the labels the page shows
+        // (the request is listed above), so the button is off until something changes and a second tap can't file it
+        // twice (MATCH-25, CLIENT-13)
         if (!queued) tracks.forEach(t => { orig[t.idx] = S.sel[t.idx]; });
+        else tracks.forEach(t => { S.sel[t.idx] = orig[t.idx]; });
       } catch (x) { S.msg = ["err", H(errMsg(x))]; }
       S.busy = false;
       await load();
