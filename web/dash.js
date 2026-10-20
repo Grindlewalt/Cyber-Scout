@@ -11,8 +11,17 @@
   const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
   const fmtT = ts => { if (ts == null) return "–"; const d = new Date(ts * 1000); return DAYS[d.getDay()] + " " + d.toTimeString().slice(0, 5); };
   const hhmm = ts => ts == null ? "–" : new Date(ts * 1000).toTimeString().slice(0, 5);
+  // the data time with its date when it isn't today (CS.fmtWhen: the app's one date format)
+  const when = ts => ts == null ? "–" : CS.fmtWhen ? CS.fmtWhen(ts) : fmtT(ts);
+  const sameDay = ts => ts != null && new Date(ts * 1000).toDateString() === new Date().toDateString();
+  // "now" only while the data is current: fresh (under 30 min old), processing running, worker checking in (MATCH-11)
+  const fresh = d => { const pr = CS.processing, t = d.event?.now;
+    return !d.event?.asof && t != null && Date.now() / 1000 - t < 1800 && !(pr && pr.paused) && !(pr && pr.worker_seen && Date.now() / 1000 - pr.worker_seen > 3600); };
+  // once every qual is played these are facts, not projections (MATCH-21)
+  const qualsDone = d => !!(d.event?.quals_total && d.event.quals_played >= d.event.quals_total);
   const dur = s => { const a = Math.abs(Math.round(s)), h = Math.floor(a / 3600), m = Math.floor(a % 3600 / 60), x = a % 60;
     return (h ? h + ":" + String(m).padStart(2, "0") : m) + ":" + String(x).padStart(2, "0"); };
+  const tipAttr = t => typeof tipA === "function" ? tipA(t) : ` title="${H(t)}"`;
   const SH = w => String(w).replace("shift", "S").replace("auto", "Auto").replace("endgame", "End").replace("transition", "Trans");
   const OPEN = id => { try { return localStorage.getItem("cs:dash:" + id) === "1"; } catch (e) { return false; } };
   const SETOPEN = (id, v) => { try { v ? localStorage.setItem("cs:dash:" + id, "1") : localStorage.removeItem("cs:dash:" + id); } catch (e) { } };
@@ -77,7 +86,7 @@
         <span class="rl-k">${H(s.short)}</span><span class="res ${wl === "W" ? "w" : wl === "L" ? "l" : ""}">${wl}</span><span class="rl-sc">${r[us]}–${r[op]}</span>${CS.liveTag(r.row)}</a></li>`;
     };
     let nowDone = false, k = 0;
-    const nowMark = `<li class="rl-now"><span>${d.event?.asof ? "replay" : "now"}<b>${hhmm(d.event?.now)}</b></span></li>`;
+    const nowMark = `<li class="rl-now"><span>${d.event?.asof ? "replay" : fresh(d) ? "now" : "data as of"}<b>${sameDay(d.event?.now) || d.event?.asof ? hhmm(d.event?.now) : H(when(d.event?.now))}</b></span></li>`;
     const more = nOld ? `<li class="rl-more"><button type="button" class="rl-mbtn" aria-expanded="false">+${nOld} earlier</button></li>` : "";
     const cells = items.map(s => {
       const pi = ps.findIndex(p => p.key === s.key);
@@ -100,7 +109,7 @@
     }).join("") + (nowDone ? "" : nowMark);
     const w = played.filter(s => s.result.won).length, t = played.filter(s => s.result.tie).length;
     return `<nav class="rail" aria-label="${tn(d.team)} matches">
-      <div class="rl-h"><span>${tn(d.team)}'s matches</span>${played.length ? `<span class="muted">${w}–${played.length - w - t}–${t}</span>` : ""}</div>
+      <div class="rl-h"><span>${tn(d.team)}'s matches</span>${played.length ? `<span class="muted">${w}–${played.length - w - t}–${t}</span><span class="muted small rl-what">all matches, playoffs too</span>` : ""}</div>
       <ol class="rl">${cells}</ol></nav>`;
   }
 
@@ -184,7 +193,7 @@
   function plansSection(d, R) {
     const ps = plansOf(d);
     if (!ps.length) return `<section class="qcard empty-q" id="plans"><h2>Next match</h2><p>No unplayed matches for ${tn(d.team)} ${d.event?.asof ? "at this replay time" : "right now"}.</p>
-      <p class="muted">${d.event?.asof ? "Pick an earlier time in the toolbar to see the plans as they stood." : "Results, rankings and selection odds are below and in the sidebar."}</p></section>`;
+      <p class="muted">${d.event?.asof ? "Pick an earlier time in the toolbar to see the plans as they stood." : "Our results and the schedule are below; Rankings and Selection have their own pages."}</p></section>`;
     if (S.tab >= ps.length) S.tab = 0;
     return queueCard(ps[S.tab], d, R, S.tab === 0);
   }
@@ -204,18 +213,18 @@
 
   // ---------------------------------------------------------------- how our event is going (side panel)
   function ourEvent(d, R) {
-    const r = R[d.team] || {}, pr = r.projection || d.our_team?.projection || {}, N = (d.ratings || []).length;
+    const r = R[d.team] || {}, pr = r.projection || d.our_team?.projection || {}, N = (d.ratings || []).length, qd = qualsDone(d);
     const tr = (d.our_team?.trend || []).filter(x => x.blend_total != null);
     const lv = [...(d.our_team?.levers || [])].filter(l => l.gap_rank != null).sort((a, b) => a.gap_rank - b.gap_rank)[0];
     const dis = r.disagree?.flag ? `<span class="mchipw" title="Model and EPA differ by ${n0(Math.abs(r.disagree.diff))} pts (more than 15 pts and 1.5 sd)">models disagree</span>` : "";
     return `<section class="side card" aria-labelledby="oe-h"><h2 id="oe-h">${tn(d.team)} at this event</h2>
       <dl class="oe">
-        <div><dt>Rank now</dt><dd>${r.rank ?? "–"}<small>${N ? ` of ${N}` : ""}</small></dd></div>
-        <div><dt>Record</dt><dd>${H(r.record || "–")}<small>${r.rp != null ? ` ${n0(r.rp)} RP` : ""}</small></dd></div>
-        <div title="final qualification rank, mean and 10–90% range of the simulation"><dt>Projected rank</dt><dd>${n0(pr.rank_mean)}<small>${pr.rank_p10 != null ? ` (${pr.rank_p10}–${pr.rank_p90})` : ""}</small></dd></div>
-        <div><dt>Top 8 odds</dt><dd>${wp5(pr.p_top8)}</dd></div>
-        <div title="expected final ranking points (RP) after the remaining quals"><dt>Expected final RP</dt><dd>${n0(pr.rp_mean, 1)}</dd></div>
-        <div title="ranking score = RP per match, expected at the end of quals"><dt>Expected RS</dt><dd>${n0(pr.rs_mean, 2)}</dd></div>
+        <div><dt>${qd ? "Final rank" : "Rank now"}</dt><dd>${r.rank ?? "–"}<small>${N ? ` of ${N}` : ""}</small></dd></div>
+        <div><dt>Qual record</dt><dd>${H(r.record || "–")}<small>${r.rp != null ? ` ${n0(r.rp)} RP` : ""}</small></dd></div>
+        ${qd ? "" : `<div${tipAttr("final qualification rank: mean and 10–90% range of the simulation")}><dt>Projected rank</dt><dd>${n0(pr.rank_mean)}<small>${pr.rank_p10 != null ? ` (${pr.rank_p10}–${pr.rank_p90})` : ""}</small></dd></div>`}
+        <div><dt>${qd ? "Top 8" : "Top 8 odds"}</dt><dd>${qd && (pr.p_top8 === 0 || pr.p_top8 === 1) ? (pr.p_top8 ? "yes" : "no") : wp5(pr.p_top8)}</dd></div>
+        ${qd ? "" : `<div${tipAttr("expected final ranking points (RP) after the remaining quals")}><dt>Expected final RP</dt><dd>${n0(pr.rp_mean, 1)}</dd></div>
+        <div${tipAttr("ranking score = RP per match, expected at the end of quals")}><dt>Expected RS</dt><dd>${n0(pr.rs_mean, 2)}</dd></div>`}
       </dl>
       <div class="oe-row"><span class="muted">Model rating</span> <b>${n0(r.blend?.total)}</b><small class="muted"> ± ${n0(r.blend?.sd)} pts/match</small> · <span class="muted">EPA</span> ${n0(r.epa?.total)} ${dis}</div>
       ${tr.length >= 2 ? `<div class="oe-spark">${spark(tr, "blend_total")}<div class="small muted">rating after each match: ${n0(tr[0].blend_total, 1)} → <b>${n0(tr[tr.length - 1].blend_total, 1)}</b></div></div>` : ""}
@@ -299,7 +308,9 @@
     const prbar = r => { const p = r.projection; if (!p) return ""; const L = v => ((v - 1) / Math.max(1, N - 1) * 100).toFixed(1);
       return `<div class="prb" title="mean ${n0(p.rank_mean, 1)}, 80% range ${p.rank_p10}-${p.rank_p90}"><i class="rg" style="left:${L(p.rank_p10)}%;width:${Math.max(1, L(p.rank_p90) - L(p.rank_p10))}%"></i><i class="mn" style="left:${L(p.rank_mean)}%"></i></div><span class="small">${p.rank_p10}–${p.rank_p90}</span>`; };
     const vcell = r => { const c = r.coverage; if (!c) return "–"; return `<span class="mcov ${c.tier}" title="verified robot video (v2 identity, team conf ≥ 0.6): ${H(c.label)}">${c.n ? `${c.n}${c.of ? "/" + c.of : ""}` : "none"}</span>${c.last ? ` <span class="muted small">last ${H(c.last)}</span>` : ""}`; };
-    const dcell = r => { const x = r.disagree; if (!x || x.diff == null) return ""; return x.flag ? `<span class="mchipw" title="Model and EPA differ by ${n0(Math.abs(x.diff))} pts (more than 15 pts and 1.5 sd)">${x.diff > 0 ? "+" : "−"}${n0(Math.abs(x.diff))}</span>` : `<span class="muted small">${x.diff > 0 ? "+" : "−"}${n0(Math.abs(x.diff))}</span>`; };
+    // sign from the rounded value, so a difference that rounds to 0 shows as a plain 0 (MATCH-20)
+    const dcell = r => { const x = r.disagree; if (!x || x.diff == null) return ""; const v = Math.round(x.diff), t = v ? `${v > 0 ? "+" : "−"}${Math.abs(v)}` : "0";
+      return x.flag ? `<span class="mchipw" title="Model and EPA differ by ${Math.abs(v)} pts (more than 15 pts and 1.5 sd)">${t}</span>` : `<span class="muted small">${t}</span>`; };
     return `
       <div class="tablewrap"><table class="rate"><thead>
         <tr class="grp"><th colspan="6"></th><th colspan="3" class="num">Model by period</th><th colspan="3"></th></tr>
@@ -308,7 +319,7 @@
         <td class="num">${r.rank ?? "–"}</td><td class="tm"><a href="#/${S.ev}/t/${r.team}"><b>${tn(r.team)}</b> <span class="muted nick">${H(r.nickname)}</span></a></td><td class="num">${H(r.record)}</td>
         <td class="num bld">${n0(r.blend?.total)}<small class="muted"> ±${n0(r.blend?.sd)}</small></td><td class="num">${n0(r.epa?.total)}</td><td class="num">${dcell(r)}</td>
         <td class="num g2">${n0(r.blend?.auto)}</td><td class="num g2">${n0(r.blend?.teleop)}</td><td class="num g2">${n0(r.blend?.endgame)}</td>
-        <td>${vcell(r)}</td><td><div class="prcell">${prbar(r)}</div></td><td class="num">${wp5(r.projection?.p_top8)}</td></tr>`).join("")}
+        <td>${vcell(r)}</td><td><div class="prcell">${prbar(r)}</div></td><td class="num">${qualsDone(d) && (r.projection?.p_top8 === 0 || r.projection?.p_top8 === 1) ? (r.projection.p_top8 ? "yes" : "no") : wp5(r.projection?.p_top8)}</td></tr>`).join("")}
       </tbody></table></div>`;
   }
 
@@ -340,7 +351,9 @@
   // ---------------------------------------------------------------- page
   function disclosure(id, title, sum, body, help) {
     if (!body) return "";
-    return `<details class="dsec" id="sec-${id}" data-sec="${id}"${OPEN(id) ? " open" : ""}><summary><span class="ds-t">${title}</span>${help || ""}<span class="ds-s">${sum}</span><span class="ds-c" aria-hidden="true"></span></summary><div class="ds-b" id="body-${id}">${body}</div></details>`;
+    // the "?" sits at the top of the open section, not inside <summary> (a button in a summary also toggles it, and screen
+    // readers announce nested controls badly: MATCH-27)
+    return `<details class="dsec" id="sec-${id}" data-sec="${id}"${OPEN(id) ? " open" : ""}><summary><span class="ds-t">${title}</span><span class="ds-s">${sum}</span><span class="ds-c" aria-hidden="true"></span></summary><div class="ds-b" id="body-${id}">${help ? `<div class="ds-hl">${help}</div>` : ""}${body}</div></details>`;
   }
   function render(d) {
     const R = Object.fromEntries((d.ratings || []).map(r => [r.team, r]));
@@ -360,6 +373,8 @@
     startCountdown(d); wirePlans(d, R); wireSecs();
     const rt = () => { document.getElementById("rt").innerHTML = ratings(d); wireSort(rt); };
     wireSort(rt);
+    const on = document.querySelector(".rl-m.upc.on"), rl = on && on.closest(".rl");          // phones: the open plan's tab in view
+    if (rl && rl.scrollWidth > rl.clientWidth) rl.scrollLeft = Math.max(0, on.closest("li").offsetLeft - rl.offsetLeft - 8);
     const mb = document.querySelector(".rl-mbtn");
     if (mb) mb.onclick = () => { const r = mb.closest(".rail"), all = r.classList.toggle("all"); mb.setAttribute("aria-expanded", all); mb.textContent = all ? "Show fewer" : `+${r.querySelectorAll("li.old").length} earlier`; };
   }
@@ -423,7 +438,14 @@
 @media (max-width: 760px) {
   .rail:not(.all) .rl > li.old { display: none; }
   .rl > li.rl-more { display: flex; }
+  /* phones: the rail is one swipeable row, so the plan (win %, auto, defend) starts on the first screen (MATCH-30) */
+  .rl { flex-wrap: nowrap; overflow-x: auto; overscroll-behavior-x: contain; scroll-snap-type: x proximity; scrollbar-width: none; padding-bottom: 2px;
+    -webkit-mask-image: linear-gradient(90deg, #000 calc(100% - 24px), transparent); mask-image: linear-gradient(90deg, #000 calc(100% - 24px), transparent); }
+  .rl::-webkit-scrollbar { display: none; }
+  .rl > li { flex: none; scroll-snap-align: start; }
+  .rl-what { display: none; }
 }
+.ds-hl { display: flex; justify-content: flex-end; margin: -6px 0 2px; }
 
 /* ---- layout */
 .db-grid { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: var(--sp-4); align-items: start; }
@@ -561,7 +583,12 @@ a.tgt { font-weight: 750; text-decoration-color: currentColor; } a.tgt.red { col
     if (byKey < 0 && !/^\d+$/.test(want) && S.live) { const i = ps.findIndex(p => !S.live[p.key]); if (i > 0) S.tab = i; }   // a plan whose match the stream already scored is history
     CS.markActive && CS.markActive("dash");
     crumbs([[d.event?.name || ev, `#/${ev}`], ["Dashboard"]]);
-    $updated.textContent = `Strategy for ${tn(d.team)} · ${d.event?.asof ? "replay at " : ""}${fmtT(d.event?.now)} · ${d.event?.quals_played ?? "?"}/${d.event?.quals_total ?? "?"} quals played`;
+    // the data time with its date unless it's today, and "data as of" (not a bare time) unless the data is current (MATCH-11, MATCH-44)
+    const sub = () => { $updated.textContent = `Strategy for ${tn(d.team)} · ${d.event?.asof ? "replay at " + fmtT(d.event.asof) : (fresh(d) ? "" : "data as of ") + when(d.event?.now)} · ${d.event?.quals_played ?? "?"}/${d.event?.quals_total ?? "?"} quals played`; };
+    sub();
+    // processing paused / resumed, the worker went quiet: the freshness words follow without a reload
+    const onPr = () => { sub(); const n = document.querySelector(".rl-now"), r = n && rail(d); if (n && r) { const t = document.createElement("div"); t.innerHTML = r; const m = t.querySelector(".rl-now"); if (m) n.replaceWith(m); } };
+    addEventListener("cs:processing", onPr); cleanup.push(() => removeEventListener("cs:processing", onPr));
     render(d);
     if (!ts) {   // live: refresh every 60s without losing scroll
       const iv = setInterval(async () => { try { const n = await load(ev, null); if (JSON.stringify(n.event) !== JSON.stringify(d.event) || n.next_match?.key !== d.next_match?.key) return route(false);

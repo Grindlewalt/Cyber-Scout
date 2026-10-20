@@ -901,7 +901,7 @@ function liveMatchPage(ev, key, row, evj) {
     <div class="mv-grid">
       <div class="mv-main">
         ${clip ? `<div class="mv-stage mv-clip"><video controls playsinline preload="metadata" src="${esc(clip)}"></video></div>
-          <div class="note">Livestream clip of this match. Robot tracking, shots and the field replay appear here once the match is tracked${L.tracking === "from_stream" ? " (from this clip, shortly)" : " from its per-match upload"}.</div>`
+          <div class="note">Livestream clip of this match. Robot tracking, shots and the field replay appear here once the match is tracked${L.tracking === "from_stream" ? " (from this clip)" : " from its per-match upload"}${CS.processing && CS.processing.paused ? ": processing is paused on the server right now, so that waits until an admin turns it back on" : ""}.</div>`
         : `<div class="empty"><b>No video yet</b>The livestream recorder found this match, but its clip isn't available.</div>`}
       </div>
       <aside class="mv-side card" aria-label="Alliances"><div class="mv-sh"><h2>Teams</h2></div>

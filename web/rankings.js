@@ -247,13 +247,13 @@
   // instead of an error page (MATCH-7)
   function selEmpty(ev, name, times, ts) {
     const near = ts ? [...times].sort((a, b) => Math.abs(a - ts) - Math.abs(b - ts)).slice(0, 3).sort((a, b) => a - b) : [];
-    const paused = window.CS && CS.processing && CS.processing.paused;
+    const stall = CS.buildStall ? CS.buildStall(CS.platform && CS.user && CS.can("admin")) : "";      // paused / no TBA key / worker quiet (app.js)
     return `<div class="dtop"><div><h1>Alliance selection</h1><div class="sub">${H(name)}</div></div></div>
       <section class="card"><div class="empty sel-empty">${ts
         ? `<b>No selection projection at ${H(fmtDT(+ts))}.</b>${near.length ? ` Snapshots near that time: ${near.map(t => `<a href="#/${ev}/selection/${t}">${H(fmtDT(t))}</a>`).join(" · ")}.` : " This competition has no selection snapshots."}
           <span class="muted">The latest projection (if there is one) is on <a href="#/${ev}/selection">Selection without a replay time</a>.</span>`
         : `<b>No alliance-selection projection for this competition.</b> It's built with the strategy data for district events and needs the
-          simulation to have run. This competition may not be a district event, or the worker hasn't built it yet.${paused ? " Processing is paused on the server right now, so nothing new is built until an admin turns it back on." : ""}
+          simulation to have run. This competition may not be a district event, or the worker hasn't built it yet.${stall ? " " + stall : ""}
           <span class="muted">Rankings and the Picklist still work: <a href="#/${ev}/rankings">Rankings</a> · <a href="#/${ev}/picklist">Picklist</a>.</span>`}</div></section>`;
   }
 
