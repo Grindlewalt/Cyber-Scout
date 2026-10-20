@@ -64,7 +64,7 @@ WARN_MB = 100                    # default "warn before a clip download over N M
 SLOW_MIN = 25.0                  # minutes per match: slower than this, Clip only helps the event more
 SERVER_MIN = 3.5                 # what the server's own worker takes per match (RTX 3060 Ti), for the comparison
 # what a GPU we have measured takes per match (client/README.md, "How fast"), shown before this computer is measured
-TYPICAL = ((re.compile(r"^Apple M1(?! (Pro|Max|Ultra))\b"), 5.2, "an Apple M1, Core ML"),)
+TYPICAL = ((re.compile(r"^Apple M1(?! (Pro|Max|Ultra))\b"), 5.2, "An Apple M1 (Core ML)"),)
 BENCH_V = 1                      # bump to re-run every client's benchmark
 # minutes per match from the benchmark: a livestream clip is ~190 s at 60 fps; the detector runs at 30 Hz over all of
 # it (process.detect_video), and the rest of the pipeline (decode, fuel tracker on every frame, OCR, shots, intakes,

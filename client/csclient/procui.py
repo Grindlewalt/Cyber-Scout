@@ -38,7 +38,7 @@ background:var(--soft);color:var(--mute)}
 .lnk{background:var(--sheet);border:1px solid var(--line);border-radius:6px;padding:3px 10px;margin:8px 0 0 10px;font:inherit;
 font-size:13px;color:var(--acc);cursor:pointer}.lnk:hover{border-color:var(--acc)}
 .lnk:disabled{color:var(--mute);cursor:not-allowed;border-style:dashed;background:transparent}
-.ro.off .v,.ro.off .k{color:var(--mute)}
+.ro.off .v,.ro.off .k{color:var(--mute)}#role{margin-top:14px}
 .verdict[hidden]+.lnk{margin-left:0}
 .notes{margin:14px 0 0;display:grid;gap:8px}
 .note{border-left:4px solid var(--warn);background:var(--sheet);padding:10px 14px;border-radius:0 6px 6px 0}
