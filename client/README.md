@@ -66,8 +66,10 @@ python3 client/cyberscout_client.py                 # opens http://127.0.0.1:760
 python3 client/cyberscout_client.py --server https://scout.example.dev --port 7600 --no-browser
 ```
 
-A terminal window shows the address and the log; closing it (or Ctrl+C) stops the client. Starting it a second
-time just opens the browser on the running one.
+A terminal window shows the address and the log; closing it (or Ctrl+C) stops the client; the app's pages then say
+"Client not running" until you start it again (your data and queued changes stay). One client runs per data folder
+(`client.lock` in it): starting it again on the same folder opens the running one, even on another port. A second
+install on the same computer needs its own `--data` and `--port`.
 
 | option | env | default |
 |---|---|---|
@@ -81,16 +83,30 @@ time just opens the browser on the running one.
 
 ## First run
 
-1. Start the client; the browser opens `http://127.0.0.1:7600/` with the app (the copy bundled into the client).
-2. **Settings → Connection**: type the server address, e.g. `https://scout.grantrindal.dev` (through the tunnel)
-   or `http://10.0.0.58:7560` (shop LAN / Tailscale). A bare host name gets `https://`.
-3. **Test connection**: shows the server's name, version and the round-trip time, or a clear error ("connection
-   refused", "certificate could not be verified", "answers, but is not a Cyber-Scout server", …).
+1. Start the client; the browser opens `http://127.0.0.1:7600/` on the **Welcome to Cyber-Scout** page
+   (`#/connect`: Connect → Sign in → Sync).
+2. Type the server address, the one you use for Cyber-Scout in a browser, e.g. `scout.grantrindal.dev` (through the
+   tunnel) or `10.0.0.58:7560` (shop LAN / Tailscale). Without `http://` / `https://`, an IP address, `localhost`, a
+   name without a dot or one ending in `.local` / `.lan` / `.home` / `.internal` / `.ts.net` gets `http://`; any other
+   name gets `https://`.
+3. **Test connection** (or **Connect**, which tests first) shows the server's name, version and round-trip time, or
+   what is wrong in a sentence: "Can't reach … connection refused (is the server running at that address?)", "This
+   address doesn't use HTTPS. Try http://…" (with a button to use it), "That's this Cyber-Scout Client's own
+   address", "Something answers at …, but it isn't Cyber-Scout", "… is a Cyber-Scout server, but a version without
+   offline sync", "the server's certificate could not be verified".
 4. **Sign in** with your Cyber-Scout account. The client signs itself in; the browser page never sees the server
-   session. Sync starts immediately.
-5. Choose **media**: `none` (default: data only), `proxy` (small ≈480p preview copies of match videos,
-   ~15–20 MB per match) or `full` (every video the server keeps: GBs per event). Choose which events to keep
-   (default: all events the server follows).
+   session. The data downloads in the background; the app is usable meanwhile.
+5. Later changes are in **Settings → Connection**: the server, sign out, **Videos** (**None**: data only, the default;
+   **Previews**: a ≈480p copy of every match video, ≈27 MB per match; **Full videos**: everything the server keeps,
+   GBs per event: the option shows the size first and asks before downloading), **Competitions** (default: every one
+   the server follows; untick one to stop syncing it, then **Remove from this computer** to delete its local copy),
+   storage, and **Changes waiting**.
+
+The **connection pill** (bottom of the sidebar; in the toolbar on phones and in the Top bar / Command layouts) shows
+the state at a glance: `Online · synced 2 min ago`, `Syncing 40%` (by bytes), `Connecting…`, `Offline · 3 changes
+waiting`, `Signed out`, `Client not running` (the client process stopped). A red number = changes that need your
+choice. Clicking it opens the **Connection** sheet: server (and the alternate address in use, if any), last sync,
+what's on this computer, every change waiting or in conflict with its buttons, **Sync now**.
 
 Without the web UI (scripts, troubleshooting), the same is possible with the control API below, from a page served
 by the client.
@@ -135,10 +151,23 @@ The web app itself (39 files, 1.8 MB) mirrors in 14 s on the slow link, once per
   the page gets the server's real answer (or `202` if it takes more than 20 s).
 * The outbox is sent in order when the server is back. The same key is used on every retry, so a change whose
   answer got lost is replayed by the server, never applied twice.
-* `409` conflicts (e.g. a picklist someone else changed) are kept, shown in `status.errors` (`kind:"conflict"`,
-  with the server's answer incl. the current version) and in the outbox list until you discard them. Other rejected
-  changes (`kind:"failed"`, e.g. 403 lockdown, 422) likewise. A `401` stops the flush until you sign in again.
+* **One picklist save per list**: a picklist save replaces a still-unsent save of the same list made on the same
+  version (it keeps that one's place in the queue and takes the new key). If the earlier one was already tried, the
+  later one stays separate and is **rebased** onto the version the earlier one creates once it is accepted (only
+  saves made on that same base version: a save made after a newer version was seen is left alone). So any number of
+  offline clicks end as one change, not as conflicts with yourself.
+* `409` conflicts (a picklist someone else saved meanwhile) are kept, shown in `status.errors` (`kind:"conflict"`,
+  with the server's answer incl. the current version) and, with their buttons, in the Connection sheet and Settings →
+  Connection → Changes waiting. The card says who saved and what each choice drops; nothing is merged: **Save mine
+  over theirs** replaces their list with yours (theirs stays in the picklist history), **Use theirs** drops yours.
+  Other rejected changes (`kind:"failed"`, e.g. 403 lockdown, 422) are listed with **Try again** / **Discard**. A
+  `401` stops the flush until you sign in again.
+* **Changes belong to their server**: each outbox row remembers the server it was written for and is only sent there
+  (or to that server's `--alt-server` addresses). After switching to another server they wait, listed as "For
+  <address>" (`status.outbox_held`), until you switch back; the switch's confirmation says so.
 * Sign-in, sign-out, password change and setup are never queued (they need the server).
+* Videos never fill the disk: a media sync keeps 2 GB free (it downloads what fits, smallest first, and says how much
+  was left out in `status.errors`, `kind:"media"`).
 
 ## Help process matches (processor mode)
 
@@ -147,7 +176,8 @@ Tracking one match takes the server about 3.5 minutes. Any computer running the 
 the server's own pipeline on it and upload the results. The server publishes them as if its worker had tracked the
 match (and keeps the clip in `MEDIA/<ev>/<key>.mp4`). Server side: `server/routers/processing.py`.
 
-* **Needs an admin account** (a processor's uploads become the event's tracking data).
+* **Needs an admin account** (a processor's uploads become the event's tracking data). Signed in with another role,
+  the page says who is signed in and keeps the switch and Set up off. Set up asks before its download.
 * Open `http://127.0.0.1:7600/client/processing`: three readouts (**GPU**, **Tracking one match** in minutes,
   **Wi-Fi to the server**) each with a verdict, the switch with **Track matches / Clip only**, the status line, Set
   up and Advanced. Or start with `--process on [--process-python /path/to/python]`. The status line is also in
@@ -209,10 +239,10 @@ cache first). Measured installs (uv 0.12.21, 2026-10-18):
 | `coreml` (Apple M1) | 0.24 GB | 0.6 GB | 12 s (setup + benchmark: 39 s) |
 | `clip` | ~0.23 GB | ~0.5 GB | |
 
-Settings → **Processing Python** (`process_python`, `--process-python`) can instead name any Python that has the
+`/client/processing` → **Advanced** → **Processing Python** (`process_python`, `--process-python`) can instead name any Python that has the
 packages, e.g. a Cyber-Scout checkout's `.venv/bin/python`. The client checks the Python once per version (`import
 onnxruntime, av, cv2, numpy, scipy, pupil_apriltags`; Clip only: `av, cv2, numpy, yt_dlp` + an ffmpeg); the status
-says `needs_setup: …` until it works. `client/build/runtime_check.py --runtime auto|cuda|coreml|clip` runs the same
+says `set up needed: …` until it works. `client/build/runtime_check.py --runtime auto|cuda|coreml|clip` runs the same
 install + checks by hand (CI runs it on every OS).
 
 ### Benchmark
@@ -226,7 +256,8 @@ the pipeline, fuel tracker / OCR / shots / identity, is CPU work that scales wit
 |---|---|---|---|---|
 | Apple M1, Core ML (2026wagg qm10, 1080p60 livestream clip) | 27.3 fps | 622 fps | 5.2 min | 5.2 min (312.7 s) |
 
-After the first real matches the page shows the measured time (median of the last 3) instead. A computer that needs
+Before this computer is measured, the page shows the time of a GPU we measured (an Apple M1: about 5.2 min per
+match). After the first real matches it shows the measured time (median of the last 3) instead. A computer that needs
 more than **25 min per match** pauses (state `slow`): "This computer needs about 34 min per match (benchmark; the
 server needs about 3.5): tracking here would slow the event down. Clip only helps more, or track anyway." with
 **Switch to Clip only** and **Track anyway** (`allow_slow`, saved).
@@ -325,14 +356,15 @@ local `cs_csrf` cookie (the client's own token — the server's CSRF token and s
 
 | call | answer |
 |---|---|
-| `GET status` | `{client:true, version, server, online, signed_in, user:{display_name,role}\|null, last_sync, syncing, progress:{done,total,bytes,done_bytes,total_bytes,ev,phase}\|null, outbox, events:[{key,name,synced_at,files,bytes,media_bytes}], errors:[{time,kind,message,ev?,id?,response?}]}` plus `active_server` (the address in use: `server` or one of `alt_servers`), `alt_servers`, `media, followed, available_events, offline_reason, server_info, web_version, storage`. `progress.done/total` count files; `bytes` is bytes received. `outbox` = changes not yet accepted. `errors[].kind`: `network`, `auth`, `sync`, `media`, `web`, `conflict`, `failed` |
+| `GET status` | `{client:true, version, server, online, signed_in, user:{display_name,role}\|null, last_sync, syncing, progress:{done,total,bytes,done_bytes,total_bytes,ev,phase}\|null, outbox, events:[{key,name,synced_at,files,bytes,media_bytes}], errors:[{time,kind,message,ev?,id?,response?}]}` plus `active_server` (the address in use: `server` or one of `alt_servers`), `alt_servers`, `connecting` (the server address just changed and hasn't answered yet), `outbox_held` (`[{server, n}]`: changes written for another server), `media, followed, available_events, offline_reason, server_info, web_version, storage`. `progress.done/total` count files, `done_bytes/total_bytes` their bytes (the app's percentage uses these); `bytes` is bytes received. `outbox` = this server's changes not yet accepted. `errors[].kind`: `network`, `auth`, `sync`, `media`, `web`, `conflict`, `failed` |
 | `PUT config` `{server?, alt_servers?, media?, events?, interval?}` | `200 {ok, config}`; `422 {detail}` on bad values. `events:null` = all followed events. Changing `server` signs out and resyncs |
-| `POST test` `{server?}` | always `200`: `{ok:true, server, latency_ms, version, name, api}` or `{ok:false, server, error}` |
+| `POST test` `{server?}` | always `200`: `{ok:true, server, latency_ms, version, name, api}` or `{ok:false, server, error, suggest?}` (`suggest`: the `http://` address when an `https://` one answered in plain http) |
 | `POST login` `{username,password}` | `200 {ok:true, user}`; server's status + `{ok:false, detail}` (401 bad password, 429 …); `503 {offline:true}` |
 | `POST logout` | `200 {ok:true}` |
 | `POST sync` `{ev?, media?}` | `202 {started:true, online}` |
-| `GET outbox` | `[{id, key, method, path, created, updated, state:"queued"\|"sending"\|"conflict"\|"failed", attempts, status, error, body, response}]` |
+| `GET outbox` | `[{id, key, method, path, created, updated, state:"queued"\|"sending"\|"conflict"\|"failed", attempts, status, error, body, response, server}]` |
 | `DELETE outbox/<id>` | `204`; `404` unknown; `409` while it is being sent |
+| `DELETE events/<ev>` | delete this computer's copy of a competition that isn't synced any more → `200 {ok, freed}`; `409` while it is still synced or a sync runs |
 | `GET processing`, `PUT processing`, `POST processing/setup`, `POST processing/{bench,netcheck,gpu}` | processor mode, see [Help process matches](#help-process-matches-processor-mode) |
 
 ## Storage
@@ -345,6 +377,7 @@ local `cs_csrf` cookie (the client's own token — the server's CSRF token and s
 
 ```
 config.json        settings + per-install secrets (0600)
+client.lock        held while a client runs on this folder ({pid, url}: a second start opens that one)
 session.json       the server session cookie + CSRF token (0600; never sent to the page)
 client.sqlite3     outbox + cache of /app/v1 answers (0600)
 site/api/…         the data mirror  (site/media/… videos)
@@ -365,12 +398,15 @@ Deleting the folder resets the client (queued changes are lost). Deleting `site/
   Windows store); behind a TLS-inspecting proxy set `"ca_file": "/path/to/ca.pem"` in `config.json`.
 * **"Open Cyber-Scout from the client's own address"** — open `http://127.0.0.1:7600/` (not a bookmark of another
   host name / port); the page sets the cookie the client requires.
-* **Port 7600 in use** — `--port 7601`.
+* **Port 7600 in use** — `--port 7601`. If another Cyber-Scout Client holds it (a different data folder), the log
+  says so.
+* **"Client not running"** — the client process stopped (its terminal window was closed): start it again; nothing
+  is lost.
 * **Sync stuck / weird data** — look at `logs/client.log`; `status.errors` has the last error per event. Delete
   `state/<ev>.json` to make that event resync from scratch (files already present and correct are not downloaded
   again: they are re-hashed).
-* **A change won't go through** — Settings → Connection → outbox: conflicts and rejected changes stay there until
-  discarded.
+* **A change won't go through** — click the connection pill (or Settings → Connection → Changes waiting): conflicts
+  and rejected changes stay there, with their buttons, until you resolve or discard them.
 
 ## Development
 

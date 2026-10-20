@@ -122,7 +122,7 @@ match clips (Clip only). Needs an admin account.</p></div><a href="/">Back to Cy
 
 <details class="panel"><summary>Advanced</summary>
  <p class="hint"><b>Data cost:</b> each match downloads its livestream clip (typically 150&ndash;250 MB) and uploads
- 1&ndash;3 MB of results; the first run also downloads the code (~10 MB) and the detector model (~40 MB). Clip only
+ 1&ndash;3 MB of results; the first run also downloads the code (~12 MB) and the detector model (~38 MB). Clip only
  downloads the stream (about 1 MB/s) and uploads the clips the server is missing.</p>
  <label for="warn">Ask before downloading a clip over (MB, 0 = never ask)</label>
  <input type="number" id="warn" min="0" max="100000" step="10"> <button class="b" id="savewarn">Save</button>

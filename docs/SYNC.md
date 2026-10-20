@@ -53,8 +53,8 @@ matches.
 - Sync engine: on start and every N s while online (and immediately when connectivity returns): `/sync/events`
   → for each followed event `/sync/manifest?since=` → download missing/changed files via `/sync/bundle` in
   chunks (verify sha256, write atomically, resume partial bundles) → flush the outbox in order (stop on auth
-  errors; surface 409 conflicts to the user). Back-off with jitter on failures. Never more than 2 concurrent
-  requests (slow links).
+  errors; surface 409 conflicts to the user: the Connection sheet and Settings list them with their buttons). Back-off
+  with jitter on failures. Never more than 2 concurrent requests (slow links).
 - Security: binds to 127.0.0.1 only by default; the control API requires a per-install random token in a cookie
   set when the page is served by the client (prevents other local sites from driving it); no shell commands;
   only the configured server is contacted.
@@ -79,6 +79,11 @@ matches.
 - **Both modes**: a small, always-visible connection pill — `Online · synced 2 min ago`, `Syncing 40%`,
   `Offline · 3 changes waiting` — plus a toast when going offline/online and when queued changes are sent or
   conflict. Never block reading because of the network.
+
+  As built: on phones the toolbar pill is the state's dot + glyph (check / cloud-off / warning / arrows / person,
+  shown by style.css) while online, and a full-width text bar when offline or unreachable; its full text is in the
+  sheet it opens. Client mode adds `Connecting…` (just after a server change) and `Client not running` (the local
+  Client process stopped answering; the pages say how to start it again).
 
 ## Deviations
 
@@ -130,10 +135,19 @@ Client side (part 2), as implemented in `client/` (answer shapes of the control 
 - **The page's own `POST /app/v1/auth/login` / `logout`** are handled by the client (they sign the client in/out,
   same as `/client/v1/login` / `logout`); every `csrf` the page sees is the client's local token.
 - **`GET /client/v1/status`**: `progress.done/total` count files (`done_bytes/total_bytes` = file bytes, `bytes` =
-  bytes received); `outbox` counts changes not yet accepted (queued + sending); conflicts and rejected changes
-  appear in `errors` (`kind` `conflict` / `failed`, with the server's answer) and in `GET /client/v1/outbox`.
-  Extra fields: `media`, `followed`, `available_events`, `offline_reason`, `server_info`, `web_version`, `storage`.
-  `POST /client/v1/test` always answers 200 with `ok:true|false`.
+  bytes received; the app's percentage is by bytes); `outbox` counts this server's changes not yet accepted (queued +
+  sending); conflicts and rejected changes appear in `errors` (`kind` `conflict` / `failed`, with the server's
+  answer) and in `GET /client/v1/outbox`. Extra fields: `active_server`, `alt_servers`, `connecting`, `outbox_held`,
+  `media`, `followed`, `available_events`, `offline_reason`, `server_info`, `web_version`, `storage`.
+  `POST /client/v1/test` always answers 200 with `ok:true|false` (+ `suggest` when an https:// address answered in
+  plain http). `DELETE /client/v1/events/<ev>` removes the local copy of a competition that isn't synced any more.
+- **Outbox (client)**: a picklist save replaces a still-unsent (never tried) save of the same list with the same
+  `base_version`; once a picklist save is accepted, later queued saves of that list with the same `base_version` are
+  rebased onto the version it created (a tried one gets a new key). Every row remembers the configured server it was
+  written for and is sent only there (or to its `--alt-server` addresses): after a server change it waits, listed as
+  held (`outbox_held`). Conflicts are never merged automatically (see part 3).
+- **One client per data folder**: `client.lock` in the data folder (flock / msvcrt lock, released by the OS); a
+  second start on the same folder opens the running one. Media sync keeps 2 GB of disk free.
 
 Web app (part 3), as implemented in `web/sync.js`, `web/sw.js` (+ small hooks in `app.js`, `setup.js`, `event.js`,
 `notes.js`, `settings.js`).
@@ -146,10 +160,24 @@ Web app (part 3), as implemented in `web/sync.js`, `web/sw.js` (+ small hooks in
   get a 40-entry LRU, videos and Range requests pass through. Bundles are requested in ≤ 8 MB chunks and a failed
   chunk is re-requested for the files still missing (no `Range`/`If-Range` resume in the browser).
 - **Outbox (browser)**: queued writes are notes, picklist, identity fixes and their approve/reject; every such write
-  carries an `Idempotency-Key` even online (the key is reused if it ends up queued). No Web Lock between the page and
-  the Background-Sync worker: both send with the item's key and rely on the server's replay / 429. "Keep mine" /
-  "Retry" send a new key. 409 "keep mine / take theirs" is offered for picklists in both modes (client mode: from the
-  outbox item's `response.detail.current`).
+  carries an `Idempotency-Key` even online (the key is reused if it ends up queued). Nothing is tried while the
+  device is offline or the server unreachable (the probe flushes when it's back; a failed fetch while
+  `navigator.onLine` is false doesn't count as a try), so a picklist save still replaces the earlier untried one: one
+  queued save per list. After an accepted picklist save, later queued saves of the list made on the same
+  `base_version` are rebased onto the new version (page and Background Sync alike). No Web Lock between the page and
+  the Background-Sync worker: both send with the item's key and rely on the server's replay / 429; the worker reports
+  the keys it sent, so the page shows one "N changes sent" toast per change, not one per sender. "Save mine" /
+  "Retry" send a new key.
+- **Picklist conflicts (both modes)**: a 409 is shown as a card in the Connection sheet (and client Settings) that
+  says who saved and what each choice drops ("Save mine over theirs: removes their star on 8248. Use theirs: drops
+  your star on 2046."). Nothing is merged: **Save mine over theirs** saves your whole list on top of their version
+  (theirs stays in the picklist history), **Use theirs** drops yours. (A merge is an open owner decision.) Client
+  mode reads the current version from the outbox item's `response.detail.current`.
+- **Offline copies need a secure context**: service workers and the Cache API only exist on https:// (or localhost),
+  so a phone on the shop LAN address (`http://10.0.0.58:7560`) gets no saved pages and no "Save this event for
+  offline" (Settings → Offline says "Offline copies need the secure address of this site (https://…)"); its changes
+  still wait in the IndexedDB outbox, sent while the page is open (no Background Sync). Use the https address (tunnel)
+  on phones, or the Cyber-Scout Client on laptops.
 - **Offline sign-in state**: the last signed-in user (id, name, role; no secret) is kept in `localStorage
   cs:sync:user` so the app opens read-only + outbox when `/app/v1/session` can't be reached; it is dropped on
   sign-out, on any 401 and when the server answers "no user".
