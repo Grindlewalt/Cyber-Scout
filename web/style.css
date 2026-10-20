@@ -278,15 +278,17 @@ canvas.field { width: 100%; display: block; border-radius: 8px; background: var(
 .mv-id button:not(.hlp-b) { min-height: 26px; padding: 2px 8px; font-size: 11.5px; background: rgba(255,255,255,.1); color: #fff; border-color: rgba(255,255,255,.25); }
 .mv-id .hlp-b { color: #dfe4ea; border-color: rgba(255,255,255,.4); }
 /* timeline */
-.an-scrub { position: relative; height: 34px; margin-top: var(--sp-2); cursor: pointer; background: var(--surface-2); border-radius: var(--r-s); overflow: hidden; touch-action: none; user-select: none; }
+.an-scrub { position: relative; height: 44px; margin-top: var(--sp-2); cursor: pointer; background: var(--surface-2); border-radius: var(--r-s); overflow: hidden; touch-action: none; user-select: none; }
 .an-scrub .seg { position: absolute; top: 0; bottom: 0; border-left: 1px solid var(--surface); font-size: 10.5px; line-height: 14px; color: var(--ink-2); overflow: hidden; white-space: nowrap; padding: 1px 4px; pointer-events: none; }
 .an-scrub .seg:first-child { border-left: 0; }
+.an-scrub .seg.out { background: repeating-linear-gradient(135deg, transparent 0 4px, color-mix(in srgb, var(--ink) 7%, transparent) 4px 5px); }
 .an-scrub .seg i { position: absolute; left: 0; right: 0; height: 7px; background: var(--surface-3); }
 .an-scrub .seg i.r { top: 17px; } .an-scrub .seg i.b { top: 25px; }
 .an-scrub .seg i.r.on { background: color-mix(in srgb, var(--red-fill) 30%, var(--surface-2)); } .an-scrub .seg i.b.on { background: color-mix(in srgb, var(--blue-fill) 30%, var(--surface-2)); }
 .an-scrub u { position: absolute; height: 7px; min-width: 2px; text-decoration: none; pointer-events: none; }
 .an-scrub u.red { top: 17px; background: var(--red-fill); } .an-scrub u.blue { top: 25px; background: var(--blue-fill); }
-.an-scrub .idm { position: absolute; top: 2px; width: 9px; height: 9px; margin-left: -4px; background: #d39e00; clip-path: polygon(0 0, 100% 0, 50% 100%); pointer-events: auto; }
+/* identity fixes get their own lane under the hub bars (they used to sit on the period names) */
+.an-scrub .idm { position: absolute; bottom: 2px; width: 9px; height: 9px; margin-left: -4px; background: #d39e00; clip-path: polygon(50% 0, 100% 100%, 0 100%); pointer-events: auto; }
 .an-scrub .idm.un { background: #8896a8; opacity: .6; }
 .an-scrub .head { position: absolute; top: 0; bottom: 0; width: 2px; margin-left: -1px; background: var(--accent); pointer-events: none; box-shadow: 0 0 0 1px var(--surface); }
 .an-scrub:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
@@ -373,6 +375,8 @@ canvas.field { width: 100%; display: block; border-radius: 8px; background: var(
   .mv-ctl { gap: 4px; } .mv-ib { min-width: 30px; padding: 4px 6px; } .mv-clock { margin-left: 2px; } .mv-clock b { font-size: var(--fs-body); }
   .mv-cks { grid-template-columns: 1fr; }
   .mv-id { left: 4px; bottom: 4px; max-width: calc(100% - 8px); }
+  /* phones: the Robots summary (what a scout opens the page for) comes right after the player; the live tally follows */
+  .mv-grid { display: contents; } .mv-main { order: 1; } .mv-robots { order: 2; } .mv-side { order: 3; } .mv-sec, .mv #mvNotes { order: 4; }
 }
 
 /* ============================================================== team page and shared scouting widgets */
@@ -464,6 +468,8 @@ table.rate tr.grp th { cursor: default; border-bottom: 0; padding-bottom: 0; tex
 table.rate .bld { font-weight: 650; } table.rate .g2:not(.bld) { color: var(--ink-2); }
 table.rate th.g2:not(.bld), table.rate td.g2:not(.bld) { border-left: 1px solid var(--line); }
 table.rate .tm { position: sticky; left: 0; background: var(--surface); z-index: 1; max-width: 200px; overflow: hidden; text-overflow: ellipsis; }
+/* the sticky team cell is opaque (it covers scrolled cells), so the "us" / hover tint is layered on top of the surface */
+table.rate .usrow .tm { background: linear-gradient(var(--sel), var(--sel)) var(--surface); } table.rate tbody tr:hover .tm { background: linear-gradient(var(--hover), var(--hover)) var(--surface); }
 .nick { font-size: var(--fs-cap); font-weight: 400; } .prcell { min-width: 150px; display: flex; gap: 8px; align-items: center; }
 .prb { position: relative; width: 70px; height: 8px; background: var(--surface-2); border-radius: 4px; flex: none; }
 .prb .rg { position: absolute; top: 0; bottom: 0; background: var(--line-strong); border-radius: 4px; } .prb .mn { position: absolute; top: -2px; width: 2px; height: 12px; background: var(--ink); }
@@ -577,6 +583,8 @@ td.wrapc { white-space: normal; }
 .lsline b { color: var(--ink); font-weight: 600; } .lsline .ls-warn { color: var(--caution); font-weight: 600; } .lsline .ls-err { color: var(--bad); font-weight: 600; }
 .mv-live { font-size: var(--fs-foot); color: var(--ink-2); }
 .mv-yt.mv-yt2 { margin-left: 0; }
+.mv-flag { display: inline-flex; align-items: center; gap: 2px; }
+.mv-none { display: grid; gap: var(--sp-2); justify-items: center; }
 .mv-clip video { display: block; width: 100%; aspect-ratio: 16 / 9; background: #000; border-radius: var(--r-p); }
 .mv-lt { display: flex; gap: 8px; flex-wrap: wrap; padding: 2px 2px 4px; font-weight: 600; font-variant-numeric: tabular-nums; }
 

@@ -5,10 +5,13 @@
 (function () {
   const H = s => esc(s);
   const n0 = (v, d = 0) => v == null ? "–" : Number(v).toFixed(d);
-  const P = v => v == null ? "–" : (v >= 0.995 ? ">99%" : v <= 0.005 && v > 0 ? "<1%" : Math.round(v * 100) + "%");
+  // one display policy for simulated probabilities (Rankings and Selection): whole percent, "<1%" / ">99%" at the ends (a
+  // simulation that never saw it isn't proof it can't happen)
+  const P = v => v == null ? "–" : v >= 0.995 ? ">99%" : v < 0.005 ? "<1%" : Math.round(v * 100) + "%";
   const tn = k => (k || "").replace("frc", "");
   const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
   const fmtT = ts => { if (!ts) return ""; const d = new Date(ts * 1000); return DAYS[d.getDay()] + " " + d.toTimeString().slice(0, 5); };
+  const fmtD = ts => { const d = new Date(ts * 1000); return d.toLocaleDateString(undefined, { month: "short", day: "numeric" }) + ", " + d.toTimeString().slice(0, 5); };
   const sgn = v => v == null ? "–" : (v > 0 ? "+" : v < 0 ? "−" : "") + Math.abs(v * 100).toFixed(1) + " pts";
   let S = null;
 
@@ -48,6 +51,10 @@
 .rk .dp i{position:absolute;top:1px;bottom:1px;background:color-mix(in srgb,var(--good) 55%,transparent);border-radius:3px} .rk .dp b{position:absolute;top:-1px;bottom:-1px;width:2px;background:var(--ink)}
 .rk .note{font-size:var(--fs-foot);color:var(--ink-2);margin-top:var(--sp-3);line-height:1.5}
 .rk th.sorted{color:var(--text)}
+.rk .pitch-l{display:grid;grid-template-columns:auto 1fr;gap:2px 10px;margin:4px 0 6px}.rk .pitch-l dt{font-size:var(--fs-cap);color:var(--ink-2);font-weight:600;padding-top:2px}.rk .pitch-l dd{margin:0;font-weight:500}
+.rk .pitch-d summary{cursor:pointer;font-size:var(--fs-cap);color:var(--ink-2);min-height:28px;display:flex;align-items:center;gap:6px;list-style:none}.rk .pitch-d summary::-webkit-details-marker{display:none}.rk .pitch-d summary::before{content:"";width:5px;height:5px;border-right:1.5px solid currentColor;border-bottom:1.5px solid currentColor;transform:rotate(-45deg)}.rk .pitch-d[open] summary::before{transform:rotate(45deg)}.rk .pitch-d[open] summary{margin-bottom:4px}.rk .pitch-d ul{margin:4px 0 0;padding-left:18px}
+.rk .sel-empty{text-align:left;display:grid;gap:8px;max-width:70ch}
+.rk th[tabindex]:focus-visible{outline-offset:-2px}
 @media (max-width:900px){.rk .goalcard{grid-template-columns:1fr}.rk .nick{display:none}.rk .vrow{grid-template-columns:62px 1fr 150px}.rk .prb{width:60px}.rk .dp{width:50px}}
 `;
     document.head.appendChild(st);
@@ -110,43 +117,56 @@
 
   function table(d) {
     const rows = d.teams || [];
-    const N = rows.length, key = S.sort.k, col = COLS.find(c => c[0] === key) || COLS[0];
+    // district columns only where there are district points (offseason / regional events have none: MATCH-36)
+    const cols = rows.some(r => r.district) ? COLS : COLS.filter(c => !["dn", "dp", "dc"].includes(c[0]));
+    const N = rows.length, key = S.sort.k, col = cols.find(c => c[0] === key) || cols[0];
+    // once every qual is played, top 8 is decided: say so instead of a simulated percentage (MATCH-21)
+    const T8 = v => d.quals_total && d.quals_played >= d.quals_total && (v === 0 || v === 1) ? (v ? "yes" : "no") : P(v);
     const sorted = [...rows].sort((a, b) => {
       const x = col[2](a), y = col[2](b); if (x == null && y == null) return 0; if (x == null) return 1; if (y == null) return -1;
       return (x - y) * S.sort.dir;
     });
     const maxDp = Math.max(1, ...rows.map(r => r.district?.p90 || 0));
     const RPRI = { rank: 1000, team: 990, rs: 800, rp: 700, pr: 600, t8: 500, dc: 450, dn: 400, dp: 350, rec: 300 };
-    const th = c => `<th data-k="${c[0]}" data-pri="${RPRI[c[0]] ?? 100}" class="${c[3]}${c[0] === key ? " sorted" : ""}">${c[1]}${c[0] === key ? (S.sort.dir > 0 ? " ▲" : " ▼") : ""}</th>`;
+    // sortable headers are reachable by keyboard and say how the table is sorted (MATCH-27)
+    const th = c => `<th data-k="${c[0]}" data-pri="${RPRI[c[0]] ?? 100}" class="${c[3]}${c[0] === key ? " sorted" : ""}" tabindex="0" aria-sort="${c[0] === key ? (S.sort.dir > 0 ? "ascending" : "descending") : "none"}">${c[1]}${c[0] === key ? (S.sort.dir > 0 ? " ▲" : " ▼") : ""}</th>`;
     const prbar = r => { const p = r.projection; if (!p) return ""; const L = v => ((v - 1) / Math.max(1, N - 1) * 100).toFixed(1);
       return `<span class="prb" title="mean ${n0(p.rank_mean, 1)}, 10–90%: ${p.rank_p10}–${p.rank_p90}"><i class="rg" style="left:${L(p.rank_p10)}%;width:${Math.max(2, L(p.rank_p90) - L(p.rank_p10))}%"></i><i class="mn" style="left:${L(p.rank_mean)}%"></i></span><span class="small">${n0(p.rank_mean, 1)} <span class="muted">${p.rank_p10}–${p.rank_p90}</span></span>`; };
     const dpbar = r => { const q = r.district; if (!q || q.projected == null) return ""; const X = v => (v / maxDp * 100).toFixed(1);
       return `<span class="dp" title="projected ${n0(q.projected)}, 10–90%: ${n0(q.p10)}–${n0(q.p90)}"><i style="left:${X(q.p10)}%;width:${Math.max(2, X(q.p90) - X(q.p10))}%"></i><b style="left:${X(q.projected)}%"></b></span><span class="small">${n0(q.projected)} <span class="muted">${n0(q.p10)}–${n0(q.p90)}</span></span>`; };
     return `<section class="card"><h2>Qualification rankings <span class="muted small">${d.quals_played}/${d.quals_total} quals played</span> ${CS.help(`<span class="hl">RS = RP per match. Projection = Monte Carlo of the remaining quals (mean and 10–90% range). Tap a header to sort.</span>${d.district ? `<span class="hl">Current district points count a team's first two district events (all points from finished events: qualification, alliance selection, playoffs, awards) plus rookie bonus. The playing event contributes once it finishes; its projection uses the simulated qualification, alliance selection, playoffs and awards.</span>` : ""}`, "How rankings are projected")}</h2>
-      <div class="tablewrap"><table class="rate rkt"><thead><tr>${COLS.map(th).join("")}</tr></thead><tbody>
+      <div class="tablewrap"><table class="rate rkt"><thead><tr>${cols.map(th).join("")}</tr></thead><tbody>
       ${sorted.map(r => `<tr class="${r.team === d.team ? "usrow" : ""}">
         <td class="num">${r.rank ?? "–"}</td><td class="tm"><a href="#/${S.ev}/t/${r.team}"><b>${r.number}</b> <span class="muted nick">${H(r.nickname || "")}</span></a></td>
         <td class="num">${H(r.record || "–")}</td><td class="num">${n0(r.rp)}</td><td class="num">${n0(r.rs, 2)}</td>
-        <td>${prbar(r)}</td><td class="num">${P(r.projection?.p_top8)}</td>
-        <td class="num">${r.district ? n0(r.district.current) : "–"}</td><td>${dpbar(r)}</td>
-        <td class="num">${r.district ? P(r.district.p_dcmp) : "–"}</td></tr>`).join("")}
+        <td>${prbar(r)}</td><td class="num">${T8(r.projection?.p_top8)}</td>
+        ${cols === COLS ? `<td class="num">${r.district ? n0(r.district.current) : "–"}</td><td>${dpbar(r)}</td>
+        <td class="num">${r.district ? P(r.district.p_dcmp) : "–"}</td>` : ""}</tr>`).join("")}
       </tbody></table></div></section>`;
   }
 
   function wire(d) {
-    document.querySelectorAll("table.rkt th[data-k]").forEach(th => th.onclick = () => {
-      const k = th.dataset.k; S.sort = S.sort.k === k ? { k, dir: -S.sort.dir } : { k, dir: ["rank", "team", "pr"].includes(k) ? 1 : -1 };
-      document.getElementById("rk-table").innerHTML = table(d); wire(d);
+    document.querySelectorAll("table.rkt th[data-k]").forEach(th => {
+      th.onclick = () => {
+        const k = th.dataset.k; S.sort = S.sort.k === k ? { k, dir: -S.sort.dir } : { k, dir: ["rank", "team", "pr"].includes(k) ? 1 : -1 };
+        document.getElementById("rk-table").innerHTML = table(d); wire(d);
+        const f = document.querySelector(`table.rkt th[data-k="${k}"]`); if (f) f.focus();
+      };
+      th.onkeydown = e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); th.onclick(); } };
     });
   }
 
   CS.route("rankings", async function (ev) {
     css();
     S = { ev, sort: S && S.ev === ev ? S.sort : { k: "rank", dir: 1 } };
-    const d = await api(`${ev}/rankings.json`);
-    crumbs([[ev, `#/${ev}`], ["Rankings"]]); $updated.textContent = d.asof ? "replay" : ago(d.generated);
-    $app.innerHTML = `<div class="dash rk"><div class="dtop"><div><h1>Rankings &amp; season goal</h1><div class="sub">${H(ev)} · ${tn(d.team)}${d.district ? " · district " + H(d.district) : ""}</div></div></div>
-      ${d.asof ? "" : `<div class="sc-banner"><b>End-of-event data</b>, not replay time${d.quals_played ? ` · ${d.quals_played}/${d.quals_total} quals played` : ""}. Replay: pick a time on <a href="#/${ev}/selection">Selection</a> or the <a href="#/${ev}/dash">Dashboard</a>.</div>`}
+    crumbs([[ev, `#/${ev}`], ["Rankings"]]);             // this page's title even if its data fails to load (MATCH-8)
+    const [d, evj] = await Promise.all([api(`${ev}/rankings.json`), api(`${ev}/event.json`).catch(() => null)]);
+    const name = evj && evj.name || ev, allQ = d.quals_total && d.quals_played >= d.quals_total;
+    // asof: the worker built these with data up to that time (a finished event), not a replay of this page
+    crumbs([[name, `#/${ev}`], ["Rankings"]]); $updated.textContent = d.asof ? "data as of " + fmtD(d.asof) : ago(d.generated);
+    // "Latest data" while quals are still being played; it is only final once they're all in (MATCH-12)
+    $app.innerHTML = `<div class="dash rk"><div class="dtop"><div><h1>Rankings &amp; season goal</h1><div class="sub">${H(name)} · us = ${tn(d.team)}${d.district ? " · district " + H(d.district) : ""}</div></div></div>
+      ${`<div class="sc-banner"><b>${allQ ? "All quals played" : "Latest data"}</b>${d.asof ? ` as of ${fmtD(d.asof)}` : ""}, not replay time${d.quals_played != null ? ` · ${d.quals_played}/${d.quals_total} quals played` : ""}. Replay: pick a time on <a href="#/${ev}/selection">Selection</a> or the <a href="#/${ev}/dash">Dashboard</a>.</div>`}
       ${goalPanel(d)}<div style="height:16px"></div><div id="rk-table">${table(d)}</div></div>`;
     wire(d);
     const iv = setInterval(async () => { try { const n = await api(`${ev}/rankings.json`); if (n.generated !== d.generated) route(false); } catch (e) { } }, 90000);
@@ -159,11 +179,14 @@
   // selection/index.json. Contract: live/strategy/README.md "selection.json".
   const ROLE_SHORT = { captain: "captain", "first pick": "R1 pick", "second pick": "R2 pick", "not selected": "not picked" };
   const fmtDT = ts => { if (!ts) return "end of data"; const d = new Date(ts * 1000); return DAYS[d.getDay()] + " " + d.toTimeString().slice(0, 5); };
-  const P5 = v => v == null ? "–" : v >= 0.995 ? ">99%" : v < 0.005 ? "<1%" : Math.round(v * 100) + "%";
+  const P5 = P;
+  // difference of two shown percentages, from the rounded values so it always matches what's printed next to it
+  const dpp = (a, b) => { if (a == null || b == null) return "–"; const d = Math.round(a * 100) - Math.round(b * 100);
+    return d ? `<b class="${d > 0 ? "pos" : "neg"}">${d > 0 ? "+" : "−"}${Math.abs(d)} pp</b>` : `<b class="muted">0 pp</b>`; };
 
-  function selPage(ev, d, times, ts) {
+  function selPage(ev, d, times, ts, name) {
     const u = d.us, tm = tn(d.team);
-    const head = `<div class="dtop"><div><h1>Alliance selection</h1><div class="sub">${H(ev)} · us = ${tm} · projection ${d.asof ? "as of " + fmtDT(d.asof) : "on all data"} · ${d.quals_played ?? "?"}/${d.quals_total ?? "?"} quals played${d.asof ? " · replay snapshot: only data posted before that time" : ""}</div></div></div>`;
+    const head = `<div class="dtop"><div><h1>Alliance selection</h1><div class="sub">${H(name || ev)} · us = ${tm} · projection ${d.asof ? "as of " + fmtDT(d.asof) : "on all data"} · ${d.quals_played ?? "?"}/${d.quals_total ?? "?"} quals played${d.asof ? " · replay snapshot: only data posted before that time" : ""}</div></div></div>`;
     if (d.status !== "projected" && d.status !== "fixed" || !u) {
       if (d.actual) return head + `<section class="card"><h3 style="margin-top:0">Actual alliances (event finished)</h3>
         ${d.actual_us ? `<div class="need">${tm}: ${d.actual_us.seed ? `A${d.actual_us.seed} ${ROLE_SHORT[d.actual_us.role] || d.actual_us.role}` : "not selected"} · ${n0(d.actual_us.event_points)} event pts · DCMP ${P5(d.actual_us.p_dcmp)}</div>` : ""}
@@ -183,10 +206,14 @@
       : `<td class="${c.result === "out early" ? "cell-ok" : (c.p_result ?? 0) >= 0.25 ? "cell-ok" : "cell-hard"}" title="${c.points} pts; P(alliance does at least this) ${P5(c.p_result)}">${c.result === "out early" ? "any" : H(c.result)}<span class="sc-sd">${P5(c.p_result)}</span></td>`;
     const grid = nd ? `<table class="mini"><thead><tr><th>Alliance</th><th>as captain</th><th>as R1 pick</th><th>as R2 pick</th></tr></thead><tbody>
       ${nd.grid.map(g => `<tr><td>A${g.seed}</td>${cell(g.captain)}${cell(g["first pick"])}${cell(g["second pick"])}</tr>`).join("")}</tbody></table>` : "";
-    const pitches = (u.pitches || []).map(p => `<div class="pitch"><h4>${tn(p.captain)} <span class="muted small">${H((p.nickname || "").slice(0, 28))} · A${p.seed} ${ROLE_SHORT[p.role]} · ${P5(p.p)} of sims</span></h4>
-      <div><b>${H(p.pitch)}</b></div>${p.resim ? `<div class="small muted">our DCMP if they take us ${P5(p.resim.take.p_dcmp)} vs ${P5(p.resim.next.p_dcmp)} · ${p.resim.n} sims where they captain and we are available</div>` : ""}
-      <div class="small muted">They lack: ${H(p.lacks)} · we bring: ${H(p.we_bring)}</div>
-      ${(p.fit || []).length ? `<div class="small muted">Fit: ${H(p.fit.join(" · "))}</div>` : ""}</div>`).join("") || `<div class="muted small">No likely captain.</div>`;
+    // pitch cards (MATCH-33): the argument first, in two short lines; the simulation numbers and fit facts folded below
+    const pitches = (u.pitches || []).map(p => { const R = p.resim, alt = R && R.alt && R.alt[0] ? tn(R.alt[0].team) : "their next best";
+      return `<div class="pitch"><h4>Pitch to ${tn(p.captain)} <span class="muted small">${H((p.nickname || "").slice(0, 28))} · A${p.seed} ${ROLE_SHORT[p.role]} · ${P5(p.p)} of sims</span></h4>
+      <dl class="pitch-l"><dt>We bring</dt><dd>${H(p.we_bring)}</dd><dt>They lack</dt><dd>${H(p.lacks)}</dd></dl>
+      <details class="pitch-d"><summary>Simulation and fit</summary>
+        ${R ? `<div class="small">If ${tn(p.captain)} takes ${tm} instead of ${alt}: alliance wins the event ${P5(R.take.p_win)} vs ${P5(R.next.p_win)} (${dpp(R.take.p_win, R.next.p_win)}); our DCMP ${P5(R.take.p_dcmp)} vs ${P5(R.next.p_dcmp)} (${dpp(R.take.p_dcmp, R.next.p_dcmp)}).</div>
+          <div class="small muted">${R.n} simulated events where they captain and ${tm} is still available.</div>` : `<div class="small">${H(p.pitch)}</div>`}
+        ${(p.fit || []).length ? `<ul class="small muted">${p.fit.map(f => `<li>${H(f)}</li>`).join("")}</ul>` : ""}</details></div>`; }).join("") || `<div class="muted small">No likely captain.</div>`;
     const seeds = (d.seeds || []).map(sd => `<tr><td>A${sd.seed}</td><td>${sd.captain.map(c => `<span class="${c.team === d.team ? "pos" : ""}">${tn(c.team)}</span> <span class="muted small">${P5(c.p)}</span>`).join(" · ")}</td>
       <td>${sd.first_pick.map(c => `<span class="${c.team === d.team ? "pos" : ""}">${tn(c.team)}</span> <span class="muted small">${P5(c.p)}</span>`).join(" · ")}</td><td class="num">${P5(sd.playoffs.win)}</td><td class="num">${P5(sd.playoffs.finalist)}</td></tr>`).join("");
     const trows = (d.teams || []).slice(0, 32).sort((a, b) => a.rank_mean - b.rank_mean).map(t => `<tr class="${t.team === d.team ? "usrow" : ""}"><td><a href="#/${S.ev}/t/${t.team}"><b>${t.number}</b></a> <span class="muted small nick">${H((t.nickname || "").slice(0, 20))}</span></td>
@@ -208,7 +235,7 @@
         <div><h3 style="margin-top:0">If this captain takes ${tm} vs their next best ${CS.help(`Full re-simulation (draft + playoffs + district points) with the pick forced vs forbidden, same random numbers; only seasons where that team captains and ${tm} is still available. Δ win in percentage points.`, "How this comparison is simulated")}</h3>
         <div class="tablewrap"><table class="mini"><thead><tr><th>Captain</th><th>Next best</th><th class="num">Alliance wins<br>take / next</th><th class="num">Δ win</th><th class="num">Our DCMP<br>take / next</th></tr></thead><tbody>
         ${(u.captains || []).map(c => `<tr><td><b>${tn(c.captain)}</b> <span class="muted small">A${c.seed_mode}</span></td><td>${c.alt.map(a => tn(a.team)).join(" / ")}</td>
-          <td class="num">${P5(c.take.p_win)} / ${P5(c.next.p_win)}</td><td class="num"><b class="${(c.delta_win || 0) >= 0 ? "pos" : "neg"}">${(c.delta_win || 0) >= 0 ? "+" : "−"}${Math.abs(Math.round((c.delta_win || 0) * 100))}</b></td>
+          <td class="num">${P5(c.take.p_win)} / ${P5(c.next.p_win)}</td><td class="num">${dpp(c.take.p_win, c.next.p_win)}</td>
           <td class="num">${P5(c.take.p_dcmp)} / ${P5(c.next.p_dcmp)}</td></tr>`).join("") || '<tr><td colspan="5" class="muted">no likely captain</td></tr>'}</tbody></table></div></div></div></section>
       <div style="height:14px"></div>
       <section class="card"><h3 style="margin-top:0">Projected seeds</h3><div class="tablewrap"><table class="mini"><thead><tr><th>Seed</th><th>Captain (most likely)</th><th data-pri="800">R1 pick (most likely)</th><th class="num" data-pri="700">Win</th><th class="num" data-pri="600">Finalist</th></tr></thead><tbody>${seeds}</tbody></table></div></section>
@@ -216,12 +243,33 @@
       <section class="card"><h3 style="margin-top:0">Draft odds by team ${CS.help(`${H(d.model?.draft || "")}. Real captains decline, scout for fit and pick defenders; treat these as base rates. Ratings in points per match (incl. foul share).`, "How draft odds are simulated")}</h3><div class="tablewrap"><table class="mini"><thead><tr><th>Team</th><th class="num">Final rank (10–90%)</th><th class="num" data-pri="300">Rating ± sd</th><th class="num" data-pri="700">Captain</th><th class="num" data-pri="650">R1</th><th class="num" data-pri="600">R2</th><th data-pri="200">Most likely captain picking them</th><th class="num" data-pri="800">DCMP</th></tr></thead><tbody>${trows}</tbody></table></div></section></div>`;
   }
 
+  // no selection file (not a district event, the simulation hasn't run, or no snapshot at that replay time): say why
+  // instead of an error page (MATCH-7)
+  function selEmpty(ev, name, times, ts) {
+    const near = ts ? [...times].sort((a, b) => Math.abs(a - ts) - Math.abs(b - ts)).slice(0, 3).sort((a, b) => a - b) : [];
+    const paused = window.CS && CS.processing && CS.processing.paused;
+    return `<div class="dtop"><div><h1>Alliance selection</h1><div class="sub">${H(name)}</div></div></div>
+      <section class="card"><div class="empty sel-empty">${ts
+        ? `<b>No selection projection at ${H(fmtDT(+ts))}.</b>${near.length ? ` Snapshots near that time: ${near.map(t => `<a href="#/${ev}/selection/${t}">${H(fmtDT(t))}</a>`).join(" · ")}.` : " This competition has no selection snapshots."}
+          <span class="muted">The latest projection (if there is one) is on <a href="#/${ev}/selection">Selection without a replay time</a>.</span>`
+        : `<b>No alliance-selection projection for this competition.</b> It's built with the strategy data for district events and needs the
+          simulation to have run. This competition may not be a district event, or the worker hasn't built it yet.${paused ? " Processing is paused on the server right now, so nothing new is built until an admin turns it back on." : ""}
+          <span class="muted">Rankings and the Picklist still work: <a href="#/${ev}/rankings">Rankings</a> · <a href="#/${ev}/picklist">Picklist</a>.</span>`}</div></section>`;
+  }
+
   CS.route("selection", async function (ev, ts) {
     css();
     S = { ev, sort: S && S.ev === ev ? S.sort : { k: "rank", dir: 1 } };
-    const [d, idx] = await Promise.all([api(ts ? `${ev}/selection/${ts}.json` : `${ev}/selection.json`), api(`${ev}/selection/index.json`).catch(() => ({ times: [] }))]);
-    crumbs([[ev, `#/${ev}`], ["Selection"]]); $updated.textContent = d.asof ? "replay " + fmtDT(d.asof) : ago(d.generated);
-    $app.innerHTML = `<div class="dash rk">${selPage(ev, d, idx.times || [], ts)}</div>`;
+    crumbs([[ev, `#/${ev}`], ["Selection"]]);             // this page's title even if its data fails to load (MATCH-8)
+    const evP = api(`${ev}/event.json`).catch(() => null), idxP = api(`${ev}/selection/index.json`).catch(() => ({ times: [] }));
+    let d = null;
+    try { d = await api(ts ? `${ev}/selection/${ts}.json` : `${ev}/selection.json`); }
+    catch (e) { if (!/404/.test(e.message)) throw e; }
+    const [evj, idx] = await Promise.all([evP, idxP]), name = evj && evj.name || ev;
+    crumbs([[name, `#/${ev}`], ["Selection"]]);
+    if (!d) { $updated.textContent = ""; $app.innerHTML = `<div class="dash rk">${selEmpty(ev, name, idx.times || [], ts ? +ts : 0)}</div>`; return; }
+    $updated.textContent = d.asof ? "replay " + fmtDT(d.asof) : ago(d.generated);
+    $app.innerHTML = `<div class="dash rk">${selPage(ev, d, idx.times || [], ts, name)}</div>`;
   });
   CS.nav({ label: "Selection", key: "selection", href: (ev, ts) => `#/${ev}/selection` + (ts ? "/" + ts : ""), order: 40, group: "picks", icon: "selection", replay: true });
 })();

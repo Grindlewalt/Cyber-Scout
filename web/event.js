@@ -76,13 +76,16 @@ function teamsTable(el, d, ev) {
     arr.sort((a, b) => { const x = sc[4](a), y = sc[4](b); if (x == null && y == null) return a.t.number - b.t.number; if (x == null) return 1; if (y == null) return -1; return (typeof x === "string" ? x.localeCompare(y) : x - y) * dir; });
     el.innerHTML = `${dataBanner(data && data.sd)}<div class="controls"><button id="cfg" class="${showCfg ? "on" : ""}" aria-expanded="${showCfg}">Columns</button>${data ? "" : '<span class="muted small">loading…</span>'}${CS.help(TEAMS_HELP, "How to read this table")}</div>
       ${showCfg ? `<div class="cfg">${QCOLS.map(c => `<label title="${esc(c[6])}"><input type="checkbox" data-c="${c[0]}" ${vis[c[0]] ? "checked" : ""}> ${c[1]}</label>`).join("")}</div>` : ""}
-      <div class="tablewrap"><table><thead><tr>${cs.map(([k, t, , n, , tip]) => `<th data-k="${k}" data-pri="${TPRI[k] ?? 100}" title="${esc(tip || "")}" class="${n ? "num" : ""}">${t}${sk === k ? (dir > 0 ? " ▲" : " ▼") : ""}</th>`).join("")}</tr></thead>
-      <tbody>${arr.map(r => `<tr>${cs.map(([, , f, n]) => `<td class="${n ? "num" : ""}">${f(r)}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`;
+      <h2 class="vh">Teams</h2><div class="tablewrap"><table><thead><tr>${cs.map(([k, t, , n, , tip]) => `<th data-k="${k}" data-pri="${TPRI[k] ?? 100}" title="${esc(tip || "")}" class="${n ? "num" : ""}"${k === "flags" ? "" : ` tabindex="0" aria-sort="${sk === k ? (dir > 0 ? "ascending" : "descending") : "none"}"`}>${t}${sk === k ? (dir > 0 ? " ▲" : " ▼") : ""}</th>`).join("")}</tr></thead>
+      <tbody>${arr.map(r => `<tr${r.t.key === (d.team || "frc4911") ? ' class="usrow"' : ""}>${cs.map(([, , f, n]) => `<td class="${n ? "num" : ""}">${f(r)}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`;
     el.querySelector("#cfg").onclick = () => { showCfg = !showCfg; render(); };
     el.querySelectorAll(".cfg input").forEach(i => i.onchange = () => { vis[i.dataset.c] = i.checked; lsSet("cyberscout:cols2", vis); render(); });
-    el.querySelectorAll("th").forEach(th => th.onclick = () => {
-      const k = th.dataset.k; if (!k || k === "flags") return; if (sk === k) dir = -dir; else { sk = k; const q = QCOLS.find(c => c[0] === k); dir = ["rank", "number", "nickname"].includes(k) ? 1 : -1; if (q && q[4] === -1) dir = 1; }
-      render();
+    el.querySelectorAll("th").forEach(th => {
+      th.onclick = () => {
+        const k = th.dataset.k; if (!k || k === "flags") return; if (sk === k) dir = -dir; else { sk = k; const q = QCOLS.find(c => c[0] === k); dir = ["rank", "number", "nickname"].includes(k) ? 1 : -1; if (q && q[4] === -1) dir = 1; }
+        render(); const f = el.querySelector(`th[data-k="${k}"]`); if (f) f.focus();
+      };
+      th.onkeydown = e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); th.onclick(); } };
     });
   };
   render();
@@ -96,11 +99,15 @@ async function comparePane(el, d, ev, arg) {
   let sel = (arg ? arg.split(",") : lsGet("cyberscout:cmp:" + ev, [])).filter(k => d.teams.some(t => t.key === k || t.key === "frc" + k)).map(k => k.startsWith("frc") ? k : "frc" + k).slice(0, 3);
   let show = lsGet("cyberscout:cmpshow", "all");
   const opts = d.teams.map(t => `<option value="${esc(t.key)}">${esc(t.number)} ${esc(t.nickname || "")}</option>`).join("");
-  el.innerHTML = `<div class="controls">${[0, 1, 2].map(i => `<select data-i="${i}"><option value="">${i < 2 ? "choose team" : "(optional) third team"}</option>${opts}</select>`).join("")}</div>
+  el.innerHTML = `<h2 class="vh">Compare teams</h2><div class="controls">${[0, 1, 2].map(i => `<select data-i="${i}" aria-label="Team ${i + 1}${i < 2 ? "" : " (optional)"}"><option value="">${i < 2 ? "choose team" : "(optional) third team"}</option>${opts}</select>`).join("")}</div>
     <div id="cmpshow"></div><div id="cmpbody" class="cmp"></div>`;
   const body = el.querySelector("#cmpbody"), showEl = el.querySelector("#cmpshow");
   const selects = [...el.querySelectorAll("select")];
-  selects.forEach((s, i) => { s.value = sel[i] || ""; s.onchange = () => { sel = selects.map(x => x.value).filter(Boolean); lsSet("cyberscout:cmp:" + ev, sel); build(); }; });
+  // the picked teams are also in the address (#/<ev>/compare/4911,2046,948), so a comparison can be shared; replaceState
+  // keeps the page as it is (no re-route)
+  const toUrl = () => { try { history.replaceState(history.state, "", `#/${ev}/compare${sel.length ? "/" + sel.map(num).join(",") : ""}`); } catch (e) { } };
+  selects.forEach((s, i) => { s.value = sel[i] || ""; s.onchange = () => { sel = selects.map(x => x.value).filter(Boolean); lsSet("cyberscout:cmp:" + ev, sel); toUrl(); build(); }; });
+  if (sel.length && !arg) toUrl();
   // one {v,n,conf} leaf -> value + n (grey italic under 3 matches), "–" when missing
   const leaf = (x, f = "1", unit = "", tip = "") => { const v = val(x), n = mn(x);
     return has(v) ? `<span class="sc-v ${n != null && n < 3 ? "grey" : ""}" title="${esc(tip)}">${fmtV(v, f)}${unit}</span>${n != null ? `<span class="sc-sd">n=${n}</span>` : ""}` : "–"; };
@@ -113,23 +120,29 @@ async function comparePane(el, d, ev, arg) {
     body.style.setProperty("--n", ts.length);
     const S = t => (sd && sd.by[t.key]) || {}, V = (t, k) => (S(t).video || {})[k];
     const DF = t => t.analytics?.defense || {}, DD = t => t.analytics?.defended || {};
-    // [label (string, or a function so each column gets its own "?" ids), cell(t, label), kind: 1 = full-width row, 2 = value may wrap]
-    const rows = [[() => `EPA (local <span style="white-space:nowrap">as-of)&nbsp;${CS.help(CMP_EPA_HELP, "What EPA means")}</span>`, t => fx(S(t).rating?.epa)],
+    // [label (string, or a function so each column gets its own "?" ids), cell(t, label), kind: 1 = full-width row, 2 = value may wrap,
+    //  shown(t): whether that team has data for the row (rows nobody has data for are left out; default: the cell isn't "–")]
+    const rows = [[() => `Blend ± sd ${CS.help("Model rating: expected points per match (TBA results + earlier events + verified video), the order Picklist and Teams sort by by default.", "What Blend means")}`,
+        t => has(S(t).rating?.blend) ? `<b>${fx(S(t).rating.blend)}</b><span class="sc-sd">±${fx(S(t).rating.sd, 0)}</span>` : "–"],
+      [() => `EPA (local <span style="white-space:nowrap">as-of)&nbsp;${CS.help(CMP_EPA_HELP, "What EPA means")}</span>`, t => fx(S(t).rating?.epa)],
       [() => `OPR ${CS.help(CMP_OPR_HELP, "What OPR means")}`, t => fx(t.opr)], ["Video", t => covPill(S(t).coverage)],
       ["Made / match", t => svHtml(V(t, "made_pm"))], ["Accuracy", t => svHtml(V(t, "acc"), "p")], ["Auto FUEL", t => V(t, "auto_made") ? svHtml(V(t, "auto_made")) : flagChips(S(t), ["auto_not_tracked"]) || "–"],
-      [() => `Hub active ${CS.help(hubHelp(), "About hub active / inactive")}`, (t, l) => hubCell(t, "on", l), 1], ["Hub inactive", (t, l) => hubCell(t, "off", l), 1],
+      [() => `Hub active ${CS.help(hubHelp(), "About hub active / inactive")}`, (t, l) => hubCell(t, "on", l), 1, t => !!(hubPhaseSummary(t.analytics?.hub) || {}).on],
+      ["Hub inactive", (t, l) => hubCell(t, "off", l), 1, t => !!(hubPhaseSummary(t.analytics?.hub) || {}).off],
       ["Climb (TBA)", t => S(t).climb ? `${pct(S(t).climb.rate)}<span class="sc-sd">${S(t).climb.n} m</span>` : "–"],
       ["Defense played", t => { const n = S(t).coverage?.n; if (!n) return "–";
         return `<span title="${esc(`${fx(V(t, "def_secs") || 0, 0)} s defending in total; verified video matches only`)}"><span style="white-space:nowrap">${V(t, "def_matches") || 0} of ${n} matches</span> <span style="white-space:nowrap">· ${V(t, "def_played") || 0} episode${V(t, "def_played") === 1 ? "" : "s"}</span></span>`; }, 2],
       ["Defending /match", t => leaf(DF(t).time_s, "1", " s", "time spent defending per match")], ["Contacts /match", t => leaf(DF(t).contacts)], ["Pins /match", t => leaf(DF(t).pins, "2", "", "sustained contact, opponent nearly stopped")],
       ["Defense effect", t => leaf(DF(t).effect, "p", "", "drop in the defended opponent's fire rate")],
       ["Defended against", t => leaf(DD(t).time_s, "1", " s", has(val(DD(t).rate_retained)) ? `keeps ${fmtV(val(DD(t).rate_retained), "p")} of its scoring rate when defended (n=${mn(DD(t).rate_retained)})` : "")]];
+    const blank = x => String(x).replace(/<[^>]*>/g, "").trim();
+    const shownRows = rows.filter(([, f, kind, shown]) => ts.some(t => shown ? shown(t) : !["", "–"].includes(blank(kind === 1 ? f(t, "") : f(t)))));
     const vids = new Set(sd ? sd.verified_matches.map(shortKey) : []);
     const chips = SHOW_CHIPS;
     if (chips && !chips.some(c => c[0] === show)) show = "all";
     showEl.innerHTML = chips ? `<div class="chipbar" style="align-items:center;margin-top:var(--sp-2)"><span class="small muted">Shot charts</span><div class="chips" id="cmpsc"></div>${shotLegend()}</div>` : "";
     body.innerHTML = ts.map((t, i) => `<div class="cmpcol card"><h2><a href="#/${ev}/t/${t.key}">${t.number}</a> <span class="muted" style="font-weight:500">${esc(t.nickname || "")}</span></h2>
-      <table class="mini">${rows.map(([l, f, kind]) => { l = typeof l === "function" ? l() : l;
+      <table class="mini">${shownRows.map(([l, f, kind]) => { l = typeof l === "function" ? l() : l;
         return kind === 1 ? `<tr><td colspan="2" style="white-space:normal">${f(t, l)}</td></tr>`
           : `<tr><td style="white-space:normal;min-width:6.5em">${l}</td><td class="num"${kind ? ' style="white-space:normal"' : ""}>${f(t)}</td></tr>`; }).join("")}</table>
       <h3>Shot chart</h3><div id="cs${i}"></div><h3>Autos</h3><div id="ca${i}"></div>

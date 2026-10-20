@@ -65,11 +65,14 @@ async function analyzePage(ev, key) {
   { const qi = String(key || "").indexOf("?");
     if (qi >= 0) { const q = new URLSearchParams(key.slice(qi + 1)); key = key.slice(0, qi); const v = parseFloat(q.get("t")); if (Number.isFinite(v)) seekT = v; } }
   const evP = api(`${ev}/event.json`).catch(() => null);
+  CS.markActive && CS.markActive("matches");
+  crumbs([[ev, `#/${ev}`], ["Matches", `#/${ev}/matches`], [shortKey(key)]]);     // this page's title even if its data fails (MATCH-8)
   let d;
   try { d = await api(`${ev}/m/${key}.json`); }
-  catch (e) {                                   // not tracked yet: a livestream result (event.json row with live.clip) still has a page
+  catch (e) {                                   // not tracked (yet): the event.json row still gives the match a page
     const ej = await evP, row = ej && (ej.matches || []).find(m => m.key === key);
-    if (row && row.live && /404/.test(e.message)) return liveMatchPage(ev, key, row, ej);
+    if (ej) crumbs([[ej.name, `#/${ev}`], ["Matches", `#/${ev}/matches`], [row && row.label || shortKey(key)]]);
+    if (row && /404/.test(e.message)) return row.live ? liveMatchPage(ev, key, row, ej) : untrackedMatchPage(ev, key, row, ej);
     throw e;
   }
   const evj = await evP;
@@ -136,8 +139,8 @@ async function analyzePage(ev, key) {
     <h1 class="vh">${esc(d.label)}</h1>
     <div class="mv-head">
       <span class="mv-score"><span class="score r${W === "red" ? " win" : ""}">${sr ?? "–"}</span><span class="muted"> – </span><span class="score b${W === "blue" ? " win" : ""}">${sb ?? "–"}</span>${W ? ` <span class="muted small">${W === "red" ? "Red" : "Blue"} won</span>` : ""}</span>
-      ${d.start_detected === false ? `<span class="pill no_video" title="match start not detected from motion; using a default offset">start estimated</span>` : ""}
-      ${d.feed_ok != null && d.feed_ok < 0.98 ? `<span class="pill no_video" title="the field camera was missing from the broadcast for part of this match; stats use only the filmed part">camera footage ${Math.round(d.feed_ok * 100)}%</span>` : ""}
+      ${d.start_detected === false ? `<span class="mv-flag"><span class="pill no_video">start estimated</span>${CS.help("The match start wasn't detected from robot motion, so the match clock uses a default offset: times on this page can be a second or two off.", "What “start estimated” means")}</span>` : ""}
+      ${d.feed_ok != null && d.feed_ok < 0.98 ? `<span class="mv-flag"><span class="pill no_video">camera footage ${Math.round(d.feed_ok * 100)}%</span>${CS.help(`The field camera was missing from the broadcast for ${100 - Math.round(d.feed_ok * 100)}% of this match (replays, close-ups). Stats use only the filmed part, so counts can be low.`, "What “camera footage” means")}</span>` : ""}
       <span class="pill no_video" id="mvNote" hidden>match video unavailable here · showing the field replay</span>
       ${CS.liveTag(d)}
       ${LV ? `<span class="mv-live">${clipPlays ? "Playing the livestream clip" : esc(CS.liveTracking(LV, true))}</span>` : ""}
@@ -646,8 +649,12 @@ async function analyzePage(ev, key) {
     for (const s of shots) if (s.outcome === "made" && s.t >= lo && s.t <= hi) { const b = Math.floor((s.t - lo) / BIN), B = bins[s.al] || bins.red; B[b] = (B[b] || 0) + 1; }
     const mx = Math.max(1, ...["red", "blue"].flatMap(a => Object.values(bins[a])));
     scrub.setAttribute("aria-valuemin", Math.round(lo)); scrub.setAttribute("aria-valuemax", Math.round(hi));
-    scrub.innerHTML = PER.map(p => `<div class="seg" style="left:${X(p.v0)}%;width:${X(p.v1) - X(p.v0)}%" title="${esc(PLABEL[p.name] || p.name)}"><span>${esc(PLABEL[p.name] || p.name)}</span>
+    // the bar runs edge to edge under the video: the seconds before and after the match are drawn as their own (empty) segments
+    const p0 = PER.length ? PER[0].v0 : lo, p1 = PER.length ? PER[PER.length - 1].v1 : hi;
+    scrub.innerHTML = (p0 > lo ? `<div class="seg out" style="left:0;width:${X(p0)}%" title="before the match"></div>` : "") +
+      PER.map(p => `<div class="seg" style="left:${X(p.v0)}%;width:${X(p.v1) - X(p.v0)}%" title="${esc(PLABEL[p.name] || p.name)}"><span>${esc(PLABEL[p.name] || p.name)}</span>
       <i class="r ${p.active.red ? "on" : ""}"></i><i class="b ${p.active.blue ? "on" : ""}"></i></div>`).join("") +
+      (p1 < hi ? `<div class="seg out" style="left:${X(p1)}%;width:${100 - X(p1)}%" title="after the match"></div>` : "") +
       ["red", "blue"].map(al => Object.entries(bins[al]).map(([b, n]) => `<u class="${al}" style="left:${X(lo + b * BIN)}%;width:${X(lo + (+b + 1) * BIN) - X(lo + b * BIN)}%;opacity:${(0.25 + 0.75 * n / mx).toFixed(2)}"></u>`).join("")).join("") +
       corrVis().map(c => `<b class="idm ${c.anchored ? "" : "un"}" style="left:${X(c.t_video)}%" title="${esc(corrText(c).head.replace("&harr;", "<->"))}"></b>`).join("") + `<div class="head" id="anHead"></div>`;
   }
@@ -847,11 +854,12 @@ async function analyzePage(ev, key) {
     const onFrame = () => { if (dead) return; syncIns(); draw(); rv = vid.requestVideoFrameCallback(onFrame); };
     if ("requestVideoFrameCallback" in HTMLVideoElement.prototype) rv = vid.requestVideoFrameCallback(onFrame);
     else { const tick = () => { if (dead) return; if (!vid.paused) { syncIns(); draw(); } raf = requestAnimationFrame(tick); }; raf = requestAnimationFrame(tick); }
-    for (const ev2 of ["seeked", "timeupdate", "loadeddata", "pause", "play", "ratechange"]) vid.addEventListener(ev2, () => { syncIns(ev2 === "seeked"); draw(); updPlay(); });
-    vid.addEventListener("play", () => { if (isFs()) wake(); }); vid.addEventListener("pause", () => mainEl.classList.remove("mv-idle"));
-    vid.addEventListener("loadedmetadata", () => { clock.dur = vid.duration; buildScrub(); if (!vid.currentTime) vid.currentTime = Math.max(0, t0m); });
+    // every listener checks `dead`: leaving the page pauses / unloads the video, which still fires events (MATCH-23)
+    for (const ev2 of ["seeked", "timeupdate", "loadeddata", "pause", "play", "ratechange"]) vid.addEventListener(ev2, () => { if (dead) return; syncIns(ev2 === "seeked"); draw(); updPlay(); });
+    vid.addEventListener("play", () => { if (!dead && isFs()) wake(); }); vid.addEventListener("pause", () => mainEl.classList.remove("mv-idle"));
+    vid.addEventListener("loadedmetadata", () => { if (dead) return; clock.dur = vid.duration; buildScrub(); if (!vid.currentTime) vid.currentTime = Math.max(0, t0m); });
     vid.addEventListener("error", () => {   // never loaded (missing file): fall back to the field replay; a later hiccup only says so
-      if (!vid) return;
+      if (!vid || dead) return;
       if (vid.readyState === 0 && vid.error && vid.error.code === 4) failVideo(); else pane.ov.msg.textContent = "the video could not be played here; reload the page to retry (the field view still works)";
     });
   } else clock.t = t0m;
@@ -904,4 +912,39 @@ function liveMatchPage(ev, key, row, evj) {
     </div></div>`;
   const v = $app.querySelector(".mv-clip video");
   if (v && L.auto_start_in_clip != null) v.addEventListener("loadedmetadata", () => { if (!v.currentTime) v.currentTime = Math.max(0, L.auto_start_in_clip - 3); }, { once: true });
+}
+
+// ------------------------------------------------------------------ played but not tracked (MATCH-6)
+// TBA has the result, but there is no tracking data (no video yet, processing paused, the stream didn't cover it): the
+// result, the teams and why, plus the match notes, instead of an error page.
+function untrackedMatchPage(ev, key, row, evj) {
+  const W = row.winner, sc = al => row[al] && row[al].score != null ? esc(row[al].score) : "–";
+  CS.markActive && CS.markActive("matches");
+  crumbs([[evj ? evj.name : ev, `#/${ev}`], ["Matches", `#/${ev}/matches`], [row.label || shortKey(key)]]); $updated.textContent = "";
+  const al = a => (row[a] && row[a].teams) || [];
+  const teams = a => al(a).map(t => `<a class="team ${a[0]}" href="#/${ev}/t/${esc(t)}">${esc(num(t))}</a>`).join(" ");
+  const played = row.red && row.red.score != null;
+  const paused = CS.processing && CS.processing.paused;
+  const why = paused ? "Processing is paused on the server, so no new matches are tracked until an admin turns it back on."
+    : row.state === "failed" ? "Tracking this match failed." : row.state === "processing" ? "It's being tracked right now: the replay appears here when it's done."
+    : "It's tracked once its video is available.";
+  $app.innerHTML = `<div class="mv mv-untracked">
+    <h1 class="vh">${esc(row.label || key)}</h1>
+    <div class="mv-head">
+      <span class="mv-score"><span class="score r${W === "red" ? " win" : ""}">${sc("red")}</span><span class="muted"> – </span><span class="score b${W === "blue" ? " win" : ""}">${sc("blue")}</span>${W === "red" || W === "blue" ? ` <span class="muted small">${W === "red" ? "Red" : "Blue"} won</span>` : played && !W ? ' <span class="muted small">Tie</span>' : ""}</span>
+      ${typeof statusPill === "function" ? statusPill(row) : ""}
+      <a class="mv-yt" href="https://www.thebluealliance.com/match/${esc(key)}" target="_blank" rel="noopener">The Blue Alliance<span class="vh"> (opens a new tab)</span>${CS.icon("external")}</a>
+    </div>
+    <div class="mv-grid">
+      <div class="mv-main"><div class="empty mv-none"><b>Not tracked</b>${played ? "The score is from The Blue Alliance; there's no robot tracking, shots or field replay for this match." : "This match hasn't been played or posted yet."}
+        ${esc(why)}${row.state_note ? `<span class="small muted">Worker: ${esc(row.state_note)}.</span>` : ""}
+        <span class="small"><a href="#/${ev}/matches">All matches</a> · <a href="#/${ev}/schedule">Schedule</a></span></div></div>
+      <aside class="mv-side card" aria-label="Alliances"><div class="mv-sh"><h2>Teams</h2></div>
+        <div class="mv-al red"><div class="mv-alh"><b>Red</b></div><div class="mv-lt">${teams("red") || '<span class="muted">–</span>'}</div></div>
+        <div class="mv-al blue"><div class="mv-alh"><b>Blue</b></div><div class="mv-lt">${teams("blue") || '<span class="muted">–</span>'}</div></div>
+        <div class="note">From The Blue Alliance.</div>
+      </aside>
+    </div>
+    <section id="mvNotes"></section></div>`;
+  if (CS.notes) CS.notes.mount(document.getElementById("mvNotes"), ev, { match: key, teams: [...al("red"), ...al("blue")] });
 }
