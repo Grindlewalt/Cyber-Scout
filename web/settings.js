@@ -55,8 +55,8 @@
       const cur = S.get(), t = S.themes.find(x => x.id === cur.style), single = t.modes.length === 1;
       const def = S.defaults;
       $app.innerHTML = `<div class="st">
-        <h1>Settings</h1><div class="sub">${client ? "This computer's connection to your team's server, and how Cyber-Scout looks for you." : "How Cyber-Scout looks for you, and what this device keeps for offline use. Saved in this browser only, so each device can have its own look."}</div>
-        ${client ? '<div id="st-sync"></div><div id="st-proc"></div>' : ""}
+        <h1>Settings</h1><div class="sub">${client ? "This computer's connection to your team's server, and how Cyber-Scout looks for you." : "What this device keeps for offline use, and how Cyber-Scout looks for you. Saved in this browser only, so each device can have its own look."}</div>
+        <div id="st-sync"></div>${client ? '<div id="st-proc"></div>' : ""}
         <figure class="st-note">
           <blockquote>I like having a colorful UI and I'm sure others do too. I couldn't land on a specific design, so I went a little ham.</blockquote>
           <figcaption><span class="st-av" aria-hidden="true">G</span>Grant</figcaption>
@@ -88,15 +88,19 @@
 
         <div class="st-acts"><button type="button" id="st-reset"${cur.style === def.style && cur.mode === def.mode && cur.layout === def.layout ? " disabled" : ""}>Reset to default</button>
           <span class="st-ok" role="status" aria-live="polite"></span></div>
-        ${client ? "" : '<div id="st-sync" class="st-after"></div>'}
       </div>`;
-      // sync.js: Connection (Cyber-Scout Client) first, or Offline (browser) after the look
+      // sync.js: Connection (Cyber-Scout Client) or Offline (browser) first, above the look (on a phone the 18 themes are
+      // several screens long)
       if (CS.sync && CS.sync.mountSettings) CS.sync.mountSettings($app.querySelector("#st-sync"));
       if (client) procSection($app.querySelector("#st-proc"));
       $app.querySelectorAll("input[name=st-style]").forEach(i => i.onchange = () => { S.set({ style: i.value }); draw(`input[name=st-style][value="${i.value}"]`); });
       $app.querySelectorAll("input[name=st-mode]").forEach(i => i.onchange = () => { S.set({ mode: i.value }); draw(`input[name=st-mode][value="${i.value}"]`); });
       $app.querySelectorAll("input[name=st-layout]").forEach(i => i.onchange = () => { S.set({ layout: i.value }); draw(`input[name=st-layout][value="${i.value}"]`); });
-      $app.querySelector("#st-reset").onclick = () => { S.reset(); draw("#st-reset"); const ok = $app.querySelector(".st-ok"); if (ok) ok.textContent = "Back to Sand & Earth, Auto, Sidebar."; };
+      $app.querySelector("#st-reset").onclick = () => {
+        S.reset(); draw("#st-reset");
+        const th = S.themes.find(x => x.id === def.style), lo = S.layouts.find(x => x.id === def.layout);
+        const ok = $app.querySelector(".st-ok"); if (ok) ok.textContent = `Back to ${th ? th.name : def.style}, ${MODE[def.mode] || def.mode}, ${lo ? lo.name : def.layout}.`;
+      };
       if (focusSel) { const f = $app.querySelector(focusSel); if (f && !f.disabled) f.focus(); else { const r = $app.querySelector("input[name=st-style]:checked"); r && r.focus(); } }
     };
     draw();
