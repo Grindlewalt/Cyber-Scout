@@ -85,14 +85,15 @@ def tba_key_or_409(db) -> str:
     return k
 
 
-def tba_call(key, path, ttl=600):
+def tba_call(key, path, ttl=600, not_found: str | None = None):
+    """TBA GET with the app's errors; not_found = the sentence for a 404 (what isn't there and how to fix it)."""
     try:
         return tba.get(key, path, ttl)
     except tba.TBAError as e:
         if e.status == 401:
             raise HTTPException(409, "the stored TBA key was rejected by TBA; set a new one")
         if e.status == 404:
-            raise HTTPException(404, "not found on TBA")
+            raise HTTPException(404, not_found or "The Blue Alliance has no such team or event")
         raise HTTPException(502, str(e))
 
 
@@ -109,7 +110,8 @@ def patch_settings(body: SettingsPatch, request: Request, user: User = Depends(r
     if "team_number" in fs and body.team_number:
         key = DB.get_setting(db, "tba_key")
         if key:     # look the team up so the UI can show its name (and catch typos)
-            t = tba_call(key, f"/team/frc{body.team_number}/simple", ttl=86400)
+            t = tba_call(key, f"/team/frc{body.team_number}/simple", ttl=86400,
+                         not_found=f"Team {body.team_number} isn't on The Blue Alliance: check the number")
             team_name = t.get("nickname")
     keys = [k for k in ("team_number", "team_name", "season_goal", "setup_complete", "options")
             if k in fs or (k == "team_name" and "team_number" in fs)]
@@ -174,7 +176,8 @@ def _ev(e):
 def tba_team(number: int, user: User = Depends(require_role("admin")), db=Depends(DB.get_db)):
     if not 1 <= number <= 99999:
         raise HTTPException(422, "bad team number")
-    t = tba_call(tba_key_or_409(db), f"/team/frc{number}/simple", ttl=86400)
+    t = tba_call(tba_key_or_409(db), f"/team/frc{number}/simple", ttl=86400,
+                 not_found=f"Team {number} isn't on The Blue Alliance: check the number")
     return {k: t.get(k) for k in ("key", "team_number", "nickname", "name", "city", "state_prov", "country")}
 
 

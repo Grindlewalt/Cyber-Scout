@@ -231,7 +231,9 @@ def add_event(body: EventIn, request: Request, user: User = Depends(require_role
     ev = body.key.strip().lower()
     if not EVENT_RE.match(ev):
         raise HTTPException(422, "bad event key (expected e.g. 2026wasam)")
-    e = tba_call(tba_key_or_409(db), f"/event/{ev}/simple", ttl=3600)
+    e = tba_call(tba_key_or_409(db), f"/event/{ev}/simple", ttl=3600,
+                 not_found=f"No event {ev} on The Blue Alliance: copy the key from the end of its TBA link "
+                           f"(thebluealliance.com/event/2026wasam)")
     now = time.time()
     with DB.tx(db):
         before = _snap(db, ev)
