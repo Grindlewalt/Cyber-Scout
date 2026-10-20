@@ -12,6 +12,8 @@
   const ROLE_TIP = { wide: "fixed overhead / wide field camera (what the tracker needs)",
                      dynamic: "switching broadcast program (cuts between cameras; may carry station-cam insets)",
                      "alliance-side": "fixed driver-station cameras" };
+  // the same names as the video cards' "What it is" (SETUP-7): camera roles are never shown raw
+  const ROLE_NAME = { wide: "Main / wide view", dynamic: "Broadcast", "alliance-side": "Station cam" };
   const TARGETS = [["overhead", "Overhead camera"], ["station_red", "Red station cam"], ["station_blue", "Blue station cam"]];
   const h = s => esc(s);
   const when = ts => ts ? new Date(ts * 1000).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : "–";
@@ -32,6 +34,55 @@
     return j;
   }
   const errMsg = e => (e && (e.message || (e.data && e.data.detail))) || String(e);
+  // tool output (yt-dlp, ffmpeg) -> one plain sentence; the raw text stays behind a "Details" disclosure (SETUP-25).
+  // First match wins: "could not resolve …: The channel is not currently live" is "not live", not "unreachable".
+  const PLAIN = [
+    [/not (currently )?live|is offline|is_upcoming|will begin in|premieres in|live event will begin|this live event has ended|stream (is )?over/i,
+      "The stream isn't live right now: try again during the event, or use a recording of it."],
+    [/\b(404|410)\b|not found|HTTP Error 4\d\d|Server returned 4\d\d|does not exist/i,
+      "Couldn't open the video: its address answers “not found”. Check the link (Replace on its card)."],
+    [/not a bot/i, "YouTube is refusing the server's downloads for now (its bot check): try again later, or update yt-dlp (Admin → Updates)."],
+    [/private video|sign in to confirm|members-only|age-restricted|requires (a )?log ?in|HTTP Error 403|Server returned 403/i,
+      "The video can't be read without a sign-in (private, members-only or age-restricted): use a public stream or recording."],
+    [/unsupported url|no video formats|unable to extract|is not a valid url|invalid data found|could not find codec/i,
+      "Cyber-Scout can't read this link as a video: use a YouTube or Twitch link of the stream, or a recording."],
+    [/cannot resolve|name or service not known|name resolution|getaddrinfo|timed? ?out|connection (refused|reset)|unreachable|network is/i,
+      "Couldn't reach the video from the server: check the link and the server's internet connection."],
+    [/frame grabs? failed|could not read enough frames|could not grab|no frames?\b/i, "Couldn't read frames from this video."],
+  ];
+  const TECH = /ERROR:|\[[\w#:@ .-]+\]|Traceback|Errno|0x[0-9a-f]{6,}|\bffmpeg\b|yt-dlp|HTTP Error/i;
+  function plainErr(e) {
+    const raw = typeof e === "string" ? e : errMsg(e), hit = PLAIN.find(([re]) => re.test(raw));
+    if (hit) return { text: hit[1], raw };
+    return TECH.test(raw) ? { text: "Something went wrong reading the video.", raw } : { text: raw, raw: null };
+  }
+  const errHtml = e => { const p = plainErr(e);
+    return `<span class="vw-et">${h(p.text)}</span>${p.raw ? ` <details class="vw-det"><summary>Details</summary><code>${h(p.raw)}</code></details>` : ""}`; };
+  // the first check of a pasted link, before any request (mirrors live/sources.py _checked / link_problem; the
+  // server stays the judge): YouTube / Twitch links, a direct .mp4 / .m3u8 address, or a file on the server
+  const LINK_EG = "e.g. youtube.com/@FIRSTWashington/live or twitch.tv/firstwa_red1";
+  const MEDIA_EXT = /\.(m3u8|mp4|m4v|mov|mkv|webm|ts|flv)$/i;
+  function linkProblem(v) {
+    const u = (v || "").trim();
+    if (!u) return "Paste a link first.";
+    if (u.startsWith("/") || /^[A-Za-z0-9_-]{11}$/.test(u)) return "";
+    if (/\s/.test(u) && !/^https?:\/\//i.test(u)) return `That isn't a link. Paste the event's stream or video link, ${LINK_EG}.`;
+    let x;
+    try { x = new URL(/^[a-z][a-z0-9+.-]*:/i.test(u) ? u : "https://" + u); } catch (e) { return "That link isn't valid: copy it again from the browser's address bar."; }
+    const host = x.hostname.replace(/^(www|m)\./, "");
+    if (/(^|\.)(youtube\.com|youtu\.be)$/.test(host)) return x.pathname.length > 1 || x.searchParams.get("v") || x.searchParams.get("list") ? ""
+      : "That YouTube link doesn't point at a stream, video, playlist or channel. Open the stream on YouTube and copy the address from there, e.g. youtube.com/@FIRSTWashington/live or a youtube.com/watch?v=… link.";
+    if (/(^|\.)twitch\.tv$/.test(host)) return x.pathname.length > 1 ? ""
+      : "That Twitch link doesn't name a channel or a video: use twitch.tv/<channel> (e.g. twitch.tv/firstwa_red1) or twitch.tv/videos/<number>.";
+    if (!/^https?:$/.test(x.protocol) || !/^[a-z]+:\/\//i.test(u)) return `${host && host.includes(".") ? host + " isn't YouTube or Twitch" : "That isn't a YouTube or Twitch link"}. Paste the event's stream or video link, ${LINK_EG}.`;
+    return MEDIA_EXT.test(x.pathname) ? "" : `${host} isn't YouTube or Twitch. Paste the event's stream or video link from YouTube or Twitch (a direct video address ending in .mp4 or .m3u8 works too).`;
+  }
+  /** a form's field error: under the field, in the error colour, the field marked invalid (SETUP-6) */
+  function fieldErr(f, t) {
+    const inp = f.querySelector("input[name=u]"), m = f.querySelector(".vw-ferr"); if (!m) return;
+    m.innerHTML = t ? (typeof t === "string" ? h(t) : t.status && t.status < 500 ? h(errMsg(t)) : errHtml(t)) : ""; m.hidden = !t;
+    if (t) { inp.setAttribute("aria-invalid", "true"); inp.focus(); } else inp.removeAttribute("aria-invalid");
+  }
   async function job(ev, start, status) {
     let j = await start;
     const t0 = Date.now();
@@ -136,8 +187,8 @@
   // ---------------------------------------------------------------- 1. videos: the per-match plan (live/videoplan.py)
   // Every candidate upload of a match is checked once (a few low-res frames) and classified wide / broadcast / station cams;
   // the worker picks per match. This tab shows the coverage, explains each choice and takes the rare override.
-  const TYPES = [["wide", "Wide", "Wide"], ["broadcast", "Broadcast", "Bcast"], ["stations", "Station cams", "Stn"]];
-  const TYPE_L = { wide: "Wide", broadcast: "Broadcast", stations: "Station cams" };
+  const TYPES = [["wide", "Main / wide", "Wide"], ["broadcast", "Broadcast", "Bcast"], ["stations", "Station cams", "Stn"]];
+  const TYPE_L = { wide: "Main / wide", broadcast: "Broadcast", stations: "Station cams" };
   const TYPE_TIP = { wide: "fixed overhead camera, no cuts: what the tracker needs",
                      broadcast: "program feed that cuts between cameras: robots are tracked only while the overhead camera is on air",
                      stations: "the overhead view with the two driver-station cameras inset in the bottom corners" };
@@ -266,8 +317,8 @@
   /** Auto-calibrate the overhead camera of a video: detect tags -> fit (auto lines) -> the admin checks the overlay -> accept,
    * then the layout's field box from the fitted camera's field_roi (only when the video has none). done(saved, message). */
   async function autoCal(ev, box, sid, done) {
-    const fail = t => { const off = /not (currently )?live|offline|is_upcoming|no video/i.test(t || "");
-      box.innerHTML = `<div class="vw-ac"><p class="small">${CS.icon("warn", "ico")} <b>Couldn't calibrate automatically.</b> ${off ? "It needs a frame of the field: try again once the stream is live (or recorded). " : ""}<span class="muted">${h(t)}</span></p>
+    const fail = t => {
+      box.innerHTML = `<div class="vw-ac"><p class="small">${CS.icon("warn", "ico")} <b>Couldn't calibrate automatically.</b> ${errHtml(t)}</p>
         <div class="vs-row"><button type="button" data-sub="calib">Calibrate by hand</button><button type="button" id="acno">Close</button></div></div>`;
       box.querySelector("#acno").onclick = () => done(false); };
     box.innerHTML = `<div class="vw-ac"><p class="small" role="status"><b>Auto-calibrate</b> <span id="acst">reading frames and AprilTags from the video (about a minute)…</span></p></div>`;
@@ -381,6 +432,9 @@
     const shown = S.filter(s => !s.dismissed).sort((a, b) => { const x = rank(a), y = rank(b); return x[0] - y[0] || x[1] - y[1] || x[2] - y[2]; }), gone = S.filter(s => s.dismissed);
     const mainSrc = shown.find(s => s.id === (V && V.stream_source)) || shown.find(s => s.kind !== "per_match" && whatOf(s) === "main");
     const recFor = s => !!(lsSt && lsSt.source && (lsSt.source.id === s.id || (s.url && lsSt.source.url === s.url)));
+    // the recorder reports its source as it read it (an old TBA webcast name has no channel): this page's name for it
+    const recName = src => { const m = S.find(x => x.id === src.id || (x.url && x.url === src.url));
+      return (m && m.label) || src.url || src.label || "another stream"; };
     function fsOf(s) {                      // field setup of a video: field (or station) box + its camera calibration
       const w = whatOf(s), stream = V && s.id === V.stream_source, c = chk();
       // a broadcast stream can carry a fixed wide camera too (program feed: tracked from every camera): optional setup
@@ -401,7 +455,7 @@
       const live = s.kind === "livestream", mine = live && recFor(s);
       let out = "";
       if (live) {
-        const r = mine || !(lsSt && lsSt.source) ? recPlain(lsSt) : { c: "", t: "Not being recorded", why: `the recorder records ${lsSt.source.label || lsSt.source.url || "another stream"} first` };
+        const r = mine || !(lsSt && lsSt.source) ? recPlain(lsSt) : { c: "", t: "Not being recorded", why: `the recorder records ${recName(lsSt.source)} first` };
         out += `<div class="vw-rec"><span class="ls-dot ${r.c}" aria-hidden="true"></span><span><b>${h(r.t)}</b>${r.why ? ` <span class="muted">· ${h(r.why)}</span>` : ""}</span></div>`;
         const tr = mine && lsSt.tracking;
         if (tr) out += `<div class="vw-tr small">${tr.ok ? `${CS.icon("check", "ico")} Robots are tracked from this stream` : `Robots aren't tracked from this stream yet <span class="muted">· ${h(tr.note || "")}</span>`}</div>`;
@@ -463,7 +517,7 @@
       }
       const bad = a.status === "error";
       return head(`<span class="pill vw-need">${bad ? "failed" : "no fixed camera"}</span>`) +
-        `<p class="small vw-asn">${CS.icon("warn", "ico")} ${bad ? "The automatic set-up failed" : "Couldn't find the fixed wide camera"}: <span class="muted">${h(a.message || "")}</span></p>
+        `<p class="small vw-asn">${CS.icon("warn", "ico")} ${bad ? `The automatic set-up failed: ${errHtml(a.message || "")}` : `Couldn't find the fixed wide camera: <span class="muted">${h(a.message || "")}</span>`}</p>
         <p class="small vw-asn muted">${bad ? "" : "Robots can still be located from every camera, but fuel and shots need the fixed camera: "}Calibrate the camera by hand (pick frames where it is on air), or run it again on a later match.</p>
         ${a.has_overlay ? `<details class="vw-asd"><summary class="small">What was found</summary>${img}${facts}</details>` : ""}
         <div class="vs-row vw-asb">${hand}${btn("run", "Run again")}<span class="muted small" data-as-st role="status"></span></div>`;
@@ -489,8 +543,9 @@
               ${s.enabled === false ? `<span class="pill">off</span>` : ""}</div>
             <div class="vw-url small">${s.url ? urlHtml(s.url) : s.title_pattern ? `title ~ <code>${h(s.title_pattern)}</code>${s.example_title ? ` · e.g. “${h(s.example_title)}”` : ""}` : ""}</div></div>
           <div class="vw-acts">${tba && per ? "" : `<button type="button" class="small" data-rep aria-label="Replace the link of ${nm}">Replace</button>`}<button type="button" class="small" data-rm aria-label="Remove ${nm}">Remove</button></div></div>
-        <form class="vw-repf vs-form" hidden><input name="u" required aria-label="New link for ${nm}" placeholder="New YouTube / Twitch link…" autocomplete="off" autocapitalize="none" spellcheck="false">
+        <form class="vw-repf vs-form" hidden novalidate><input name="u" required aria-label="New link for ${nm}" aria-describedby="vwrerr-${h(s.id)}" placeholder="New YouTube / Twitch link…" autocomplete="off" autocapitalize="none" spellcheck="false">
           ${liveChoice()}<button class="primary">Save link</button><button type="button" data-cancel>Cancel</button>
+          <p class="vw-ferr" id="vwrerr-${h(s.id)}" role="alert" hidden></p>
           <span class="muted small vw-repn">${tba ? "Adds your link and removes the TBA one." : "Keeps this video's field box and calibration: redo them if the camera moved."}</span></form>
         <div class="vw-body"><div class="vw-sets"><label class="vw-wl small">What it is <select data-what aria-label="What ${nm} is">${whatOpts(w)}</select></label>${dynSelect(s)}</div>
           <div class="vw-dyn">${dynHtml(s)}</div>
@@ -501,13 +556,17 @@
           <p class="vw-fsn muted small">${fsNote(fs)}</p><div class="vw-mount"></div></div></details>`}
       </article>`;
     }
+    // the first video is the main (wide) one; every later link is a Broadcast until the admin says otherwise: a
+    // station cam is never picked for them (SETUP-7)
     const used = new Set(shown.filter(s => s.kind !== "per_match").map(whatOf));
-    const nextWhat = ["main", "red", "blue"].find(w => !used.has(w)) || "broadcast";
+    const nextWhat = used.has("main") ? "broadcast" : "main";
     listEl.innerHTML = shown.map(card).join("") + `
-      <form class="card vw-add vs-form" id="vwadd"><h2 class="vw-h2">${shown.length ? "Add another video or stream" : "Add the event's video or stream"}</h2>
-        <input name="u" required aria-label="Video or stream link" placeholder="Paste a YouTube or Twitch link: live stream or recording" autocomplete="off" autocapitalize="none" spellcheck="false" inputmode="url">
+      <form class="card vw-add vs-form" id="vwadd" novalidate><h2 class="vw-h2">${shown.length ? "Add another video or stream" : "Add the event's video or stream"}</h2>
+        <div class="vw-tbaw" id="vwtba" hidden></div>
+        <input name="u" required aria-label="Video or stream link" aria-describedby="vwerr" placeholder="Paste a YouTube or Twitch link: live stream or recording" autocomplete="off" autocapitalize="none" spellcheck="false" inputmode="url">
         <label class="small">What it is <select name="what">${whatOpts(nextWhat)}</select></label>${liveChoice()}
         <button class="primary">Add</button><span id="vwst" class="muted small" role="status"></span>
+        <p class="vw-ferr" id="vwerr" role="alert" hidden></p>
         <p class="muted small vw-tip">A channel's live link (youtube.com/@channel/live or twitch.tv/channel) follows each day's new stream; a watch link is one stream or one recording.</p></form>
       ${gone.length ? `<p class="vw-gone small muted">Removed from TBA's list (kept off): ${gone.map(s => `<span>${h(s.label || s.id)} <button type="button" class="small" data-restore="${h(s.id)}">Restore</button></span>`).join(" · ")}</p>` : ""}`;
     try { const f = sessionStorage.getItem("cs:vwflash"); if (f) { sessionStorage.removeItem("cs:vwflash"); document.getElementById("vwflash").innerHTML = `<div class="vw-flash">${CS.icon("check", "ico")} ${h(f)}</div>`; } } catch (e) { }
@@ -516,18 +575,42 @@
     const live = f => { const r = f.querySelector("input[name=live]:checked"); return ytVideo(f.u.value) && r ? r.value === "1" : null; };
     listEl.querySelectorAll("form").forEach(f => { const lv = f.querySelector(".vw-live"); if (lv) f.u.addEventListener("input", () => { lv.hidden = !ytVideo(f.u.value); }); });
     const addBody = (url, w, lv) => { const b = whatBody(w); return { url, role: b.role, primary: !!b.primary, station: b.station || null, live: lv }; };
-    async function afterMain(w) {          // the first main video: apply the suggested match video mode (visible + changeable at the top)
-      if (w !== "main" || !V || V.chosen || !V.suggested || V.suggested === V.video_mode) return "";
-      try { await A("PUT", `events/${ev}/video-mode`, { video_mode: V.suggested }); return ` Match video set to ${VM_NAME[V.suggested]} (suggested: ${V.suggested_why}).`; } catch (x) { return ""; }
+    // the match video mode never changes as a side effect of adding a link (SETUP-6): after the first main live
+    // stream the flash only points at the suggestion, which stays a choice at the top
+    const modeHint = (w, s) => w === "main" && s.kind === "livestream" && V && !V.chosen && V.suggested && V.suggested !== V.video_mode
+      ? ` Suggested match video: ${VM_NAME[V.suggested]} (${V.suggested_why}): choose it at the top if that's right.` : "";
+    const addForm = document.getElementById("vwadd");
+    addForm.u.addEventListener("input", () => { if (addForm.u.getAttribute("aria-invalid")) fieldErr(addForm, ""); });
+    async function addLink(url, w, lv) {
+      const s = await A("POST", `events/${ev}/sources`, addBody(url, w, lv));
+      if (s.job) { say("listing the playlist…"); await job(ev, Promise.resolve(s.job), say); }
+      flash(`Added ${s.label || s.url}.` + modeHint(w, s) + (w === "main" ? " Next: Field setup on its card." : "")); route(false);
     }
-    document.getElementById("vwadd").onsubmit = async e => {
-      e.preventDefault(); const f = e.target, w = f.what.value; say("adding…");
-      try {
-        const s = await A("POST", `events/${ev}/sources`, addBody(f.u.value.trim(), w, live(f)));
-        if (s.job) { say("listing the playlist…"); await job(ev, Promise.resolve(s.job), say); }
-        flash(`Added ${s.label || s.url}.` + await afterMain(w) + (w === "main" ? " Next: Field setup on its card." : "")); route(false);
-      } catch (x) { say(errMsg(x)); }
+    addForm.onsubmit = async e => {
+      e.preventDefault(); const f = e.target, w = f.what.value, u = f.u.value.trim(), bad = linkProblem(u);
+      if (bad) { fieldErr(f, bad); return; }
+      fieldErr(f, ""); say("adding…");
+      try { await addLink(u, w, live(f)); }
+      catch (x) { say(""); fieldErr(f, x); }
     };
+    // TBA's webcasts for this event, offered above the paste box in every match video mode (SETUP-12)
+    A("GET", `events/${ev}/sources/webcasts`).then(r => {
+      const box = document.getElementById("vwtba"), L = ((r && r.webcasts) || []).filter(w => !w.source || w.dismissed);
+      if (!box || !L.length) return;
+      box.innerHTML = `<p class="small"><b>The Blue Alliance lists ${L.length === 1 ? "a stream" : L.length + " streams"} for this event.</b>
+          <span class="muted">Add uses your “What it is” choice below.</span></p>
+        <ul class="vw-tbal">${L.map(w => `<li><b>${h(w.label.replace(/^Event webcast · /, ""))}</b> <span class="muted small">${urlHtml(w.url)}</span>
+          ${w.dismissed ? `<button type="button" class="small" data-tbares="${h(w.source)}">Restore</button>` : `<button type="button" class="small" data-tbaadd="${h(w.url)}">Add</button>`}</li>`).join("")}</ul>`;
+      box.hidden = false;
+      box.onclick = async e => {
+        const b = e.target.closest("button[data-tbaadd], button[data-tbares]"); if (!b) return;
+        b.disabled = true; fieldErr(addForm, ""); say("adding…");
+        try {
+          if (b.dataset.tbares) { await A("PATCH", `events/${ev}/sources/${encodeURIComponent(b.dataset.tbares)}`, { dismissed: false, enabled: true }); flash("Restored."); route(false); }
+          else await addLink(b.dataset.tbaadd, addForm.what.value, null);
+        } catch (x) { b.disabled = false; say(""); fieldErr(addForm, x); }
+      };
+    }).catch(() => { });
     listEl.querySelectorAll("[data-restore]").forEach(b => b.onclick = async () => {
       try { await A("PATCH", `events/${ev}/sources/${encodeURIComponent(b.dataset.restore)}`, { dismissed: false, enabled: true }); route(false); } catch (x) { say(errMsg(x)); }
     });
@@ -551,14 +634,18 @@
       wireAuto(c, s);
       const rb = c.querySelector("[data-rep]");
       if (rb) rb.onclick = () => { rf.hidden = !rf.hidden; if (!rf.hidden) rf.u.focus(); };
-      rf.querySelector("[data-cancel]").onclick = () => { rf.hidden = true; };
+      rf.querySelector("[data-cancel]").onclick = () => { rf.hidden = true; fieldErr(rf, ""); };
+      rf.u.addEventListener("input", () => { if (rf.u.getAttribute("aria-invalid")) fieldErr(rf, ""); });
       rf.onsubmit = async e => {
-        e.preventDefault(); csay("saving…");
+        e.preventDefault();
+        const u = rf.u.value.trim(), bad = linkProblem(u);
+        if (bad) { fieldErr(rf, bad); return; }
+        fieldErr(rf, ""); csay("saving…");
         try {
-          if (s.origin === "admin") await A("PATCH", `events/${ev}/sources/${sid}`, { url: rf.u.value.trim(), live: live(rf) });
-          else { await A("POST", `events/${ev}/sources`, addBody(rf.u.value.trim(), whatOf(s) === "stations" ? "red" : whatOf(s), live(rf))); await A("DELETE", `events/${ev}/sources/${sid}`); }
+          if (s.origin === "admin") await A("PATCH", `events/${ev}/sources/${sid}`, { url: u, live: live(rf) });
+          else { await A("POST", `events/${ev}/sources`, addBody(u, whatOf(s) === "stations" ? "red" : whatOf(s), live(rf))); await A("DELETE", `events/${ev}/sources/${sid}`); }
           flash("Link replaced."); route(false);
-        } catch (x) { csay(errMsg(x)); }
+        } catch (x) { csay(""); fieldErr(rf, x); }
       };
     });
     // ---- automatic set-up: actions + a poll while one runs
@@ -689,15 +776,15 @@
     const lsDraw = async () => { lsSt = await liveRec.load(ev, evj); if (listEl.isConnected) { redrawDyn(); drawSum(); } };
     lsDraw(); const lsIv = setInterval(lsDraw, 15000); cleanup.push(() => clearInterval(lsIv));
     // ---- actions
-    const dst = t => { const s = document.getElementById("dst"); if (s) s.textContent = t; };
+    const dst = t => { const s = document.getElementById("dst"); if (s) s.textContent = t; }, dstE = e => { const s = document.getElementById("dst"); if (s) s.innerHTML = errHtml(e); };
     document.getElementById("vpcheck").onclick = async e => {
       e.target.disabled = true;
       try { dst("checking videos…"); const r = await job(ev, A("POST", `events/${ev}/video-plan/check`, {}), dst); dst(`${r.checked} video${r.checked === 1 ? "" : "s"} checked`); route(false); }
-      catch (x) { dst(errMsg(x)); e.target.disabled = false; }
+      catch (x) { dstE(x); e.target.disabled = false; }
     };
     document.getElementById("disc").onclick = async () => {
       try { dst("asking TBA…"); await job(ev, A("POST", `events/${ev}/sources/discover`), dst); route(false); }
-      catch (x) { dst(errMsg(x)); }
+      catch (x) { dstE(x); }
     };
     // ---- the per-match sheet: candidates, why, pin / exclude
     const dlg = document.getElementById("vpsheet");
@@ -789,16 +876,16 @@
       <p class="muted small vp-advn">Where candidate videos come from: TBA webcasts (recorded automatically on their day), upload families TBA links (grouped by title) and anything pasted below.
         Switching a family <b>off</b> excludes its videos from every match. The per-match choice above does not need roles; <i>Tracked</i> only matters for matches the plan has not checked yet.</p>
       <div class="vs-tw">
-        <table class="mini vs-src"><thead><tr><th>Source</th><th>Type</th><th title="${h(Object.entries(ROLE_TIP).map(([k, v]) => k + ": " + v).join("\n"))}">Camera role</th>
-          <th title="the overhead video the tracker processes">Tracked</th><th>Covers</th><th>Layout</th><th>On</th><th></th></tr></thead>
+        <table class="mini vs-src"><thead><tr><th>Source</th><th>Type</th><th title="${h(Object.entries(ROLE_TIP).map(([k, v]) => ROLE_NAME[k] + ": " + v).join("\n"))}">What it is</th>
+          <th title="the overhead video the tracker processes">Tracked</th><th>Covers</th><th>Field box</th><th>On</th><th></th></tr></thead>
         <tbody>${S.length ? S.map(s => `<tr data-id="${h(s.id)}">
           <td><b>${h(s.label || s.id)}</b><div class="muted small vs-url">${s.url ? urlHtml(s.url) :
             s.title_pattern ? `title ~ <code>${h(s.title_pattern)}</code>${s.example_title ? ` · e.g. “${h(s.example_title)}”` : ""}` : ""}</div></td>
-          <td data-l="Type"><span><span class="pill">${h(s.kind)}</span> <span class="muted small">${h(s.provider || "")}${s.origin === "tba" ? " · TBA" : ""}</span></span></td>
-          <td data-l="Camera role"><select data-f="role" aria-label="Camera role of ${h(s.label || s.id)}">${d.roles.map(r => `<option ${r === s.role ? "selected" : ""} title="${h(ROLE_TIP[r])}">${r}</option>`).join("")}</select></td>
+          <td data-l="Type"><span><span class="pill">${h(KIND_W[s.kind] || s.kind)}</span> <span class="muted small">${h(s.provider || "")}${s.origin === "tba" ? " · TBA" : ""}</span></span></td>
+          <td data-l="What it is"><select data-f="role" aria-label="What ${h(s.label || s.id)} is">${d.roles.map(r => `<option value="${h(r)}" ${r === s.role ? "selected" : ""} title="${h(ROLE_TIP[r])}">${h(ROLE_NAME[r] || r)}</option>`).join("")}</select></td>
           <td data-l="Tracked" class="vs-c"><input type="radio" name="prim" data-f="primary" aria-label="Track ${h(s.label || s.id)}" ${s.primary ? "checked" : ""}></td>
           <td data-l="Covers" class="small">${cov(s)}</td>
-          <td data-l="Layout"><a href="#/${ev}/sources/layout/${encodeURIComponent(s.id)}">${s.has_layout ? "edit boxes" : "draw boxes"}</a></td>
+          <td data-l="Field box"><a href="#/${ev}/sources/layout/${encodeURIComponent(s.id)}">${s.has_layout ? "edit" : "draw"}</a></td>
           <td data-l="On" class="vs-c"><input type="checkbox" data-f="enabled" aria-label="Use ${h(s.label || s.id)}" ${s.enabled !== false ? "checked" : ""}></td>
           <td class="vs-x"><button class="small" data-del>Remove</button></td></tr>`).join("") :
           `<tr><td colspan="8" class="muted">No sources yet: discover them from TBA or paste a URL below.</td></tr>`}</tbody></table>
@@ -807,27 +894,27 @@
         <h3 style="margin:0 0 8px">Add a source</h3>
         <form id="add" class="vs-form">
           <input name="url" required placeholder="YouTube / Twitch URL (livestream, video, playlist, channel), .m3u8/.mp4 URL, or /media/… file" style="flex:3 1 380px">
-          <select name="role">${d.roles.map(r => `<option title="${h(ROLE_TIP[r])}">${r}</option>`).join("")}</select>
+          <select name="role" aria-label="What it is">${d.roles.map(r => `<option value="${h(r)}" title="${h(ROLE_TIP[r])}">${h(ROLE_NAME[r] || r)}</option>`).join("")}</select>
           <input name="label" placeholder="Label (optional)…" style="flex:1 1 160px">
           <label class="small"><input type="checkbox" name="primary"> tracked video</label>
-          <button>Add</button>${CS.help("Alternate angles (e.g. a team's own overhead recording) can be added the same way; mark the one the tracker should use as <i>tracked</i>.", "About alternate angles")}<span id="ast" class="muted small"></span>
+          <button>Add</button>${CS.help("Alternate angles (e.g. a team's own overhead recording) can be added the same way; mark the one the tracker should use as <i>tracked</i>.", "About alternate angles")}<span id="ast" class="muted small" role="status"></span>
         </form>
       </div>
       <div class="muted small" style="margin-top:12px">
         Fallback (matches not checked yet): prefer <code>${h((d.video_config || {}).prefer || "^Wide Match (default)")}</code>${(d.video_config || {}).reject ? `, skip <code>${h(d.video_config.reject)}</code>` : ""}${d.station_pattern ? ` · station-cam uploads <code>${h(d.station_pattern)}</code>` : ""}${d.livestream ? ` · livestream ${urlHtml(d.livestream, true)}` : ""}.
         ${d.jobs_inline ? "" : "Frame grabs and calibration run in the worker (its video job runner must be on)."}
-        Next: <a href="#/${ev}/sources/layout">draw the layout</a>, then <a href="#/${ev}/sources/calib">calibrate the cameras</a>.
+        Next: <a href="#/${ev}/sources/layout">draw the field box</a>, then <a href="#/${ev}/sources/calib">calibrate the cameras</a>.
       </div>`;
     el.querySelectorAll("tr[data-id]").forEach(tr => {
       const id = tr.dataset.id;
       tr.querySelectorAll("[data-f]").forEach(inp => inp.onchange = async () => {
         const f = inp.dataset.f, v = inp.type === "checkbox" || inp.type === "radio" ? inp.checked : inp.value;
         try { await A("PATCH", `events/${ev}/sources/${encodeURIComponent(id)}`, { [f]: v }); if (f === "primary") route(false); }
-        catch (e) { alert(errMsg(e)); route(false); }
+        catch (e) { document.getElementById("ast").innerHTML = errHtml(e); }
       });
       tr.querySelector("[data-del]").onclick = async () => {
-        if (!confirm("Remove this source? (its layout boxes are kept)")) return;
-        try { await A("DELETE", `events/${ev}/sources/${encodeURIComponent(id)}`); route(false); } catch (e) { alert(errMsg(e)); }
+        if (!confirm("Remove this source? (its field box is kept)")) return;
+        try { await A("DELETE", `events/${ev}/sources/${encodeURIComponent(id)}`); route(false); } catch (e) { document.getElementById("ast").innerHTML = errHtml(e); }
       };
     });
     document.getElementById("add").onsubmit = async e => {
@@ -837,7 +924,7 @@
         const s = await A("POST", `events/${ev}/sources`, { url: f.url.value.trim(), role: f.role.value, label: f.label.value.trim() || null, primary: f.primary.checked });
         if (s.job) { st.textContent = "indexing the playlist…"; await job(ev, Promise.resolve(s.job), t => st.textContent = t); }
         route(false);
-      } catch (x) { st.textContent = errMsg(x); }
+      } catch (x) { st.innerHTML = errHtml(x); }
     };
   }
 
@@ -871,8 +958,12 @@
         lens.style.left = (V.mouse[0] * V.s > (wrap.clientWidth / 2) ? 8 : wrap.clientWidth - lens.width - 8) + "px";
       } else lens.style.display = "none";
     };
-    c.addEventListener("mousemove", e => { if (opts.lens) { V.mouse = V.toImg(e); V.render(); } });
-    c.addEventListener("mouseleave", () => { V.mouse = null; V.render(); });
+    if (opts.edit) { c.classList.add("vs-draw"); c.tabIndex = 0; c.setAttribute("role", "application"); c.setAttribute("aria-label", opts.edit); }
+    // the magnifier: follows a mouse; a finger or pen shows it only while pressed (touch has no hover)
+    c.addEventListener("pointermove", e => { if (opts.lens && (e.pointerType === "mouse" || e.buttons)) { V.mouse = V.toImg(e); V.render(); } });
+    c.addEventListener("pointerleave", () => { V.mouse = null; V.render(); });
+    c.addEventListener("pointerup", e => { if (e.pointerType !== "mouse" && V.mouse) { V.mouse = null; V.render(); } });
+    c.addEventListener("blur", () => { if (V.mouse) { V.mouse = null; V.render(); } });
     const onR = () => V.size(); window.addEventListener("resize", onR); (opts.bin || cleanup).push(() => window.removeEventListener("resize", onR));
     return V;
   }
@@ -908,8 +999,9 @@
       <div class="vs-edit">
         <div class="vs-wrap" id="cv"></div>
         <div class="vs-side">
-          <div class="small muted">Draw boxes ${CS.help("Pick a kind, drag on the frame. Click a box to select; drag to move, corners to resize; Delete removes.", "How to draw boxes")}</div>
-          <div class="chips" id="kinds">${Object.keys(L.kinds).map(k => `<span class="chip ${k === kind ? "on" : ""}" data-k="${k}" title="${h(L.kinds[k])}"><i class="vs-sw" style="background:${KCOL[k]}"></i>${KSHORT[k] || k}</span>`).join("")}</div>
+          <div class="small muted">Draw boxes ${CS.help("Pick a kind, then drag on the frame with the mouse, a finger or a pen (or press <b>Add box</b>). Tap or click a box to select it; drag it to move, its corners to resize. <b>Keyboard</b>: pick a box with its swatch in the list (or Add box), then the arrow keys move it (Shift: faster), Alt / Option + arrows resize it, Delete removes it.", "How to draw boxes")}</div>
+          <div class="chips" id="kinds" role="group" aria-label="Kind of box">${Object.keys(L.kinds).map(k => `<button type="button" class="chip ${k === kind ? "on" : ""}" data-kind="${k}" aria-pressed="${k === kind}" title="${h(L.kinds[k])}"><i class="vs-sw" style="background:${KCOL[k]}"></i>${KSHORT[k] || k}</button>`).join("")}
+            <button type="button" id="addbox" class="small" title="A box of the chosen kind in the middle of the frame: move it with the arrow keys, resize with Alt / Option + arrows">Add box</button></div>
           <div id="sugbox"></div>
           <div id="rlist"></div>
           <div class="vs-row" style="margin-top:10px"><button id="save" class="primary">Save layout</button>
@@ -917,19 +1009,30 @@
           <div class="small muted" id="savest">${saved ? `saved ${when(saved.updated_at)} by ${h(saved.updated_by || "?")}` : "not saved yet — the pipeline uses the 2026 FIRST defaults"}</div>
         </div>
       </div>`;
-    const st = t => el.querySelector("#lst").textContent = t;
-    const V = FrameView(el.querySelector("#cv"), { lens: true, zoom: 3, bin: el._bin });
+    const st = t => el.querySelector("#lst").textContent = t, stE = e => { el.querySelector("#lst").innerHTML = errHtml(e); };
+    const V = FrameView(el.querySelector("#cv"), { lens: true, zoom: 3, bin: el._bin,
+      edit: "Video frame with the boxes. Drag to draw a box; arrow keys move the selected box (Shift: faster), Alt + arrows resize it, Delete removes it." });
     V.empty = "No frame yet: Grab frame"; V.W = W; V.H = H; V.size();
-    try { V.setImage(await loadImg(imgUrl(`events/${ev}/sources/${encodeURIComponent(src.id)}/frame.jpg`))); W = V.W; H = V.H; }
+    if (src.has_frame === false) st("no frame yet: Grab frame");      // (a plan group doesn't say: try it)
+    else try { V.setImage(await loadImg(imgUrl(`events/${ev}/sources/${encodeURIComponent(src.id)}/frame.jpg`))); W = V.W; H = V.H; }
     catch (e) { st("no frame yet: Grab frame"); }
     el.querySelector("#srcsel").onchange = e => { location.hash = `#/${ev}/sources/layout/${encodeURIComponent(e.target.value)}`; };
-    el.querySelector("#kinds").onclick = e => { const k = e.target.closest("[data-k]"); if (!k) return; kind = k.dataset.k; el.querySelectorAll("#kinds .chip").forEach(c => c.classList.toggle("on", c === k)); };
+    el.querySelector("#kinds").onclick = e => { const k = e.target.closest("[data-kind]"); if (!k) return; kind = k.dataset.kind;
+      el.querySelectorAll("#kinds [data-kind]").forEach(c => { c.classList.toggle("on", c === k); c.setAttribute("aria-pressed", String(c === k)); }); };
+    const SINGLE = ["station_red", "station_blue", "clock", "field", "overhead"];      // one box of these per video
+    el.querySelector("#addbox").onclick = () => {
+      const w = W * 0.3, hh = H * 0.3, x0 = (W - w) / 2, y0 = (H - hh) / 2;
+      if (SINGLE.includes(kind)) regions = regions.filter(r => r.kind !== kind);
+      regions.push({ id: "r" + Date.now().toString(36), kind, label: KSHORT[kind], box: [x0, y0, x0 + w, y0 + hh] });
+      sel = regions.length - 1; dirty = true; paint(); V.c.focus();
+      st(`${KSHORT[kind] || kind} box added in the middle: move it with the arrow keys or drag it.`);
+    };
     el.querySelector("#grab").onclick = async () => {
       const t = el.querySelector("#ft").value;
       try {
         await job(ev, A("POST", `events/${ev}/sources/${encodeURIComponent(src.id)}/frame`, t !== "" ? { t: +t } : {}), st);
         V.setImage(await loadImg(imgUrl(`events/${ev}/sources/${encodeURIComponent(src.id)}/frame.jpg`))); W = V.W; H = V.H; st("");
-      } catch (e) { st(errMsg(e)); }
+      } catch (e) { stE(e); }
     };
     el.querySelector("#sug").onclick = async () => {
       const other = el.querySelector("#other").value;
@@ -938,7 +1041,7 @@
         const sx = W / r.W, sy = H / r.H;
         sugg = r.suggestions.map(s => ({ ...s, box: [s.box[0] * sx, s.box[1] * sy, s.box[2] * sx, s.box[3] * sy] }));
         st(`${sugg.length} suggestions: accept the ones that fit`); paint();
-      } catch (e) { st(errMsg(e)); }
+      } catch (e) { stE(e); }
     };
     el.querySelector("#dflt").onclick = () => {
       const hasInsets = regions.some(r => r.kind.startsWith("station_")) || src.role !== "wide";
@@ -949,7 +1052,7 @@
       try {
         await A("PUT", `events/${ev}/layout/${encodeURIComponent(src.id)}`, { W, H, regions: regions.map(r => ({ id: r.id, kind: r.kind, label: r.label, box: r.box.map(Math.round), light_on_dark: r.light_on_dark })) });
         dirty = false; el.querySelector("#savest").textContent = "saved just now"; paint();
-      } catch (e) { alert(errMsg(e)); }
+      } catch (e) { el.querySelector("#savest").innerHTML = `<span class="vw-ferr">${errHtml(e)}</span>`; }
     };
     const leave = e => { if (dirty) { e.preventDefault(); e.returnValue = ""; } };
     window.addEventListener("beforeunload", leave); (el._bin || cleanup).push(() => window.removeEventListener("beforeunload", leave));
@@ -980,10 +1083,10 @@
         ${sugg.map((s, i) => `<div class="vs-ri"><i class="vs-sw" style="background:${KCOL[s.kind]}"></i>${KSHORT[s.kind] || s.kind} <span class="muted small">${h(s.label || "")} ${s.score != null ? Math.round(s.score * 100) + "%" : ""}</span>
           <button class="small" data-acc="${i}">accept</button></div>`).join("")}</div>` : "";
       el.querySelector("#rlist").innerHTML = regions.map((r, i) => `<div class="vs-ri ${i === sel ? "on" : ""}" data-i="${i}">
-        <i class="vs-sw" style="background:${KCOL[r.kind]}"></i>
+        <button type="button" class="vs-pick" data-sel="${i}" aria-pressed="${i === sel}" aria-label="Select box ${i + 1} (${h(r.label || KSHORT[r.kind] || r.kind)}): then the arrow keys move it" title="Select (arrow keys move it)"><i class="vs-sw" style="background:${KCOL[r.kind]}"></i></button>
         <select data-k="${i}">${Object.keys(L.kinds).map(k => `<option value="${k}" ${k === r.kind ? "selected" : ""}>${KSHORT[k] || k}</option>`).join("")}</select>
         <input data-l="${i}" value="${h(r.label || "")}" placeholder="Label…" aria-label="Box label" style="width:110px">
-        <span class="muted small">${r.box.map(v => Math.round(v)).join(",")}</span>
+        <span class="muted small vs-xy">${r.box.map(v => Math.round(v)).join(",")}</span>
         ${r.kind === "clock" ? `<label class="small" title="digits lighter than their box"><input type="checkbox" data-ld="${i}" ${r.light_on_dark ? "checked" : ""}>light</label>` : ""}
         <button class="small icon" data-x="${i}" aria-label="Remove box">${CS.icon("close")}</button></div>`).join("") || `<div class="muted small" style="margin-top:8px">No boxes yet.</div>`;
       const acc = i => { const s = sugg[i]; regions.push({ id: "r" + Date.now().toString(36) + i, kind: s.kind, label: s.label, box: s.box.slice() }); dirty = true; };
@@ -995,11 +1098,12 @@
       el.querySelectorAll("[data-ld]").forEach(s => s.onchange = () => { regions[+s.dataset.ld].light_on_dark = s.checked; dirty = true; });
       el.querySelectorAll("[data-x]").forEach(b => b.onclick = () => { regions.splice(+b.dataset.x, 1); sel = -1; dirty = true; paint(); });
       el.querySelectorAll(".vs-ri[data-i]").forEach(d => d.onclick = e => { if (e.target.closest("select,input,button")) return; sel = +d.dataset.i; paint(); });
+      el.querySelectorAll("[data-sel]").forEach(b => b.onclick = () => { const i = +b.dataset.sel; sel = sel === i ? -1 : i; paint(); const n = el.querySelector(`[data-sel="${i}"]`); if (n) n.focus(); });
     }
-    // mouse: draw / move / resize
+    // pointer (mouse, finger, pen): draw / move / resize; a finger gets bigger corner targets
     let drag = null;
-    const hit = (x, y) => {
-      const tol = 9 / V.s;
+    const hit = (x, y, touch) => {
+      const tol = (touch ? 22 : 9) / V.s;
       for (let i = regions.length - 1; i >= 0; i--) {
         const [x0, y0, x1, y1] = regions[i].box;
         const cs = [[0, 0], [1, 0], [0, 1], [1, 1]].find(([a, b]) => Math.abs(x - (a ? x1 : x0)) < tol && Math.abs(y - (b ? y1 : y0)) < tol);
@@ -1008,16 +1112,18 @@
       }
       return null;
     };
-    V.c.addEventListener("mousedown", e => {
-      const [x, y] = V.toImg(e), t = hit(x, y);
+    V.c.addEventListener("pointerdown", e => {
+      if (e.pointerType === "mouse" && e.button !== 0) return;
+      e.preventDefault(); try { V.c.setPointerCapture(e.pointerId); } catch (x) { } V.c.focus({ preventScroll: true });
+      const [x, y] = V.toImg(e), t = hit(x, y, e.pointerType !== "mouse");
       if (t) { sel = t.i; drag = { ...t, x, y, box0: regions[t.i].box.slice() }; }
       else { sel = -1; drag = { mode: "new", x, y, box: [x, y, x, y] }; }
       paint();
     });
-    window.addEventListener("mousemove", onMove); window.addEventListener("mouseup", onUp);
-    (el._bin || cleanup).push(() => { window.removeEventListener("mousemove", onMove); window.removeEventListener("mouseup", onUp); window.removeEventListener("keydown", onKey); });
+    V.c.addEventListener("pointermove", onMove); V.c.addEventListener("pointerup", onUp); V.c.addEventListener("pointercancel", onUp);
+    (el._bin || cleanup).push(() => { window.removeEventListener("keydown", onKey); });
     function onMove(e) {
-      if (!drag) { if (e.target === V.c) { const t = hit(...V.toImg(e)); V.c.style.cursor = t ? (t.mode === "move" ? "move" : "nwse-resize") : "crosshair"; } return; }
+      if (!drag) { if (e.pointerType === "mouse") { const t = hit(...V.toImg(e)); V.c.style.cursor = t ? (t.mode === "move" ? "move" : "nwse-resize") : "crosshair"; } return; }
       let [x, y] = V.toImg(e); x = Math.max(0, Math.min(W, x)); y = Math.max(0, Math.min(H, y));
       if (drag.mode === "new") drag.box = [Math.min(drag.x, x), Math.min(drag.y, y), Math.max(drag.x, x), Math.max(drag.y, y)];
       else if (drag.mode === "move") {
@@ -1035,7 +1141,7 @@
       if (drag.mode === "new") {
         const [x0, y0, x1, y1] = drag.box;
         if (x1 - x0 > 6 && y1 - y0 > 6) {
-          if (["station_red", "station_blue", "clock", "field", "overhead"].includes(kind)) regions = regions.filter(r => r.kind !== kind);
+          if (SINGLE.includes(kind)) regions = regions.filter(r => r.kind !== kind);
           regions.push({ id: "r" + Date.now().toString(36), kind, label: KSHORT[kind], box: drag.box }); sel = regions.length - 1; dirty = true;
         }
       } else if (drag.mode === "resize") {
@@ -1047,6 +1153,19 @@
       if ((e.key === "Delete" || e.key === "Backspace") && sel >= 0 && !e.target.closest("input,select,textarea")) { regions.splice(sel, 1); sel = -1; dirty = true; paint(); }
     }
     window.addEventListener("keydown", onKey);
+    // keyboard: arrow keys move the selected box (Shift: 10x), Alt / Option + arrows resize it -- on the frame or on the
+    // box's swatch button in the list (only the frame redraws, so focus stays where it is)
+    el.addEventListener("keydown", e => {
+      if (sel < 0 || !regions[sel] || !(e.target === V.c || (e.target.closest && e.target.closest("[data-sel]")))) return;
+      if (e.key === "Escape" && e.target === V.c) { sel = -1; paint(); return; }
+      const d = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[e.key]; if (!d) return;
+      e.preventDefault();
+      const step = (e.shiftKey ? 10 : 1) * Math.max(1, Math.round(W / 480)), b = regions[sel].box;
+      if (e.altKey) { b[2] = Math.max(b[0] + 8, Math.min(W, b[2] + d[0] * step)); b[3] = Math.max(b[1] + 8, Math.min(H, b[3] + d[1] * step)); }
+      else { const dx = Math.max(-b[0], Math.min(W - b[2], d[0] * step)), dy = Math.max(-b[1], Math.min(H - b[3], d[1] * step)); b[0] += dx; b[2] += dx; b[1] += dy; b[3] += dy; }
+      dirty = true; V.render();
+      const xy = el.querySelector(`.vs-ri[data-i="${sel}"] .vs-xy`); if (xy) xy.textContent = b.map(v => Math.round(v)).join(",");
+    });
     paint();
   }
 
@@ -1070,20 +1189,24 @@
         <div class="vs-wrap" id="ccv"></div>
         <div class="vs-side">
           <div id="rep"></div>
-          <div class="small muted" style="margin-top:8px">2. Pick a line or point, then click on the frame ${CS.help("The magnifier follows the mouse; drag a marker to adjust, right-click removes it. Lines are easiest: any 2+ points along a visible edge. Field frame: blue wall X = 0, the blue outpost / chute is on the Y = 0 long side.", "How to place field points")}</div>
+          <div class="small muted" style="margin-top:8px">2. Pick a line or point, then click or tap on the frame ${CS.help("The magnifier follows the mouse (with a finger or pen it shows while you press); drag a marker to adjust it; the × next to it in the list removes it (right-click works too). Lines are easiest: any 2+ points along a visible edge. <b>Keyboard</b>: pick a line or point in the list, Tab to the frame, Enter places it in the middle, the arrow keys move it (Shift: faster), Delete removes it. Field frame: blue wall X = 0, the blue outpost / chute is on the Y = 0 long side.", "How to place field points")}</div>
           <div id="plist"></div>
         </div>
       </div>`;
-    const st = t => el.querySelector("#cst").textContent = t;
-    const V = FrameView(el.querySelector("#ccv"), { lens: true, zoom: 4, bin: el._bin });
+    const st = t => el.querySelector("#cst").textContent = t, stE = e => { el.querySelector("#cst").innerHTML = errHtml(e); };
+    const V = FrameView(el.querySelector("#ccv"), { lens: true, zoom: 4, bin: el._bin,
+      edit: "Video frame for the calibration. Pick a line or point in the list, then click or tap here; with the keyboard Enter places it, arrow keys move it, Delete removes it." });
     V.empty = "No frame yet: 1. Detect tags grabs one";
     let W = 1920, H = 1080, tags = {}, points = {}, NP = {}, NL = DEFAULT_LINES, lineClicks = {}, overlay = null, pick = null, report = null, drop = new Set();
     const show = { grid: true, lines: true, tags: true };
     ["sg", "sh", "st"].forEach((id, i) => document.getElementById(id).onchange = e => { show[["grid", "lines", "tags"][i]] = e.target.checked; V.render(); });
+    let hasFrame = stat.has_frame !== false;          // no wizard frame yet: don't ask for one (a 404 in the console)
     async function loadFrame() {
+      if (!hasFrame) return;
       try { V.setImage(await loadImg(imgUrl(`events/${ev}/calibration/${target}/frame.jpg`)), W, H); } catch (e) { }
     }
     async function loadState() {
+      if (stat.has_frame !== undefined && !stat.candidate) { st("start with step 1"); V.size(); return; }   // no wizard state yet
       try {
         const w = await A("GET", `events/${ev}/calibration/${target}/wizard`);
         W = w.W; H = w.H; tags = w.fit_tags || w.tags || {}; points = w.points || {}; NP = w.points_catalog || NP;
@@ -1119,21 +1242,26 @@
         ctx.fillStyle = "#ff922b"; ctx.font = `${11 / V.s}px system-ui`; ctx.fillText((NP[k] || {}).short || k, p[0] + 8 / V.s, p[1] + 14 / V.s);
       }
     };
+    const rmX = (k, label) => `<button type="button" class="vs-ptx" data-rmp="${h(k)}" aria-label="${h(label)}" title="${h(label)}">${CS.icon("close")}</button>`;
     function plist() {
       const groups = {};
       Object.entries(NP).forEach(([k, v]) => { if (v.group !== "tags") (groups[v.group] = groups[v.group] || []).push([k, v]); });
       const tagIds = Object.keys(tags);
-      el.querySelector("#plist").innerHTML = `<div class="vs-pg"><b class="small">field lines — click 2+ points anywhere along one (easiest)</b>${Object.entries(NL).map(([k, v]) =>
-        `<div class="vs-pt ${"line:" + k === pick ? "on" : ""} ${(lineClicks[k] || []).length ? "set" : ""}" data-p="line:${k}">${(lineClicks[k] || []).length ? "●" + lineClicks[k].length : "○"} ${h(v.label)}</div>`).join("")}</div>` +
+      el.querySelector("#plist").innerHTML = `<div class="vs-pg"><b class="small">field lines — click 2+ points anywhere along one (easiest)</b>${Object.entries(NL).map(([k, v]) => { const n = (lineClicks[k] || []).length;
+        return `<div class="vs-ptr"><button type="button" class="vs-pt ${"line:" + k === pick ? "on" : ""} ${n ? "set" : ""}" data-p="line:${k}" aria-pressed="${"line:" + k === pick}">${n ? "●" + n : "○"} ${h(v.label)}</button>${n ? rmX("line:" + k, `Remove the ${n} point${n > 1 ? "s" : ""} on ${v.label}`) : ""}</div>`; }).join("")}</div>` +
         Object.entries(groups).map(([g, l]) => `<div class="vs-pg"><b class="small">${h(g)}</b>${l.map(([k, v]) =>
-        `<div class="vs-pt ${k === pick ? "on" : ""} ${points[k] ? "set" : ""}" data-p="${k}">${points[k] ? "●" : "○"} ${h(v.label)}</div>`).join("")}</div>`).join("") +
+        `<div class="vs-ptr"><button type="button" class="vs-pt ${k === pick ? "on" : ""} ${points[k] ? "set" : ""}" data-p="${k}" aria-pressed="${k === pick}">${points[k] ? "●" : "○"} ${h(v.label)}</button>${points[k] ? rmX(k, `Remove ${v.label}`) : ""}</div>`).join("")}</div>`).join("") +
         `<div class="vs-pg"><b class="small">AprilTag centres (when not detected)</b><div class="chips">${Object.entries(NP).filter(([k, v]) => v.group === "tags" && !tagIds.includes(k.slice(4)))
-          .map(([k]) => `<span class="chip ${k === pick ? "on" : ""} ${points[k] ? "set" : ""}" data-p="${k}">${k.slice(4)}${points[k] ? "●" : ""}</span>`).join("")}</div></div>`;
-      el.querySelectorAll("[data-p]").forEach(d => d.onclick = () => { pick = d.dataset.p === pick ? null : d.dataset.p; plist(); V.render(); });
+          .map(([k]) => `<span class="vs-tg"><button type="button" class="chip ${k === pick ? "on" : ""} ${points[k] ? "set" : ""}" data-p="${k}" aria-pressed="${k === pick}" aria-label="AprilTag ${k.slice(4)} centre${points[k] ? " (placed)" : ""}">${k.slice(4)}${points[k] ? "●" : ""}</button>${points[k] ? rmX(k, `Remove AprilTag ${k.slice(4)} centre`) : ""}</span>`).join("")}</div></div>`;
+      el.querySelectorAll("[data-p]").forEach(d => d.onclick = () => { const k = d.dataset.p; pick = k === pick ? null : k; plist(); V.render();
+        const n = el.querySelector(`#plist [data-p="${window.CSS.escape(k)}"]`); if (n) n.focus(); });
+      el.querySelectorAll("[data-rmp]").forEach(b => b.onclick = () => { const k = b.dataset.rmp;
+        if (k.startsWith("line:")) delete lineClicks[k.slice(5)]; else delete points[k];
+        plist(); V.render(); const n = el.querySelector(`#plist [data-p="${window.CSS.escape(k)}"]`); if (n) n.focus(); });
     }
     function rep() {
       const r = report;
-      const tl = Object.entries(tags).map(([id, t]) => `<label class="chip ${drop.has(+id) ? "" : "on"}" title="${t.predicted ? "found from the fit" : "detected"}${t.n ? `, ${t.n} frames` : ""}"><input type="checkbox" data-t="${id}" ${drop.has(+id) ? "" : "checked"} style="display:none">${id}${t.predicted ? "*" : ""}</label>`).join("");
+      const tl = Object.entries(tags).map(([id, t]) => `<label class="chip ${drop.has(+id) ? "" : "on"}" title="${t.predicted ? "found from the fit" : "detected"}${t.n ? `, ${t.n} frames` : ""}"><input type="checkbox" class="vh" data-t="${id}" ${drop.has(+id) ? "" : "checked"} aria-label="Use AprilTag ${id}">${id}${t.predicted ? "*" : ""}</label>`).join("");
       el.querySelector("#rep").innerHTML = `<div class="small"><b>Tags</b> (click to ignore one): <div class="chips">${tl || `<span class="muted">none found — click field points</span>`}</div></div>` +
         (r ? `<div class="vs-kv small"><b>Fit</b>: ${h(fmt(r)) || "–"}<br>focal ${r.f} px · k1 ${r.k1} · camera at (${r.C.map(v => v.toFixed(1)).join(", ")}) m
           ${(r.warnings || []).map(w => `<div class="vs-warn">${CS.icon("warn", "ico")} ${h(w)}</div>`).join("")}
@@ -1142,15 +1270,16 @@
           <div class="muted">Does the yellow outline / grid sit on the carpet everywhere, and the hub boxes on the hubs? Then accept.</div></div>` : "");
       el.querySelectorAll("[data-t]").forEach(c => c.onchange = () => { c.checked ? drop.delete(+c.dataset.t) : drop.add(+c.dataset.t); rep(); V.render(); });
     }
-    // clicks: place / drag / clear named points
+    // pointer (mouse, finger, pen): place / drag named points; right-click or the list's × removes one
     let dragK = null;
-    V.c.addEventListener("mousedown", e => {
-      const [x, y] = V.toImg(e);
-      if (e.button === 2) return;
-      const near = Object.entries(points).find(([k, p]) => p && Math.hypot(p[0] - x, p[1] - y) < 10 / V.s);
+    V.c.addEventListener("pointerdown", e => {
+      if (e.pointerType === "mouse" && e.button !== 0) return;
+      e.preventDefault(); try { V.c.setPointerCapture(e.pointerId); } catch (x) { } V.c.focus({ preventScroll: true });
+      const [x, y] = V.toImg(e), tol = e.pointerType === "mouse" ? 1 : 2.4;
+      const near = Object.entries(points).find(([k, p]) => p && Math.hypot(p[0] - x, p[1] - y) < 10 * tol / V.s);
       if (near) { dragK = near[0]; pick = near[0]; plist(); return; }
       for (const [k, pts] of Object.entries(lineClicks)) {
-        const i = (pts || []).findIndex(p => Math.hypot(p[0] - x, p[1] - y) < 8 / V.s);
+        const i = (pts || []).findIndex(p => Math.hypot(p[0] - x, p[1] - y) < 8 * tol / V.s);
         if (i >= 0) { dragK = ["line", k, i]; pick = "line:" + k; plist(); return; }
       }
       if (pick && pick.startsWith("line:")) { const k = pick.slice(5); (lineClicks[k] = lineClicks[k] || []).push([x, y]); plist(); V.render(); return; }
@@ -1171,17 +1300,38 @@
       V.render();
     };
     const up = () => { dragK = null; };
-    window.addEventListener("mousemove", mv); window.addEventListener("mouseup", up);
-    (el._bin || cleanup).push(() => { window.removeEventListener("mousemove", mv); window.removeEventListener("mouseup", up); });
+    V.c.addEventListener("pointermove", mv); V.c.addEventListener("pointerup", up); V.c.addEventListener("pointercancel", up);
+    // keyboard: Enter places the picked point (or adds a point to the picked line) in the middle of the frame, the
+    // arrow keys move it (Shift: 10 px), Delete removes it; the magnifier shows where it is
+    V.c.addEventListener("keydown", e => {
+      if (!pick) return;
+      const line = pick.startsWith("line:"), k = line ? pick.slice(5) : pick;
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        const at = [W / 2, H / 2];
+        if (line) (lineClicks[k] = lineClicks[k] || []).push(at); else points[k] = at;
+        V.mouse = at.slice(); plist(); V.render(); return;
+      }
+      if (e.key === "Delete" || e.key === "Backspace") {
+        e.preventDefault();
+        if (line) { (lineClicks[k] || []).pop(); if (!(lineClicks[k] || []).length) delete lineClicks[k]; } else delete points[k];
+        V.mouse = null; plist(); V.render(); return;
+      }
+      const d = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[e.key]; if (!d) return;
+      const p = line ? (lineClicks[k] || []).slice(-1)[0] : points[k]; if (!p) return;
+      e.preventDefault();
+      const s = e.shiftKey ? 10 : 1; p[0] = Math.max(0, Math.min(W, p[0] + d[0] * s)); p[1] = Math.max(0, Math.min(H, p[1] + d[1] * s));
+      V.mouse = p.slice(); V.render();
+    });
 
     el.querySelector("#det").onclick = async () => {
       try {
         const r = await job(ev, A("POST", `events/${ev}/calibration/${target}/detect`, srcId ? { source: srcId } : {}), st);
         W = r.W; H = r.H; tags = r.tags; NP = r.points || NP; NL = r.lines || NL; report = r.report || null; overlay = r.overlay || null; drop = new Set();
-        await loadFrame(); el.querySelector("#fit").disabled = false;
+        hasFrame = true; await loadFrame(); el.querySelector("#fit").disabled = false;
         st(`${Object.keys(tags).length} tags found${r.report ? " — a first fit is drawn; check it or add points" : " — click field points (≥ 4–6 spread over the field), then Fit"}`);
         plist(); rep(); V.render();
-      } catch (e) { st(errMsg(e)); }
+      } catch (e) { stE(e); }
     };
     el.querySelector("#fit").onclick = async () => {
       try {
@@ -1189,16 +1339,16 @@
         if (r.error) { st(r.error); return; }
         report = r.report; overlay = r.overlay; tags = r.tags || tags; lineClicks = r.line_clicks || lineClicks;
         el.querySelector("#acc").disabled = false; st("fitted — check the overlay"); rep(); plist(); V.render();
-      } catch (e) { st(errMsg(e)); }
+      } catch (e) { stE(e); }
     };
     el.querySelector("#acc").onclick = async () => {
       if (!confirm("Save this calibration? The pipeline uses it for the next matches (the old file is kept as a backup).")) return;
-      try { await A("POST", `events/${ev}/calibration/${target}/accept`); st("saved"); route(false); } catch (e) { st(errMsg(e)); }
+      try { await A("POST", `events/${ev}/calibration/${target}/accept`); st("saved"); route(false); } catch (e) { stE(e); }
     };
     const sc = el.querySelector("#showcur");
     if (sc) sc.onclick = async () => {
-      try { const r = await job(ev, A("POST", `events/${ev}/calibration/${target}/overlay`), st); overlay = r.overlay; await loadFrame(); V.render(); st(`showing the saved ${r.file}`); }
-      catch (e) { st(errMsg(e)); }
+      try { const r = await job(ev, A("POST", `events/${ev}/calibration/${target}/overlay`), st); overlay = r.overlay; hasFrame = true; await loadFrame(); V.render(); st(`showing the saved ${r.file}`); }
+      catch (e) { stE(e); }
     };
     await loadState();
     if (!Object.keys(NP).length) NP = DEFAULT_POINTS;
@@ -1263,6 +1413,24 @@
     .ls-kv div { display:contents; } .ls-kv dt { color:var(--ink-2); } .ls-kv dd { margin:0; min-width:0; overflow-wrap:anywhere; }
     .ls-kv .team { font-weight:600; font-variant-numeric:tabular-nums; }
     .ls-errs summary { cursor:pointer; font-size:var(--fs-foot); color:var(--ink-2); } .ls-errs ul { margin:6px 0 0; padding-left:18px; font-size:var(--fs-cap); }
+    .vw-ferr { flex-basis:100%; margin:0; color:var(--bad); font-size:var(--fs-foot); font-weight:500; line-height:1.45; }
+    .vs-form input[aria-invalid=true], .vs-form input[aria-invalid=true]:focus-visible { border-color:var(--bad); outline-color:var(--bad); box-shadow:0 0 0 1px var(--bad); }
+    .vw-det { display:inline; font-weight:400; } .vw-det summary { display:inline; cursor:pointer; color:var(--ink-2); font-size:var(--fs-cap); text-decoration:underline; }
+    .vw-det[open] { display:block; } .vw-det code { display:block; margin-top:4px; white-space:pre-wrap; overflow-wrap:anywhere; font-size:11.5px; color:var(--ink-2); max-height:10em; overflow:auto; }
+    .vw-tbaw { flex-basis:100%; display:grid; gap:6px; padding:10px 12px; border:1px dashed var(--line-strong); border-radius:var(--r-s); background:var(--surface-2); }
+    .vw-tbaw p { margin:0; } .vw-tbal { list-style:none; margin:0; padding:0; display:grid; gap:6px; }
+    .vw-tbal li { display:flex; flex-wrap:wrap; align-items:center; gap:4px 10px; font-size:var(--fs-foot); } .vw-tbal li > span { min-width:0; overflow-wrap:anywhere; }
+    .vs-draw { touch-action:none; } .vs-canvas:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+    #kinds .chip { display:inline-flex; align-items:center; min-height:30px; } #addbox { min-height:30px; }
+    .vs-pick { display:inline-grid; place-items:center; width:28px; height:28px; padding:0; border-radius:6px; }
+    .vs-pick .vs-sw { margin:0; width:12px; height:12px; } .vs-pick[aria-pressed=true] { border-color:var(--accent); background:var(--accent-tint); }
+    .vs-ptr { display:flex; align-items:center; gap:2px; } .vs-ptr .vs-pt { flex:1; }
+    button.vs-pt { display:block; width:100%; text-align:left; background:none; border:0; color:inherit; min-height:0; }
+    .vs-ptx, .vs-tg .vs-ptx { flex:none; display:inline-grid; place-items:center; width:26px; height:26px; padding:0; background:none; border:1px solid transparent; color:var(--ink-2); }
+    .vs-ptx svg { width:14px; height:14px; } .vs-ptx:hover { border-color:var(--line-strong); color:var(--bad); }
+    .vs-tg { display:inline-flex; align-items:center; }
+    .chip:has(> input.vh:focus-visible) { outline:2px solid var(--accent); outline-offset:1px; }
+    @media (pointer: coarse) { #kinds .chip, #addbox, .vs-pick, button.vs-pt, .vs-ptx, .vs-tg .chip { min-height:40px; } .vs-pick, .vs-ptx { width:40px; } }
     @media (max-width: 1000px) {
       .vs-tw { overflow:visible; }
       .vs-src thead { display:none; }
