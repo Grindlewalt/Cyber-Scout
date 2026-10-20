@@ -209,7 +209,7 @@ package is the exception: it is run as `python -m live.strategy.*` from the repo
 | `live/dynpose.py` | Dynamic view: a camera pose for every frame of a program feed from the field's AprilTags, plus the stream auto-setup. |
 | `live/overlay.py` | CLI: renders the baked accuracy-check MP4 (robots, labels, arcs, minimap, traced-vs-TBA) on the broadcast video. Not called by the worker. |
 | `live/verify_ids.py` | CLI: contact sheet of bumper crops per track, for checking robot→team labels by eye. Not called by any code. |
-| `live/make_labels.py` | CLI: builds a domain training set (field-ROI crops + YOLO labels) from event videos, using `bglabel` and the current detector. |
+| `live/make_labels.py` | CLI: builds a domain training set (field-ROI crops + YOLO labels) from event videos, using `bglabel` and the current detector (the 2026 flow); `grow()` is reused by `cstrain.py autolabel --bglabel`. |
 | `live/bglabel.py` | Model-free robot proposals for a locked-off camera (background subtraction + bumper colour + expected box size). Used only by `make_labels.py`. |
 | `live/analytics_demo.py` | Dev script: runs `analytics.py` over `.work/samples` and writes `.work/robot-analytics/report.json`. Only works on a machine with `.work/`. |
 | `live/requirements-ytdlp.txt` | yt-dlp and its deps pinned with sha256 hashes (pip-compile output). Bumped by hand or by the updater's "also update yt-dlp". |
@@ -235,14 +235,20 @@ downloaded by `install.sh` from `CS_MODEL_URL`.
 
 ### `live/train/`
 
-Detector retraining. It ran once on atomosserver; none of it is used at runtime.
+Local detector training for any season (`cstrain.py`, recipe in `README.md`). Runs on the training box; none of it is
+used at runtime: the output is `DATA/models/robot.onnx`.
 
 | file | purpose |
 |---|---|
-| `README.md` | The retraining recipe: dl → pool → r1 → auto-labels → r2. |
-| `dl.py` | Downloads 6 public FRC robot datasets from Roboflow (`RF=<key>`; free-tier credits, so run once). |
-| `pool.py` | Normalises the datasets into one single-class YOLO pool (robot / bumper class aliases → `robot`). |
-| `r2.sh` | Round 2: fine-tunes r1 on the public pool + Sammamish auto-labels (×2) and validates on held-out matches. |
+| `README.md` | The recipe: project layout, init → import → harvest → autolabel → review → build → train → eval → export → install, a new game, measured speeds, the 2026 history. |
+| `cstrain.py` | The CLI: every step above plus `status`; reads `live/camera.py`, `bglabel.py`, `make_labels.grow`, `detector.py` (ONNX eval / teachers the way the worker runs them). |
+| `cstrain_core.py` | Pure helpers (numpy only): frame ids, DCT perceptual hash + near-duplicate filter, thumbnail change, split by match, IoU, weighted box fusion, uncertainty, label priority (review > import > auto), YOLO text, mAP / P / R. |
+| `setup_env.sh` | Builds `/mnt/nas/autoscout-scratch/trainenv` with uv (Python 3.12, CUDA torch, ultralytics 8.4.138, onnx, onnxslim, onnxruntime-gpu 1.31.0, av, opencv headless), caches on the NAS; idempotent. |
+| `review/server.py` | The label review / labelling web UI (stdlib): token auth (`?token=` once → cookie, or `X-Review-Token`), queues Uncertain / Gold set / Random / Mine / All with event / match / split filters; writes only `labels/review/<id>.json` (temp file + rename). `serve(project_dir, host, port, token)`; `cstrain.py review`. |
+| `review/index.html`, `review/review.js`, `review/review.css` | Its page: canvas box editor, keyboard shortcuts, CSP `script-src 'self'`. |
+| `dl.py` | 2026 one-off: downloaded 6 public FRC robot datasets from Roboflow (`RF=<key>`; free-tier credits, cached in `DATA/training/rf`). |
+| `pool.py` | 2026 one-off: pooled those datasets into one single-class YOLO set (robot / bumper aliases → `robot`). |
+| `r2.sh` | 2026 one-off: round 2, fine-tuned r1 on the public pool + Sammamish auto-labels (×2) on both GPUs. |
 
 ### Function index: big `live/` modules
 
@@ -665,6 +671,8 @@ Run with `python -m pytest tests` from the repo root. They need no GPU, video or
 | `tests/test_dynpose.py` | `live/dynpose.py` (a camera pose per frame from AprilTags) and its `process.py` hooks; synthetic geometry only. |
 | `tests/test_overlay_layouts.py` | Scoreboard layouts in `live/livestream.py` (top-centre scoreboard, bottom score bar). Uses `tests/fixtures/scorebar_*.jpg`. |
 | `tests/test_process_only.py` | `live/worker.py --process-only`: claim + track only, per-match state files, delegation, dynamic per source. |
+| `tests/test_cstrain.py` | Local training (`live/train/cstrain.py`, `cstrain_core.py`): ids, hash + near-duplicate filter, split by match, WBF, uncertainty, label priority (review > import > auto, doubtful auto frames train-only), YOLO text, mAP / P / R, `build` end to end on a synthetic project (no torch / video). |
+| `tests/test_train_review.py` | The label review UI (`live/train/review/server.py`): token, path safety, atomic review writes, queue order, validation. |
 | `tests/test_undefined_names.py` | pyflakes check for undefined names in the pipeline modules (skipped without pyflakes). |
 | `tests/fixtures/scorebar_bottom_f1m1.jpg`, `scorebar_bottom_qm33.jpg`, `scorebar_top_qm12.jpg` | Real score-bar frames for `test_overlay_layouts.py`. |
 

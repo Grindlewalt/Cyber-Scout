@@ -1233,29 +1233,40 @@ Differences from the worker:
 - No site rebuild; the worker's next poll does that.
 - Default `--gpus 0,1`. On atomosserver, agents were told to use GPU 1 only (HANDOFF).
 
-### 6.2 Detector training — `live/train/`, `live/make_labels.py`, `live/bglabel.py`
+### 6.2 Detector training — `live/train/cstrain.py`, `live/train/review/`
 
-These ran once on atomosserver. Inputs are kept in `DATA/training/` so a rebuild never
-re-downloads.
+Local, for any season: frames from our match videos, labels from our own models plus human review, training on
+atomosserver's GPUs; no Roboflow / Kaggle. The full recipe, the project layout and measured speeds are in
+`live/train/README.md`. Nothing here runs inside the worker; the output is `DATA/models/robot.onnx`.
 
-1. `live/train/dl.py` downloads 6 public FRC robot datasets from Roboflow (`RF=<key>`). The
-   free tier is about 10 credits a month, so it skips datasets already present under `rf/`.
-2. `live/train/pool.py` normalises them into one-class YOLO (`pool/`, 8% val).
-3. Round 1: `yolo detect train data=pool/data.yaml model=yolo11s.pt imgsz=960 epochs=40`.
-4. `live/make_labels.py CAMERA.json MODEL.onnx OUTDIR VIDEO... [--val VIDEO...]` auto-labels
-   event footage every `STEP` (2 s):
-   - round-1 detections at conf ≥ `DET_CONF` (0.35);
-   - plus robots the detector missed, from `live/bglabel.py`. These are model-free
-     proposals: foreground vs the median plate, not ball-yellow, size consistent with a
-     0.91 m robot projected at that field position, grown upward to a whole-robot box.
-5. `live/train/r2.sh` fine-tunes round 1 at 1280 on pool + event labels (event labels
-   duplicated ×2), on both GPUs, 30 epochs.
-6. Export: `yolo export model=r2.pt format=onnx imgsz=544,1280 half=True simplify=True opset=17`,
-   then copy to `DATA/models/robot.onnx`.
+```
+cstrain.py init P --classes robot          project = one season, TRAIN_DIR/<P> (/mnt/nas/autoscout-scratch/train)
+  import-yolo DIR    public YOLO sets as human labels (the cached Roboflow export DATA/training/rf, never re-downloaded)
+  harvest            full frames every --every s (static frames and cross-video duplicates dropped), view F / M / ?
+  autolabel          teachers (.pt via ultralytics, .onnx via live/detector.py) fused with WBF; u = most doubtful box
+  review             live/train/review/server.py: token-protected web UI on the LAN / Tailscale (never the tunnel)
+  build              review (ok / fixed) > import > auto (p >= 0.45); doubtful auto frames left out of train only
+  train              ultralytics (yolo11s / yolo11m @ 1280), GPU 0, 1 or both, --detach
+  eval               mAP50 / mAP50-95 / P / R at CONF_TRACK 0.30, ms/frame, per view; ROI crops like the worker
+  export             544x1280 fp16 ONNX (+ COREML_CACHE_KEY) and card.json
+  install            DATA/models (backup kept); picked up at the next match, no restart
+```
 
-Training environment: `uv venv -p 3.12 trainenv && uv pip install ultralytics==8.4.138 roboflow==1.4.2 onnx onnxslim`.
-The detector is not the accuracy bottleneck (`docs/COMPONENTS.md`: position error is flat at
-~0.125 m over 3× mAP). A very different camera angle may still need the event fine-tune.
+* **Splits are by match** (a hash of event/match), `--test-events` holds whole events out; val / test frames are
+  never filtered (that would flatter the model).
+* **Labels:** `labels/review` is gold, written only by the review UI (`ok` / `fixed` train, `skip` / `bad` excluded);
+  `labels/import` = imported human labels; `labels/auto` = silver. A teacher graded on its own pseudo-labels scores
+  itself high: compare models on the Gold set (`labels:review` in the eval report).
+* **bglabel** (`live/bglabel.py`, `make_labels.grow`): on fixed-camera uploads, bumper-colour proposals the teachers
+  missed (foreground vs the match's median plate, robot-sized for the camera). They are never labels; they only flag
+  the frame for review. On program feeds they over-propose, so autolabel skips those.
+* **Single class at runtime:** `live/detector.py` takes the max over classes, so a multi-class model (a game piece
+  next season) needs a class-aware decoder in the worker before install.
+* `live/make_labels.py` (field-ROI crops + labels from one event's videos) and `live/train/dl.py`, `pool.py`,
+  `r2.sh` are the one-off 2026 flow that made the Oct 10 detector (README "2026 history").
+
+The detector is not the accuracy bottleneck on the fixed camera (`docs/COMPONENTS.md`: position error is flat at
+~0.125 m over 3× mAP); a very different camera angle or a program feed's close-ups is where more training pays off.
 
 ### 6.3 Other one-off modules in `live/`
 
