@@ -1076,8 +1076,8 @@ async function route(scroll = true) {
     if (p.length && EVK.test(p[0]) && !CS.globalRoutes[p[0]] && (!p[1] || p[1] === "dash")) compSetupBanner(p[0]);
   } catch (e) {
     const ev = p.length && EVK.test(p[0]) && !CS.globalRoutes[p[0]] ? p[0] : null;
-    if (!(ev && /\b404\b/.test(e.message) && e.message.startsWith(ev + "/"))) console.error(e);     // a page not built yet isn't a bug
     const off = CS.sync && CS.sync.isOffline();
+    if (!off && !(ev && /\b404\b/.test(e.message) && e.message.startsWith(ev + "/"))) console.error(e);     // offline or not built yet: not a bug
     if (ev && !off && /\b404\b/.test(e.message) && await compNotBuilt(ev, p)) { done(); return; }
     // the title is the page you asked for, whatever failed (not the previous page's)
     const lab = pageLabel(p);
