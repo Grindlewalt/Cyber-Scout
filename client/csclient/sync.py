@@ -13,7 +13,7 @@ from urllib.parse import quote, urlencode
 
 from .mirror import extract_bundle, remove_file, sha256_file, write_stream_verified
 from .net import HTTPError, NetError, detail_text
-from .store import EventState, list_event_states
+from .store import PICKLIST_RE, EventState, list_event_states
 from .util import ensure_dir, read_json, safe_relpath, target_path, write_json
 
 log = logging.getLogger("cyberscout.sync")
@@ -46,6 +46,7 @@ class SyncEngine:
         self.parts_dir = ensure_dir(os.path.join(app.data_dir, "parts"))
         self.tmp_dir = ensure_dir(os.path.join(app.data_dir, "tmp"))
         self.online = False
+        self.connecting = False       # the server address just changed and hasn't been probed yet (status: "Connecting…")
         self.offline_reason = None
         self.server_info = None
         self.syncing = False
@@ -238,6 +239,7 @@ class SyncEngine:
         except (NetError, HTTPError) as e:
             got = self._failover(e) if len(self.server.addresses()) > 1 else None
             if got is None:
+                self.connecting = False
                 self.set_online(False, str(e))
                 return False
             info, ms = got
@@ -256,6 +258,7 @@ class SyncEngine:
         self.server_info = dict(info, latency_ms=ms)
         came_back = not self.online
         self.set_online(True)
+        self.connecting = False
         if came_back and self.session.cookie_header():
             try:
                 self.server.refresh_session()
@@ -707,15 +710,18 @@ class SyncEngine:
             ev.set()
 
     def _flush_all(self):
+        servers = self.server.addresses()         # only what was written for this server (CLIENT-24)
         while True:
-            row = self.db.next_queued()
+            row = self.db.next_queued(servers=servers)
             if row is None or not self.server.base:
                 return
             if not self.session.cookie_header():
-                self.note_error("auth", f"sign in to send {self.db.count('queued')} queued change(s)")
+                self.note_error("auth", f"sign in to send {self.db.count('queued', servers)} queued change(s)")
                 return
             oid = row["id"]
-            self.db.set_state(oid, "sending", bump=True)
+            row = self.db.claim(oid)              # (re-read: a picklist save may have merged into it meanwhile)
+            if row is None:
+                continue
             try:
                 r = self._send(row)
                 if r.status == 403 and "csrf" in detail_text(r.body).lower():
@@ -736,6 +742,7 @@ class SyncEngine:
             if 200 <= st < 300:
                 self.db.set_state(oid, "sent", status=st, response=body, error=None)
                 log.info("outbox #%d sent: %s -> %d", oid, what, st)
+                self._rebase_after(row, body)
             elif st == 409 and (r.header("Retry-After") or "still being processed" in detail_text(body)):
                 # the server is still running the first copy of this request (same Idempotency-Key): retry later
                 self.db.set_state(oid, "queued", status=st, error=detail_text(body) or "busy")
@@ -752,7 +759,7 @@ class SyncEngine:
                 except (NetError, HTTPError):
                     pass
                 self.note_error("auth", f"signed out by the server: sign in again to send "
-                                        f"{self.db.count('queued')} queued change(s)")
+                                        f"{self.db.count('queued', servers)} queued change(s)")
                 self._notify(oid)
                 return
             elif st == 429 or st >= 500:
@@ -768,6 +775,22 @@ class SyncEngine:
                                   error=detail_text(body) or f"HTTP {st}")
                 log.warning("outbox #%d rejected: %s -> %d %s", oid, what, st, detail_text(body))
             self._notify(oid)
+
+    def _rebase_after(self, row, answer):
+        """A picklist save was accepted: later queued saves of the same list that were made on top of it (offline,
+        same base_version) are rebased onto the version it created, so they don't conflict with it (CLIENT-2)."""
+        if row["method"] != "PUT" or not PICKLIST_RE.match(row["path"]):
+            return
+        try:
+            sent = json.loads(bytes(row["body"] or b"").decode("utf-8"))
+            got = json.loads(bytes(answer or b"").decode("utf-8"))
+        except (ValueError, UnicodeDecodeError):
+            return
+        if not isinstance(sent, dict) or not isinstance(got, dict) or not isinstance(got.get("version"), int):
+            return
+        n = self.db.rebase_picklist(row["path"], row["id"], sent.get("base_version"), got["version"], row["server"])
+        if n:
+            log.info("outbox: %d later save(s) of %s now build on version %d", n, row["path"], got["version"])
 
     def _retry_soon(self, retry_after=None):
         try:

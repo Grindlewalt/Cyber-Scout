@@ -386,6 +386,96 @@ class TestOutbox(Base):
         self.assertEqual(code, 204)
         self.assertEqual([e for e in self.status()["errors"] if e["kind"] == "conflict"], [])
 
+    def pl_put(self, teams, base=1):
+        return self.c.req("PUT", f"/app/v1/events/{EV}/picklists/main", {"base_version": base, "teams": teams})
+
+    def test_offline_picklist_saves_are_merged(self):
+        """Two picklist clicks offline (both based on version 1): one change to send, no conflict with ourselves."""
+        self.login()
+        self.settle()                                            # (the sign-in's sync would try the first save)
+        self.fs.state.down = True
+        self.app.engine.set_online(False, "test")
+        c1, d1 = self.pl_put(["frc1", "frc2"])
+        c2, d2 = self.pl_put(["frc1", "frc2", "frc3"])
+        self.assertEqual((c1, c2), (202, 202))
+        self.assertEqual(d2["id"], d1["id"])                     # merged into the first, still-unsent save
+        _, items = self.c.req("GET", "/client/v1/outbox")
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["body"]["teams"], ["frc1", "frc2", "frc3"])
+        self.assertEqual(items[0]["key"], d2["key"])
+        self.assertEqual(self.status()["outbox"], 1)
+        self.fs.state.down = False
+        self.c.req("POST", "/client/v1/sync", {})
+        self.wait(lambda: self.app.db.pending() == 0 and self.app.engine.online, "flush")
+        self.assertEqual(self.fs.state.picklist, {"version": 2, "teams": ["frc1", "frc2", "frc3"]})
+        self.assertEqual(self.app.db.count("conflict"), 0)
+        self.assertEqual([e for e in self.status()["errors"] if e["kind"] == "conflict"], [])
+
+    def test_picklist_save_after_a_tried_one_is_rebased(self):
+        """The first save was already tried (the connection dropped): the second can't merge into it, so it is rebased
+        onto the version the first one creates instead of conflicting with it."""
+        self.login()
+        self.settle()
+        self.fs.state.down = True                                # online as far as the client knows: tries at once
+        c1, d1 = self.pl_put(["frc1", "frc2"])
+        self.assertEqual(c1, 202, d1)
+        self.wait(lambda: not self.app.engine.online, "offline after the failed send")
+        self.assertEqual(self.app.db.get(d1["id"])["attempts"], 1)
+        c2, d2 = self.pl_put(["frc1", "frc2", "frc3"])
+        self.assertNotEqual(d2["id"], d1["id"])
+        c3, d3 = self.pl_put(["frc1", "frc2", "frc3", "frc4"])  # (this one merges into the second)
+        self.assertEqual(d3["id"], d2["id"])
+        self.fs.state.down = False
+        self.c.req("POST", "/client/v1/sync", {})
+        self.wait(lambda: self.app.db.pending() == 0 and self.app.engine.online, "flush")
+        self.assertEqual(self.app.db.count("conflict"), 0, self.app.db.items())
+        self.assertEqual(self.fs.state.picklist, {"version": 3, "teams": ["frc1", "frc2", "frc3", "frc4"]})
+
+    def test_later_save_on_a_newer_base_is_not_rebased(self):
+        """A queued save made after the page saw a newer version (another base) is left alone: a real conflict stays
+        a conflict for the user to resolve."""
+        self.login()
+        self.settle()
+        self.fs.state.down = True
+        self.app.engine.set_online(False, "test")
+        self.pl_put(["frc2"], base=1)
+        self.pl_put(["frc9"], base=7)
+        self.assertEqual(len(self.app.db.items()), 2)
+        self.fs.state.down = False
+        self.c.req("POST", "/client/v1/sync", {})
+        self.wait(lambda: self.app.db.pending() == 0, "flush")
+        self.assertEqual(self.app.db.count("conflict"), 1)
+        self.assertEqual(self.fs.state.picklist["teams"], ["frc2"])
+
+    def test_queued_changes_stay_with_their_server(self):
+        """Pointing the client at another server never sends the old server's queued changes there (CLIENT-24)."""
+        self.login()
+        self.settle()
+        self.fs.state.down = True
+        self.app.engine.set_online(False, "test")
+        code, d = self.post_note("for the first server")
+        self.assertEqual(code, 202)
+        other = FakeServer().start()
+        self.addCleanup(other.stop)
+        code, _ = self.c.req("PUT", "/client/v1/config", {"server": other.url})
+        self.assertEqual(code, 200)
+        s = self.status()
+        self.assertEqual(s["outbox"], 0)
+        self.assertEqual(s["outbox_held"], [{"server": self.fs.url, "n": 1}])
+        self.wait(lambda: self.app.engine.online and not self.status()["connecting"], "connected to the other server")
+        code, _ = self.c.req("POST", "/client/v1/login", {"username": "scout", "password": "pw-scout-1"})
+        self.assertEqual(code, 200)
+        self.sync()
+        self.assertEqual(other.state.notes, [])
+        self.assertEqual(self.app.db.pending(), 1)
+        # back to the first server: sent there
+        self.fs.state.down = False
+        self.c.req("PUT", "/client/v1/config", {"server": self.fs.url})
+        self.wait(lambda: self.app.engine.online, "back")
+        self.login()
+        self.wait(lambda: [n["text"] for n in self.fs.state.notes] == ["for the first server"], "sent to its server")
+        self.assertEqual(other.state.notes, [])
+
     def test_online_conflict_answered_directly(self):
         self.login()
         code, d = self.c.req("PUT", f"/app/v1/events/{EV}/picklists/main", {"base_version": 0, "teams": []})
@@ -557,6 +647,46 @@ def make_tar(members):
             else:
                 tf.addfile(ti)
     return buf.getvalue()
+
+
+class TestLocalServer(Base):
+    def test_unread_bodies_dont_break_keep_alive(self):
+        """Control POSTs that answer without reading their body (logout {}, gpu {}, a 405) must drain it, or the next
+        request on the same keep-alive connection is parsed as "{}GET ..." (501, CLIENT-9)."""
+        import http.client
+        h = http.client.HTTPConnection("127.0.0.1", self.app.port, timeout=10)
+        ck = {"Cookie": f"cs_client={self.app.config['token']}; cs_csrf={self.app.config['local_csrf']}",
+              "Origin": self.c.base, "Content-Type": "application/json"}
+        for method, path in (("POST", "/client/v1/logout"), ("POST", "/client/v1/processing/gpu"),
+                             ("POST", "/index.html"), ("POST", "/client/v1/nope")):
+            h.request(method, path, body=b'{"x": 1}', headers=ck)
+            r = h.getresponse()
+            r.read()
+            self.assertNotEqual(r.status, 501, (method, path))
+            h.request("GET", "/client/v1/status", headers=ck)
+            r = h.getresponse()
+            body = r.read()
+            self.assertEqual(r.status, 200, (method, path, body[:200]))
+        h.close()
+
+    def test_one_client_per_data_folder(self):
+        from csclient.app import DataDirInUse
+        with self.assertRaises(DataDirInUse) as cm:
+            App(self.app.data_dir, port=0, bundled_web=os.path.join(HERE, "nonexistent"))
+        self.assertEqual(cm.exception.info.get("url"), self.app.url)
+        # another folder is fine
+        other = App(os.path.join(self.tmp, "data2"), port=0, bundled_web=os.path.join(HERE, "nonexistent"))
+        other.shutdown()
+
+    def test_server_change_says_connecting(self):
+        other = FakeServer().start()
+        self.addCleanup(other.stop)
+        other.state.latency = 0.5
+        code, _ = self.c.req("PUT", "/client/v1/config", {"server": other.url})
+        self.assertEqual(code, 200)
+        s = self.status()
+        self.assertTrue(s["connecting"] or s["online"], s)
+        self.wait(lambda: self.status()["online"] and not self.status()["connecting"], "connected")
 
 
 class TestPathSafety(unittest.TestCase):

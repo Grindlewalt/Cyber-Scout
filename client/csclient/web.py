@@ -124,13 +124,31 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.close_connection = True
 
     def read_body(self):
+        if self._body is not None:                 # read once per request (dispatch drains what nobody read)
+            return self._body
         n = self.headers.get("Content-Length")
         if self.headers.get("Transfer-Encoding", "").lower() == "chunked":
+            self.close_connection = True           # can't tell where the next request starts
             raise ValueError("chunked request bodies are not supported")
         n = int(n) if n and n.isdigit() else 0
         if n > MAX_BODY:
+            self.close_connection = True
             raise ValueError("request body too large")
-        return self.rfile.read(n) if n else b""
+        self._body = self.rfile.read(n) if n else b""
+        return self._body
+
+    def _drain(self):
+        """A keep-alive connection carries the next request right after this one's body: a handler that answered
+        without reading the body (POST /client/v1/logout {}, a 405, ...) must not leave it to be parsed as the next
+        request line ("Unsupported method ('{}GET')", CLIENT-9)."""
+        if self._body is not None or self.close_connection:
+            return
+        try:
+            self.read_body()
+        except ValueError:
+            self.close_connection = True
+        except OSError:
+            self.close_connection = True
 
     def json_body(self):
         b = self.read_body()
@@ -186,7 +204,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 f"{CSRF_COOKIE}={cfg['local_csrf']}; Path=/; Max-Age={COOKIE_AGE}; SameSite=Strict"]
 
     # ------------------------------------------------------------------------------------------------ routing
+    _body = None
+
     def dispatch(self):
+        self._body = None
+        try:
+            self._route()
+        finally:
+            self._drain()
+
+    def _route(self):
         try:
             if not self.host_ok():
                 return self.send_json(403, {"detail": "unknown Host (use http://127.0.0.1:%d/)" % self.app.port})
@@ -513,13 +540,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
             ex = app.db.db.execute("SELECT id FROM outbox WHERE key=?", (key,)).fetchone()
             if ex:                                 # the page retried a request we already hold
                 return self.send_json(202, {"queued": True, "id": ex[0], "key": key})
-        was_empty = app.db.pending() == 0
-        item = app.db.enqueue(method, full, self.headers.get("Content-Type"), body, app.server.base, key)
+        was_empty = app.db.pending(app.server.addresses()) == 0
+        # rows remember the configured server (not the alternate address in use): only ever sent to that server
+        item = app.db.enqueue(method, full, self.headers.get("Content-Type"), body, app.config["server"], key)
         oid = item["id"]
-        log.info("write %s %s queued as #%d", method, full, oid)
+        log.info("write %s %s %s #%d", method, full, "merged into queued" if item.get("merged") else "queued as", oid)
         if not app.engine.online:
             return self.send_json(202, {"queued": True, "id": oid, "key": key})
-        if not was_empty:                          # keep the order: behind what is already waiting
+        if not was_empty or item.get("merged"):    # keep the order: behind what is already waiting
             app.engine.flush_async()
             return self.send_json(202, {"queued": True, "id": oid, "key": key})
         ev = threading.Event()

@@ -1,6 +1,7 @@
 """Durable local state: config, server session (0600), outbox + GET cache (sqlite), per-event sync state."""
 import json
 import os
+import re
 import secrets
 import sqlite3
 import threading
@@ -11,6 +12,15 @@ from urllib.parse import urlsplit
 from .util import ensure_dir, read_json, write_json
 
 MEDIA_MODES = ("none", "proxy", "full")
+PICKLIST_RE = re.compile(r"^/app/v1/events/[^/?#]+/picklists/[^/?#]+$")
+
+
+def _json_obj(b):
+    try:
+        d = json.loads(bytes(b or b"").decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
+        return None
+    return d if isinstance(d, dict) else None
 
 
 def normalize_server(url) -> str:
@@ -211,18 +221,71 @@ class LocalDB:
         self.db.execute("UPDATE outbox SET state='queued' WHERE state='sending'")
 
     # ---- outbox
+    # Every row remembers the server it was written for (`server`): it is only ever sent there (CLIENT-24); rows for
+    # another server wait (listed, discardable) until the client points at that server again.
+    @staticmethod
+    def _srv(servers):
+        """SQL condition + args: rows for one of `servers` (None = any server); rows without a server match too."""
+        if servers is None:
+            return "1", ()
+        servers = [s for s in servers if s]
+        return f"(server IS NULL OR server IN ({','.join('?' * len(servers)) or 'NULL'}))", tuple(servers)
+
     def enqueue(self, method, path, ctype, body: bytes, server, key=None) -> dict:
+        """Queue a write -> {"id", "key", "merged"}. A picklist save replaces the still-unsent save of the same list
+        that was based on the same version (only the newest list matters; one change to send, no conflict with
+        ourselves, CLIENT-2). It keeps that row's place in the queue and takes the new request's key."""
         key = key or str(uuid.uuid4())
         with self.lock:
+            if method == "PUT" and PICKLIST_RE.match(path):
+                new = _json_obj(body)
+                prev = self.db.execute("SELECT * FROM outbox WHERE state='queued' AND method='PUT' AND path=? "
+                                       "AND server IS ? ORDER BY id DESC LIMIT 1", (path, server)).fetchone()
+                old = _json_obj(prev["body"]) if prev is not None else None
+                if prev is not None and not prev["attempts"] and new is not None and old is not None \
+                        and old.get("base_version") == new.get("base_version"):
+                    n = self.db.execute("UPDATE outbox SET body=?, ctype=?, key=?, updated=?, error=NULL "
+                                        "WHERE id=? AND state='queued' AND attempts=0",
+                                        (body, ctype, key, time.time(), prev["id"])).rowcount
+                    if n:
+                        return {"id": prev["id"], "key": key, "merged": True}
             cur = self.db.execute("INSERT INTO outbox(key,method,path,ctype,body,created,updated,server) "
                                   "VALUES(?,?,?,?,?,?,?,?)", (key, method, path, ctype, body, time.time(),
                                                               time.time(), server))
-            return {"id": cur.lastrowid, "key": key}
+            return {"id": cur.lastrowid, "key": key, "merged": False}
 
-    def next_queued(self, after_id=0):
+    def next_queued(self, after_id=0, servers=None):
+        cond, args = self._srv(servers)
         with self.lock:
-            return self.db.execute("SELECT * FROM outbox WHERE state='queued' AND id>? ORDER BY id LIMIT 1",
-                                   (after_id,)).fetchone()
+            return self.db.execute(f"SELECT * FROM outbox WHERE state='queued' AND id>? AND {cond} ORDER BY id "
+                                   "LIMIT 1", (after_id,) + args).fetchone()
+
+    def claim(self, oid):
+        """queued -> sending, atomically (a picklist save merging into this row can't slip in between reading it and
+        sending it) -> the row as it is now, or None if it isn't queued any more."""
+        with self.lock:
+            n = self.db.execute("UPDATE outbox SET state='sending', attempts=attempts+1, updated=? "
+                                "WHERE id=? AND state='queued'", (time.time(), oid)).rowcount
+            return self.db.execute("SELECT * FROM outbox WHERE id=?", (oid,)).fetchone() if n else None
+
+    def rebase_picklist(self, path, after_id, old_base, new_version, server):
+        """A picklist save based on `old_base` was accepted as `new_version`: later queued saves of the same list made
+        on top of it (same base) now build on the new version instead of conflicting with it. A row already tried
+        gets a new Idempotency-Key (its body changes). -> rows rebased."""
+        n = 0
+        with self.lock:
+            rows = self.db.execute("SELECT * FROM outbox WHERE state='queued' AND method='PUT' AND path=? AND id>? "
+                                   "AND server IS ? ORDER BY id", (path, after_id, server)).fetchall()
+            for r in rows:
+                d = _json_obj(r["body"])
+                if d is None or d.get("base_version") != old_base:
+                    continue
+                d["base_version"] = new_version
+                self.db.execute("UPDATE outbox SET body=?, key=?, updated=? WHERE id=? AND state='queued'",
+                                (json.dumps(d).encode(), str(uuid.uuid4()) if r["attempts"] else r["key"],
+                                 time.time(), r["id"]))
+                n += 1
+        return n
 
     def set_state(self, oid, state, status=None, response=None, error=None, bump=False):
         with self.lock:
@@ -238,14 +301,26 @@ class LocalDB:
         with self.lock:
             return self.db.execute("DELETE FROM outbox WHERE id=? AND state<>'sending'", (oid,)).rowcount > 0
 
-    def count(self, state="queued") -> int:
+    def count(self, state="queued", servers=None) -> int:
+        cond, args = self._srv(servers)
         with self.lock:
-            return self.db.execute("SELECT COUNT(*) FROM outbox WHERE state=?", (state,)).fetchone()[0]
+            return self.db.execute(f"SELECT COUNT(*) FROM outbox WHERE state=? AND {cond}", (state,) + args).fetchone()[0]
 
-    def pending(self) -> int:
-        """Changes not yet accepted by the server (queued or being sent right now)."""
+    def pending(self, servers=None) -> int:
+        """Changes not yet accepted by the server (queued or being sent right now); `servers`: only those for one of
+        these addresses (the current server's)."""
+        cond, args = self._srv(servers)
         with self.lock:
-            return self.db.execute("SELECT COUNT(*) FROM outbox WHERE state IN ('queued','sending')").fetchone()[0]
+            return self.db.execute(f"SELECT COUNT(*) FROM outbox WHERE state IN ('queued','sending') AND {cond}",
+                                   args).fetchone()[0]
+
+    def held(self, servers):
+        """Queued changes written for another server -> {server: n} (they wait until the client points there again)."""
+        cond, args = self._srv(servers)
+        with self.lock:
+            rows = self.db.execute(f"SELECT server, COUNT(*) FROM outbox WHERE state IN ('queued','sending') "
+                                   f"AND NOT {cond} GROUP BY server", args).fetchall()
+        return {r[0]: r[1] for r in rows}
 
     def items(self):
         with self.lock:
@@ -267,7 +342,7 @@ class LocalDB:
             out.append({"id": r["id"], "key": r["key"], "method": r["method"], "path": r["path"],
                         "created": r["created"], "updated": r["updated"], "state": r["state"],
                         "attempts": r["attempts"], "status": r["status"], "error": r["error"],
-                        "body": body, "response": resp})
+                        "body": body, "response": resp, "server": r["server"]})
         return out
 
     def prune_sent(self, older_than_s=7 * 86400):

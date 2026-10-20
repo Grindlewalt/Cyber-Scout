@@ -1,6 +1,7 @@
 """Wiring + command line: python cyberscout_client.py [--port 7600] [--data DIR] [--server URL] [--no-browser]"""
 import argparse
 import errno
+import json
 import logging
 import os
 import shutil
@@ -22,6 +23,73 @@ from .web import Handler, LocalHTTPServer
 log = logging.getLogger("cyberscout")
 
 
+class DataDirInUse(Exception):
+    """Another Cyber-Scout Client runs on this data folder (two sync engines / outbox flushers / processors on one
+    folder would fight over it, CLIENT-23). .info = what it wrote in the lock file ({pid, url, port}) or {}."""
+
+    def __init__(self, data_dir, info):
+        self.data_dir, self.info = data_dir, info or {}
+        super().__init__(f"this data folder ({data_dir}) is in use by the Cyber-Scout Client at "
+                         f"{self.info.get('url') or 'another window'}")
+
+
+class DirLock:
+    """An exclusive lock on <data>/client.lock for as long as this client runs (released by the OS if it dies)."""
+    NAME = "client.lock"
+
+    def __init__(self, data_dir):
+        self.path = os.path.join(data_dir, self.NAME)
+        self.f = None
+
+    def acquire(self):
+        f = open(self.path, "a+")
+        try:
+            if os.name == "nt":
+                import msvcrt
+                f.seek(0)
+                msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            f.seek(0)
+            try:
+                info = json.loads(f.read() or "{}")
+            except ValueError:
+                info = {}
+            f.close()
+            raise DataDirInUse(os.path.dirname(self.path), info if isinstance(info, dict) else {})
+        self.f = f
+        return self
+
+    def describe(self, **info):
+        """Write who holds the lock (read by a second start: "in use by the client at <url>")."""
+        if not self.f:
+            return
+        try:
+            self.f.seek(0)
+            self.f.truncate()
+            self.f.write(json.dumps(dict(info, pid=os.getpid())))
+            self.f.flush()
+        except OSError:
+            pass
+
+    def release(self):
+        f, self.f = self.f, None
+        if not f:
+            return
+        try:
+            f.seek(0)
+            f.truncate()
+            if os.name == "nt":
+                import msvcrt
+                f.seek(0)
+                msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1)
+        except OSError:
+            pass
+        f.close()                                 # (closing drops the flock)
+
+
 class App:
     def __init__(self, data_dir=None, host="127.0.0.1", port=7600, server_url=None, bundled_web=None,
                  alt_servers=None):
@@ -31,6 +99,15 @@ class App:
             os.chmod(self.data_dir, 0o700)
         except OSError:
             pass
+        self.lock = DirLock(self.data_dir).acquire()      # DataDirInUse: another client runs on this folder
+        try:
+            self._init(host, port, server_url, bundled_web, alt_servers)
+        except BaseException:
+            self.lock.release()
+            raise
+        self.lock.describe(url=self.url, port=self.port, version=VERSION)
+
+    def _init(self, host, port, server_url, bundled_web, alt_servers):
         self.config = Config(self.data_dir)
         if server_url:
             self.config.update(server=normalize_server(server_url))
@@ -74,10 +151,12 @@ class App:
     def shutdown(self):
         self.processor.stop()
         self.engine.stop()
-        self.httpd.shutdown()
+        if self._threads:                         # (shutdown() waits for serve_forever: only once it was started)
+            self.httpd.shutdown()
         self.httpd.server_close()
         if self.engine.thread:
             self.engine.thread.join(timeout=10)
+        self.lock.release()
 
     def login(self, username, password):
         sess = self.server.login(username, password)
@@ -108,6 +187,9 @@ class App:
             self.db.cache_clear()
             self.server.configure(ch["server"])
             self.engine.set_online(False, "server changed")
+            # the page just passed Test connection: say "Connecting…" until the engine's first probe (at once, below)
+            # answers, not "Offline" (CLIENT-10). Changes queued for the old server stay queued for it (CLIENT-24).
+            self.engine.connecting = bool(ch["server"])
         elif "alt_servers" in ch and self.server.base not in self.server.addresses():
             self.server.configure(self.config["server"])   # the alternate in use was removed
         self.engine.kick()
@@ -137,7 +219,10 @@ class App:
             "online": bool(e.online), "signed_in": bool(u),
             "user": {"display_name": u.get("display_name"), "role": u.get("role")} if u else None,
             "last_sync": e.last_sync, "syncing": bool(e.syncing), "progress": dict(e.progress) if e.progress else None,
-            "outbox": self.db.pending(),
+            "outbox": self.db.pending(self.server.addresses()),
+            # changes written for another server (the client was pointed elsewhere since): kept, never sent here
+            "outbox_held": [{"server": k, "n": n} for k, n in self.db.held(self.server.addresses()).items()],
+            "connecting": bool(e.connecting),
             "events": e.status_events(),
             "errors": e.status_errors(),
             # additions (not in the v1 table; safe to ignore)
@@ -161,7 +246,7 @@ def _already_running(port):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="cyberscout-client", description="Cyber-Scout Client: the scouting app with an "
-                                 "offline copy of your server's data, at http://127.0.0.1:7600/")
+                                 "offline copy of your server's data, at http://127.0.0.1:<port>/ (default 7600)")
     ap.add_argument("--port", type=int, default=int(os.environ.get("CYBERSCOUT_PORT", "7600")))
     ap.add_argument("--host", default=os.environ.get("CYBERSCOUT_HOST", "127.0.0.1"),
                     help="address to listen on (default 127.0.0.1: this computer only)")
@@ -183,14 +268,24 @@ def main(argv=None):
     setup_logging(os.path.join(data, "logs"), a.log_level)
     try:
         app = App(data, host=a.host, port=a.port, server_url=a.server, alt_servers=a.alt_server)
+    except DataDirInUse as e:
+        # the same install is already running (maybe on another port): use that one
+        url = e.info.get("url")
+        if url and not a.no_browser:
+            log.info("Cyber-Scout Client is already running on this data folder at %s; opening it", url)
+            webbrowser.open(url)
+        else:
+            log.info("Cyber-Scout Client is already running on this data folder (%s)%s", data,
+                     f" at {url}" if url else "")
+        return 0
     except OSError as e:
         if e.errno in (errno.EADDRINUSE, getattr(errno, "WSAEADDRINUSE", -1)) or "in use" in str(e).lower():
+            # (this data folder is free, so whatever holds the port is another install or another program)
             if _already_running(a.port):
-                log.info("Cyber-Scout Client is already running; opening it")
-                if not a.no_browser:
-                    webbrowser.open(f"http://127.0.0.1:{a.port}/")
-                return 0
-            log.error("port %d is in use by another program: start with --port <other>", a.port)
+                log.error("port %d is in use by another Cyber-Scout Client with a different data folder (open "
+                          "http://127.0.0.1:%d/ for that one): start this one with --port <other>", a.port, a.port)
+            else:
+                log.error("port %d is in use by another program: start with --port <other>", a.port)
             return 2
         raise
     except ValueError as e:
