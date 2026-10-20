@@ -299,8 +299,12 @@ elseif (Test-Cmd 'nvidia-smi') {
     if (-not $Wsl2) { Write-Warn 'NVIDIA GPUs only work in Docker Desktop with the WSL2 backend.' }
     elseif ($DryRun -or -not $DockerOk) { $UseGpu = $true }
     else {
-      Write-Info 'checking that containers can use the GPU (docker run --gpus all ... nvidia-smi)'
-      $t = Invoke-Quiet 'docker' @('run', '--rm', '--gpus', 'all', 'python:3.12-slim', 'sh', '-c', 'nvidia-smi -L || /usr/lib/wsl/lib/nvidia-smi -L')
+      # the card the worker will get, asked for by id the way compose does (some hosts fail "--gpus all" while each
+      # card works); a list like 0,1 needs embedded quotes that Windows PowerShell mangles, so that one tests "all"
+      $tIds = if ($GpuIds) { $GpuIds } elseif ($Existing) { Read-EnvValue 'GPU_IDS' } else { '' }
+      $tGpus = if ($tIds -match '^[0-9]+$') { "device=$tIds" } elseif (-not $tIds) { 'device=0' } else { 'all' }
+      Write-Info "checking that containers can use the GPU (docker run --gpus $tGpus ... nvidia-smi)"
+      $t = Invoke-Quiet 'docker' @('run', '--rm', '--gpus', $tGpus, 'python:3.12-slim', 'sh', '-c', 'nvidia-smi -L || /usr/lib/wsl/lib/nvidia-smi -L')
       if ($t.Code -eq 0 -and $t.Out -match 'GPU') { $UseGpu = $true; Write-Info 'GPU works in containers' }
       else {
         Write-Warn 'A test container could not use the GPU. Update the NVIDIA driver (Game Ready / Studio drivers include'

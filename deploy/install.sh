@@ -315,7 +315,8 @@ WITH_WORKER=1
 if [ -n "$SERVICES" ]; then case " $SERVICES " in *" worker "*|*" recorder "*) ;; *) WITH_WORKER=0;; esac; fi
 
 # ---------------------------------------------------------------- GPU
-GPU=0; GPU_COUNT=0
+GPU=0; GPU_COUNT=0; GPU_TESTED=""
+gpu_test() { dk run --rm --gpus "\"device=$1\"" python:3.12-slim nvidia-smi -L >/dev/null 2>&1; }
 if [ "$OS" = Darwin ]; then
   info "macOS: CPU mode (Docker Desktop on a Mac has no CUDA). Each match takes ~4x longer than on an NVIDIA GPU."
 elif [ "$MODE_CPU" = cpu ]; then
@@ -332,9 +333,13 @@ elif have nvidia-smi && nvidia-smi -L >/dev/null 2>&1; then
   if [ "$toolkit" = 1 ]; then
     if [ "$DRY" = 1 ] || [ "$DOCKER_OK" != 1 ]; then GPU=1
     else
-      info "checking that containers can use the GPU (docker run --gpus all ... nvidia-smi)"
-      if dk run --rm --gpus all python:3.12-slim nvidia-smi -L >/dev/null 2>&1; then GPU=1; info "GPU works in containers"
-      else warn "The NVIDIA Container Toolkit is installed but a test container couldn't use the GPU."
+      # the card(s) the worker will get, asked for the way compose does (device ids, not "all": on some hosts, e.g. a
+      # hardened kernel with one card busy, --gpus all fails while each card works)
+      T_IDS="$CS_GPU_IDS"; [ -n "$T_IDS" ] || [ "$EXISTING" != 1 ] || T_IDS="$(env_get GPU_IDS)"
+      [[ "${T_IDS:-}" =~ ^[0-9]+(,[0-9]+)*$ ]] || T_IDS=0
+      info "checking that containers can use GPU $T_IDS (docker run --gpus device=$T_IDS ... nvidia-smi)"
+      if gpu_test "$T_IDS"; then GPU=1; GPU_TESTED="$T_IDS"; info "GPU works in containers"
+      else warn "The NVIDIA Container Toolkit is installed but a test container couldn't use GPU $T_IDS."
            warn "Try: sudo nvidia-ctk runtime configure --runtime=docker && sudo systemctl restart docker"; fi
     fi
   else
@@ -355,6 +360,9 @@ if [ "$GPU" = 1 ]; then
   if [ -z "$CS_GPU_IDS" ] && [ "$GPU_COUNT" -gt 1 ]; then CS_GPU_IDS="$(ask "Which GPU(s) should the worker use (0, 1, 0,1 ...)" 0)"; SET_GPU_IDS="$CS_GPU_IDS"; fi
   CS_GPU_IDS="${CS_GPU_IDS:-0}"
   [[ "$CS_GPU_IDS" =~ ^[0-9]+(,[0-9]+)*$ ]] || die "--gpu-ids: like 0 or 0,1 ($CS_GPU_IDS)"
+  if [ -n "${GPU_TESTED:-}" ] && [ "$CS_GPU_IDS" != "$GPU_TESTED" ] && ! gpu_test "$CS_GPU_IDS"; then
+    warn "GPU $CS_GPU_IDS didn't work in a test container (GPU $GPU_TESTED did): the worker may not start. Re-run with --gpu-ids $GPU_TESTED"
+  fi
   info "GPU mode, GPU_IDS=$CS_GPU_IDS"
 elif [ "$DOCKER_OK" = 1 ] && [ -n "$CV" ] && ! ver_ge "$CV" 2.24.4; then
   need "CPU-only mode needs Docker Compose >= 2.24.4 (you have $CV). Update Docker."
