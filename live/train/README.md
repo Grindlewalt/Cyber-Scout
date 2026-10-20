@@ -88,14 +88,14 @@ lands in one split, a hash of event/match), so near-identical neighbouring frame
    - Leaving a frame with unsaved edits (Skip, Prev, a queue or filter change) keeps them as a **draft** in the page
      (listed in the side panel; closing the page asks first). Held keys never save: `A` / `B` / `N` ignore auto-repeat.
    - **View**: the Fixed / Moving toggle corrects a wrong camera tag; it is saved as `view` in the review file (only
-     when it differs from the index). *build / eval still read the index's `view`.*
+     when it differs from the index); build, eval and status use it in place of the index's tag (`load_index`).
    - Touch (iPad): one finger draws / moves, two fingers pinch and pan; Undo, Reset and Delete box stay in the bottom
      bar. Trackpad: pinch zooms, two-finger scroll pans when zoomed in; a mouse wheel zooms. `Shift`+drag draws a box
      even when it starts inside another box.
 6. **build** — `$T build d1 --project P --test-events 2026wagg --dup review=3`. Labels per frame: review
    (`ok` / `fixed`) > import > auto (boxes with `p >= --auto-min-conf` 0.45). A review marked `bad` (or `skip`, written
-   before Skip stopped saving) drops the frame (extra review fields such as `diff`, `conf`, `hidden`, `view` are
-   ignored). For **train** only, auto frames are left
+   before Skip stopped saving) drops the frame (extra review fields such as `diff`, `conf`, `hidden` are ignored for
+   labels; `view` replaces the frame's camera tag). For **train** only, auto frames are left
    out when a box sits just under the bar (`--auto-mid` 0.3 ≤ p < 0.45: probably a robot the model would learn as
    background), when an unreviewed bglabel proposal is in them, or when `u > --auto-max-u` (off). Val / test keep every
    frame (filtering them would flatter the model). Public sets go to train (`--public-val` keeps their val split).

@@ -10,6 +10,12 @@ are to that commit (`git show HEAD:web/<file>`).
 > theme `jetdark` was changed from "Jet" to "Jet (dark only)" (lab panel only; the site name comes from
 > `lab/tools/site-themes.mjs`).
 
+> **UX fix wave (2026-10-19, `56fda7c..c64b813`).** The parts that wave changed are described as of `c64b813`:
+> processing state (`CS.processing`, §4.7), the global notice, error / empty states, scroll memory, the time
+> control, shared helpers (`CS.form`, `CS.fmtWhen`, `data-tip`, …), the toolbar at narrow widths and the touch
+> block, the picklist, the offline layer's page hooks (§6 `sync.js`), and the pages' fixes. Audit:
+> `.work/ux-audit/FLAWS.md`; fixer notes: `.work/ux-fix/{A,B,C,D}/FIXED.md`.
+
 Contents
 
 1. [What the SPA is](#1-what-the-spa-is)
@@ -42,34 +48,37 @@ Contents
   `CS.platform = false`, there is no sign-in, and shared state (picklist) falls back to `localStorage`. The design lab
   relies on this mode.
 
-Files (committed sizes):
+Files (sizes at `c64b813`):
 
 | file | lines | role |
 |---|---:|---|
-| `index.html` | 57 | shell markup: sidebar, toolbar, `#app`, phone tab bar, "More" sheet; script order |
+| `index.html` | 60 | shell markup: skip link, sidebar, toolbar, `#app`, phone tab bar, "More" sheet; script order; first-paint `theme-color` metas (Jet & Paper `#f3f3f1` / `#050505`) |
+| `manifest.webmanifest` | | PWA manifest (Jet & Paper colours) |
 | `theme.js` | 50 | **generated**; applies theme/appearance/layout before first paint; `window.CSStyle` |
 | `fonts.css` | 5 (65 KB) | Archivo variable font inlined as a base64 `data:` URL (works offline on venue Wi-Fi) |
-| `style.css` | 619 | base tokens (type scale, spacing, radii, layout sizes) and every component |
-| `themes.css` | 2192 | **generated**; 18 themes' colour tokens + fonts + per-theme rules + Top bar / Command layouts |
+| `style.css` | 1218 | base tokens (type scale, spacing, radii, layout sizes), every component, the toolbar container queries and the coarse-pointer (touch) block |
+| `themes.css` | 2213 | **generated**; 18 themes' colour tokens + fonts + per-theme rules + Top bar / Command layouts |
 | `fonts/*.woff2` | 16 files | self-hosted theme fonts (copied from `lab/fonts/` by `site-themes.mjs`) |
 | `field.jpg` | 118 KB | top-down field image used by every canvas (`FIELD`) |
-| `quant.js` | 270 | chart helpers (shot chart, density, paths, bars, sparklines) + the team page |
-| `event.js` | 215 | Teams table, Compare, Picklist |
-| `player.js` | 851 | match page / Analyze viewer, livestream-only match page |
-| `dash.js` | 563 | strategy Dashboard |
-| `app.js` | 498 | data contract, plugin registry, shared helpers, shell/nav, time control, router |
-| `setup.js` | 395 | session, `CS.app`, roles, login, account, TBA event picker, first-run wizard |
-| `admin.js` | 240 | Admin: Teammates, Settings, Events, Updates |
-| `audit.js` | 130 | Activity (audit log, lockdown, sign-in policy) and Identity-fixes queue |
-| `notes.js` | ~300 | (cleanup pass) `CS.notes` (Notes card on the team and match pages) and `CS.idFix` ("Wrong team?" identity-fix form on the match page) |
-| `sources.js` | 649 | Video setup: sources, layout box editor, calibration wizard; livestream recorder status |
-| `rankings.js` | 227 | Rankings & season goal; Selection tab |
-| `schedule.js` | 151 | Schedule with per-period breakdown |
-| `teams2.js` | 304 | Spec sheets (list + per team) |
-| `defense.js` | 415 | Defense library with top-down clips |
-| `settings.js` | 69 | per-browser look: theme / appearance / layout |
-| `nginx.conf` | 161 | the web container's nginx (see `deploy.md` for the non-SPA parts) |
-| `Dockerfile` | 9 | `nginx:1.29-alpine` image, cache-bust stamp |
+| `quant.js` | 357 | chart helpers (shot chart, density, paths, bars, sparklines) + the team page |
+| `event.js` | 553 | Teams table, Compare, Picklist (shared list, drafts, conflicts, History) |
+| `player.js` | 950 | match page / Analyze viewer, livestream-only match page, untracked-match card |
+| `dash.js` | 601 | strategy Dashboard |
+| `app.js` | 1125 | data contract, plugin registry, shared helpers, shell/nav, global notice, processing state, time control, router |
+| `setup.js` | 562 | session (+ 60 s poll), `CS.app`, `CS.form`, roles, login, account, TBA event picker, first-run wizard |
+| `sync.js` | 1248 | offline layer and Client mode: cached reads, outbox, connection pill / sheet, offline copies (`docs/SYNC.md` part 3) |
+| `sw.js` | 264 | service worker (browser mode, https only): cache, offline copies, Background Sync of the outbox |
+| `admin.js` | 293 | Admin: Teammates, Settings (+ worker status line), Events, Updates |
+| `audit.js` | 242 | Activity (audit log in sentences, lockdown, sign-in policy) and Identity-fixes queue (+ nav badge) |
+| `notes.js` | 356 | `CS.notes` (Notes card on the team and match pages) and `CS.idFix` ("Wrong team?" identity-fix form on the match page) |
+| `sources.js` | 1444 | Video setup: per-video cards, link checks, TBA webcasts, layout box editor, calibration wizard; livestream recorder status |
+| `rankings.js` | 275 | Rankings & season goal; Selection tab (+ empty state) |
+| `schedule.js` | 156 | Schedule with per-period breakdown |
+| `teams2.js` | 308 | Spec sheets (list + per team) |
+| `defense.js` | 427 | Defense library with top-down clips |
+| `settings.js` | 112 | per-browser look: theme / appearance / layout; Offline / Connection section first (sync.js) |
+| `nginx.conf` | 265 | the web container's nginx (see `deploy.md` for the non-SPA parts) |
+| `Dockerfile` | 14 | `nginx:1.29-alpine` image, cache-bust stamp |
 
 ---
 
@@ -127,7 +136,7 @@ Consequences are in [§11](#11-csp-rules-for-contributors).
 End of `<body>`, in this order (order matters, see below):
 
 ```
-quant.js  event.js  player.js  dash.js  app.js  setup.js  admin.js  audit.js  notes.js
+quant.js  event.js  player.js  dash.js  app.js  setup.js  sync.js  admin.js  audit.js  notes.js
 sources.js  rankings.js  schedule.js  teams2.js  defense.js  settings.js
 ```
 
@@ -143,6 +152,8 @@ sources.js  rankings.js  schedule.js  teams2.js  defense.js  settings.js
   - `renderTopNav` → temporarily filters `CS.navItems` by role (`CS.navAllowed`) and renders the user box;
   - `api` → on a 401 from site JSON, refresh the session and go to `#/login`.
   Because app.js's listeners call `route()` by name, the wrapped version is what runs.
+- `sync.js` (right after setup.js) wraps `CS.app` again (cached reads, queued writes) and `route` (clears the
+  "Saved copy · as of" label per page); setup.js waits for `CS.sync.ready` before the first session check.
 - The remaining files are self-contained IIFE plugins that call `CS.route` / `CS.globalRoute` / `CS.nav`.
   `settings.js` needs `window.CSStyle` from `theme.js`.
 
@@ -176,7 +187,9 @@ CS.nav(item)              // sidebar / tab bar / More sheet entry
 Nav item fields: `label`, `key` (matches `activeKey`), `href(ev, ts)`, `order` (sort; default 50), `group`
 (`day` "Match day" | `picks` "Picks" | `scout` "Scouting" | `manage` "Manage"; default `manage` for global items,
 else `scout`), `icon` (a key of `ICON`), `tab` (also on the phone tab bar), `replay` (href receives the shared as-of
-time), `global` (shown even without an event), `roles: [...]` or `minRole` (filtered by `setup.js`).
+time), `global` (shown even without an event), `roles: [...]` or `minRole` (filtered by `setup.js`), `badge(ev)`
+(optional: a count drawn as `.nav-badge` after the label, signed-in only; Identity fixes uses it for the requests
+waiting at that competition, fetched at most once a minute and patched into the nav in place).
 
 Registered items (committed):
 
@@ -193,12 +206,13 @@ Registered items (committed):
 | 65 | Specs | `#/<ev>/specs` | scout | | teams2.js |
 | 70 | Defense | `#/<ev>/defense` | scout | | defense.js |
 | 80 | Video | `#/<ev>/sources` | manage | roles admin | sources.js |
-| 94 | Identity fixes | `#/<ev>/fixes` (old `#/fixes` redirects to the current competition's) | manage | minRole strategist | audit.js |
+| 94 | Identity fixes | `#/<ev>/fixes` (old `#/fixes` redirects to the current competition's) | manage | minRole strategist, `badge` | audit.js |
 | 95 | Admin | `#/admin` | manage | global, roles admin | admin.js |
-| 96 | Activity | `#/activity` | manage | global, roles admin | audit.js |
+| 96 | Activity | `#/activity` (icon `activity`) | manage | global, roles admin | audit.js |
 | 99 | Settings | `#/settings` | manage | global | settings.js |
 
-"My account" (`#/account`) is not a nav item; it is the user box link and an extra group in the phone More sheet.
+"My account" (`#/account`) is not a nav item; it is the user box link and an extra group in the phone More sheet
+(account name + **Sign out**, `CS.signOut`).
 
 ### 4.3 Route table
 
@@ -217,7 +231,25 @@ Registered items (committed):
 | `#/<ev>/teams\|compare[/<a,b,c>]\|picklist[/<ts>]\|matches` | `eventPage(ev, tab, arg)` |
 | anything else under an event | `eventPage` → falls back to Teams |
 
-Errors in a handler render a "Couldn't load this page … Try again" card (`#routeretry` re-runs `route(false)`).
+Errors in a handler (UX fix wave) never keep the previous page's title: the toolbar title is the page that was
+asked for (`pageLabel(p)`: "Selection", "Match Q12", "Team 4911"), and pages set their own title before awaiting
+data. Then, in this order:
+
+| case | what shows |
+|---|---|
+| offline (`CS.sync.isOffline()`) | `CS.sync.offlineHint()` card ("This page isn't saved on this device" / "isn't on this computer yet" / "The Cyber-Scout Client isn't running"); title "Not saved on this device" or "Client not running" (`CS.sync.clientDown()`); the "Saved copy · as of" label is cleared. No console error. |
+| a followed competition with no `event.json` yet | `compNotBuilt`: "<competition> isn't ready yet" + `CS.buildStall()` reason (paused / no TBA key / worker quiet) or "builds on its next pass"; re-routes on `cs:processing` |
+| match page, `m/<match>.json` 404 | player.js first: livestream row → `liveMatchPage`, any other row → `untrackedMatchPage` (§6); without a row: "Match Q12 wasn't tracked" + stall reason, links to Schedule / All matches |
+| another page file 404 (`<ev>/…`) | "<Page> isn't built for <competition> yet" + `CS.buildStall()` or a per-page sentence (Selection: needs enough schedule and results) |
+| anything else | "Couldn't load this page: The server didn't answer as expected (<error>). Check the connection, then try again." |
+
+Every card has **Try again** (`#routeretry` → `route(false)`).
+
+**Back / Forward keep your place.** `history.scrollRestoration = "manual"`; each history entry gets an id in
+`history.state.csn`; the scroll position is saved under it (`sessionStorage cs:scroll`, last 60 entries) on
+leaving / `pagehide`, and restored when the route returns to that entry (Back, Forward, reload), retrying for ~1 s
+while late content arrives. A new entry starts at the top. After a route, focus moves to `#app` (`tabindex=-1`)
+unless the page focused a field; "Skip to content" (`a.skip`) also focuses `#app` without changing the hash.
 
 **Route validation** (cleanup pass, security audit): before any handler runs, `routeOk(p)` (also `CS.routeOk`)
 checks every hash segment once: each matches `^[A-Za-z0-9_.,=?&%:-]{1,160}$`; the first is a global route or an
@@ -231,7 +263,9 @@ route with arguments should add its shape to `routeOk`.
 adds to `window`/`document` must be removed through it.
 
 Polling: `eventPage` re-fetches `event.json` every 60 s and re-routes when `updated` changes; Dashboard every 60 s
-(compares `event` block and next match); Rankings and Schedule every 90 s (`generated`).
+(compares `event` block and next match); Rankings and Schedule every 90 s (`generated`); the Picklist asks for the
+team list every 20 s and on focus / visibility; setup.js re-reads `/session` every 60 s while the tab is visible
+(lockdown and `processing`).
 
 ### 4.4 Shell and navigation
 
@@ -243,17 +277,38 @@ Polling: `eventPage` re-fetches `event.json` every 60 s and re-routes when `upda
   fix (fragment XSS into nav hrefs; see `security.md`).
 - `body.bare` is set when the platform is present but nobody is signed in (sidebar/tab bar/time control hidden).
 - Sidebar toggle `#sbtoggle` → `body.sb-off`, remembered in `localStorage cs:sboff`.
-- `crumbs(parts)` sets the toolbar title (last crumb = page title, earlier ones = back links) and `document.title`.
+- `crumbs(parts)` sets the toolbar title (last crumb = page title, earlier ones = back links) and `document.title`
+  ("<page> · <competition> · Cyber-Scout").
+- **Global notice** (`#gnotice`, above `#app`, `role=status`, `renderNotice()` on every nav render and
+  `CS.setProcessing`): signed-in pages except login / setup / connect show at most one processing line — "Processing
+  is paused on the server" (with a "?" that has `CS.PAUSE_HOW` for admins), "Nothing is processed yet: the server has
+  no TBA key" (admins, links Admin → Settings), or "The worker hasn't checked in since <date>" — with **Hide**
+  (until the next visit: `sessionStorage cs:gnotice` = that line's kind). On phones (≤ 760 px) it also carries the
+  lockdown line ("Read-only (lockdown)", admins get "End it" → Activity), because the toolbar's lockdown chip is hidden
+  there.
+- **Toolbar at narrow widths** (style.css, a container query on `.toolbar`, so it works with the sidebar open or
+  hidden and in every layout): earlier crumbs give way first and the page title ends in an ellipsis; under 960 px the
+  user box becomes the name's initial in a circle (name and role stay its tooltip / accessible name; the lockdown
+  chip keeps its icon) and the connection pill its short text; under 700 px a Live / Replay time control moves to
+  its own full-width row (the static "Latest" tag stays in the first row). Phones (≤ 760 px) show only the page title
+  and the connection state as an icon in a 44 px target. `main#app` holds a screen's height while loading (no footer
+  flash).
 
 ### 4.5 The time control (replay)
 
-`renderTimebar(p, ev)` puts one control in the toolbar for every event page:
+`renderTimebar(p, ev)` puts at most one control in the toolbar, per page:
 
-- Pages that can replay are those whose nav item has `replay:true`: Dashboard (`#/<ev>/dash/<ts>`), Selection
-  (`#/<ev>/selection/<ts>`), Picklist (`#/<ev>/picklist/<ts>`, ts must be ≥ 9 digits). `urlTs(p)` reads the ts.
-- Other event pages show a static "Latest data" tag (end-of-event data).
-- Snapshot list: `api/<ev>/dash/index.json` (`[{ts,label,quals_played}]`), falling back to
-  `selection/index.json` (`{times:[…]}`).
+- **Replayable pages** (nav item `replay:true`): Dashboard (`#/<ev>/dash/<ts>`), Selection (`#/<ev>/selection/<ts>`),
+  Picklist (`#/<ev>/picklist/<ts>`, ts ≥ 9 digits). `urlTs(p)` reads the ts. They get the full control (earlier /
+  later, a select of snapshot times, "Go live" / "Latest") with **that page's** times: Selection reads
+  `selection/index.json` (`{times}`), the others `dash/index.json` (`[{ts,label,quals_played}]`, falling back to the
+  selection index). Lists are cached 2 min. With no snapshots and no ts the page gets the static tag instead.
+- **Other data pages** (Teams, Compare, Matches, Specs, Defense, Schedule, Rankings): a static tag
+  `CS.latestLabel(ev)` — "Latest data" while the competition is on or upcoming, "End-of-event data" once it's over
+  ("Latest" / "Final" on phones) — with a "?" (everything posted so far, not replay time; paused processing noted).
+- **Nothing** on Video, Identity fixes, match pages, global pages, or a competition whose `event.json` isn't built.
+- The tag says **Live** only while the competition is on, processing isn't paused, the worker isn't stale and
+  `event.json updated` is under 30 min old; otherwise **Latest** (with a tap tip giving the build time).
 - The chosen ts is shared across replay pages via `sessionStorage cs:asof:<ev>` (`CS.asofGet/CS.asofSet`), and nav
   hrefs of replay items carry it.
 
@@ -264,14 +319,22 @@ Polling: `eventPage` re-fetches `event.json` every 60 s and re-routes when `upda
 | `esc(s)` | HTML-escape `& < > " '`. Use for every data/user string put into HTML. |
 | `api(p)` | `fetch("api/" + p, {cache:"no-cache"})`, throws `Error("<p>: <status>")`; wrapped by setup.js for 401 |
 | `num`, `pct`, `fx` | `frc4911`→`4911`; 0.42→`42%`; fixed decimals, `–` for null |
-| `confBar(c)`, `idPill(c, n)` | identity-confidence bar / pill (tiers `IDC`: ≥0.8 good, ≥0.5 warn) |
+| `confBar(c)`, `idPill(c, n)` | identity-confidence bar / pill (tiers `IDC`: ≥0.8 good, ≥0.5 warn); both explain themselves on tap (`data-tip`) |
 | `scoutData(ev)` | cached `api/<ev>/scout.json` with `.by[teamKey]` index (the canonical per-team numbers) |
-| `covPill(c)`, `svHtml(m)`, `flagChips(row)`, `dataBanner(sd)` | render scout.json coverage tiers, canonical metrics `{v,raw,n,tier,lower_bound,over,gates}`, flags, and the "End-of-event data" banner |
+| `covPill(c)`, `svHtml(m)`, `flagChips(row)`, `dataBanner(sd)` | render scout.json coverage tiers, canonical metrics `{v,raw,n,tier,lower_bound,over,gates}`, flags, and the "Latest data / End-of-event data, not replay time" banner |
+| `tipA(tip, key)` + `[data-tip]` | **honesty labels open on tap / click / Enter, not only hover.** `tipA` returns ` data-tip="…" title="…"` (and, with `key`, `role="button" tabindex="0"`). One shared popover (`#cstip`, same look and closing rules as `CS.help`) shows `data-tip` as text. Stand-alone chips (coverage, ID %, flags, status pills) are Tab-reachable buttons; `svHtml` numbers and `confBar` in table cells open on tap but stay out of the Tab order (the page's "?" explains them). `title` keeps mouse hover. |
 | `shortKey(k)` | `2026wasam_qm12` → `Q12`, `sf1m2` → `SF1-2` |
-| `crumbs`, `ago(ts)` | toolbar title; "updated N min ago" |
+| `crumbs`, `ago(ts)` | toolbar title; "updated N min ago" / "updated today 11:03 PM" / `CS.fmtWhen` |
+| `CS.fmtWhen(ts, {sec, day})` | the one date format: "11:03 PM" today, "Oct 12, 11:03 PM" this year, "Oct 12, 2025, 11:03 PM" before; `day` forces the date, `sec` adds seconds (logs) |
+| `CS.sentence(m)` | a server message as a sentence: capital first letter, full stop added ("invalid username or password" → "Invalid username or password.") |
+| `CS.latestLabel(ev)` | "End-of-event data" once the competition is over, else "Latest data" (banners, the time control's static tag) |
+| `CS.buildStall(admin)` | why nothing new is being built, as a sentence for empty states: processing paused (admins get a "?" with `CS.PAUSE_HOW`), no TBA key (admins: link to Admin → Settings), worker not checked in since …; `""` when the worker runs normally |
+| `CS.PAUSE_HOW` | HTML: how an admin turns processing back on (remove `PAUSE_PROCESSING=1` from `.env`, `docker compose up -d worker`; Video jobs still run) |
+| `CS.setProcessing(p)`, `CS.processing`, `CS.renderNotice()` | §4.7 |
 | `fieldCanvas(el)` | HiDPI field canvas: `{c, ctx, P(x,y), S(m), bg(alpha), size}`; broadcast orientation (red end left) |
 | `CS.help(html, label)` | "?" button + popover (`.hlp`), inline content only; one open at a time; Esc/outside click closes |
-| `CS.fit()` / table fitter | every `.tablewrap > table` with a `<thead>` is fitted to its width: low-priority columns fold into a per-row "More" disclosure. Priority via `<th data-pri="N">` (0 = always folded; default keeps the first two columns). Re-fits via MutationObserver, resize and `<details>` toggle. Tables never scroll sideways. |
+| `CS.fit()` / table fitter | every `.tablewrap > table` with a `<thead>` is fitted to its width: low-priority columns fold into a per-row "›" disclosure. Priority via `<th data-pri="N">` (0 = always folded; default keeps the first two columns). Re-fits via MutationObserver, resize and `<details>` toggle. Tables never scroll sideways. The open detail row **moves the folded cells' real nodes** in (and back on close / re-fit), so buttons, selects and links keep their handlers and state, and it copies the row's `data-*` attributes so delegated handlers reading `tr.dataset` still work. The "›" button is labelled from the first cell's `data-label` (or its `b` / `a` text). |
+| sortable headers | `th[data-k]` with a click handler gets `tabindex=0`, `aria-sort` (from the ▲ / ▼ mark) and Enter / Space sorting that keeps focus on the header (`a11ySort`, run with the fitter) |
 | `CS.icon(key, cls)` | inline SVG from the `ICON` set (24-grid, 1.8 stroke): nav icons plus `star`, `starOn`, `external`, `chevL/R`, `close`, `up`, `warn`, `check`, `ban` |
 | `CS.isStream(m)`, `CS.liveTag(m)` | match row has `score_source:"livestream"` → "LIVE · stream" tag |
 | `CS.liveTracking(live, tracked)` | status text for a stream result ("Tracking from stream" / "Waiting for uploads") |
@@ -280,26 +343,54 @@ Polling: `eventPage` re-fetches `event.json` every 60 s and re-routes when `upda
 | `CS.asofGet/Set`, `CS.markActive`, `CS.fit` | see above |
 | constants | `LEN=16.541`, `WID=8.069`, `FIELD` (field.jpg `Image`), `COLORS` (3 shades per alliance), `PALETTE` |
 
+### 4.7 Processing state (`CS.processing`, `cs:processing`)
+
+Source: `GET app/v1/session` → `processing` ([server.md](server.md) §7.2, from `data/worker-status.json`).
+
+- `CS.processing` = `{paused: bool|null, worker_seen: unix|null, reason: "paused"|"no_key"|"no_events"|null, why}`,
+  `null` when signed out, `undefined` before the first session answer (pages guard for both).
+- setup.js calls `CS.setProcessing(session.processing)` after every session check, after sign-in, and from its 60 s
+  poll (visible tabs only; also on `visibilitychange`); sign-out sets it to null.
+- `CS.setProcessing` stores it, redraws the global notice, and dispatches **`cs:processing`** on `window` (detail =
+  the state) only when `paused`, `reason` or "worker stale" changed.
+- **Worker stale** = `worker_seen` older than `STALE_S` (1 h) and not `paused === true`.
+- Who reacts: the notice (§4.4); the time control's Live / Latest; Matches ("not tracked (paused)" instead of
+  "waiting", redrawn on the event); not-built cards and Selection / page empty states (`CS.buildStall`); the
+  Dashboard's "now" vs "data as of" (redrawn on the event); the untracked-match card; notes.js re-label wording;
+  the "Competition added" dialog; Admin → Settings worker line ("Worker: paused / running / waiting for a TBA key /
+  idle / not heard from / status unknown").
+
 ---
 
 ## 5. `setup.js`: session, `CS.app`, sign-in, roles, setup wizard
 
 Exports: `CS.app`, `CS.can`, `CS.user`, `CS.session`, `CS.platform`, `CS.refreshSession`, `CS.navAllowed`,
-`CS.form`, `CS.genPassword`, `CS.eventPicker`, `CS.ROLES`, `CS.ROLE_TIP`, `CS.GOALS`.
+`CS.form`, `CS.fieldErr`, `CS.signOut`, `CS.genPassword`, `CS.eventPicker`, `CS.ROLES`, `CS.ROLE_TIP`, `CS.GOALS`,
+`CS.USER_PATTERN`.
 
 **`CS.app(method, path, body)`** → `fetch("app/v1/" + path)` with `credentials: same-origin`, `cache: no-store`,
 JSON body, and for every non-GET the header `X-CSRF-Token` = cookie `cs_csrf` (fallback `CS.session.csrf`). Returns
 parsed JSON (null for 204). Errors throw `Error(message)` with `.status` and `.data`; FastAPI `detail` strings, 422
 lists and `{message}` objects are turned into readable text. A 401 while signed in clears `CS.user` and goes to the
-login page.
+login page. Every answer is handed to `CS.sync.seenApp(path, response)` (Client mode labels cached answers).
 
 **Session**: `CS.refreshSession()` → `GET app/v1/session`. 404 or non-JSON → `CS.platform=false` (static site).
 Network error / 5xx → "Can't reach the Cyber-Scout server" card with retry. Otherwise `CS.session` =
-`{setup_required, setup_code_required, user, csrf, configured, lockdown, network, passwordless_ok}`.
+`{setup_required, setup_code_required, user, csrf, configured, lockdown, network, passwordless_ok, processing}` and
+`CS.setProcessing(processing)` (§4.7). A 60 s poll (visible tab, signed in) refreshes `lockdown` (redraws the user
+box) and `processing`; a changed user is left to the next request.
+
+**`CS.form(el, onSubmit, opts)`**: submit → `onSubmit(values, form)` with the submit button disabled
+(`opts.busy` = its text meanwhile, e.g. "Checking with The Blue Alliance…"); old `.csok` lines are cleared. A thrown
+error lands **under the field it is about**: `Error.field` (`CS.fieldErr(name, message)` builds one), else guessed
+from the server's sentence ("setup code", "don't match", "current password", "password", "username", "display
+name", "goal"); that input gets `aria-invalid` + `aria-describedby`, focus and selection; the message clears on
+input. Anything else goes to the form's `.cserr`. Messages pass through `CS.sentence`. Every password input gets a
+Show / Hide toggle (`.pwrow`). First focus: the checked radio or the first input / select.
 
 **Route guard** (wrapped `route`): setup required → `#/setup`; not signed in → remember the hash in
-`sessionStorage cs:next` and go to `#/login`; signed in on `#/login` → back to `cs:next` (never back to login/setup);
-an admin with `configured:false` landing on `#/` → `#/setup`.
+`sessionStorage cs:next` and go to `#/login`; signed in on `#/login` → back to `cs:next` (never back to login /
+setup / the Client's `#/connect`); an admin with `configured:false` landing on `#/` → `#/setup`.
 
 **Roles**: `viewer < scout < strategist < admin`. `CS.can(role)` is true when the user's role is at least `role`
 (always true in static mode). Nav items are filtered by `roles` (exact membership) or `minRole`. Pages also check
@@ -308,19 +399,32 @@ an admin with `configured:false` landing on `#/` → `#/setup`.
 **Pages**:
 
 - `#/login`: username + optional password (blank = passwordless, if the server policy allows it) →
-  `POST auth/login`.
-- `#/account`: name/role, change password (`POST auth/password`; admins 10+ chars required, members optional 4+).
+  `POST auth/login`. A wrong password: "Invalid username or password." under the password field, which is cleared
+  and focused; a "Forgot your password?" line points at the admin.
+- `#/account`: password card (`POST auth/password`; admins 10+ chars required; members optional 4+, and leaving
+  both fields blank removes the password = sign in with just the username), **Your name** for scout+ (`PATCH
+  auth/profile {display_name}`, redraws the nav), and **Sign out**.
 - `#/setup[/<step>]`: first-run wizard. Steps `account` (only while `setup_required`: setup code from
-  `data/setup-code.txt`, username, display name, 10+ char password → `POST setup`), `tba` (`PUT settings/tba-key`),
-  `team` (`PATCH settings {team_number}`), `goal` (`PATCH settings {season_goal}`; choices Win an event / DCMP /
-  Worlds / Einstein / Scouting / Other), `event` (`CS.eventPicker`), `video` (lists `GET events/<ev>/sources` per
-  followed event, links to `#/<ev>/sources`), `done` (sets `setup_complete: true`). Until `setup_complete`, the
-  wizard walks every step in order even when a value exists (e.g. imported from an old `.env`).
-- `CS.eventPicker(el, opts)`: `GET tba/events?year=` + `GET events`; your team's events first, search, year select,
-  Follow (`POST events {key}`) / Unfollow (`DELETE events/<key>`), "or an event key". Used by the wizard and
-  Admin → Events.
+  `data/setup-code.txt`, username with `pattern=CS.USER_PATTERN`, display name, 10+ char password → `POST setup`),
+  `tba` (`PUT settings/tba-key`, busy "Checking with The Blue Alliance…"), `team` (`PATCH settings {team_number}`,
+  busy "Looking it up…"), `goal` (`PATCH settings {season_goal}`; choices Win an event / DCMP / Worlds / Einstein /
+  Scouting / Other), `event` (`CS.eventPicker`; Continue stays off with "Follow at least one event to continue";
+  following refreshes the competition switcher at once), `video` (lists `GET events/<ev>/sources` per followed event,
+  links to `#/<ev>/sources`), `done` (sets `setup_complete: true`). The step list ("Step n of 7") shows from the
+  first page: ✓ done, Video "· later" once skipped (`localStorage cs:wiz-video`) or ✓ when every followed event has
+  its video set up. Required steps (`tba`, `team`, `event`) can't be skipped: a link or URL to a later step
+  redirects to the first one missing. Until `setup_complete`, the wizard walks every step in order even when a
+  value exists (e.g. imported from an old `.env`). Each step focuses its first control.
+- `CS.eventPicker(el, opts)`: the competition switcher's ranked type-ahead (`GET events/search?q=&year=&limit=12`:
+  on now / soon / your team's events first; a full key from any season is looked up directly), followed events on
+  top with Unfollow, a season select, Enter searches; 409 → "Set your TBA Read API key first". Follow (`POST events
+  {key}`) / Unfollow (`DELETE events/<key>`). Used by the wizard and Admin → Competitions.
 
-The user box (`#userbox`) shows "name · role" (link to `#/account`) and Sign out (`POST auth/logout`).
+The user box (`#userbox`) shows a lockdown chip when `CS.session.lockdown` ("Read-only", admins: "Read-only
+(lockdown)" linking to Activity), "name · role" (link to `#/account`) and Sign out. **`CS.signOut()`** (user box,
+More sheet, account page): in Client mode it first asks "Sign this computer out of the server? Saved data stays…"
+and calls `CS.sync.clientLogout()`; otherwise `POST auth/logout` + `CS.sync.signedOut()`; then clears the user and
+the processing state and goes to `#/login`.
 
 ---
 
@@ -341,27 +445,64 @@ canonical scout.json values, coverage, flags, trend), then sections Scoring (til
 "show all auto paths"), Movement (tiles, zone time, mid-field crossings by lane, teleop heatmap), Defense, Endgame,
 Reliability & role, Matches table, and (cleanup pass) a **Notes** card under Scouting truth (`CS.notes`, see
 `notes.js` below). When the team file mixes unverified matches (`tainted`), the per-team aggregate
-Scoring section is replaced by a note pointing at Scouting truth.
+Scoring section is replaced by a note pointing at Scouting truth. (UX fix wave) Tiles, hub pills and stats explain
+themselves on tap (`tipA`); the Matches table shows "–" instead of null/null and its Auto (routine) column only when
+a verified match has a routine; routine chips are keyboard buttons in ink with a colour swatch; a star that doesn't
+reach the server says so in a toast (the Picklist keeps the change); read-only users see a plain star mark.
 
 ### `event.js` — Teams, Compare, Picklist (panes of `eventPage`)
 
 - **Teams** (`teamsTable`): one row per team from `event.json teams[]` joined with `scout.json` (`scoutRows`).
   Columns `QCOLS`: Blend ± sd, EPA, Video coverage, Made/m, Acc, Auto, Cycle s, Volley p90, Fire /s, Climb (TBA),
   Dead (only n ≥ 3), p95 m/s, Def. played, plus Rank / Team / Name / OPR. Sortable headers; a column picker
-  (visibility in `localStorage cyberscout:cols2`); fold priorities `TPRI`.
+  (visibility in `localStorage cyberscout:cols2`); fold priorities `TPRI`. Our row is tinted (also in the sticky
+  team cell of rate tables); headers are keyboard-sortable.
 - **Compare** (`#/<ev>/compare[/<t1,t2,t3>]`): up to 3 teams (selection remembered in
-  `localStorage cyberscout:cmp:<ev>`); canonical rows + shot chart + auto paths, **verified matches only**.
+  `localStorage cyberscout:cmp:<ev>` and written to the URL with `replaceState`, so a comparison can be shared);
+  labelled selects "Team 1/2/3"; a Blend ± sd row first; rows nobody has data for are left out; canonical rows + shot
+  chart + auto paths, **verified matches only**.
 - **Picklist** (`#/<ev>/picklist[/<ts>]`): shared server picklist `main`
-  (`GET/PUT app/v1/events/<ev>/picklists/main`, data `{stars:[teamkey], dnp:[teamkey], weights:{metric:w}}`).
-  Saves are debounced 500 ms and send `base_version`; a 409 replaces the local state with the server's
-  (`detail.current`) and re-renders. Only strategist+ saves to the server; everyone keeps a copy in
-  `localStorage cyberscout:picks:<ev>` (the team page and Teams table read stars from there). Sort modes Blend / EPA /
-  OPR / Custom (`localStorage cyberscout:plmode`); Custom = weighted mean of event z-scores over `PL_KEYS`
-  (blend, video made/m, acc, auto, cycle ↓, climb (disabled when `scout.json event_stats.climb_matters` is false),
-  defense matches), weights 0–5 sliders, default `{blend: 4}`. Filters All / Starred / Hide do-not-pick. "Copy list"
-  copies a numbered text list. Weights are coerced on load and on render (`plWeights` / `plWeight`: known keys only,
-  `Number()` clamped to 0–5) so a stored value can never reach `value=""` or the shown number as markup (security
-  audit finding 1; the server schema also rejects it). In replay (`/<ts>`) it reads `scout/<ts>.json` and uses that snapshot's rank/OPR.
+  (`GET/PUT app/v1/events/<ev>/picklists/main`, data `{stars:[teamkey], dnp:[teamkey], order:[teamkey],
+  weights:{metric:w}}`). Everyone keeps a copy in `localStorage cyberscout:picks:<ev>` (the team page and Teams
+  table read stars from there). Rules (UX fix wave):
+  - **Who edits:** strategist+ (`plCanEdit`); during lockdown only admins. Viewers, scouts and lockdown get no grips,
+    star / do-not-pick buttons, Reset or sliders, just plain marks and a line saying why ("Read-only: only strategists
+    and admins…" / "Lockdown is on…"). The team page's star is a plain mark for them.
+  - **Saving:** debounced 500 ms, one PUT at a time per event (`plSend` chains them, each on the version the previous
+    one created), with `base_version`. Status line beside the filters: Saving… / Saved · <who> · <when> / Updated
+    (someone else's save picked up) / Waiting to send · offline / Not saved / Not loaded / "Not started: your first
+    change creates the team's list".
+  - **A change is never dropped silently:** until the server has it, it is kept as a per-user draft
+    (`localStorage cyberscout:picks:unsaved:<ev>:<user id>`, survives a reload). A failed save (423 lockdown, 500, …)
+    shows a banner with the reason, **Try again** and **Discard my change**; the team page's star shows a toast.
+  - **Conflict (409) — no auto-merge:** your list stays on screen; the banner says who saved and when ("… on another
+    device or tab" when it was you), lists **Only in yours** / **Only in theirs** (stars, do-not-picks), and whether
+    the order or the weights differ, with **Use theirs (drop my change)** and **Save mine (replaces theirs)** (sent
+    on top of their version). Either way the other list stays in History. If their save equals yours, it is adopted
+    silently.
+  - **Offline:** a queued save (`r.queued`) shows "Waiting to send · offline"; on load the newest queued PUT from
+    `CS.sync.pending()` (browser outbox or the Client's) is drawn over the saved copy; the page follows `cs:outbox`
+    and `cs:sent`.
+  - **Polling:** teammates' saves show up every 20 s and on focus / visibility (not while dragging or typing, never
+    over an unsaved change); before any list exists it asks `GET events/<ev>/picklists` (no 404 noise).
+  - **History** (disclosure): versions newest first (`…/versions?limit=` + each version's data), who, when, and what
+    changed in words ("starred 4469 · unstarred 1318", "changed our order", "restored version 3"), Show older;
+    strategist+ get **Restore** (confirm; `POST …/versions/<v>/restore`, saved as a new version).
+  - Sort modes Blend / EPA / OPR / Custom / **Our order** (`localStorage cyberscout:plmode`; Our order = the
+    strategists' dragged ranking `order`, shared like the stars; unplaced teams follow by blend; the help says which
+    views are per-device). Custom = weighted mean of event z-scores over `PL_KEYS` (blend, video made/m, acc, auto,
+    cycle ↓, climb (disabled when `scout.json event_stats.climb_matters` is false), defense matches), weights 0–5
+    sliders, default `{blend: 4}`. Filters All / Starred / Hide do-not-pick; do-not-pick rows in `--ink-2` with the
+    team number struck through in red; nicknames ellipsised (full name in `title`).
+  - **Copy list** copies a numbered text list: the async clipboard on https / localhost, else `execCommand("copy")`,
+    else a selected textarea to copy by hand (the venue LAN is plain http).
+  - Weights are coerced on load and on render (`plWeights` / `plWeight`: known keys only, `Number()` clamped to
+    0–5) so a stored value can never reach `value=""` or the shown number as markup (security audit finding 1; the
+    server schema also rejects it). In replay (`/<ts>`) it reads `scout/<ts>.json` and uses that snapshot's rank/OPR.
+- **Matches** (`matchesTable`, in app.js): every match with its tracking state. Chips **All** / **<our team> only**
+  (default ours while the competition is on), a search box (team number or match, "4911", "Q12"), short names as on
+  the Schedule (Q12, SF4), an "ID confidence" column with a "?", "not tracked (paused)" while processing is paused
+  (redrawn on `cs:processing`), "No match matches …" when the filter is empty.
 
 ### `player.js` — match page / Analyze (`#/<ev>/m/<match>`, `#/<ev>/a/<match>[?t=<s>]`)
 
@@ -400,6 +541,14 @@ Everything is drawn client-side on canvases over the real video; nothing is bake
 - **`liveMatchPage`**: if `m/<match>.json` is 404 but the `event.json` row has `live` data (the recorder cut the
   match from the livestream), shows the stream score, teams read off the overlay, and the clip with native controls,
   seeking to `live.auto_start_in_clip − 3 s`.
+- **`untrackedMatchPage`** (UX fix wave): `m/<match>.json` is 404 and the row has no `live` data (played but not
+  tracked, or not played yet): a "Not tracked" card instead of an error page: TBA score and winner, the status pill,
+  why ("Processing is paused on the server…" while `CS.processing.paused`, failed, being tracked now, or "tracked
+  once its video is available") plus the worker's `state_note`, a The Blue Alliance link, the six teams, links to
+  All matches / Schedule, and the match **Notes** card. A dashboard "Full preview" of an unplayed match lands here.
+- Every video listener returns once the page is left (`dead`), so leaving a match page logs no errors. The
+  timeline scrubber draws the seconds before / after the match as hatched segments (the bar runs edge to edge under
+  the video) and gives identity-fix triangles their own lane. On phones the Robots card comes right after the player.
 - `?t=<video s>` (used by the defense library) seeks there on load.
 - (cleanup pass) **Wrong team?** in the Robots card header (and "Propose a fix" in the Identity section) opens the
   identity-fix form (`CS.idFix`), and a **Notes** card ends the page (`CS.notes`, match notes, optionally about one
@@ -426,8 +575,15 @@ loads `event.json` for livestream results and `CS.liveRecorder` status. Order on
 
 Display policy: win % / bonus odds in 5 % steps via `wp5` ("<5%" / ">95%" at the ends) everywhere. Plan tabs are
 linkable: `#/<ev>/dash/<ts|live>/<q51 | index>`. The live view refreshes every 60 s and re-routes when the
-`event` block, the next match, or `event.json updated` changes. The perspective team is hard-coded
-(`US = "frc4911"`, see §13).
+`event` block, the next match, or `event.json updated` changes. The perspective team defaults to `frc4911` and is
+set per load from `dashboard.json` (see §13).
+
+Freshness (UX fix wave): the subtitle and rail say "now" only while the data is current (under 30 min old,
+processing not paused, worker checked in); otherwise "data as of <CS.fmtWhen date>", redrawn on `cs:processing`.
+Records are labelled ("6–9–0 · all matches, playoffs too" in the rail, "Qual record" in the side panel). Once every
+qual is played, rank and top 8 are stated as decided ("Final rank", top 8 yes / no) and Expected RP / projected rank
+are hidden. Δ signs come from the rounded shown value. Section "?" buttons sit inside the open section, not in its
+`<summary>`. On phones the rail is one swipeable row scrolled to the open plan.
 
 ### `rankings.js` — Rankings (`#/<ev>/rankings`) and Selection (`#/<ev>/selection[/<ts>]`)
 
@@ -440,6 +596,15 @@ linkable: `#/<ev>/dash/<ts|live>/<q51 | index>`. The live view refreshes every 6
   is likely to pick us, **pitch cards** (per likely captain: what they lack, what we bring, re-sim Δwin / ΔP(DCMP),
   fit facts), the per-captain re-simulation table ("if this captain takes us vs their next best"), projected seeds,
   and draft odds per team. `status: done` shows the actual alliances instead.
+- (UX fix wave) Both pages: one probability format (whole %, "<1%" / ">99%"); title set before data loads; subtitle
+  with the event name ("· us = 4911"); keyboard-sortable headers. Rankings: district columns (Dist. pts, Projected
+  pts, DCMP) only when some team has district points; once all quals are played top 8 is "yes" / "no" and the banner
+  says "All quals played"; "as of <date>" when the file was built to a time. Selection: Δ win and pitch deltas from
+  the rounded shown values with a "pp" unit; pitch cards lead with "Pitch to <team>" (We bring / They lack) and fold
+  the simulation numbers and fit facts into "Simulation and fit" (honesty labels kept inside). **Empty state:** no
+  `selection.json` → "No alliance-selection projection for this competition" (built for district events once the
+  simulation has run) plus `CS.buildStall()` when the worker is stalled, and links to Rankings / Picklist; a replay
+  time without a snapshot → "No selection projection at <time>" with the nearest snapshots.
 
 ### `schedule.js` — Schedule (`#/<ev>/schedule[/<match>]`)
 
@@ -447,7 +612,7 @@ linkable: `#/<ev>/dash/<ts|live>/<q51 | index>`. The live view refreshes every 6
 Upcoming matches show predicted win %; our upcoming ones expand into a per-period table (auto, transition, shift
 1–4, endgame: ours vs theirs, Δ, P(ahead), P(our hub active), if-won/lost-auto variants) plus the plain-English
 "where you will be beaten" summary. Played rows link to the Analyze view. `#/<ev>/schedule/<matchkey>` scrolls to
-that row. Polls every 90 s.
+that row. Polls every 90 s. Its banner uses `CS.latestLabel` ("Latest data" until the competition is over).
 
 ### `teams2.js` — Spec sheets (`#/<ev>/specs[/<team>]`)
 
@@ -455,7 +620,10 @@ that row. Polls every 90 s.
 made/match, accuracy, pts per active minute, cycle, fire rate, hopper, speed, trench share, left share, on-the-move
 rate, climb (TBA), defense received/played, flags. Sheet sections: Drive, Scoring, Auto & climb, Lanes (trench /
 bump bands, left/right from the driver's view), Shooting locations, Shooting paths (the drive into each volley),
-Defense. Team frame: own alliance wall on the left (blue matches point-reflected), driver's left = top.
+Defense. Team frame: own alliance wall on the left (blue matches point-reflected), driver's left = top. (UX fix wave)
+Auto made uses the canonical value (same as the team page; raw mean in the tooltip); the Scoring header says "N
+reconciled matches" with a "?", the shot map "all N verified matches"; empty intake tiles are hidden; the list's
+headers and selects are labelled and keyboard-sortable.
 
 ### `defense.js` — Defense library (`#/<ev>/defense[/<target team>]`)
 
@@ -467,6 +635,14 @@ is embedded in `defense.json` or rebuilt on demand from `m/<match>.json` (`clipF
 `live/scouting.py`). Clips animate only while visible (IntersectionObserver) and are stopped in `cleanup`. "Watch at
 N s" links to `#/<ev>/a/<match>?t=<video s>`. Verdicts: clearly reduced / reduced, not clear / no effect / nothing at
 stake / tracking unsure.
+
+**Three-episode rule** (UX fix wave): the event-wide headline ("Defended scorers kept N% of their expected output")
+needs **≥ 3 testable episodes**; below that the page says "Too few defended episodes to say how much defense slows
+scorers here (1 testable episode; at least 3 are needed for an estimate)" and that the clips are single examples,
+not a measurement. An interval that includes 100% adds "not significant: the range includes no effect"; no
+interval, none printed. Defenders are ranked ("slowed it most") only with ≥ 3 testable episodes; fewer are listed
+unranked and say so; "Who is easiest to slow down" has a sentence when no team qualifies. Clip captions are ink text
+with coloured dots for defender / target.
 
 ### `sources.js` — Video setup (`#/<ev>/sources[/sources|layout|calib][/<id>]`, admin)
 
@@ -511,6 +687,20 @@ recording on its own (pipeline.md §1.2 "Automatic set-up"); the card shows, by 
 **Track robots from** (select next to "What it is", not for station cams / upload families): Automatic (the label says
 what the set-up detected) / Every camera / The fixed camera only → `PATCH sources/<sid> {dynamic: null | true | false}`.
 
+**Adding a link** (UX fix wave): `linkProblem()` checks the pasted link in the page first (same sentences as the
+server's `link_problem`, no request): only YouTube / Twitch links, a direct video address (`.mp4`, `.m3u8`, …) or a
+server file. The error sits under the field in the error colour with `aria-invalid`; the server's 422 sentence
+(including a dead direct link, `probe_http`) lands there too. Adding a link never switches the video mode (the old
+silent switch to Livestream-only is gone; the suggestion stays a choice at the top). **TBA's webcasts** (`GET
+events/<ev>/sources/webcasts`) not yet added are offered above the paste box in every mode, with Add (or Restore for
+a removed one), named "Event webcast · Twitch firstwa_red2". The second and later links default to "Broadcast"
+(never a station cam); one camera vocabulary everywhere (Main / wide view · Broadcast · Station cam; "Field box").
+**Tool errors** (yt-dlp / ffmpeg, from Auto-calibrate, Grab frame, Suggest, Detect / Fit / Accept, Discover, Check
+videos) become one plain sentence (`plainErr`: not live, not found, sign-in / bot check, unreadable link, unreachable,
+no frames) with the raw text behind a **Details** disclosure. The box editor and calibration take touch / pen
+(Pointer Events) and the keyboard (Add box, arrows move, Shift ×10, Alt / Option + arrows resize; calibration points
+are buttons with a × remove, Enter places, Delete removes).
+
 `CS.liveRecorder` (exported here, used by dash.js): `load(ev, evj)` (`GET events/<ev>/livestream`, else the
 `livestream` summary in `event.json`, flagged stale after 10 min), `line()` (one quiet Dashboard line while
 recording/waiting/error), `card()` (state, behind-live, analyser lag, last match + clip, tracking from stream or
@@ -518,13 +708,20 @@ uploads, disk, recent errors).
 
 ### `admin.js` — Admin (`#/admin[/users|settings|events|updates]`, admin)
 
-- **Teammates**: `GET users`; create (`POST users`, generated passwords via `CS.genPassword`), change role,
-  disable/enable, reset password, delete (`PATCH/DELETE users/<id>`). Shows "no password" accounts, last sign-in,
-  active sessions; you cannot change your own role.
-- **Settings**: team number + season goal (`PATCH settings`), TBA key (`PUT settings/tba-key`, shows only the hint),
-  processing options (`PATCH settings {options: {poll_seconds, gpu_device, cpu_only, hubcam}}`; blank = `.env`
-  default; applied by the worker on its next poll).
-- **Events**: followed events (open / video setup / Unfollow) + `CS.eventPicker`.
+Tabs Teammates / Settings / Competitions / Updates (the tab row scrolls on phones with the current tab in view).
+
+- **Teammates** (full width): `GET users`; create (`POST users`, generated passwords via `CS.genPassword`), change
+  role, disable/enable, reset password, delete (`PATCH/DELETE users/<id>`). Shows "no password: can't sign in"
+  accounts (when passwordless sign-in is Off), last sign-in, active sessions; you cannot change your own role. Add
+  teammate and Reset password follow the sign-in policy (passwordless Off → a password is required and
+  pre-generated). Reset password / Disable / Delete are visible on a desktop and fold into the row's "›" on a phone;
+  one delegated handler per table, errors shown in the row; the chevron is named "More for <username>".
+- **Settings**: team number + season goal (`PATCH settings`; goal radios as in the wizard, plus None), TBA key
+  (`PUT settings/tba-key`, shows only the hint), a **worker status line** from `CS.processing` (paused with
+  `CS.PAUSE_HOW` / running / waiting for a TBA key / idle / not heard from / unknown, with the last check time;
+  redrawn on `cs:processing`), processing options (`PATCH settings {options: {poll_seconds, gpu_device, cpu_only,
+  hubcam}}`; blank = `.env` default; applied by the worker on its next poll).
+- **Competitions** (`events`): followed competitions (Open / Video setup buttons / Unfollow) + `CS.eventPicker`.
 - **Updates**: polls `GET admin/update` (every 2.5 s while busy, 3 s while the server is unreachable during a
   restart). Not installed → instructions to run `install-updater.sh`. Installed → current version (+ "local
   changes"), changelog, what restarts (worker heavy/light, api, web), disk needed vs free, buttons Check / Update now
@@ -536,13 +733,20 @@ uploads, disk, recent errors).
 - Activity: **Lockdown** toggle (`PATCH admin/security {lockdown}`), **Sign everyone out** (`POST
   admin/sessions/revoke {include_admins}`), sign-in policy form (`passwordless_login`: UI offers only `never` "Off"
   and `everywhere` "On (testing only)"; `scout_overrides`: review | direct), and the **audit log** (`GET audit?…`,
-  filters by user / action family / via lan|public, 100 per page with "more"). Each row: time, who, action + target,
-  before/after (truncated JSON), team net vs internet + IP, **Undo** (`POST audit/<id>/revert`) and **Undo all
-  since** (`POST audit/revert-user {user_id, since}`).
+  filters by user / kind / via lan|public / competition, 100 per page with "more"). The default kind is "changes
+  (no sign-ins)" = `changes=true` (no sign-ins, sign-outs, failed sign-ins or raw `http.*` requests); "everything",
+  "sign-ins" and "other requests" bring them back. Each entry reads as a sentence ("Sam saved the picklist", "Coach
+  changed the season goal: — → DCMP"; accounts by who they are, not a field diff), with the time (`CS.fmtWhen`,
+  seconds), team net vs internet + IP, and **Undo** (`POST audit/<id>/revert`, confirm shows what comes back).
+  **Undo all their changes since…** is only on other people's write rows, behind a ⋯ menu in danger style: a
+  `revert-user` **`dry_run: true`** first gives the count ("Undo ALL of Sam's changes since …: 7 changes (2 more
+  can't be undone)"), then the admin must type that **username** to confirm before the real call.
 - Identity fixes (`#/<ev>/fixes`, one queue per competition; other competitions' waiting counts link to theirs):
   `GET events/<ev>/overrides`; pending scout requests with requested vs current mapping (robots named as the match
   page shows them, from `m/<match>.json`; "changed" when stale) and Approve / Reject
-  (`POST …/override-requests/<id>/approve|reject`). Requests come from the match page's "Wrong team?" form.
+  (`POST …/override-requests/<id>/approve|reject`, one delegated handler, so they work from a folded row). The match
+  cell is a link with a chevron. Requests come from the match page's "Wrong team?" form. The nav item's `badge`
+  shows the waiting count.
 
 ### `notes.js` — Notes and identity-fix proposals (cleanup pass)
 
@@ -570,13 +774,58 @@ user string with `esc()` (note text with `white-space: pre-wrap`, never as HTML)
 - Errors: 423 → "Read-only right now: an admin turned on lockdown…", 429 → "Slow down… try again in N s" (or the
   server's "too many fixes waiting" text), 403 → "Your role can't do that." (`CS.writeErr`). With
   `CS.session.lockdown` set, non-admins see the forms replaced by a read-only line.
+- Offline / queued (UX fix wave): a queued write shows `CS.sync.queuedMsg()` inline (no second toast). Queued note
+  edits and deletes are drawn over the saved copy ("edit waiting to send"), also after a reload; the header says
+  "3 · 1 waiting to send" / "not connected" and "Saved copy from <time>" when the list came from this device
+  (`CS.sync.readInfo`). The fix form's button is off until a select changes, says "Sending…" while sending and
+  resets after "Sent for review" / queued (no double filing); queued fixes are listed as "Waiting to send", network
+  errors are words. While `CS.processing.paused`, the wording says re-labelling waits for processing; an applied fix
+  the page doesn't show yet is tagged "not re-labelled yet" ("<robot> will show as <team>").
 
 ### `settings.js` — Settings (`#/settings`, everyone)
 
-Theme grid (18 themes, light/dark swatch previews built from `CSStyle.themes[].sw`), Appearance (Auto / Light /
-Dark; locked for single-appearance themes), Layout (Sidebar / Top bar / Command), Reset to default. Stored per
-browser only (`CSStyle.set` → localStorage). Redraws on `cs:style` events (another tab changed the look) unless
+sync.js's **Offline** (browser) / **Connection** (Client) section comes first in every mode, then the theme grid (18
+themes, light/dark swatch previews built from `CSStyle.themes[].sw`), Appearance (Auto / Light / Dark; locked for
+single-appearance themes), Layout (Sidebar / Top bar / Command), Reset to default (its message is built from the
+defaults: "Back to Jet & Paper, Auto, Sidebar."). Non-admins aren't offered the Client's processing set-up. Stored
+per browser only (`CSStyle.set` → localStorage). Redraws on `cs:style` events (another tab changed the look) unless
 focus is inside the page.
+
+### `sync.js` + `sw.js` — offline layer and Client mode (protocol: `docs/SYNC.md`)
+
+`CS.sync.ready` resolves to `"client"` (page served by the local Cyber-Scout Client, `GET client/v1/status`) or
+`"browser"`. In browser mode `sw.js` (https / localhost only) caches pages and offline copies and replays the outbox
+by Background Sync; on plain http (the shop LAN address) there are no offline copies, and changes wait in the
+IndexedDB outbox while the page is open. Reads of scouting data fall back to a saved copy (slow 4 s / unreachable)
+and the toolbar says "Saved copy · as of <time>" ("Saved <time>" on phones). Writes of notes, picklists and
+identity fixes carry an `Idempotency-Key` and are queued when the server can't be reached. The connection pill
+(sidebar footer; toolbar on phones / Top bar / Command) opens the Connection sheet; on phones it is the state's
+icon in a 44 px target. Hooks the pages use:
+
+| helper | what |
+|---|---|
+| `CS.sync.isOffline()`, `mode` | offline / unreachable now; `"client"` / `"browser"` |
+| `CS.sync.offlineHint()` | the offline error page's card (`"<b>Title</b>Text"`, `""` when online); clears the "as of" label |
+| `CS.sync.clientDown()` | Client mode and the local Client stopped answering → "Client not running" |
+| `CS.sync.seenApp(path, r)` | setup.js hands it every `CS.app` response: a Client answer from its own cache (`X-CS-Offline` + `X-CS-At`) gets the "Saved copy · as of" label |
+| `CS.sync.readInfo(path)` | how the last read of `path` was answered: `{at (ms), saved}` |
+| `CS.sync.queuedMsg()` | one wording per mode: "Saved on this device. It's sent when the connection to the server is back." / "Saved on this computer. It's sent when the server is back." |
+| `CS.sync.pending(filter)` | queued changes still to send (browser outbox: this user's, not failed / conflict; Client: its outbox minus rows held for another server), for pages to draw over the saved copy |
+| events (on `document`) | `cs:outbox` (outbox changed), `cs:sent` (a queued write was accepted; detail `{path, method, data}`) |
+
+Browser outbox rules: nothing is tried while offline or unreachable (a fetch that fails while `navigator.onLine` is
+false isn't a try), so a picklist save replaces the earlier untried one (one queued save per list); after an accepted
+picklist save, later queued saves on the same `base_version` are rebased (page and `sw.js` alike); one "N changes
+sent" toast per flush. Picklist **conflicts** are cards that say who saved and what each choice drops ("Save mine
+over theirs: removes their star on 8248… Use theirs: drops your star on 2046."); nothing is merged.
+
+Client mode (the Client does the queueing): the pill adds "Connecting…" (right after a server change) and "Client not
+running"; sync progress is by bytes; the sheet lists every change (waiting / conflict / rejected / **held for another
+server** — the Client sends a row only to the server it was written for, `status.outbox_held`) with its buttons;
+unticking a competition offers **Remove from this computer** (`DELETE client/v1/events/<ev>`); choosing Previews /
+Full videos first shows the extra size against the free disk and refuses what can't fit, since the Client keeps
+2 GB free (`MEDIA_SPARE`, same as `client/csclient/sync.py`). One Client per data folder (`client.lock`). Details:
+`client/README.md`, `docs/SYNC.md` "Deviations".
 
 ---
 
@@ -594,21 +843,22 @@ Site JSON (`api/…`, i.e. `data/site/api/…`, written by the worker):
 | `<ev>/dashboard.json`, `<ev>/dash/<ts>.json`, `<ev>/dash/index.json` | Dashboard, time control |
 | `<ev>/rankings.json` | Rankings |
 | `<ev>/schedule.json` | Schedule |
-| `<ev>/selection.json`, `<ev>/selection/<ts>.json`, `<ev>/selection/index.json` | Selection, time-control fallback |
+| `<ev>/selection.json`, `<ev>/selection/<ts>.json`, `<ev>/selection/index.json` | Selection (its own time control), Dashboard / Picklist time-control fallback |
 | `<ev>/spec/index.json`, `<ev>/spec/<team>.json` | Specs |
 | `<ev>/defense.json` | Defense |
 
 Written but **not read by the UI**: `dashboard.<team>.json` (dash.js always loads `dashboard.json`),
-`preview/<match>.json` (the "Full preview" button only links to the match page).
+`preview/<match>.json` (the "Full preview" button only links to the match page, which shows the untracked-match card
+for an unplayed match).
 
-Platform API (`app/v1/…`), by file: setup.js `session`, `setup`, `auth/login|logout|password`, `settings`,
-`settings/tba-key`, `events`, `tba/events`, `events/<ev>/sources`; admin.js `users[/<id>]`, `settings`,
+Platform API (`app/v1/…`), by file: setup.js `session` (+ 60 s poll), `setup`, `auth/login|logout|password|profile`,
+`settings`, `settings/tba-key`, `events`, `events/search`, `events/<ev>/sources`; admin.js `users[/<id>]`, `settings`,
 `settings/tba-key`, `events[/<key>]`, `admin/update[/check|apply|rollback]`; audit.js `admin/security`,
-`admin/sessions/revoke`, `audit`, `audit/<id>/revert`, `audit/revert-user`, `events/<ev>/overrides`,
-`events/<ev>/override-requests/<id>/approve|reject`; notes.js `events/<ev>/notes`, `notes/<id>`,
-`notes/<id>/restore`, `events/<ev>/overrides[/<match>]`, `events/<ev>/override-requests/<id>/approve|reject`;
-event.js `events/<ev>/picklists/main`; sources.js
-`events/<ev>/sources[/discover|/<id>|/<id>/frame|/<id>/frame.jpg|/<id>/auto-setup[/accept|/overlay.jpg]]`,
+`admin/sessions/revoke`, `audit?changes=true…`, `audit/<id>/revert`, `audit/revert-user` (`dry_run` first),
+`events/<ev>/overrides` (also for the nav badge), `events/<ev>/override-requests/<id>/approve|reject`; notes.js
+`events/<ev>/notes`, `notes/<id>`, `notes/<id>/restore`, `events/<ev>/overrides[/<match>]`,
+`events/<ev>/override-requests/<id>/approve|reject`; event.js `events/<ev>/picklists[/main[/versions[/<v>[/restore]]]]`;
+sources.js `events/<ev>/sources[/webcasts|/discover|/<id>|/<id>/frame|/<id>/frame.jpg|/<id>/auto-setup[/accept|/overlay.jpg]]`,
 `events/<ev>/video-mode`, `events/<ev>/video-plan[/check|/matches/<key>]`, `events/<ev>/layout[/<id>[/suggest]]`,
 `events/<ev>/calibration[/<target>/wizard|detect|fit|accept|overlay|frame.jpg]`, `events/<ev>/jobs/<id>`,
 `events/<ev>/livestream`. Full list and roles: `server.md`.
@@ -626,11 +876,16 @@ All access is wrapped in try/catch (private windows / blocked storage just lose 
 | `cs:sboff` | local | sidebar hidden |
 | `cs:dash:<section>` | local | Dashboard disclosure open |
 | `cs:asof:<ev>` | session | shared replay time |
-| `cs:next` | session | where to go after sign-in |
-| `cyberscout:picks:<ev>` | local | picklist copy `{stars, dnp, weights}` (server is the source of truth when signed in) |
+| `cs:next` | session | where to go after sign-in (never login / setup / connect) |
+| `cs:scroll` | session | `{<history entry id>: scrollY}` for Back / Forward (last 60; ids in `history.state.csn`) |
+| `cs:gnotice` | session | the global notice line hidden until the next visit (`paused` / `no_key` / `stale`) |
+| `cs:wiz-video` | local | setup wizard: the Video step was left for later |
+| `cyberscout:picks:<ev>` | local | picklist copy `{stars, dnp, order, weights}` (server is the source of truth when signed in) |
+| `cyberscout:picks:unsaved:<ev>:<user id>` | local | a picklist change the server doesn't have yet `{data, base, at, why}` (failed save, conflict, page closed mid-save) |
 | `cyberscout:plmode`, `cyberscout:cmp:<ev>`, `cyberscout:cols2` | local | picklist sort mode; Compare selection; Teams column visibility |
 | `pl.cfg`, `pl.trailS`, `pl.offset` | local | match viewer mode/panes/layers, trail length, data sync offset |
 | `lab:theme`, `lab:layout`, `lab:mode` | local | design lab only |
+| `cs:sync:user` + IndexedDB `cyberscout` (`outbox`, `reads`, `kv`) | local / IDB | sync.js: last signed-in user, offline outbox, saved reads (`docs/SYNC.md`) |
 
 ---
 
@@ -665,7 +920,8 @@ html[data-style="x"][data-mode="dark"]  { dark tokens }
 
 Single-appearance themes are locked to it (`effMode()`), and the Settings page disables the other choices.
 The generator also puts one theme on plain `:root` and `html:is([data-style=…], :not([data-style]))` so the page is
-styled without JavaScript (in the committed `themes.css` that is still Sand & Earth, see §13).
+styled without JavaScript: Jet & Paper since `themes.css` was regenerated in the UX fix wave (`58a199a`), matching
+`theme.js`, `index.html`'s first-paint `theme-color` metas and the manifest.
 `@media (prefers-contrast: more)` collapses secondary inks to `--ink`.
 
 ### The 18 site themes
@@ -683,10 +939,21 @@ Fonts: each theme names font families; `themes.css` declares one `@font-face` pe
 ### Layouts
 
 - `sidebar` (default): `style.css` as is.
-- `topbar`: nav across the top (`html[data-style][data-layout="topbar"] …` in `themes.css`).
-- `command`: icon rail + denser dashboard grid for a big laptop.
+- `topbar`: nav across the top (`html[data-style][data-layout="topbar"] …` in `themes.css`). Every item keeps its
+  label (icon over label); the brand is logo-only at ≤ 1240 px; when an admin's items don't fit, the bar scrolls
+  (with a fade) instead of hiding names.
+- `command`: icon rail + denser dashboard grid for a big laptop. With no next match, Levers moves under "Next match"
+  and Schedule + Ratings sit side by side at full height (no hole, no inner scroll boxes).
 - Phones (≤ 760 px) always get the stacked layout with the bottom tab bar. Layout selectors carry `[data-style]` so
   they outrank theme rules.
+
+### Touch (`@media (pointer: coarse)` in style.css)
+
+With a finger (phones, the pit iPad) every button, select and text field is at least **44 px** tall (Apple HIG,
+WCAG 2.5.5): chips 40 px, controls repeated in every table row (star, grip, the fold "›") 40 × 40, toolbar buttons
+and the time control 44, the "?" help buttons keep their look with a 44 px hit area (`.hlp-b::after`). Pages that
+inject their own CSS add the same for their controls (setup.js, audit.js, app.js's Matches bar). Mouse layouts are
+unchanged.
 
 ### Persistence and API
 
@@ -747,7 +1014,9 @@ fixtures `lab/api/events.json`, `lab/api/2026wasam/dash/index.json` and `lab/api
 4. `node lab/tools/site-themes.mjs` → regenerates `web/themes.css`, `web/theme.js`, `web/fonts/`. Commit those
    generated files together with the lab change. A new layout additionally needs its CSS slice wired into the
    generator (only Top bar from `lab.css` and Command from `ext/b.css` are copied today) and an entry in its
-   `LAYOUTS`.
+   `LAYOUTS`. The same applies to a fix in a theme's `rules` or a layout slice (e.g. the UX fix wave's Jet
+   `.oe dd small, .bigp small { letter-spacing: normal }`, the Top bar labels, the Command grid): edit the lab, then
+   regenerate.
 
 ---
 
@@ -794,7 +1063,14 @@ fixtures `lab/api/events.json`, `lab/api/2026wasam/dash/index.json` and `lab/api
    plugin block). `web/Dockerfile` copies `web/*.js` and versions it automatically.
 3. If the page reads new site JSON, have the worker write it under `data/site/api/<ev>/` (`live/sitev2.py` or a
    module's `site_build`), and document it in the data contract comment / `pipeline.md`.
-4. Tables: wrap in `.tablewrap` and give `<th data-pri>` priorities; help text via `CS.help`; colours via tokens.
+4. Tables: wrap in `.tablewrap` and give `<th data-pri>` priorities (folded cells keep working: don't copy cell
+   HTML yourself, and use delegated handlers that read `tr.dataset`); sortable headers as `th[data-k]` with an
+   `onclick`; help text via `CS.help`; colours via tokens. Set the title (`crumbs`) **before** awaiting data. Forms:
+   `CS.form(el, fn, {busy})` and throw `CS.fieldErr(name, msg)`; dates `CS.fmtWhen`; server messages
+   `CS.sentence`; honesty labels with `tipA(text, true)` (tap / Enter, not only hover); a missing page file is
+   handled by the router's empty state, and your own empty states can add `CS.buildStall(admin)`. Anything that
+   depends on `CS.processing` listens to `cs:processing` and removes the listener through `cleanup`. Touch targets
+   follow the coarse-pointer block (§9).
 5. If the page should follow the replay time, give its nav item `replay: true`, take the ts as the first route
    argument, and teach `urlTs()` in app.js about the key (currently hard-coded for dash/selection/picklist).
 6. Rebuild the web image (see `deploy.md`). Nothing else registers routes.
@@ -803,21 +1079,27 @@ fixtures `lab/api/events.json`, `lab/api/2026wasam/dash/index.json` and `lab/api
 
 ## 13. Known inconsistencies and gaps
 
-Found while writing this (code at `cc6297c`):
+Found while writing this (code at `cc6297c`), updated for the UX fix wave (`c64b813`):
 
-- **Default theme half-switched.** `cc6297c` changed `DEFAULT` to `"jet"` in `site-themes.mjs` and hand-edited
-  `theme.js`, but did not regenerate `themes.css`: its plain-`:root` / no-JS fallback and header comment are still
-  Sand & Earth, and `index.html`'s `theme-color` metas are Sand & Earth colours. With JS (always, in practice) the
-  default is Jet & Paper. Running `site-themes.mjs` will move the fallback to Jet but keep the stale header text.
+- *(Fixed in the UX fix wave.)* **Default theme half-switched.** `themes.css` was regenerated (`58a199a`): its
+  plain-`:root` / no-JS fallback is Jet & Paper, and `index.html`'s `theme-color` metas and the manifest use Jet &
+  Paper colours. Left over: the generated header comment (from `site-themes.mjs`) still says "Default = Sand & Earth".
 - **"Users who picked a style keep it" is only partly true.** `theme.js` deletes `cs:style` when it equals the
   default, so anyone who had explicitly chosen Sand & Earth while it was the default has no stored key and now gets
   Jet & Paper.
-- `settings.js` Reset message still says "Back to Sand & Earth, Auto, Sidebar."
-- Perspective team hard-coded: `dash.js` `US = "frc4911"` (chips, "us" tags) and `event.js` picklist highlight
-  falls back to `frc4911`, while the backend uses `DASH_TEAM` / the team setting. A different team would see wrong
-  "us" markers.
+- *(Fixed in the UX fix wave.)* The `settings.js` Reset message is built from the defaults ("Back to Jet & Paper,
+  Auto, Sidebar.").
+- Perspective team: `dash.js` takes `US` from `dashboard.json` per load (default `frc4911`) and the `event.js`
+  picklist highlight falls back to `frc4911`, while the backend uses `DASH_TEAM` / the team setting. A different team
+  without a rebuilt dashboard would see wrong "us" markers.
 - `dashboard.<team>.json` and `preview/<match>.json` are written but never read. The queue card's "Full preview"
-  button links to `#/<ev>/m/<match>`, which for an unplayed match is a 404 → error card.
+  button links to `#/<ev>/m/<match>`; for an unplayed match that is now the untracked-match card ("This match hasn't
+  been played or posted yet"), not an error card, but still not a preview.
+- **Worker "stale" during a long pass.** The notice and `CS.buildStall` call the worker stale when its last pass
+  started over 1 h ago. `worker-status.json` is written once per loop pass, so a pass tracking a big backlog can
+  read as "The worker hasn't checked in since …" while it is working (server.md, Docs vs code 14).
+- The Video page's private-host refusal suggests `CS_URL_ALLOW`, which the api container doesn't get (server.md,
+  Docs vs code 13).
 - *(Fixed in the cleanup pass.)* Notes and identity-fix proposals now have a UI (`notes.js`).
 - Sign-in policy UI offers only `never` / `everywhere` (commit 52e9da6), but `server/routers/admin.py` still accepts
   `never | lan | everywhere` and its field description calls `lan` the default; a server-side `lan` value is not an option in the

@@ -9,6 +9,9 @@ lives, and the path a browser request takes. This describes the committed code (
 > `live/sitev2.py`. A competitions pass touches the `web/app.js` nav, the server routers and `live/worker.py`.
 > Caching headers, the request path and the worker loop below describe the **committed** versions. Check
 > `git log` for anything newer.
+>
+> **UX fix wave (2026-10-19, `56fda7c..c64b813`):** adds one file channel, worker → API `data/worker-status.json`
+> (§3), and the Video page's link checks in the api (§7); §6 also corrects the no-model case (no wait).
 
 ---
 
@@ -51,8 +54,8 @@ The design rule is that **containers talk through files in `./data`, not through
 proxies to the API. The worker never calls the API and the API never calls the worker. Settings flow API to worker
 through `data/config/worker.json`. Video-setup jobs flow API to worker through `data/jobs/sources/*.json`.
 Identity fixes go through `data/events/<ev>/overrides.json`, recorder status through
-`data/events/<ev>/livestream.json`, and the site itself through `data/site/api/**`, which nginx serves straight
-off disk.
+`data/events/<ev>/livestream.json`, the worker's own state (paused / waiting / last pass) through
+`data/worker-status.json`, and the site itself through `data/site/api/**`, which nginx serves straight off disk.
 
 ---
 
@@ -187,6 +190,15 @@ The browser polls it through the API (`GET /app/v1/events/<ev>/jobs/<id>`). Jobs
 `PUT /app/v1/events/<ev>/overrides/<match>` (or an approved request) replaces that match's entry. The worker's next
 `build_site()` passes the file to `identity.assign_event()`.
 
+### Worker → API: processing state (`data/worker-status.json`)
+
+`live/worker.py:status_beat(reason)` writes `{at, paused, reason}` (`reason` = `paused` | `no_key` | `no_events` |
+null) at the top of every main-loop pass: every 30 s while it waits, once per pass while it works. Process-only
+processors and the recorder don't write it. `server/workerstatus.py` reads it for `GET /app/v1/session` →
+`processing: {paused, worker_seen, reason, why}` (signed-in users only; missing file = unknown; older than 1 h =
+`paused: null`). The web app shows "Processing is paused on the server" / "The worker hasn't checked in since …"
+from it ([web.md](web.md) §4.7). Reporting only: `PAUSE_PROCESSING` still lives in `.env` and is read by the worker.
+
 ### Recorder → worker: livestream records (`MEDIA/live/<ev>/<video id>/matches/*.json`)
 
 The recorder's `livestream.py` child writes one record per match plus a clip. The worker's `liveingest.LiveView`
@@ -216,6 +228,7 @@ data a browser sees is a static file.
 | `config/worker.json` (0600) | api (`workerconf.write`) | worker (`load_config`), recorder (`liveingest.worker_config`) |
 | `config/update-request.json` | api (`routers/update.py`) | host updater |
 | `config/update-status.json` | host updater | api |
+| `worker-status.json` | worker (`status_beat`, every loop pass) | api (`workerstatus.processing_state` → `/session.processing`) |
 | `jobs/sources/<id>.json`, `<id>.lock` | api (create), worker job thread (claim, result) | api (`GET /events/<ev>/jobs/<id>`), worker |
 | `models/robot.onnx` | `install.sh` (`CS_MODEL_URL`) or by hand | worker (`MODEL`), training scripts |
 | `models/robot.pt`, `training/` | training scripts (`live/train/`, `live/make_labels.py`) | training only; nothing at runtime |
@@ -266,6 +279,7 @@ data/                                   owned by PUID:PGID (worker re-chowns eve
 │                                       picklist_versions, notes, override_log, override_requests, audit_log
 │                                       (DDL in server/db.py; details in server.md). Holds the TBA key + argon2 hashes.
 ├── setup-code.txt                      one-time first-run code (exists only while there are no users)
+├── worker-status.json                  {at, paused, reason}: the worker's last loop pass (api → /session.processing)
 ├── config/
 │   ├── worker.json                     0600: the worker's copy of the settings (incl. TBA key)
 │   ├── update-request.json             api -> host updater (transient)
@@ -427,7 +441,9 @@ main()
  ├─ thread: sources.job_loop(DATA)                          (Video-page jobs; always on)
  └─ loop:
      load_config()                                          worker.json → env fallbacks
-     waiting if PAUSE_PROCESSING=1 | no TBA key | no events | no model  (re-check every 30 s)
+     status_beat(reason)                                    data/worker-status.json (paused | no_key | no_events | null)
+     waiting if PAUSE_PROCESSING=1 | no TBA key | no events  (re-check every 30 s)
+     no model file → TBA + livestream results only, robot tracking off until it appears
      for ev in events: sync(ev, tba)
         ├─ matches = TBA matches (+ livestream-only matches from LiveView)
         ├─ cfg = sources.video_config(sources.json, events/<ev>/event.json, layout.json)
@@ -504,7 +520,7 @@ the compose file, and as `env_file` for **worker and recorder only**.
 | `RECON_GATE` | coverage | `0.2` | TBA reconciliation gate |
 | `YTDLP` | videos, sources, layout, livestream, liveingest | `yt-dlp` | binary |
 | `YT_FORCE_IPV4` | videos, liveingest | `1` | pass `-4` to yt-dlp (last download attempt goes without) |
-| `CS_URL_ALLOW` | sources | — | private hosts/CIDRs allowed as source URLs (SSRF guard exceptions) |
+| `CS_URL_ALLOW` | sources | — | private hosts/CIDRs allowed as source URLs (SSRF guard exceptions). A pasted link is checked in the **api**, which compose doesn't give this variable (see API below) |
 | `CS_SOURCE_ROOTS` | sources | — | extra `:`-separated roots for absolute-path sources (besides `/media`, `/data`) |
 | `LAYOUT` | layout | — | force a layout file; `none` disables layouts |
 | `LIVESTREAM` | liveingest | `1` | `0` disables the recorder |
@@ -542,6 +558,8 @@ rest in `.env` has **no effect** unless you add them to the api's `environment:`
 | `TBA_BASE` | `https://www.thebluealliance.com/api/v3` | TBA endpoint (tests) |
 | `TBA_KEY`, `EVENTS` | — | legacy one-time import into an empty DB (`main.seed_from_env`) |
 | `PUID`, `PGID` | 1000 | entrypoint and `server.manage` privilege drop |
+| `CS_URL_ALLOW` | — | read by `live/sources.py` when a link is pasted on the Video page; **not passed** by compose, so private hosts are always refused there |
+| `CS_PROBE_LINKS` | `1` | `0` skips the one `HEAD` request that checks a pasted direct video link (`sources.probe_http`); not passed by compose (a test / dev switch) |
 
 ### Host updater (`updater/updater.conf`, not an env file)
 

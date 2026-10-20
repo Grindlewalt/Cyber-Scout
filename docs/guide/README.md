@@ -9,6 +9,13 @@
 > (navigation in `web/app.js`, new/changed `server/routers/*`, `live/worker.py`) and a *performance* change
 > (`web/nginx.conf`, `web/Dockerfile`, the fetch code in `web/app.js`, `live/sitev2.py`). If those files differ from
 > `git show cc6297c:<path>`, the code is newer than this guide.
+>
+> **Updated for the UX fix wave** (2026-10-19, `56fda7c..c64b813`; audit `.work/ux-audit/FLAWS.md`): processing
+> state in the app (`data/worker-status.json` → `/session.processing` → `CS.processing`), shared form / date / tip
+> helpers, error and empty states, the picklist's drafts / conflicts / History, the toolbar and touch targets, the
+> Video page's link rules, the offline layer's page hooks, the review tool and the downloads site. See
+> [web.md](web.md), [server.md](server.md), [architecture.md](architecture.md) §3, [deploy.md](deploy.md) §2 / §8.9,
+> [files.md](files.md).
 
 ## Contents
 
@@ -99,7 +106,8 @@ calibration) and, optionally, correcting a robot's team (an identity override; s
 * Stack at `/opt/stacks/cyber-scout` (not `/opt/cyber-scout` as `deploy/README.md` assumes), owner `Grindlewalt`
   (uid 1000). `app/` is a copy made with `git archive`, **not a git checkout**. The updater is **not installed**.
 * `.env` has **`PAUSE_PROCESSING=1`**: the worker's loop does nothing at all (no processing *and no site builds*)
-  until it is removed. The recorder and API run independently of it.
+  until it is removed. The recorder and API run independently of it. Since the UX fix wave the app tells signed-in
+  users ("Processing is paused on the server", from `data/worker-status.json`) once a worker with that change runs.
 * The root filesystem is full (3 GB free of 915 GB). `data/` is 1.5 GB; videos and livestream recordings live on
   the NAS (`MEDIA_DIR=/mnt/nas/autoscout-media`, 7.2 TB free). Image rebuilds need several GB on `/`.
 * One event, `2026wasam` (PNW District Sammamish), 74 processed matches in `data/events/2026wasam/matches/`.
@@ -126,6 +134,9 @@ calibration) and, optionally, correcting a robot's team (an identity override; s
 * *(Fixed in the cleanup pass.)* Notes and identity fixes have a UI: a Notes card on the team and match pages and a
   "Wrong team?" form on the match page (scouts' fixes go to the per-competition queue `#/<ev>/fixes`).
   ([web.md](web.md))
+* The app calls the worker "not checked in" after an hour without a loop pass, which a very long backlog pass can
+  also trigger. The Video page's hint to allow a private host with `CS_URL_ALLOW` needs that variable added to the
+  api container too. ([server.md](server.md) Docs vs code 13–14)
 * Every idle poll (120 s) rebuilds the whole site, including the dashboard, the defense library and all
   `scout/<ts>.json` replay snapshots. ([pipeline.md](pipeline.md), [architecture.md](architecture.md))
 * `camera_<source>.json` (needed to track from a livestream) is written by no code; it must be made by hand.
@@ -269,6 +280,8 @@ overlay, start/end time, clip path) under `MEDIA/live/<ev>/<video>/matches/`. It
 **v1 / v2** — tracker generations (see Identity); also "V2=1" enables the FUEL/shots/analytics enrichment.
 
 **PAUSE_PROCESSING** — `.env` flag; `1` makes the worker idle entirely (production is paused at time of writing).
+The worker reports it in `data/worker-status.json`; the app shows a "Processing is paused" notice and says
+"not tracked (paused)" / "data as of" instead of "waiting" / "now".
 
 **Dev set** — 2026wasam qm1, qm10–19 (showcase qm17 / team 4911): the matches every tuning change is checked on;
 full-event reprocessing is avoided until final.

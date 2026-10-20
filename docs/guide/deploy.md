@@ -7,6 +7,10 @@ commands. Facts marked **(atomosserver)** were checked read-only on the producti
 > **In progress at time of writing.** A performance pass (`web/nginx.conf`, `Dockerfile`s) and a competitions pass
 > (`live/worker.py`, server routers) were under way. Commands below match the committed code. Newer commits may add
 > flags or change the worker loop.
+>
+> **UX fix wave (2026-10-19, `56fda7c..c64b813`):** the app now shows the worker's paused / waiting state
+> (`data/worker-status.json`, §2), the Video page refuses links it can't track (§2 table), and the downloads site has
+> its own publish script and nginx config (§8.9).
 
 ---
 
@@ -130,7 +134,7 @@ app falls back to the matching `.env` value.
 | `POLL_SECONDS`, `HUBCAM`, `EVENTS`, `TBA_KEY` | worker | fallbacks only; prefer the app |
 | `YT_FORCE_IPV4` | worker, recorder | keep `1` on hosts whose IPv6 is bot-flagged by YouTube |
 | `LIVESTREAM`, `LIVE_BUDGET_GB`, `LIVE_MIN_FREE_GB`, `LIVE_BACKFILL_MIN`, `LIVE_DIR`, ... | recorder | §8.7 |
-| `CS_URL_ALLOW` | worker, recorder | private hosts allowed as video sources (e.g. a LAN OBS HLS server) |
+| `CS_URL_ALLOW` | worker, recorder | private hosts allowed as video sources (e.g. a LAN OBS HLS server). Pasting such a link on the Video page is checked by the **api**, which doesn't get this variable: add it to the api's `environment:` too, or the paste is refused |
 | `PROCESSORS_GPU0`, `PROCESSORS_GPU1`, `PROCESSOR_*`, `WORKER_TRACK` | compose, worker | extra tracking jobs, §3.1 |
 | `DYNAMIC` | worker, processors | `1` / `0` forces dynamic mode on / off for every livestream source; unset = per source (§3.1) |
 | `DASH_TEAM`, `DASH_GOAL`, `DASH_AWARD_CONTENDER`, `DCMP_CAPACITY` | worker | strategy perspective. `DASH_TEAM` defaults to `frc4911`, and the Admin team number does **not** change it |
@@ -158,7 +162,14 @@ options null.
 * the Video-page job thread (frame grabs, layout suggestions, calibration fits) **still runs**;
 * the **recorder is not affected**. It records whenever a followed event with a livestream source is within its
   dates;
-* the updater never edits `.env`, so the pause survives updates.
+* the updater never edits `.env`, so the pause survives updates;
+* the web app **says so**: the worker writes `data/worker-status.json` (`{at, paused, reason}`) on every loop pass
+  (every 30 s while waiting), the api returns it in `/app/v1/session` → `processing`, and signed-in pages show
+  "Processing is paused on the server" (admins get how to turn it back on), Matches says "not tracked (paused)",
+  empty pages give that reason, the time control says "Latest" instead of "Live", and Admin → Settings has a
+  worker status line. The same channel reports "no TBA key" and "The worker hasn't checked in since …" (no pass for
+  over an hour: a stopped worker, or a very long pass). The notice goes away within about a minute of unpausing
+  (the app re-reads the session every 60 s).
 
 Production on atomosserver runs paused. The 2026wasam data is complete and frozen, and new site builds are made by
 hand (§8.3).
@@ -630,7 +641,38 @@ docker compose exec -u 1000:1000 -e HOME=/tmp -e PAUSE_PROCESSING=0 -e ONCE=1 -e
 
 This runs one sync pass in a second process that processes at most one new match per event and exits. The two
 never track the same match (claims, `live/claims.py`), but both rewrite `status.json`: run it while the main worker
-is idle, or start a process-only processor instead (§3.1).
+is idle, or start a process-only processor instead (§3.1). It also writes `worker-status.json` (not paused) once;
+a paused main worker writes "paused" again within 30 s, so the app's notice may flicker off for that long.
+
+### 8.9 Downloads / demo site (port 7580)
+
+The demo and the install downloads are a separate, read-only nginx container `cyber-scout-demo` on atomosserver
+port 7580 (not part of the compose stack; 8790 on that host is another app, never use it). It is **LAN-only**: no
+tunnel. Publish from the Mac, in the repo:
+
+```bash
+bash site/tools/publish_downloads.sh http://10.0.0.58:7580 atomosserver /mnt/nas/autoscout-scratch/demo-site 7580
+bash site/tools/publish_downloads.sh --listing-only [SITE_URL]     # only rewrite site/downloads/README.txt
+```
+
+* **`SITE_URL` is required** (no default): it is baked into `get.sh` / `get.ps1`, so it must be the address other
+  computers use. It must be `http(s)://host[:port]` with no path; `PORT` defaults to its port. A private address
+  (10.x, 192.168.x, 100.64/10 Tailscale, `.local`, a bare host name, …) gets a note: the one-liners only work where
+  that address is reachable (the shop network or a VPN into it).
+* It builds `site/downloads/` locally (`install.sh`, `install.ps1`, `get.sh`, `get.ps1`, `cyberscout-src.tar.gz` =
+  `git archive HEAD`, Client builds from `client/dist/` and `client/dist/ci/`, the APK from `android/build/`,
+  `SHA256SUMS`, `VERSION` = `<commit> <commit date> <site>`, `README.txt` last), rsyncs `site/` to the remote dir,
+  takes `robot.onnx` and its SHA-256 from the server's own stack, and (re)starts the container with
+  `site/tools/nginx.conf`. It **refuses a port** that anything but `cyber-scout-demo` is listening on.
+* **Checksummed one-liners:** `get.sh` / `get.ps1` download `install.sh` / `install.ps1` and the code tarball from the
+  site, check each against the SHA-256 written in at publish time ("not running it" on a mismatch), then run the
+  installer with `--tarball`, `--model <site>/downloads/robot.onnx` and `--model-sha256`. They say the site must be
+  reachable when it isn't.
+* **`CS_SITE`** overrides the baked-in address when the site is reached another way (e.g. Tailscale):
+  `curl -fsSL <addr>/downloads/get.sh | CS_SITE=<addr> bash`, or `$env:CS_SITE='<addr>'; irm <addr>/downloads/get.ps1
+  | iex`. The install page adds it to the commands by itself when opened at another address than the published one.
+* `nginx.conf` serves scripts, `SHA256SUMS` and `VERSION` as `text/plain` (readable in the browser before piping),
+  binaries as downloads, and redirects `/downloads/` to the install guide.
 
 ---
 
@@ -717,8 +759,12 @@ the cause.
 
 ### 9.7 Worker says "waiting"
 
-The log line names the reason: `match processing paused (PAUSE_PROCESSING=1)`, `no TBA key`, `no events followed`
-or `model not found: /data/models/robot.onnx`. It re-checks every 30 s, and a settings change wakes it at once.
+The log line names the reason: `match processing paused (PAUSE_PROCESSING=1)`, `no TBA key` or `no events
+followed`. It re-checks every 30 s, and a settings change wakes it at once. The same reason is in
+`data/worker-status.json` and in the app (the notice above every page, Admin → Settings worker line). A missing
+model doesn't make it wait: it logs `no detector model (…): publishing TBA + livestream results` and tracks robots
+once the file appears. "The worker hasn't checked in since …" in the app means no loop pass for over an hour: check
+`docker compose ps worker` and its log (a long backlog pass can also cause it).
 
 ### 9.8 Sign-in problems
 

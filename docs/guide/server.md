@@ -14,6 +14,12 @@ Everything below was read from the code at the commit named in `docs/guide/READM
 > `server/routers/*` (and `web/app.js`, `live/worker.py`). At the time of writing `git status` showed no
 > uncommitted changes under `server/`, so this page describes the committed routers. Expect new endpoints
 > (for example event/competition management) to appear; regenerate `server/openapi.json` when they do.
+>
+> **UX fix wave (2026-10-19, `56fda7c..c64b813`).** Brought up to date for that wave: `/session.processing` +
+> `DATA/worker-status.json`, the setup check order and weak admin passwords, TBA not-found sentences, the audit
+> `changes` filter and `revert-user` `dry_run`, Video-page link rules (`GET sources/webcasts`, `probe_http`,
+> `CS_PROBE_LINKS`). `server/openapi.json` was regenerated in that wave (`c777728`). The competitions and offline-sync
+> routers (`events/search`, `/sync/*`) are still not described here; `docs/SYNC.md` covers sync.
 
 ---
 
@@ -30,6 +36,7 @@ Everything below was read from the code at the commit named in `docs/guide/READM
 | `server/audit.py` | `record()` (append to `audit_log`), `family()`, `revertible()`, `REVERTIBLE` |
 | `server/textrules.py` | free-text validation: `plain_text`, `display_name`, `skeleton` (look-alike folding), `has_reserved_word`, `label` |
 | `server/workerconf.py` | `build()` / `write()` of `DATA/config/worker.json` (0600) for the worker and recorder |
+| `server/workerstatus.py` | `processing_state()`: reads `DATA/worker-status.json` (written by the worker every pass) for `/session.processing`; `WHY` sentences per reason; `FRESH_S` 3600 |
 | `server/tba.py` | minimal TBA client with an in-memory TTL cache; `validate_key()` |
 | `server/manage.py` | break-glass CLI: `users`, `reset-password`, `make-admin` |
 | `server/routers/auth.py` | `/session`, `/setup`, `/auth/*`, password/display-name policy helpers |
@@ -61,7 +68,7 @@ browser ──HTTP──> web (nginx :80, published as WEB_BIND:WEB_PORT, defaul
                   api (uvicorn server.main:app, ONE process, port 8000, not published)
                     │  sqlite3  DATA/app.db (WAL)
                     │  files    DATA/config/worker.json, DATA/events/<ev>/{overrides,sources,layout,camera,...}.json,
-                    │           DATA/jobs/sources/*.json, DATA/config/update-request.json
+                    │           DATA/jobs/sources/*.json, DATA/config/update-request.json; reads DATA/worker-status.json
                     ▼
                   worker / recorder / host updater read those files (no HTTP between services)
 ```
@@ -210,7 +217,9 @@ and `pw_strength = 0`.
 * argon2id via `argon2-cffi` defaults; `verify_password` verifies against a dummy hash when the user doesn't
   exist (equal timing) and returns a re-hash when parameters changed (stored on login).
 * `check_password_policy(pw, username, role)`:
-  * `admin`: >= `PASSWORD_MIN` (10) chars and not equal (case-insensitive) to the username;
+  * `admin`: >= `PASSWORD_MIN` (10) chars, not equal (case-insensitive) to the username, and not `too_simple`
+    (3 or fewer distinct characters, or a substring of a keyboard / alphabet / digit run such as `qwertyuiop`,
+    `1234567890`, either direction) -> 422 "that admin password is too easy to guess ...";
   * others: optional; if set, >= `MEMBER_PASSWORD_MIN` (4).
 * `password_strength`: 0 = none, 1 = member-rule only, 2 = admin-grade. Stored in `users.pw_strength`.
   Promoting someone to admin requires strength 2 (or a new password in the same PATCH) -> otherwise 409.
@@ -234,8 +243,9 @@ and `pw_strength = 0`.
 * `GET /session` -> `setup_required: true` while `users` is empty; `setup_code_required` mirrors
   `SETUP_CODE_REQUIRED`.
 * `POST /setup` creates the first account as **admin** (admin password rules; display name may use reserved
-  words), checks the code case-insensitively against `DATA/setup-code.txt` (403 + limiter failure if wrong),
-  signs in, audits `auth.setup`, then deletes the code file. 409 once any user exists.
+  words). Order of checks: 409 once any user exists, then the code (case-insensitive against
+  `DATA/setup-code.txt`; 403 + limiter failure if wrong), and only then username / password / display name, so a
+  wrong code is reported before anything else. It signs in, audits `auth.setup`, then deletes the code file.
 * `configured` (in `/session`) = TBA key set AND >= 1 followed event AND setting `setup_complete` true. The wizard
   (`web/setup.js`) sets `setup_complete` via `PATCH /settings` at the end; values imported from `.env` don't count.
 
@@ -360,8 +370,10 @@ the entry already has a revert (`SELECT 1 FROM audit_log WHERE ref=id`).
 | events | follow (upsert row) or unfollow to match; `events_configured` set; worker.json rewritten |
 
 `POST /audit/revert-user {user_id, since}` walks that account's entries with `at >= since`, newest first (max
-2000), reverts each revertible, not-yet-reverted one, and returns `{reverted: [ids], skipped: [ids]}` (skipped =
-not revertible, already reverted, or the revert raised an HTTP error). One transaction for all.
+2000), reverts each revertible, not-yet-reverted one, and returns `{reverted: [ids], skipped: [ids], dry_run}`
+(skipped = not revertible, already reverted, or the revert raised an HTTP error). One transaction for all. With
+`dry_run: true` nothing changes: `reverted` lists what would be undone (the Activity page shows that count and asks
+for the username before the real call).
 
 Not undoable from the log: account changes, sign-ins, the TBA key, sources / layout / calibration edits (only
 `http.*` entries; `calibration/accept` keeps a `.bak-<ts>` copy of the replaced camera file), and updates.
@@ -386,13 +398,21 @@ All paths are under **`/app/v1`**. "CSRF" = mutating, so both CSRF layers apply.
 
 | method | path | role | CSRF | limits | audit | what |
 |---|---|---|---|---|---|---|
-| GET | `/session` | anyone | | | | always 200: `{setup_required, setup_code_required, user: {id, username, display_name, role} \| null, csrf, configured, lockdown, network: lan\|public, passwordless_ok}`; ensures the `cs_csrf` cookie |
+| GET | `/session` | anyone | | | | always 200: `{setup_required, setup_code_required, user: {id, username, display_name, role} \| null, csrf, configured, lockdown, network: lan\|public, passwordless_ok, processing}`; ensures the `cs_csrf` cookie. `processing` is null when signed out (below) |
 | POST | `/setup` | anyone, only while no users exist | cookie | login limiter key `#setup` | `auth.setup` | body `SetupIn {setup_code?, username, password, display_name}` (`extra=forbid`). Creates the admin, signs in, deletes `setup-code.txt`. 403 wrong code, 409 already set up |
 | POST | `/auth/login` | anyone | cookie | login limiter; nginx 10 r/min | `auth.login` (`after.password` bool) / `auth.login_failed` | body `{username (1-64), password ("" allowed)}`. Generic `401 "invalid username or password"` for unknown user, wrong password or disabled account. Empty password: policy check first (section 3.5). Session is `net_locked` when the password was empty |
 | POST | `/auth/logout` | anyone | cookie | | `auth.logout` if a valid session | deletes this session row, clears `cs_session`, sets a fresh `cs_csrf`; 204 |
 | POST | `/auth/password` | viewer+ (exempt from lockdown) | session | `write` (non-admin) | `auth.password` | `{current_password, new_password}`; 403 if current is wrong; applies the policy for the user's role; deletes the user's other sessions; this session's `net_locked` = new password empty; 204 |
 | PATCH | `/auth/profile` | scout+ | session | `write`, `profile` | `users.profile` | `{display_name}` (2-64 in, then `display_name` rules without reserved words, 409 if look-alike to another account); returns `SessionOut` |
 | GET | `/auth/check` | viewer+ | | | | nginx `auth_request`: 204 + `X-CS-Role`, or 401 |
+
+**Processing state** (`/session.processing`, signed in only; `server/workerstatus.py`). The worker writes
+`DATA/worker-status.json` = `{at, paused, reason}` at the top of every loop pass (`live/worker.py:status_beat`;
+every 30 s while it waits, once per pass while it works). The API turns it into `{paused: bool|null, worker_seen:
+unix|null, reason: "paused"|"no_key"|"no_events"|null, why: sentence|null}`. Missing / unreadable file (no worker,
+or one older than this change) -> all null ("unknown"). A file older than `FRESH_S` (1 h) keeps `worker_seen` but
+`paused` / `reason` become null, so a stopped worker never reads as "paused". `PAUSE_PROCESSING` semantics are
+unchanged; this is reporting only. The web app polls `/session` every 60 s for it (`web.md` §4.7).
 
 ### 7.3 Users (`routers/users.py`, admin only)
 
@@ -414,8 +434,10 @@ All paths are under **`/app/v1`**. "CSRF" = mutating, so both CSRF layers apply.
 | GET | `/tba/team/{number}` | admin | | `{key, team_number, nickname, name, city, state_prov, country}` (cached 24 h) |
 | GET | `/tba/events?year=` | admin | | `{year (default: this year), team_number, team_events[], events[]}`; each `{key, name, event_type, start_date, end_date, city, state_prov, country, district (abbreviation), year}`; `team_events` failures are swallowed |
 
-TBA errors via `tba_call`: stored key rejected -> 409 "set a new one"; 404 -> 404; other -> 502. No key -> 409
-"set the TBA key first". `server/tba.py` caches per `(last 8 chars of key, path)` in memory (default TTL 600 s,
+TBA errors via `tba_call(key, path, ttl, not_found=None)`: stored key rejected -> 409 "set a new one"; 404 -> 404
+with the caller's `not_found` sentence (team lookups: "Team 99998 isn't on The Blue Alliance: check the number";
+`POST /events`: "No event 2026zzzz on The Blue Alliance: copy the key from the end of its TBA link ..."), else "The
+Blue Alliance has no such team or event"; other -> 502. No key -> 409 "set the TBA key first". `server/tba.py` caches per `(last 8 chars of key, path)` in memory (default TTL 600 s,
 max ~500 entries) and sends `X-TBA-Auth-Key` + `User-Agent: cyber-scout`, 12 s timeout.
 
 ### 7.5 Followed events (`routers/events.py`)
@@ -479,9 +501,9 @@ The mode is the setting `scout_overrides` (`review` default, or `direct`).
 | GET | `/admin/security` | | `{lockdown: null \| {on, at, by: {id, display_name}}, passwordless_login, scout_overrides}` |
 | PATCH | `/admin/security` | `settings.security` | `{lockdown?: bool, passwordless_login?: never\|lan\|everywhere, scout_overrides?: review\|direct}`; null fields ignored; switching to `never` deletes all `net_locked` sessions |
 | POST | `/admin/sessions/revoke` | `sessions.revoke_all` | `{include_admins: false}` -> deletes every other session of non-admins (or of everyone); your own stays; `{signed_out: n}` |
-| GET | `/audit?user_id=&action=&event=&since=&via=&before_id=&limit=` | | newest first; `action` is a prefix (LIKE-escaped); `limit` 1-500 (default 100); `{entries: [{id, at, action, event, target, user: {id, username, display_name, role}, ip, via, ua, before, after, ref, revertible, reverted_by}], next_before_id}` (paging cursor, null on the last page) |
+| GET | `/audit?user_id=&action=&event=&since=&via=&before_id=&limit=&changes=` | | newest first; `action` is a prefix (LIKE-escaped); `changes=true` leaves out `auth.login`, `auth.login_failed`, `auth.logout` and every `http.*` entry (the Activity page's default view); `limit` 1-500 (default 100); `{entries: [{id, at, action, event, target, user: {id, username, display_name, role}, ip, via, ua, before, after, ref, revertible, reverted_by}], next_before_id}` (paging cursor, null on the last page) |
 | POST | `/audit/{aid}/revert` | `<family>.revert` | section 6.2; `{reverted, entry}` |
-| POST | `/audit/revert-user` | one `*.revert` per entry | `{user_id, since}` -> `{reverted, skipped}` |
+| POST | `/audit/revert-user` | one `*.revert` per entry (none with `dry_run`) | `{user_id, since, dry_run=false}` -> `{reverted, skipped, dry_run}` |
 
 ### 7.8 Video sources, layout, calibration, jobs, livestream (`routers/sources.py`)
 
@@ -513,10 +535,11 @@ than 1 h with no runner are marked `error: expired`. States: `queued -> running 
 
 | method | path | role | what |
 |---|---|---|---|
-| GET | `/events/{ev}/sources` | viewer+ | `{event, sources[] (+ has_layout, n_videos, has_frame), discovered_at, roles, kinds, jobs_inline, video_config, station_pattern, livestream}` |
-| POST | `/events/{ev}/sources/discover` | admin | fetches TBA `/event/{ev}` (webcasts) and `/event/{ev}/matches` (per-match videos) and queues a `discover` job (runs inline); returns `{id, kind, state, created}` |
-| POST | `/events/{ev}/sources` | admin | `{url (<= 2000), role: wide\|dynamic\|alliance-side, label?, primary?, coverage?}`; `sources.add` normalises with `classify_url` (http/https with host, YouTube/Twitch forms, or absolute file paths under the media/data dirs; leading `-` refused), `safe_public_url` refuses private / loopback / link-local / docker / Tailscale hosts (allow-list `CS_URL_ALLOW`), id = `url-<sha1[:8]>`, 422 on any rule; 201. A playlist/channel (`kind: per_match`) also queues `index_playlist` |
-| PATCH | `/events/{ev}/sources/{sid}` | admin | `{role?, primary?, enabled?, label?, coverage?, sample?, notes?}` (only `USER_FIELDS`); `sample` validated by `clean_sample` (`{video, match, t}`); `primary: true` also sets `layout.json processing_source` if that source has a layout |
+| GET | `/events/{ev}/sources` | viewer+ | `{event, sources[] (+ has_layout, n_videos, has_frame), discovered_at, roles, kinds, jobs_inline, video_config, station_pattern, livestream}`; each `label` goes through `display_label` (a TBA webcast still named "Event webcast (twitch)" is shown as "Event webcast · Twitch firstwa_red2") |
+| GET | `/events/{ev}/sources/webcasts` | admin | TBA `/event/{ev}` webcasts (YouTube / Twitch only, canonical URL, each once) for the Video page to offer above its paste box: `{event, webcasts: [{url, label, provider, kind, channel, date, source (id of the source that already has the link, else null), dismissed}]}`. No TBA key or TBA down -> `{webcasts: [], note}`, never an error |
+| POST | `/events/{ev}/sources/discover` | admin | fetches TBA `/event/{ev}` (webcasts) and `/event/{ev}/matches` (per-match videos) and queues a `discover` job (runs inline); returns `{id, kind, state, created}`. Webcasts are named `webcast_label` ("Event webcast · <provider> <channel>[, <date>]"); `merge` renames an old automatic name |
+| POST | `/events/{ev}/sources` | admin | `{url (<= 2000), role: wide\|dynamic\|alliance-side, label?, primary?, coverage?}`; `sources.add` -> `_checked`: `classify_url` (leading `-` refused), then only **YouTube / Twitch links, a direct video address** (path ending `.m3u8 .mp4 .m4v .mov .mkv .webm .ts .flv`) **or a file under the media / data dirs**; any other web page (vimeo.com, a site's home page) is refused. `safe_public_url` refuses private / loopback / link-local / docker / Tailscale hosts (allow-list `CS_URL_ALLOW`). Every refusal is a 422 with one sentence for the admin (`link_problem`, e.g. "vimeo.com isn't YouTube or Twitch. Paste the event's stream or video link ..."). A direct `http(s)` link then gets one `HEAD` (`probe_http`: 5 s, redirects not followed; 404 / 410 or `text/html` -> 422 "That address answers “404 Not Found” ..."; anything else, or unreachable, passes; `CS_PROBE_LINKS=0` skips it). Id = `url-<sha1[:8]>`; 201. Adding a link never changes the event's video mode. A playlist/channel (`kind: per_match`) also queues `index_playlist` |
+| PATCH | `/events/{ev}/sources/{sid}` | admin | `{role?, primary?, enabled?, label?, coverage?, sample?, notes?, station?, dismissed?, url?, live?, dynamic?}`; a new `url` (admin-added sources only, id kept) goes through the same checks and probe as POST; `sample` validated by `clean_sample` (`{video, match, t}`); `primary: true` also sets `layout.json processing_source` if that source has a layout |
 | DELETE | `/events/{ev}/sources/{sid}` | admin | removes the source; its layout entry is kept |
 | POST | `/events/{ev}/sources/{sid}/frame` | admin | body `{t?, match?}` -> `frame` job |
 | GET | `/events/{ev}/sources/{sid}/frame.jpg` | admin | last grabbed frame (path-checked, `no-store`) |
@@ -524,7 +547,7 @@ than 1 h with no runner are marked `error: expired`. States: `queued -> running 
 | PUT | `/events/{ev}/layout/{sid}` | admin | `{W, H (1..8192), regions: [{id?, kind, label?, box: [x0,y0,x1,y1], light_on_dark?}] (<= 60), frame?}`; kinds from `layout.KINDS` (`field, overhead, station_red, station_blue, clock, scoreboard, mask, inset`); boxes clamped to the frame, must be >= 2 px; at most one each of `station_red, station_blue, clock, field, overhead`. Sets `processing_source` when the source is primary and `station_source` when it has station boxes |
 | DELETE | `/events/{ev}/layout/{sid}` | admin | forget one source's boxes (clears `processing_source` / `station_source` if they pointed at it) |
 | POST | `/events/{ev}/layout/{sid}/suggest` | admin | body `{other?, match?}` -> `suggest` job (auto-detect overlay / clock / inset / field boxes) |
-| GET | `/events/{ev}/calibration` | viewer+ | per target (`overhead`, `station_red`, `station_blue`): `{target, file, saved, where: data\|repo, W, H, crop, calib, tag_rms, mtime, candidate?: {fitted_at, report, has_camera, source}}`; looks in `DATA/events/<ev>/` then the repo's `events/<ev>/` |
+| GET | `/events/{ev}/calibration` | viewer+ | per target (`overhead`, `station_red`, `station_blue`): `{target, file, saved, where: data\|repo, W, H, crop, calib, tag_rms, mtime, has_frame (the wizard's frame exists), candidate?: {fitted_at, report, has_camera, source}}`; looks in `DATA/events/<ev>/` then the repo's `events/<ev>/` |
 | POST | `/events/{ev}/calibration/{target}/detect` | admin | body `{source?, match?}` -> `detect` job (sample frames + AprilTags, creates the wizard state) |
 | POST | `/events/{ev}/calibration/{target}/fit` | admin | `{points: {name: [u,v]}, drop_tags: [id], line_clicks: {line: [[u,v],...]} (<= 60 per line), tags?, auto_lines=true, more_tags=true}` -> `fit` job; 409 before detect |
 | GET | `/events/{ev}/calibration/{target}/frame.jpg` | admin | the wizard frame |
@@ -742,13 +765,16 @@ policy path). Neither writes an audit entry.
 | `MEMBER_PASSWORD_MIN` | 4 | `config.py` | non-admin minimum when a password is set |
 | `TBA_BASE` | `https://www.thebluealliance.com/api/v3` | `config.py` | TBA API root (tests stub it) |
 | `TBA_KEY`, `EVENTS` | empty | `config.py` -> `seed_from_env` | imported once into an empty DB |
+| `CS_URL_ALLOW` | empty | `live/sources.py` (in the api for pasted links) | private hosts / CIDRs a pasted video link may use |
+| `CS_PROBE_LINKS` | `1` | `live/sources.py:probe_http` | `0` = no `HEAD` check of a pasted direct video link (tests set it) |
 | `TZ`, `PYTHONDONTWRITEBYTECODE` | | compose | |
 
 The shipped `deploy/docker-compose.yml` gives the api no `env_file`; its `environment:` is an explicit allowlist:
 `DATA`, `PUID`, `PGID`, `TZ`, `COOKIE_SECURE`, `PYTHONDONTWRITEBYTECODE` and (since the cleanup pass)
 `SESSION_IDLE_DAYS`, `SESSION_MAX_DAYS`, `PASSWORD_MIN`, `MEMBER_PASSWORD_MIN`, `SETUP_CODE_REQUIRED`, each as `${VAR:-<config.py default>}`. `TBA_BASE`,
-`TBA_KEY` and `EVENTS` are not passed (the one-time `.env` import is off on purpose). A new api setting must be added
-to that block; `server/tests/test_hardening.py::test_compose_gives_api_an_env_allowlist` checks the list and its
+`TBA_KEY` and `EVENTS` are not passed (the one-time `.env` import is off on purpose). Neither are `CS_URL_ALLOW` and
+`CS_PROBE_LINKS`, so in the shipped stack the api always refuses private hosts for pasted links and always probes
+direct ones (see Docs vs code 13). A new api setting must be added to that block; `server/tests/test_hardening.py::test_compose_gives_api_an_env_allowlist` checks the list and its
 defaults.
 
 Container hardening (compose): `read_only: true`, tmpfs `/tmp` 64 MB, `cap_drop: ALL` + `CHOWN, DAC_OVERRIDE,
@@ -761,7 +787,7 @@ ${API_MEM_LIMIT:-1g}`, no published port.
 
 ```bash
 pip install -r server/requirements-dev.txt          # or use the repo's .venv
-python -m pytest server/tests                        # 161 tests after the cleanup pass, ~30 s
+python -m pytest server/tests                        # 256 tests at c64b813 (UX fix wave)
 ```
 
 `conftest.py`: the `data` fixture points `cfg` at a tmp dir, clears the limiters and the TBA cache, and replaces
@@ -777,7 +803,9 @@ tests use no-password teammates), `team` (one signed-in client per role).
 | `test_data.py` | wizard flow, worker.json `events: null` until configured, picklist versioning, overrides file, note validation, admin-only OpenAPI, picklist rejects markup |
 | `test_hardening.py` | audit of every change (who/where), append-only triggers, no secrets in the log, failed logins logged without user enumeration, fallback `http.*` audit, picklist history / restore / revert-of-revert, revert-user, note soft delete / hide / restore, note markup and invisible-char refusal, scout fix approval queue, direct mode, pending cap, note flood and picklist/global write limits, display-name rules, new accounts default to viewer, passwordless LAN-only and fail-closed proxy detection, policy switching, password unlocks a session, rate limit keyed on the real IP, lockdown, sign everyone out, disable is instant, no self-promotion, no usernames leak to teammates, settings refuse markup, settings/events revert, audit filters, migrating an old DB, the compose api env allowlist (cleanup pass) |
 | `test_notes_ui.py` | (cleanup pass) the contract `web/notes.js` relies on: match notes tagged with a team appear on both pages, viewers read but can't write, own edit / delete / undo, strategist hide / restore (author can't undo a hide), lockdown answers 423 for notes and fixes while reads still work, the "Wrong team?" merge-then-PUT flow (202 pending → approve → merged file), scout "ask to clear" queued vs strategist clear applied |
-| `test_sources_api.py` | `POST /sources` rejects option-like, `file:`, `javascript:`, relative, private / loopback / Tailscale URLs; normalisation (Twitch, host lower-casing); `sample` validation; skipped if `live/sources.py` can't be imported |
+| `test_sources_api.py` | `POST /sources` rejects option-like, `file:`, `javascript:`, relative, private / loopback / Tailscale URLs; normalisation (Twitch, host lower-casing); `sample` validation; skipped if `live/sources.py` can't be imported (sets `CS_PROBE_LINKS=0`) |
+| `test_video_links_api.py` | (UX fix wave) only YouTube / Twitch / direct video / server files accepted, each refusal a sentence; a dead direct link is refused on POST and on a PATCH of the URL and not saved; adding a link never sets the video mode; `GET sources/webcasts` (added / dismissed flags, admin only); old webcast names get their channel |
+| `test_ux_a.py` | (UX fix wave) `/session.processing` (paused / stale / unknown, null when signed out), the setup code checked first, trivial admin passwords refused, TBA not-found sentences, `status_beat` writes `worker-status.json`, audit `changes=true` and `revert-user` `dry_run` |
 | `test_livestream.py` | `/livestream` states `no_source` / `not_running` / `recording` / stale, bad event key, needs login |
 | `test_update.py` | admin-only, 401, CSRF, not-installed, fixed-schema request + audit, strict apply body, display name can't break the request, busy/rollback rules, yt-dlp switch, lockdown doesn't block admins, rate limit, status parsing whitelist and types, garbage and symlinked status; plus the updater's own validator, helpers, yt-dlp lock validation and conf parsing (loads `deploy/updater/cs-updater.py` directly) |
 
@@ -842,3 +870,11 @@ Where the code and existing docs disagree (the code is what runs):
 11. **Picklist weights** accept -10..10 (`PicklistData`); the security report's suggested fix said 0..5. Not a bug,
     just different from the recommendation.
 12. **`manage.py`** isn't mentioned as bypassing the password policy and the audit log; it does both (section 10).
+13. **`CS_URL_ALLOW` for pasted links.** The Video page's refusal for a private host says "the server's admin can
+    allow that host with CS_URL_ALLOW", and `deploy.md` lists it for worker / recorder. The check that refuses the
+    paste runs in the **api** (`sources._checked`), and compose doesn't pass `CS_URL_ALLOW` (or `CS_PROBE_LINKS`) to
+    the api, so setting it in `.env` doesn't let such a link be added until it is added to the api's `environment:`.
+14. **Worker "stale" during a long pass.** `worker-status.json` is written once per loop pass. A pass that tracks a
+    big backlog (`BACKLOG_BATCH` caps only the other competitions while one is live) can take more than an hour; the app then
+    says "The worker hasn't checked in since …" (web `STALE_S` 1 h) although it is working, and `/session` reports
+    `paused: null` (`FRESH_S` 1 h).

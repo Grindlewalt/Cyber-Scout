@@ -22,6 +22,10 @@ CLI invocations and references.
 > `live/worker.py`, `live/sitev2.py`, `web/nginx.conf`, `Dockerfile` and the fetch code in the web files. This page
 > describes the **committed** state (`git show HEAD:<path>`). After those changes land, the function lists for
 > those files may need a refresh.
+>
+> **UX fix wave (2026-10-19, `56fda7c..c64b813`):** entries for the files that wave added or changed in purpose were
+> updated (server `workerstatus.py` + tests, `web/sync.js` / `sw.js`, the review tool, the client sync files, the
+> downloads-site tools). Line counts elsewhere are still those of `cc6297c`.
 
 ---
 
@@ -37,6 +41,8 @@ CLI invocations and references.
 - [`server/` (API)](#server-api)
 - [`web/` (the SPA)](#web-the-spa)
 - [`lab/` (design lab)](#lab-design-lab)
+- [`client/`](#client-cyber-scout-client-the-sync-files-the-ux-fix-wave-changed-and-the-processing-parts)
+- [`site/`](#site-demo--downloads-website-the-files-the-ux-fix-wave-changed)
 - [`tests/` (pipeline tests)](#tests-pipeline-tests)
 - [`tools/` [U]](#tools-u)
 - [`src/` [U]](#src-u)
@@ -241,11 +247,11 @@ used at runtime: the output is `DATA/models/robot.onnx`.
 | file | purpose |
 |---|---|
 | `README.md` | The recipe: project layout, init → import → harvest → autolabel → review → build → train → eval → export → install, a new game, measured speeds, the 2026 history. |
-| `cstrain.py` | The CLI: every step above plus `status`; reads `live/camera.py`, `bglabel.py`, `make_labels.grow`, `detector.py` (ONNX eval / teachers the way the worker runs them). |
+| `cstrain.py` | The CLI: every step above plus `status`; reads `live/camera.py`, `bglabel.py`, `make_labels.grow`, `detector.py` (ONNX eval / teachers the way the worker runs them). `load_index` applies a reviewer's `view` correction (review file) over the index's F / M / ? tag, so build, eval and status use it. |
 | `cstrain_core.py` | Pure helpers (numpy only): frame ids, DCT perceptual hash + near-duplicate filter, thumbnail change, split by match, IoU, weighted box fusion, uncertainty, label priority (review > import > auto), YOLO text, mAP / P / R. |
 | `setup_env.sh` | Builds `/mnt/nas/autoscout-scratch/trainenv` with uv (Python 3.12, CUDA torch, ultralytics 8.4.138, onnx, onnxslim, onnxruntime-gpu 1.31.0, av, opencv headless), caches on the NAS; idempotent. |
-| `review/server.py` | The label review / labelling web UI (stdlib): token auth (`?token=` once → cookie, or `X-Review-Token`), queues Uncertain / Gold set / Random / Mine / All with event / match / split filters; writes only `labels/review/<id>.json` (temp file + rename). `serve(project_dir, host, port, token)`; `cstrain.py review`. |
-| `review/index.html`, `review/review.js`, `review/review.css` | Its page: canvas box editor, keyboard shortcuts, CSP `script-src 'self'`. |
+| `review/server.py` | The label review / labelling web UI (stdlib): token auth (`?token=` once → 30-day cookie, or `X-Review-Token`; without it a styled "This review link is incomplete or has expired. Ask your mentor…" page, whose stylesheet and font are the only public files), queues Uncertain / Gold set / Random / Mine / All with event / match / split filters (natural match order; Mine uses the stored name rule `clean_name`); writes only `labels/review/<id>.json` (temp file + rename): status `ok` / `fixed` / `bad` (`skip` only in older files), plus `hidden` (auto boxes the slider left out) and `view` (the reviewer's F / M / ? fix). `DELETE /api/review/<id>` removes one (the UI's Undo of a first save). `serve(project_dir, host, port, token)`; `cstrain.py review`. |
+| `review/index.html`, `review/review.js`, `review/review.css` | Its page: canvas box editor, keyboard shortcuts, CSP `script-src 'self'`. Accept (`A`), **Skip = later** (`S` / `→`, saves nothing), **Bad = exclude** (`B`, saved); saving zero boxes needs a separate "No robots here" (`N`) confirmation; every save has **Undo** (toast button / `Ctrl+Z`); slider drops are counted and recorded as `hidden`; bumper guesses are saved only when kept (`K`, Keep, or moved); Fixed / Moving view toggle; drafts + `beforeunload`; What-to-box Guide; touch (pinch / pan) and trackpad; 44 px targets on coarse pointers. Behaviour in `live/train/README.md` step 5. |
 | `dl.py` | 2026 one-off: downloaded 6 public FRC robot datasets from Roboflow (`RF=<key>`; free-tier credits, cached in `DATA/training/rf`). |
 | `pool.py` | 2026 one-off: pooled those datasets into one single-class YOLO set (robot / bumper aliases → `robot`). |
 | `r2.sh` | 2026 one-off: round 2, fine-tuned r1 on the public pool + Sammamish auto-labels (×2) on both GPUs. |
@@ -269,6 +275,8 @@ used at runtime: the output is `DATA/models/robot.onnx`.
 - `live_view`, `live_summary`, `live_input`, `live_reconcile`: the livestream integration (see `liveingest.py`).
 - `_sleep` (wakes early when settings or livestream records change), `main()` (`--recorder` →
   `liveingest.main`; `ONCE=1`; `PAUSE_PROCESSING`).
+- `status_beat(reason)`: writes `DATA/worker-status.json` `{at, paused, reason}` at the top of every main-loop pass
+  (the app's "processing is paused" / "worker hasn't checked in" notice, via `/session.processing`).
 
 **`live/process.py`** (673 lines)
 - `process(video, cam, onnx, tag_csv, log, start_hint, pose_guess, teams=, event=, extra_reads=)`: production
@@ -340,8 +348,12 @@ used at runtime: the output is `DATA/models/robot.onnx`.
 - `classify_url` (normalises; rejects leading `-`, bad schemes and bad characters), `media_ok`, `clean_sample`,
   `file_allowed` / `allowed_roots`.
 - `safe_public_url`, `ip_blocked`, `_url_allow` (`CS_URL_ALLOW`): the SSRF guard.
-- `discover` (TBA webcasts + per-match upload families), `webcast_url`, `oembed`, `family` /
-  `family_pattern`, `match_key_from_title`.
+- What may be pasted (UX fix wave): `_checked` (YouTube / Twitch, a direct video address `MEDIA_EXT`, or a server
+  file; anything else refused), `link_problem` (an error → one sentence for the admin), `probe_http` (one `HEAD` of a
+  direct link, no redirects; 404 / 410 / `text/html` refused; `CS_PROBE_LINKS=0` off).
+- `discover` (TBA webcasts + per-match upload families), `webcast_url`, `webcast_label` ("Event webcast · Twitch
+  firstwa_red1"), `display_label` (renames an old automatic name), `webcast_list` (TBA webcasts with
+  added / dismissed flags, for `GET sources/webcasts`), `oembed`, `family` / `family_pattern`, `match_key_from_title`.
 - `video_config` (→ `videos.candidates` config), `station_pattern`, `livestream_url`, `media_for`, `covers`.
 - Job queue in `DATA/jobs/sources/`: `new_job`, `get_job`, `_claim`, `run_job`, `run_pending`, `job_loop`
   (worker thread), `submit`.
@@ -506,25 +518,26 @@ edited** when this was written (see top note).
 | `server/textrules.py` | Validation for user text: `plain_text` (notes: no tags/entities/`javascript:`/control/bidi/zero-width), `label`, display-name rules (no staff words, no look-alikes). |
 | `server/tba.py` | Server-side TBA client; the key never leaves the server; short in-memory cache. |
 | `server/workerconf.py` | Writes `DATA/config/worker.json` (0600) from the DB on every settings or events change. |
+| `server/workerstatus.py` | Reads `DATA/worker-status.json` (the worker's last loop pass) → `processing_state()` = `{paused, worker_seen, reason, why}` for `GET /session`; a file older than 1 h is not trusted for `paused`. |
 | `server/manage.py` | Break-glass CLI: `python -m server.manage users \| reset-password <u> \| make-admin <u>`. |
 | `server/entrypoint.sh` | Drops to PUID/PGID. chowns only the API's own files, with `chown -h`; refuses a symlinked `config/` (audit finding 5). Then runs uvicorn. |
 | `server/Dockerfile` | API image: python:3.12-slim + `server/requirements.txt`. Copies `server/` plus `live/sources.py` and `live/layout.py` (stdlib-importable; heavy jobs run in the worker). Removes tests; healthcheck on `/app/v1/health`. |
 | `server/requirements.txt` | Pinned runtime deps (fastapi, starlette, pydantic, uvicorn, argon2-cffi). |
 | `server/requirements-dev.txt` | + httpx, pytest. |
-| `server/openapi.json` | Generated OpenAPI 3.1 contract (50 paths). **Stale:** it lacks the `/admin/update*` endpoints added in fa29065. Regenerate it with the command in `server/README.md`. |
+| `server/openapi.json` | Generated OpenAPI 3.1 contract. Last regenerated in the UX fix wave (`c777728`: session `processing`, audit `changes` + `dry_run`, `sources/webcasts`). Regenerate it with the command in `server/README.md` after API changes. |
 
 ### `server/routers/`
 
 | file | endpoints (all under `/app/v1`) |
 |---|---|
 | `__init__.py` | Empty package marker. |
-| `auth.py` | `GET /session`, `POST /setup`, `POST /auth/login`, `POST /auth/logout`, `POST /auth/password`, `PATCH /auth/profile`, `GET /auth/check` (nginx auth_request). Helpers: `passwordless_allowed`, `check_password_policy`, `password_strength`, `check_display_name`, `start_session`, `ensure_setup_code`, `configured`. |
+| `auth.py` | `GET /session` (+ `processing` for signed-in users), `POST /setup` (code checked first), `POST /auth/login`, `POST /auth/logout`, `POST /auth/password`, `PATCH /auth/profile`, `GET /auth/check` (nginx auth_request). Helpers: `passwordless_allowed`, `check_password_policy` (+ `too_simple` for admin passwords), `password_strength`, `check_display_name`, `start_session`, `ensure_setup_code`, `configured`. |
 | `users.py` | `GET`/`POST /users`, `PATCH`/`DELETE /users/{uid}`. Guards: last active admin, self-delete, admin-grade password before promotion. |
 | `settings.py` | `GET`/`PATCH /settings`, `PUT`/`DELETE /settings/tba-key` (validated against TBA), `GET /tba/team/{n}`, `GET /tba/events?year=`. Helpers: `tba_call`, `settings_out`, `apply_settings_state` (revert support). |
 | `events.py` | `GET`/`POST /events`, `DELETE /events/{ev}` (follow / unfollow; rewrites `worker.json`). |
 | `scouting.py` | Picklists: `GET /events/{ev}/picklists[/{name}]`, `PUT`/`DELETE` (strategist+; `base_version` 409), plus versions, version restore. `PicklistData` is a strict schema (team keys ≤ 200, known weight keys, floats 0..5). Notes: `GET`/`POST /events/{ev}/notes`, `PATCH`/`DELETE /notes/{id}`, `POST /notes/{id}/restore`. Overrides: `GET /events/{ev}/overrides`, `PUT`/`DELETE /events/{ev}/overrides/{match}` (scout = queued request in `review` mode), `POST /events/{ev}/override-requests/{id}/approve\|reject`. Writes `DATA/events/<ev>/overrides.json`. |
-| `admin.py` | `GET`/`PATCH /admin/security` (lockdown, passwordless policy, scout review mode), `POST /admin/sessions/revoke`, `GET /audit`, `POST /audit/{id}/revert`, `POST /audit/revert-user`. `_revert` dispatches to each family's `apply_*_state`. |
-| `sources.py` | Sources: `GET /events/{ev}/sources`, `POST .../sources/discover`, `POST .../sources`, `PATCH`/`DELETE .../sources/{sid}`, `POST .../sources/{sid}/frame`, `GET .../frame.jpg`. Layout: `GET /events/{ev}/layout`, `PUT`/`DELETE .../layout/{sid}`, `POST .../layout/{sid}/suggest`. Calibration: `GET /events/{ev}/calibration`; for each `{target}`: `POST detect`, `POST fit`, `GET frame.jpg`, `GET wizard`, `POST overlay`, `POST accept`. Also `GET /events/{ev}/livestream` (recorder status) and `GET /events/{ev}/jobs/{jid}`. Heavy steps are jobs in `DATA/jobs/sources/`, run by the worker's `sources.job_loop` (the API image has no vision stack). |
+| `admin.py` | `GET`/`PATCH /admin/security` (lockdown, passwordless policy, scout review mode), `POST /admin/sessions/revoke`, `GET /audit` (`changes=true`: no sign-ins / raw requests), `POST /audit/{id}/revert`, `POST /audit/revert-user` (`dry_run`: count only). `_revert` dispatches to each family's `apply_*_state`. |
+| `sources.py` | Sources: `GET /events/{ev}/sources`, `GET .../sources/webcasts` (TBA's streams to offer), `POST .../sources/discover`, `POST .../sources` (only YouTube / Twitch / direct video / server files; a direct link is `HEAD`-probed; 422 sentences), `PATCH`/`DELETE .../sources/{sid}`, `POST .../sources/{sid}/frame`, `GET .../frame.jpg`. Layout: `GET /events/{ev}/layout`, `PUT`/`DELETE .../layout/{sid}`, `POST .../layout/{sid}/suggest`. Calibration: `GET /events/{ev}/calibration`; for each `{target}`: `POST detect`, `POST fit`, `GET frame.jpg`, `GET wizard`, `POST overlay`, `POST accept`. Also `GET /events/{ev}/livestream` (recorder status) and `GET /events/{ev}/jobs/{jid}`. Heavy steps are jobs in `DATA/jobs/sources/`, run by the worker's `sources.job_loop` (the API image has no vision stack). |
 | `update.py` | `GET /admin/update` (status from `DATA/config/update-status.json`; whitelist / type checks in `parse_status`), `POST /admin/update/check\|apply\|rollback` (write `update-request.json`; 6/min; allowed during lockdown). |
 | `processing.py` | Distributed processing (admin): claims, clip download, result upload, pipeline code tarball, speed test (`/processing/*`). |
 
@@ -542,6 +555,8 @@ edited** when this was written (see top note).
 | `test_video_mode_api.py` | `GET/PUT /events/{ev}/video-mode`: livestream-only mode, readiness checklist, audit, roles. |
 | `test_roles.py` | Role matrix: who may call what. |
 | `test_sources_api.py` | Pasted source URLs are normalised and validated (audit findings 2 and 4). |
+| `test_video_links_api.py` | Video page links (UX fix wave): only YouTube / Twitch / direct video / server files, refusals as sentences, a dead direct link refused (POST and PATCH), the video mode untouched, `GET sources/webcasts`, old webcast names renamed. |
+| `test_ux_a.py` | UX fix wave A: `/session.processing` (paused / stale / unknown / signed out), setup code checked first, trivial admin passwords, TBA not-found sentences, `status_beat`, audit `changes` + `dry_run`. |
 | `test_update.py` | Update endpoints: permissions, request-file schema (round trip through `cs-updater.validate_request`), status parsing, lockdown, CSRF, rate limit, the updater's pure helpers. |
 | `test_processing.py` | Processing API: claims shared with the worker, order, clip Range download, uploads, complete / release, auth. |
 | `test_auto_setup_api.py` | Stream auto-setup endpoints (`auto-setup`, `overlay.jpg`, `accept`, `dynamic`) and what `/sources` reports. |
@@ -551,8 +566,8 @@ edited** when this was written (see top note).
 ## `web/` (the SPA)
 
 Static, no build step, served by nginx. Script order is fixed in `index.html`: `theme.js` in `<head>`, then
-`quant.js`, `event.js`, `player.js`, `dash.js`, `app.js`, `setup.js`, `admin.js`, `audit.js`, `notes.js`, `sources.js`,
-`rankings.js`, `schedule.js`, `teams2.js`, `defense.js`, `settings.js`. The later files register through
+`quant.js`, `event.js`, `player.js`, `dash.js`, `app.js`, `setup.js`, `sync.js`, `admin.js`, `audit.js`, `notes.js`,
+`sources.js`, `rankings.js`, `schedule.js`, `teams2.js`, `defense.js`, `settings.js`. The later files register through
 `CS.route`, `CS.globalRoute` and `CS.nav`. `app.js` and the fetch code were **being edited** (see top note).
 
 | file | purpose |
@@ -561,19 +576,22 @@ Static, no build step, served by nginx. Script order is fixed in `index.html`: `
 | `web/Dockerfile` | nginx:1.29-alpine; copies `nginx.conf`, `web/*.html *.js *.css field.jpg` and `fonts/`; adds the cache-bust `?v=` hash to `index.html`. |
 | `web/nginx.conf` | Real-IP trust (docker gateway + loopback only), security headers + CSP, denies dotfiles / `*.db` / `*.env` / keys, `auth_request` (`/_auth` → `/app/v1/auth/check`) gating `/api/` and `/media/`, login rate limiting, proxy `/app/v1/` → `api:8000`, static `/`. |
 | `web/app.js` | Router + plugin registry + shared helpers + the data contract comment at the top (see the function list below). |
-| `web/setup.js` | Platform plugin: sign-in, session, role-aware nav, first-run setup wizard, my account. Exposes `CS.app`, `CS.user`, `CS.can`, `CS.platform`, `CS.form`, `CS.genPassword`, `CS.eventPicker`, `CS.refreshSession`, `CS.navAllowed`. Global routes `#/login`, `#/account`, `#/setup[/step]`. |
-| `web/admin.js` | `#/admin[/users\|settings\|events\|updates]` (admin): `users`, `settings` (team, goal, TBA key, worker options incl. GPU / HUBCAM), `events` (follow via `CS.eventPicker`), `updates` (changelog, progress, rollback). |
-| `web/audit.js` | `#/activity` (admin: audit log, filters, revert, lockdown / passwordless / review switches, sign everyone out) and `#/<ev>/fixes` (strategist+: identity-fix approval queue per competition). |
-| `web/notes.js` | `CS.notes` (Notes card on the team and match pages) and `CS.idFix` ("Wrong team?" identity-fix form on the match page). |
-| `web/settings.js` | `#/settings`: per-browser theme, appearance (light / dark / auto) and layout (sidebar / top bar / command), stored by `theme.js` (`window.CSStyle`). |
+| `web/setup.js` | Platform plugin: sign-in, session (+ 60 s poll for lockdown / processing), role-aware nav, user box (lockdown chip), first-run setup wizard, my account (password, your name, sign out). Exposes `CS.app`, `CS.user`, `CS.can`, `CS.platform`, `CS.form` (field errors, `busy`), `CS.fieldErr`, `CS.signOut`, `CS.genPassword`, `CS.eventPicker` (type-ahead), `CS.refreshSession`, `CS.navAllowed`, `CS.USER_PATTERN`. Global routes `#/login`, `#/account`, `#/setup[/step]`. |
+| `web/sync.js` | Offline layer and Cyber-Scout Client mode (`docs/SYNC.md` part 3): wraps `CS.app` (cached reads, queued writes with `Idempotency-Key`), IndexedDB outbox, connection pill + sheet, conflict cards, offline copies, Settings sections, `#/connect`. Page hooks `CS.sync.offlineHint / clientDown / seenApp / readInfo / queuedMsg / pending`; events `cs:outbox`, `cs:sent`. |
+| `web/sw.js` | Service worker (browser mode, secure contexts only): app shell + offline copies (`cs-ev-<ev>` caches), Background Sync of the outbox (same rebase rule as `sync.js`; reports the keys it sent so the page toasts once). |
+| `web/manifest.webmanifest` | PWA manifest (Jet & Paper colours). |
+| `web/admin.js` | `#/admin[/users\|settings\|events\|updates]` (admin): Teammates (full width, delegated row buttons), Settings (team, goal, TBA key, worker status line from `CS.processing`, worker options incl. GPU / HUBCAM), Competitions (follow via `CS.eventPicker`), Updates (changelog, progress, rollback). |
+| `web/audit.js` | `#/activity` (admin: audit log in sentences, `changes` filter by default, revert, undo-all behind ⋯ with a dry-run count and typed username, lockdown / passwordless / review switches, sign everyone out) and `#/<ev>/fixes` (strategist+: identity-fix approval queue per competition; nav `badge` with the waiting count). |
+| `web/notes.js` | `CS.notes` (Notes card on the team and match pages) and `CS.idFix` ("Wrong team?" identity-fix form on the match page); queued edits drawn over the saved copy, paused-processing wording. Sets `CS.writeErr`. |
+| `web/settings.js` | `#/settings`: sync.js's Offline / Connection section first, then per-browser theme, appearance (light / dark / auto) and layout (sidebar / top bar / command), stored by `theme.js` (`window.CSStyle`). |
 | `web/theme.js` | **Generated** by `lab/tools/site-themes.mjs`. Runs in `<head>` before paint: reads `cs:style` / `cs:mode` / `cs:layout` from localStorage and sets `<html data-style data-mode data-layout>` and theme-colour metas. Default `{style: "jet", mode: "auto", layout: "sidebar"}`. |
 | `web/themes.css` | **Generated**: every theme (18) scoped to `html[data-style]` + mode, plus the layout CSS. |
 | `web/style.css` | Base tokens (type, spacing, shape) and all component styles. Colours come from `themes.css`. |
 | `web/fonts.css` | Archivo variable font inlined as base64 `@font-face` (works offline on venue Wi-Fi). |
 | `web/dash.js` | `#/<ev>/dash[/<ts\|live>[/<q51>]]` dashboard: match rail, queue card, our event, schedule, levers, ratings, honest footer. Entry `dashPage(ev, ts)`, called by `app.js`. |
-| `web/player.js` | Match viewer `#/<ev>/m/<match>` and `#/<ev>/a/<match>[?t=]`: video + canvas layers (robots, labels, trails, arcs, fuel, field, HUD), View menu (Video / Field / Overlay), station-camera sync, identity corrections timeline, livestream clip playback (`liveMatchPage`). |
+| `web/player.js` | Match viewer `#/<ev>/m/<match>` and `#/<ev>/a/<match>[?t=]`: video + canvas layers (robots, labels, trails, arcs, fuel, field, HUD), View menu (Video / Field / Overlay), station-camera sync, identity corrections timeline, livestream clip playback (`liveMatchPage`), the played-but-untracked card (`untrackedMatchPage`). |
 | `web/quant.js` | Shared quant helpers and charts (`tile`, `spark`, `bars`, `periodBars`, `drawShotChart`, `drawIntakeMap`, `drawPath`, `densityLayer`, `drawHubMark`, `chipRow`, `section`) and the team page `teamPage` (`#/<ev>/t/<team>`). |
-| `web/event.js` | Event panes: team table (`teamsTable`, columns from `scout.json` + `event.json`), Compare (`comparePane`), Picklist (`picklistPane`: shared server picklist `main`, replay-aware, stars / DNP / weights). |
+| `web/event.js` | Event panes: team table (`teamsTable`, columns from `scout.json` + `event.json`), Compare (`comparePane`, shareable URL), Picklist (`picklistPane`: shared server picklist `main`, replay-aware, stars / DNP / order / weights; `plLoad` / `plSave` / `plSend` with per-user drafts, conflict banner, read-only roles, 20 s polling, History + Restore, `CS.picklist.adopt`). |
 | `web/rankings.js` | `#/<ev>/rankings` (rankings, RP, projected range, district points, goal panel) and `#/<ev>/selection[/<ts>]` (Selection: seeds, captains, need grid, pitch cards). |
 | `web/schedule.js` | `#/<ev>/schedule`: all matches, predicted win %, per-period "where you'll be beaten" for our matches. |
 | `web/teams2.js` | `#/<ev>/specs[/<team>]` spec sheets: `listPage`, `specPage`, `laneDiagram`, `shotMap`, `pathsAnim`. |
@@ -582,7 +600,7 @@ Static, no build step, served by nginx. Script order is fixed in `index.html`: `
 | `web/field.jpg` | (binary) Top-down field image for canvases. |
 | `web/fonts/*.woff2` | (binary, 16 files) Theme fonts (see Binary assets). |
 
-**`web/app.js`** (498 lines, long lines) key symbols:
+**`web/app.js`** (498 lines at `cc6297c`, 1125 at `c64b813`; long lines) key symbols:
 - Plugin registry: `CS.route(name, fn)` → `CS.routes`; `CS.globalRoute(name, fn)` → `CS.globalRoutes`;
   `CS.nav({label, key, href, order, group, icon, tab, replay, global, roles|minRole})`.
 - `route()`: dispatch on `location.hash`, in this order: global routes; home; plugin routes `#/<ev>/<name>/...`;
@@ -592,12 +610,19 @@ Static, no build step, served by nginx. Script order is fixed in `index.html`: `
 - Escaping and formatting: `esc`, `num`, `pct`, `fx`, `ago`.
 - Identity, coverage and data-quality badges: `confBar`, `idPill`, `covPill`, `flagChips`, `dataBanner`,
   `svHtml`, `scoutData`.
-- Help and table fitting: `CS.help` / `CS.closeHelp` (the "?" popovers), `fitTable` / `fitDetail` / `fitAll` /
-  `CS.fit` (no horizontal scroll).
+- Help and table fitting: `CS.help` / `CS.closeHelp` (the "?" popovers), `tipA` + `[data-tip]` (honesty labels
+  open on tap / Enter in one shared popover), `fitTable` / `fitDetail` / `fitRestore` / `fitAll` / `CS.fit` (no
+  horizontal scroll; folded cells' live nodes move into the detail row and back), `a11ySort` (keyboard-sortable
+  headers).
+- UX fix wave: `CS.fmtWhen` (one date format), `CS.sentence`, `CS.latestLabel`, `CS.buildStall`, `CS.PAUSE_HOW`,
+  `CS.setProcessing` / `CS.processing` / `cs:processing` event, `renderNotice` / `CS.renderNotice` (global notice
+  `#gnotice`), `pageLabel` (titles for error pages), `compNotBuilt`, scroll memory (`saveScroll`, `enterEntry`,
+  `restoreScroll`; `history.state.csn`), nav item `badge`.
 - Livestream: `CS.isStream`, `CS.liveTag`, `CS.mediaUrl`, `CS.liveTracking`.
 - Navigation chrome: `CS.safeHref`, `CS.icon` (`ICON` SVG set), `CS.markActive`, `renderTopNav` (`NAV_GROUPS`),
-  `renderTimebar` (replay as-of slider), `CS.asofGet` / `CS.asofSet`, `crumbs`.
-- Pages built here: `home`, `eventPage` (`EV_TABS`), `matchesTable`, `statusPill`.
+  `renderTimebar` (replay control on Dashboard / Selection / Picklist, a "Latest data" tag on other data pages,
+  nothing elsewhere; `eventTimes(ev, kind)`), `CS.asofGet` / `CS.asofSet`, `crumbs`.
+- Pages built here: `home`, `eventPage` (`EV_TABS`), `matchesTable` (All / ours chips, search), `statusPill`.
 - Canvas: `fieldCanvas`.
 - Shared constants and state: `FIELD`, `LEN` / `WID`, `COLORS`, `PALETTE`, `cleanup`.
 - Built-in nav entries: Dashboard, Teams, Compare, Picklist, Matches.
@@ -638,10 +663,18 @@ from when the lab was made** and are not kept in sync; for example, `lab/admin.j
 
 ---
 
-## `client/` (Cyber-Scout Client, processing parts)
+## `client/` (Cyber-Scout Client: the sync files the UX fix wave changed, and the processing parts)
+
+Full description: `client/README.md`; protocol and deviations: `docs/SYNC.md`.
 
 | file | purpose |
 |---|---|
+| `client/csclient/app.py` | Wiring + command line. `client.lock` in the data folder (flock / msvcrt; `{pid, url}`): one Client per folder, a second start opens the running one, a port held by another install is named; `status` adds `active_server`, `alt_servers`, `connecting` (after a server change, until the first probe) and `outbox_held`. |
+| `client/csclient/store.py` | Local state (sqlite): config, session, GET cache, the outbox. `enqueue` merges a picklist save into a still-unsent one of the same list and `base_version` (atomic `claim` so a merge can't slip between read and send); `rebase_picklist` moves later saves onto the version an accepted one created; each row keeps the `server` it was written for (`held(servers)` = rows for another server). |
+| `client/csclient/sync.py` | Sync engine (probe → manifest → bundles → media → outbox flush). Sends rows only to their own server (or its alternates); media never leaves less than `MEDIA_SPARE` (2 GB) free (downloads what fits, smallest first, reports the rest as a `media` error); `remove_event` deletes an unsynced competition's local copy. |
+| `client/csclient/web.py` | Local HTTP server: the app, `/api` + `/media` from the mirror, `/app/v1` proxy, control API `/client/v1/*` (adds `DELETE events/<ev>`, `POST test` → `suggest` for an https address that answers plain http, own-address and not-Cyber-Scout messages). Drains unread request bodies so keep-alive survives. |
+| `client/csclient/net.py` | Server connection pool, TLS trust, session; a retry after a dead pooled keep-alive connection opens a fresh one. |
+| `client/tests/test_client.py` | Client against a fake server; the wave added picklist merge / rebase / no-rebase on a newer base, rows staying with their server, one client per folder, keep-alive with unread bodies, "connecting" after a server change, test-connection answers, media never filling the disk, removing an unsynced competition. |
 | `client/csclient/processor.py` | Processor mode ("Help process matches"): claim, download clip, run the runner, upload results. |
 | `client/csclient/procrunner.py` | Tracks one claimed match with the server's own code; shipped by the server as `runner.py` in its code tarball. |
 | `client/csclient/procui.py` | The client's `/client/processing` page. |
@@ -652,6 +685,21 @@ from when the lab was made** and are not kept in sync; for example, `lab/admin.j
 | `client/build/runtime_check.py` | CI / by-hand check that the processing runtime installs and works. |
 | `client/tests/fakeprocessing.py` | Fake of the processing API for the client tests. |
 | `client/tests/test_processor.py` | Processor mode against the fake server and fake processing API. |
+
+---
+
+## `site/` (demo + downloads website; the files the UX fix wave changed)
+
+Served on atomosserver by the `cyber-scout-demo` nginx container on port 7580 (LAN only). Overview: `site/README.md`;
+publishing: [deploy.md](deploy.md) §8.9.
+
+| file | purpose |
+|---|---|
+| `site/tools/publish_downloads.sh` | `SITE_URL [HOST] [REMOTE_DIR] [PORT]`: builds `site/downloads/` (installers, `get.sh` / `get.ps1` with the SHA-256 of `install.sh` / `install.ps1`, the code tarball and `robot.onnx` baked in, the code tarball, Client builds, APK, `SHA256SUMS`, `VERSION` = `<commit> <commit date> <site>`, `README.txt` written last), rsyncs the site, copies the model on the server, (re)starts the container. `SITE_URL` is required and checked (no default; private addresses flagged; `PORT` from it); refuses a port another program holds. `--listing-only` rewrites only `README.txt`. |
+| `site/tools/nginx.conf` | The container's nginx: `.sh` / `.ps1` / `.txt` / `SHA256SUMS` / `VERSION` as `text/plain` (read `get.sh` before piping it), Client builds `application/octet-stream`, APK typed, `/downloads/` → 302 to `/download.html`, gzip, `nosniff`, `no-referrer`. |
+| `site/download.html`, `site/assets/download.js` | Install guide and download cards: commands with `--tarball`, `--model …/robot.onnx`, `--model-sha256`; per-chip macOS steps (xattr, chmod, Open Anyway); browser / Play Protect warnings; sizes from `HEAD`; one-liners say where they work and add `CS_SITE=<address>` when the page was opened at another address than the published one; version as "date (commit)". |
+| `site/downloads/README.txt` | The tracked listing (regenerated with `--listing-only`): one-liners, files, model, current macOS steps. |
+| `site/tools/demo/demo-tail.js`, `demo.css` | Demo: match links tagged "in demo" for the included matches, the rest dimmed with a tooltip. |
 
 ---
 
@@ -666,13 +714,13 @@ Run with `python -m pytest tests` from the repo root. They need no GPU, video or
 | `tests/test_livestream_only.py` | Livestream-only video mode: no upload lookups, synthesized quals, clip failures → failed, TBA-time cut, recorded frames. |
 | `tests/test_matchday.py` | Pure helpers of `live/strategy/matchday.py`; defense "measured" only when the library says `significant` (queue card and preview factors). |
 | `tests/test_goals_scale.py` | `goals.py` passes the dashboard blend to the season sim unscaled (per robot). |
-| `tests/test_source_urls.py` | Audit findings 2 and 4: URL normalisation, `--` before URLs, SSRF guard in `live/sources.py`. |
+| `tests/test_source_urls.py` | Audit findings 2 and 4: URL normalisation, `--` before URLs, SSRF guard in `live/sources.py`; (UX fix wave) pasted links refused with a sentence / accepted, webcast names carry the channel, `probe_http` (404 / html refused, `CS_PROBE_LINKS=0`). |
 | `tests/test_auto_setup.py` | Stream auto-setup in `live/sources.py` and the per-source `program_feed` / `dynamic` flags. |
 | `tests/test_dynpose.py` | `live/dynpose.py` (a camera pose per frame from AprilTags) and its `process.py` hooks; synthetic geometry only. |
 | `tests/test_overlay_layouts.py` | Scoreboard layouts in `live/livestream.py` (top-centre scoreboard, bottom score bar). Uses `tests/fixtures/scorebar_*.jpg`. |
 | `tests/test_process_only.py` | `live/worker.py --process-only`: claim + track only, per-match state files, delegation, dynamic per source. |
-| `tests/test_cstrain.py` | Local training (`live/train/cstrain.py`, `cstrain_core.py`): ids, hash + near-duplicate filter, split by match, WBF, uncertainty, label priority (review > import > auto, doubtful auto frames train-only), YOLO text, mAP / P / R, `build` end to end on a synthetic project (no torch / video). |
-| `tests/test_train_review.py` | The label review UI (`live/train/review/server.py`): token, path safety, atomic review writes, queue order, validation. |
+| `tests/test_cstrain.py` | Local training (`live/train/cstrain.py`, `cstrain_core.py`): ids, hash + near-duplicate filter, split by match, WBF, uncertainty, label priority (review > import > auto, doubtful auto frames train-only), YOLO text, mAP / P / R, `build` end to end on a synthetic project (no torch / video), a reviewer's `view` correction winning over the index. |
+| `tests/test_train_review.py` | The label review UI (`live/train/review/server.py`): token, path safety, atomic review writes, queue order, validation; (UX fix wave) `DELETE` for Undo, `view` / `hidden` kept, Mine by the stored name + natural match order, the no-token page, the empty overlay never taking the pointer. |
 | `tests/test_undefined_names.py` | pyflakes check for undefined names in the pipeline modules (skipped without pyflakes). |
 | `tests/fixtures/scorebar_bottom_f1m1.jpg`, `scorebar_bottom_qm33.jpg`, `scorebar_top_qm12.jpg` | Real score-bar frames for `test_overlay_layouts.py`. |
 
