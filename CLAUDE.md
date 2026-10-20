@@ -41,8 +41,8 @@ samdev-7/autoscout (MIT, credited).
   rsync -a --delete --exclude data deploy/ /opt/stacks/cyber-scout/app/; cp app/deploy/docker-compose*.yml .;
   GIT_SHA=<sha> docker compose build <svcs> && GIT_SHA=<sha> docker compose up -d <svcs>'`. Back up `data/app.db` to
   `/mnt/nas/autoscout-scratch/backups/` before schema changes. Strategy/site regen: `/mnt/nas/autoscout-scratch/regen_prod.sh`.
-- **Root disk is nearly full (~3–4 GB free).** Never change the big `pip install` line in the root Dockerfile
-  (rebuilds a 3.3 GB layer and fills the disk); keep everything big on the NAS. After builds remove only *our*
+- Root disk: 337 GB free since the Oct 2026 outage (was ~4 GB). Still don't change the big `pip install` line in the
+  root Dockerfile without need (3.3 GB layer); keep big data on `/mnt/nas` (now a local 7.3 TB disk). After builds remove only *our*
   dangling images (check `docker history` for live/, /srv, nginx html) — **never `docker image prune -f`** (host-wide).
 - Downloads site refresh: `bash site/tools/publish_downloads.sh http://10.0.0.58:7580 atomosserver /mnt/nas/autoscout-scratch/demo-site 7580`.
 - Updater (Admin → Updates) is stubbed: needs a read-only GitHub deploy key — ask the owner before adding one.
@@ -71,9 +71,12 @@ samdev-7/autoscout (MIT, credited).
 - Honesty: strategist-facing numbers carry coverage/uncertainty; video counts as censored evidence; "measured" only
   when statistically significant. Don't remove those labels.
 
-## Status / open items (2026-10-13)
+## Status / open items (2026-10-19)
+- atomosserver is the main server again (HEAD deployed 2026-10-19, still `PAUSE_PROCESSING=1`). The 2026wagg comp
+  data lives on the M2 (offline since 2026-10-18): copy it over once the M2 is on (see the memory notes).
+- Detector training is local: `live/train/cstrain.py` on atomosserver (both GPUs while processing is paused).
 - All features live: dashboard + queue cards, Selection, picklist, notes, identity-fix queue, competitions switcher,
   activity log/lockdown, offline sync (client + PWA), video sources v2 (per-match plan, channel scan), full screen.
-- Open: updater deploy key; owner to add the next competition + unpause processing; root disk space; Windows server
+- Open: updater deploy key; owner to add the next competition + unpause processing; Windows server
   install never run on real Windows; client binaries unsigned; Android APK debug-signed; Cloudflare Access in front of
   the public tunnel recommended (passwordless sign-in is off by default).
