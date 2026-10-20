@@ -61,7 +61,7 @@
   /** "scout.grantrindal.dev" -> https://scout.grantrindal.dev, "10.0.0.58:7560" -> http://10.0.0.58:7560; null if not an address */
   function normServer(v) {
     let s = String(v || "").trim();
-    if (!s) return null;
+    if (!s || /\s/.test(s)) return null;      // ("not a url!!" must not become http://not%20a%20url!!)
     if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(s)) {
       let host = ""; try { host = new URL("http://" + s).hostname.toLowerCase(); } catch (e) { return null; }
       // a bare address on the team network (IP, IPv6, localhost, no dot, .local / .lan / Tailscale) is plain http; names are https
@@ -71,6 +71,7 @@
     }
     let u; try { u = new URL(s); } catch (e) { return null; }
     if (!/^https?:$/.test(u.protocol) || !u.hostname || u.username || u.password) return null;
+    if (!/^(\[[0-9a-f:.]+\]|[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*\.?)$/i.test(u.hostname)) return null;   // a host name or IP, nothing else
     const path = u.pathname.replace(/\/(index\.html|app\/v1(\/.*)?)$/, "").replace(/\/+$/, "");
     return `${u.protocol}//${u.host}${path}`;
   }
@@ -159,8 +160,9 @@
       if (CS.session && CS.session.offline) { if (window.CS && CS.reauth) CS.reauth(); }
       flush(true); setTimeout(refreshSaved, 3000);
     } else {
-      if (!quiet && was === "online") toast(st === "offline" ? "You're offline. Showing saved data; changes you make wait on this device."
-        : "Can't reach the Cyber-Scout server. Showing saved data; changes you make wait on this device.", { kind: "warn" });
+      const writes = !!(CS.user && CS.user.role && CS.user.role !== "viewer"), wait = writes ? "; changes you make wait on this device" : "";
+      if (!quiet && was === "online") toast(st === "offline" ? `You're offline. Showing saved data${wait}.`
+        : `Can't reach the Cyber-Scout server. Showing saved data${wait}.`, { kind: "warn" });
       probeSoon();
     }
     paint();
@@ -201,12 +203,42 @@
     if (slowOnly && Date.now() - at < 120000) return;
     if (!asof || at < asof) { asof = at; paintAsOf(); }
   }
+  const narrow = matchMedia("(max-width: 760px)");
   function paintAsOf() {
     let el = document.getElementById("asof");
     if (!el) { const sub = document.getElementById("tbsub"); if (!sub) return; el = document.createElement("span"); el.id = "asof"; sub.appendChild(el); }
-    el.textContent = asof ? `Saved copy · as of ${clock(asof)}` : "";
+    // phones: the short form, so the time (the useful part) isn't the bit that gets cut off (CLIENT-14)
+    el.textContent = asof ? (narrow.matches ? `Saved ${clock(asof)}` : `Saved copy · as of ${clock(asof)}`) : "";
     el.title = asof ? `This page shows data saved on this device ${agoTxt(asof)}: the server couldn't be reached (or was slow). It refreshes by itself when the connection is back.` : "";
   }
+  try { narrow.addEventListener("change", () => { if (asof) paintAsOf(); }); } catch (e) { }
+  /** CS.app answers (setup.js hands each response here): in client mode an /app/v1 read the Client answered from its
+   *  own cache while offline carries X-CS-Offline + X-CS-At, and gets the same "Saved copy · as of" label */
+  S.seenApp = (path, r) => {
+    if (S.mode !== "client" || !r || !r.headers || !r.headers.get("x-cs-offline")) return;
+    const at = +(r.headers.get("x-cs-at") || 0) || +(r.headers.get("x-cs-cached-at") || 0) * 1000;
+    if (!at) return;
+    RINFO.set(path, { at, saved: true });
+    if (/^events\/[^/?]+\//.test(path)) noteAsOf(at);
+  };
+  /** the offline error page (app.js): what happened and what to do, as "<b>Title</b>Text" for the .empty card ("" when
+   *  online). The page shows no saved data, so the toolbar's "Saved copy · as of" goes too (CLIENT-7, CLIENT-14). */
+  S.offlineHint = () => {
+    if (!S.isOffline()) return "";
+    asof = null; paintAsOf();
+    if (S.mode === "client" && !S.status) return `<b>The Cyber-Scout Client isn't running</b>This page comes from the Cyber-Scout Client on this computer, and it stopped answering. ${CLIENT_START}`;
+    if (S.mode === "client") {
+      const st = S.status;
+      return `<b>This page isn't on this computer yet</b>The Cyber-Scout server${st.server ? ` (${esc(S.host(st.server))})` : ""} can't be reached${st.offline_reason ? ` (${esc(st.offline_reason)})` : ""}, and this computer's copy doesn't have this page${st.last_sync ? ` (last sync ${esc(clock(st.last_sync * 1000))})` : ""}. Pages that were synced still open; this one comes with the first sync after the server is back.`;
+    }
+    return `<b>This page isn't saved on this device</b>${navigator.onLine === false || NET.state === "offline" ? "This device has no connection" : "The Cyber-Scout server can't be reached"}, and this page wasn't opened or saved while it could be. ${CACHE_OK
+      ? "Next time you're online, use “Save this event for offline” in the connection menu to keep every page of a competition." : "Offline copies need the secure (https://) address of this site."}`;
+  };
+  /** one phrasing per mode for "your change is queued" (toasts, notes, identity fixes; CLIENT-28) */
+  S.queuedMsg = () => S.mode === "client" ? "Saved on this computer. It's sent when the server is back." : "Saved on this device. It's sent when the connection to the server is back.";
+  /** how the last CS.app read of `path` was answered: {at (ms), saved: true when it came from the copy on this device} */
+  const RINFO = new Map();
+  S.readInfo = path => RINFO.get(path) || null;
   // every page starts without one (setup.js wraps route() first; this wraps that)
   const prevRoute = route;
   route = function (scroll) { asof = null; paintAsOf(); return prevRoute(scroll); };
@@ -224,7 +256,7 @@
     if (!queueable) {
       try {
         const d = await rawApp(method, path, body, opts);
-        if (S.mode === "client" && d && d.queued) { refresh(); toast("Saved on this computer. It's sent when the server is back.", { kind: "warn" }); }
+        if (S.mode === "client" && d && d.queued) { refresh(); if (!(opts && opts.quiet)) toast(S.queuedMsg(), { kind: "warn" }); }
         return d;
       } catch (e) { if (netErr(e) && !/^auth\//.test(path)) markFail(); throw e; }
     }
@@ -249,10 +281,11 @@
     const uid = uidOf(CS.user);
     const hit = await idb("reads", "readonly", s => s.get(path)).catch(() => null);
     const ok = hit && hit.uid === uid ? hit : null;
-    const net = go().then(d => { if (S.mode === "browser") markOk(); idb("reads", "readwrite", s => s.put({ k: path, uid, d, at: Date.now() })).catch(() => { }); return d; });
+    const net = go().then(d => { if (S.mode === "browser") markOk(); if (!(RINFO.get(path) || {}).saved || S.mode !== "client" || !S.isOffline()) RINFO.set(path, { at: Date.now(), saved: false });
+      idb("reads", "readwrite", s => s.put({ k: path, uid, d, at: Date.now() })).catch(() => { }); return d; });
     if (!ok) return net.catch(e => { if (netErr(e)) markFail(); throw e; });
     const page = /^events\/[^/?]+\//.test(path);     // the competition list (sidebar) doesn't make a page "as of"
-    const asOf = slow => { if (page) noteAsOf(ok.at, slow); };
+    const asOf = slow => { RINFO.set(path, { at: ok.at, saved: true }); if (page) noteAsOf(ok.at, slow); };
     if (S.isOffline() && (S.mode === "client" || navigator.onLine === false)) { net.catch(() => { }); asOf(); return ok.d; }
     const r = await Promise.race([net.then(d => ({ d }), e => ({ e })), sleep(4000).then(() => null)]);
     if (!r) { net.catch(() => { }); asOf(true); return ok.d; }
@@ -265,17 +298,33 @@
   const attention = () => OB.filter(x => x.state === "failed" || x.state === "conflict");
   S.pending = f => S.mode === "browser" ? OB.filter(x => x.state !== "failed" && x.state !== "conflict" && x.uid === uidOf(CS.user) && (!f || f(x)))
     : COB.filter(x => !f || f(x));
-  // client mode: the Client's queued changes (GET client/v1/outbox), in the same shape, so pages can show them
-  let COB = [], cobN = -1;
-  async function clientOutbox(st) {
-    const n = st ? st.outbox || 0 : 0;
-    if (n === cobN && !(n && Date.now() - (clientOutbox.at || 0) > 30000)) return;
-    cobN = n; clientOutbox.at = Date.now();
+  // client mode: the Client's changes (GET client/v1/outbox: waiting, conflicts, rejected, held for another server).
+  // COB = the ones still to be sent here, in the browser outbox's shape, so pages can draw them (S.pending)
+  const CL = { items: null, at: 0, sig: "" };
+  let COB = [];
+  const cAddrs = () => { const st = S.status || {}; return [st.server, st.active_server, ...(st.alt_servers || [])].filter(Boolean); };
+  const cHeld = x => !!x.server && !cAddrs().includes(x.server);
+  async function clientOutbox(st, force) {
+    const held = st ? (st.outbox_held || []).reduce((a, h) => a + (h.n || 0), 0) : 0;
+    const n = st ? (st.outbox || 0) + clientAtt(st) + held : 0;
+    const sig = JSON.stringify(st ? [st.outbox || 0, held, (st.errors || []).filter(e => e && e.id != null).map(e => `${e.kind}${e.id}`)] : null);
+    if (!force && sig === CL.sig && !(n && Date.now() - CL.at > 30000)) return;
+    CL.sig = sig; CL.at = Date.now();
     let l = [];
     if (n) { try { const r = await ctl("GET", "outbox"); l = Array.isArray(r) ? r : (r && r.items) || []; } catch (e) { return; } }
-    COB = l.filter(x => x.state === "queued" || x.state === "sending").map(x => ({ id: x.id, method: x.method, path: String(x.path || "").replace(/^\/?app\/v1\//, "").split("?")[0],
-      body: x.body, at: (x.created || Date.now() / 1000) * 1000, state: "pending" }));
+    CL.items = l;
+    COB = l.filter(x => (x.state === "queued" || x.state === "sending") && !cHeld(x)).map(x => ({ id: x.id, method: x.method,
+      path: String(x.path || "").replace(/^\/?app\/v1\//, "").split("?")[0], body: x.body, at: (x.created || Date.now() / 1000) * 1000, state: "pending" }));
+    paint();
     document.dispatchEvent(new CustomEvent("cs:outbox"));
+  }
+  /** every change on this device / computer that isn't accepted yet, one shape for both modes (sheet + Settings) */
+  function changeList() {
+    if (S.mode !== "client") return OB.filter(x => x.uid === uidOf(CS.user)).map(x => Object.assign({}, x, { ref: "b" + x.seq }));
+    return (CL.items || []).filter(x => x.state !== "sent").map(x => { const r = x.response;
+      return { ref: "c" + x.id, id: x.id, method: x.method, path: String(x.path || "").replace(/^\/?app\/v1\//, ""), body: x.body,
+        at: (x.created || Date.now() / 1000) * 1000, state: x.state === "queued" ? "pending" : x.state, tries: x.attempts || 0, error: x.error,
+        current: (r && r.detail && typeof r.detail === "object" && r.detail.current) || null, server: x.server, held: cHeld(x) }; });
   }
   const loadOB = () => idb("outbox", "readonly", s => s.getAll()).then(l => (l || []).sort((a, b) => a.seq - b.seq), () => OB);
   const saveIt = it => idb("outbox", "readwrite", s => s.put(Object.assign({}, it))).catch(() => { });
@@ -301,9 +350,13 @@
   }
   async function flush(manual) {
     if (S.mode !== "browser" || FLUSHING || !CS.user || (CS.session && CS.session.offline && NET.state !== "online")) return;
+    // offline / server unreachable: don't even try (the probe flushes once it's back). A try would count against the
+    // change, and an untried picklist save can still be replaced by the next one (one save per list, CLIENT-6).
+    if (navigator.onLine === false || NET.state !== "online") return;
     if (!pendingMine().some(x => manual || (x.next || 0) <= Date.now())) return scheduleFlush();
     FLUSHING = true; paint();
     let sent = 0, conflicts = 0, failed = 0;
+    const sentKeys = [];
     const run = async () => {
       const fresh = await loadOB();                          // the service worker may have sent some already
       OB = fresh.map(x => Object.assign(OB.find(y => y.seq === x.seq) || {}, x));
@@ -315,13 +368,15 @@
           r = await fetchT("app/v1/" + it.path, { method: it.method, credentials: "same-origin", cache: "no-store",
             headers: Object.assign({ "Idempotency-Key": it.key, "X-CSRF-Token": (CS.csrf && CS.csrf()) || it.csrf || "" }, it.body !== undefined ? { "Content-Type": "application/json" } : {}),
             body: it.body !== undefined ? JSON.stringify(it.body) : undefined }, 25000);
-        } catch (e) { backoff(it, "Couldn't reach the server"); markFail(); break; }
+        } catch (e) {
+          if (navigator.onLine === false) it.state = "pending";       // never left this device: not a try
+          else backoff(it, "Couldn't reach the server");
+          markFail(); break;
+        }
         if (r.status !== 204) { try { d = await r.json(); } catch (e) { } }
         if (r.ok) {
-          await delIt(it); sent++; markOk();
-          // later saves of the same picklist were based on the version before this one
-          if (/\/picklists\//.test(it.path) && d && d.version != null)
-            for (const x of OB) if (x.path === it.path && x.seq > it.seq && x.body && x.state === "pending") { x.body = Object.assign({}, x.body, { base_version: d.version }); await saveIt(x); }
+          await delIt(it); sent++; sentKeys.push(it.key); markOk();
+          await rebaseAfter(it, d);
           document.dispatchEvent(new CustomEvent("cs:sent", { detail: { path: it.path, method: it.method, data: d } }));
           continue;
         }
@@ -341,10 +396,36 @@
       FLUSHING = false;
       for (const x of OB) if (x.state === "sending") x.state = "pending";
     }
-    if (sent) toast(`${plural(sent, "change")} sent.`, { kind: "good" });
-    if (conflicts) toast("Someone else changed the picklist while you were offline. Pick which version to keep.", { kind: "warn", action: "Review", fn: openSheetFromToast });
-    if (failed) toast(`${plural(failed, "change")} couldn't be sent. What you wrote is kept.`, { kind: "bad", action: "Review", fn: openSheetFromToast });
+    sentToast(newlySent(sentKeys), conflicts, failed);
     obChanged(); scheduleFlush();
+  }
+  /** a picklist save was accepted: later queued saves of the same list made on top of it (same base_version, i.e.
+   *  offline after it) now build on the version it created instead of conflicting with it (CLIENT-2) */
+  async function rebaseAfter(it, d) {
+    if (it.method !== "PUT" || !/\/picklists\//.test(it.path) || !d || d.version == null) return;
+    const base = it.body && it.body.base_version;
+    for (const x of OB) if (x.path === it.path && x.seq > it.seq && x.body && x.state === "pending" && x.body.base_version === base) {
+      x.body = Object.assign({}, x.body, { base_version: d.version });
+      if (x.tries) x.key = uuid();          // tried before with the old body: the server must not replay that answer
+      await saveIt(x);
+    }
+  }
+  // the page and the service worker's Background Sync may both send (and both report) the same change: count each once
+  const SENT = new Map();
+  function newlySent(keys) {
+    const now = Date.now(); let n = 0;
+    for (const [k, t] of SENT) if (now - t > 600000) SENT.delete(k);
+    for (const k of keys || []) if (k && !SENT.has(k)) { SENT.set(k, now); n++; }
+    return n;
+  }
+  /** one toast for a flush: "3 changes sent · 1 needs your choice" */
+  function sentToast(sent, conflicts, failed) {
+    if (!sent && !conflicts && !failed) return;
+    const n = (k, w) => sent ? `${k} need${k === 1 ? "s" : ""}` : `${k === 1 ? "A change" : `${k} changes`} need${k === 1 ? "s" : ""}`;
+    const parts = [sent ? `${plural(sent, "change")} sent` : "", conflicts ? `${n(conflicts)} your choice: someone else saved the picklist meanwhile` : "",
+      failed ? `${failed === 1 && !sent ? "A change" : failed} couldn't be sent (what you wrote is kept)` : ""].filter(Boolean);
+    const att = conflicts || failed;
+    toast(parts.join(" · ") + ".", att ? { kind: conflicts ? "warn" : "bad", action: "Review", fn: openSheetFromToast } : { kind: "good" });
   }
   function backoff(it, why) {
     it.state = "pending"; it.tries = (it.tries || 0) + 1; it.error = why;
@@ -365,7 +446,8 @@
       if (ev && new RegExp(`^#/${ev}/picklist`).test(location.hash)) route(false);
       return;
     }
-    // keep mine (on top of their version) / retry: a new key, so the server doesn't replay its earlier answer
+    // save mine over theirs (replaces their list: the card said what that removes) / retry: a new key, so the server
+    // doesn't replay its earlier answer
     if (act === "mine" && it.current) it.body = Object.assign({}, it.body, { base_version: it.current.version });
     Object.assign(it, { key: uuid(), state: "pending", tries: 0, next: 0, error: null, current: null, status: null });
     await saveIt(it); obChanged(); flush(true);
@@ -429,7 +511,8 @@
     while (true) {
       if (!await fill(512)) return;
       const h = take(512);
-      if (h.every(x => x === 0)) return;
+      // end of the archive: read the padding that follows, so the download ends normally (not "net::ERR_ABORTED")
+      if (h.every(x => x === 0)) { try { while (!(await rd.read()).done); } catch (e) { } return; }
       const size = oct(h, 124, 12), type = h[156], pad = Math.ceil(size / 512) * 512;
       if (!await fill(pad)) throw new Error("the download was cut short");
       const body = take(pad).slice(0, size);
@@ -530,7 +613,8 @@
   function estimate(ev) {
     const m = MAN[ev]; if (m && (m.p || Date.now() - m.at < 300000)) return m;
     const e = MAN[ev] = { at: Date.now(), p: getJSON(`app/v1/sync/manifest?ev=${enc(ev)}`).then(d => {
-      const l = (d.files || []).filter(f => okPath(f.path)); Object.assign(e, { bytes: l.reduce((a, f) => a + (f.size || 0), 0), count: l.length, p: null }); paint();
+      const l = (d.files || []).filter(f => okPath(f.path)), own = l.filter(f => f.path.startsWith(`api/${ev}/`));
+      Object.assign(e, { bytes: l.reduce((a, f) => a + (f.size || 0), 0), count: l.length, own: own.length, p: null }); paint();
     }, err => { Object.assign(e, { err: err.status === 404 ? "This server can't make offline copies yet." : null, p: null }); paint(); }) };
     return e;
   }
@@ -561,31 +645,37 @@
   S.refresh = refresh;
   function pollSoon() {
     clearTimeout(pollT);
-    const st = S.status, watching = (sheet && sheet.open) || /^#\/(settings|connect)/.test(location.hash);
-    pollT = setTimeout(refresh, document.hidden ? 60000 : !st || (st.syncing && watching) ? 2500 : st.syncing || watching ? 5000 : 15000);
+    const st = S.status, watching = (sheet && sheet.open) || /^#\/(settings|connect|login)/.test(location.hash);
+    pollT = setTimeout(refresh, document.hidden ? 60000 : !st || st.connecting || (st.syncing && watching) ? 2500 : st.syncing || watching ? 5000 : 15000);
   }
+  let outboxSince = 0, outboxOff = false;     // when the Client's outbox last went from empty to waiting; offline since?
   function clientNews(a, b) {
     if (!a && !b) return;
-    if (a && !b) { toast("The Cyber-Scout Client stopped answering. Is it still running?", { kind: "bad" }); return; }
+    if (a && !b) { toast("The Cyber-Scout Client on this computer stopped answering. Start it again: your data and changes stay on this computer.", { kind: "bad", ms: 15000 }); return; }
     if (!a || !b) return;
     const was = a.server && a.signed_in && a.server === b.server;      // not the first connect / sign-in
-    if (was && a.online && !b.online) toast("Offline. Working from this computer's copy; changes wait here until the server is back.", { kind: "warn" });
+    const writes = !!(CS.user && CS.user.role && CS.user.role !== "viewer");
+    if (was && a.online && !b.online) toast(`Offline. Working from this computer's copy${writes ? "; changes wait here until the server is back" : ""}.`, { kind: "warn" });
     else if (was && !a.online && b.online) toast("Back online.", { kind: "good" });
-    if (a.outbox > 0 && b.outbox < a.outbox && b.online) toast(`${plural(a.outbox - b.outbox, "change")} sent.`, { kind: "good" });
     if (a.signed_in && !b.signed_in) { toast("Signed out of the server.", { kind: "warn" }); if (CS.user && CS.reauth) CS.reauth(); }
     if (!a.server !== !b.server || (a.signed_in !== b.signed_in && b.signed_in && !CS.user)) { if (CS.reauth) CS.reauth(); }
+    if (!a.outbox && b.outbox) { outboxSince = Date.now(); outboxOff = false; }
+    if ((a.outbox && !a.online) || (b.outbox && !b.online)) outboxOff = true;
     const key = e => `${e.kind}:${e.id || ""}:${e.time || ""}:${e.message || ""}`;
     const errs = JSON.stringify((b.errors || []).map(key));
+    let fresh = [];
     if (errs !== lastErrs) {
       const old = new Set((a.errors || []).map(key));
-      const fresh = (b.errors || []).filter(e => e && (e.kind === "conflict" || e.kind === "failed") && !old.has(key(e)));
-      if (fresh.length) {
-        const c = fresh.some(e => e.kind === "conflict");
-        toast(c ? "A change conflicts with a newer one on the server. Pick which to keep." : `${plural(fresh.length, "change")} couldn't be sent. What you wrote is kept.`,
-          { kind: c ? "warn" : "bad", action: "Review", fn: () => { location.hash = "#/settings"; } });
-      }
+      fresh = (b.errors || []).filter(e => e && (e.kind === "conflict" || e.kind === "failed") && !old.has(key(e)));
       lastErrs = errs;
     }
+    // one toast: "3 changes sent · 1 needs your choice" (a change that conflicted wasn't sent, CLIENT-8). A change the
+    // page sent online and got its answer for within the 20 s wait isn't news.
+    const left = a.server === b.server && a.outbox > 0 && b.outbox < a.outbox ? a.outbox - b.outbox : 0;
+    const sent = left && (outboxOff || Date.now() - outboxSince > 25000) ? Math.max(0, left - fresh.length) : 0;
+    if (!b.outbox) outboxOff = false;
+    const nc = fresh.filter(e => e.kind === "conflict").length;
+    sentToast(sent, nc, fresh.length - nc);
   }
   function startClient() {
     lastErrs = JSON.stringify(((S.status && S.status.errors) || []).map(e => `${e.kind}:${e.id || ""}:${e.time || ""}:${e.message || ""}`));
@@ -609,7 +699,11 @@
       navigator.serviceWorker.addEventListener("message", e => {
         const m = e.data || {};
         if (m.type === "cs-net") m.ok ? markOk() : markFail();
-        else if (m.type === "cs-outbox") loadOB().then(l => { OB = l; obChanged(); if (m.sent) toast(`${plural(m.sent, "change")} sent.`, { kind: "good" }); });
+        else if (m.type === "cs-outbox") loadOB().then(l => {
+          OB = l.map(x => Object.assign(OB.find(y => y.seq === x.seq) || {}, x)); obChanged();
+          const n = Array.isArray(m.keys) ? newlySent(m.keys) : 0;          // (an older worker sends only a count: no toast)
+          if (n || m.conflicts || m.failed) sentToast(n, m.conflicts || 0, m.failed || 0);
+        });
       });
       const warm = () => {
         const c = navigator.serviceWorker.controller; if (!c) return;
@@ -623,19 +717,28 @@
   }
 
   // ================================================================ UI: pill, toasts, sheet
+  // byte-based when the Client reports bytes (a file count stalls on one big file over a slow link, CLIENT-20)
+  const syncPct = p => !p ? null : p.total_bytes ? Math.min(99, Math.floor(p.done_bytes / p.total_bytes * 100)) : p.total ? Math.min(99, Math.floor(p.done / p.total * 100)) : null;
+  // the address the Client uses right now, when it isn't the configured one (failover to --alt-server, CLIENT-15)
+  const altInUse = st => st && st.active_server && st.server && st.active_server !== st.server ? st.active_server : null;
   function pillState() {
     const signedOut = CS.platform && !CS.user && !(CS.session && CS.session.setup_required);
     if (S.mode === "client") {
       const st = S.status;
-      if (!st) return { k: "down", t: "Server unreachable", s: "Unreachable", d: "The Cyber-Scout Client on this computer isn't answering." };
-      const n = st.outbox || 0, w = n ? ` · ${plural(n, "change")} waiting` : "";
+      // the page is still open but the local Client process is gone (its window was closed): the data is all on this
+      // computer, the user only needs to start the Client again (CLIENT-7)
+      if (!st) return { k: "down", t: "Client not running", s: "Client stopped", d: "The Cyber-Scout Client on this computer isn't answering. Start it again: your data and changes stay on this computer." };
+      const n = st.outbox || 0, w = n ? ` · ${plural(n, "change")} waiting` : "", alt = altInUse(st);
       if (!st.server) return { k: "signedout", t: "Not connected", s: "Not connected", d: "Pick your team's server to start." };
-      if (st.syncing) { const p = st.progress, pc = p && p.total ? Math.min(99, Math.floor(p.done / p.total * 100)) : null;
-        return { k: "sync", t: pc != null ? `Syncing ${pc}%` : "Syncing…", s: pc != null ? `Syncing ${pc}%` : "Syncing", d: `Downloading from ${S.host(st.server)}.`, pc }; }
+      if (st.connecting) return { k: "sync", t: "Connecting…", s: "Connecting", d: `Connecting to ${S.host(st.server)}.` };
+      if (st.syncing) { const p = st.progress || {}, pc = syncPct(st.progress), what = p.phase === "media" ? "videos" : "data";
+        return { k: "sync", t: pc != null ? `Syncing ${pc}%` : "Syncing…", s: pc != null ? `Syncing ${pc}%` : "Syncing", pc,
+          d: `Downloading ${what}${p.total_bytes ? ` · ${fmtB(p.done_bytes || 0)} of ${fmtB(p.total_bytes)}` : ""}${p.ev ? ` · ${evName(p.ev)}` : ""} from ${S.host(st.active_server || st.server)}.` }; }
       if (!st.online) return { k: "offline", t: "Offline" + w, s: n ? `Offline · ${n}` : "Offline", att: clientAtt(st),
         d: `Can't reach ${S.host(st.server)}${st.offline_reason ? ` (${st.offline_reason})` : ""}. Pages show this computer's copy${st.last_sync ? ` from ${clock(st.last_sync * 1000)}` : ""}.` };
       if (!st.signed_in) return { k: "signedout", t: "Signed out", s: "Signed out", d: `Sign in to sync with ${S.host(st.server)}.` };
-      return { k: "online", t: `Online · ${n ? plural(n, "change") + " waiting" : st.last_sync ? "synced " + agoTxt(st.last_sync * 1000) : "not synced yet"}`, s: "Online", d: `Connected to ${S.host(st.server)}.`, att: clientAtt(st) };
+      return { k: "online", t: `Online · ${n ? plural(n, "change") + " waiting" : st.last_sync ? "synced " + agoTxt(st.last_sync * 1000) : "not synced yet"}`, s: "Online", att: clientAtt(st),
+        d: alt ? `Connected to ${S.host(alt)}, another address of this server: ${S.host(st.server)} isn't answering.` : `Connected to ${S.host(st.server)}.` };
     }
     const n = pendingMine().length, att = attention().length, w = n ? ` · ${plural(n, "change")} waiting` : "";
     if (JOB && !JOB.quiet) { const pc = JOB.total ? Math.min(99, Math.floor(JOB.done / JOB.total * 100)) : 0; return { k: "sync", t: `Syncing ${pc}%`, s: `Syncing ${pc}%`, d: `Saving ${evName(JOB.ev)} for offline.`, pc }; }
@@ -647,8 +750,19 @@
     const last = Math.max(NET.lastFresh, NET.lastSync);
     return { k: "online", t: `Online${last ? " · synced " + agoTxt(last) : ""}`, s: "Online", d: `Connected to ${location.host}.`, att };
   }
+  S.clientDown = () => S.mode === "client" && !S.status;
   const clientAtt = st => (st.errors || []).filter(e => e && (e.kind === "conflict" || e.kind === "failed")).length;
-  const pillHTML = st => `<i class="conn-dot" aria-hidden="true"></i><span class="conn-t">${esc(st.t)}</span><span class="conn-s">${esc(st.s)}</span>${st.att ? `<b class="conn-att" title="${plural(st.att, "change")} need${st.att === 1 ? "s" : ""} attention">${st.att}</b>` : ""}`;
+  // a glyph per state, so the state isn't carried by colour alone (phones show only the pill's icon; CLIENT-22). Hidden
+  // until style.css shows it (#tbconn on phones).
+  const PILL_ICO = {
+    online: '<path d="M5 12.5l4.5 4.5L19 7.5"/>',
+    offline: '<path d="M7 18h10a4 4 0 0 0 .5-8 6 6 0 0 0-11.3-1.5A4.5 4.5 0 0 0 7 18z"/><path d="M4 4l16 16"/>',
+    down: '<path d="M12 4l9 16H3z"/><path d="M12 10v4.5M12 17.2v.1"/>',
+    sync: '<path d="M19.5 12a7.5 7.5 0 0 1-13.2 4.9M4.5 12a7.5 7.5 0 0 1 13.2-4.9"/><path d="M18 3.5v3.8h-3.8M6 20.5v-3.8h3.8"/>',
+    signedout: '<circle cx="12" cy="8.5" r="3.5"/><path d="M5 20c.8-4 3.5-6 7-6s6.2 2 7 6"/>',
+  };
+  const pillIco = k => `<span class="conn-ico" hidden><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${PILL_ICO[k] || PILL_ICO.down}</svg></span>`;
+  const pillHTML = st => `<i class="conn-dot" aria-hidden="true"></i>${pillIco(st.k)}<span class="conn-t">${esc(st.t)}</span><span class="conn-s">${esc(st.s)}</span>${st.att ? `<b class="conn-att" title="${plural(st.att, "change")} need${st.att === 1 ? "s" : ""} attention">${st.att}</b>` : ""}`;
   function mountChrome() {
     const sb = document.getElementById("sidebar");
     if (sb && !document.getElementById("sbconn")) {
@@ -749,16 +863,22 @@
       el.onclick = async e => {
         const b = e.target.closest("[data-act]"); if (!b) return;
         if (b.dataset.act === "sync") { b.disabled = true; try { await ctl("POST", "sync", {}, 30000); await refresh(); } catch (x) { toast(x.message, { kind: "bad" }); } }
+        else if (b.dataset.ref) changeAct(b.dataset.act, b.dataset.ref, b);
       };
       live(el, () => {
-        const st = S.status || {}, p = pillState(), ev = st.events || [], bytes = ev.reduce((a, e) => a + (e.bytes || 0) + (e.media_bytes || 0), 0);
+        const st = S.status, p = pillState();
+        if (!st) { el.innerHTML = `${stLine(p)}<p class="cx-note">${CLIENT_START}</p>`; return; }
+        const ev = st.events || [], items = changeList(), att = items.filter(x => !x.held && (x.state === "conflict" || x.state === "failed")).length, alt = altInUse(st);
+        // (the sheet lists conflicts with their buttons too: the pill's red count leads here, CLIENT-5)
         el.innerHTML = `${stLine(p)}
-          ${st.server ? `<dl class="cx-dl"><div><dt>Server</dt><dd>${esc(S.host(st.server))}</dd></div><div><dt>Last sync</dt><dd>${st.last_sync ? `${esc(clock(st.last_sync * 1000))} (${agoTxt(st.last_sync * 1000)})` : "not yet"}</dd></div>
-            <div><dt>On this computer</dt><dd>${plural(ev.length, "competition")} · ${fmtB(bytes)}</dd></div><div><dt>Changes waiting</dt><dd>${st.outbox || 0}</dd></div></dl>` : ""}
+          ${st.server ? `<dl class="cx-dl"><div><dt>Server</dt><dd>${esc(S.host(alt || st.server))}${alt ? ` <span class="muted small">(another address of it: ${esc(S.host(st.server))} isn't answering)</span>` : ""}</dd></div><div><dt>Last sync</dt><dd>${st.last_sync ? `${esc(clock(st.last_sync * 1000))} (${agoTxt(st.last_sync * 1000)})` : "not yet"}</dd></div>
+            <div><dt>On this computer</dt><dd>${plural(ev.length, "competition")} · ${fmtB(clientBytes(st).total)}</dd></div><div><dt>Changes waiting</dt><dd>${st.outbox || 0}${att ? ` · ${att} need${att === 1 ? "s" : ""} your choice` : ""}</dd></div></dl>` : ""}
           ${progress(p)}
+          ${items.length ? `<section class="cx-sec"><h3>Changes on this computer <span class="cx-n">${items.length}</span></h3><ul class="cx-ob">${items.map(obItem).join("")}</ul></section>` : ""}
           <div class="cx-acts">${st.server && st.signed_in ? `<button type="button" class="primary" data-act="sync"${st.syncing || !st.online ? " disabled" : ""}>Sync now</button>` : ""}
             <a class="cmp-btn" href="#/${st.server ? "settings" : "connect"}">${st.server ? "Connection settings" : "Connect to a server"}</a></div>`;
       });
+      clientOutbox(S.status, true);
       return;
     }
     el.onclick = e => panelClick(e, el);
@@ -770,6 +890,19 @@
       storageLine();
     });
   }
+  /** a failed Test connection, with "Use http://…" when the address answered in plain http */
+  const testErr = r => `${CS.icon("warn", "ico")}<span>${esc(cap(errText({ error: r.error }, 0)) || "Couldn't connect.")}${r.suggest ? ` <button type="button" class="cx-link" data-sugg="${esc(r.suggest)}">Use ${esc(r.suggest)}</button>` : ""}</span>`;
+  document.addEventListener("click", e => {
+    const b = e.target.closest && e.target.closest("[data-sugg]"); if (!b) return;
+    const f = b.closest("form, .cx-v"), i = f && f.querySelector("input"); if (i) { i.value = b.dataset.sugg; i.focus(); }
+  });
+  const CLIENT_START = `Start it again: open <b>Cyber-Scout Client</b> (or run <span class="code">python3 client/cyberscout_client.py</span> in its folder), then reload this page. Your data and the changes you made are kept on this computer.`;
+  /** bytes the Client keeps (the same total in the sheet and in Settings) */
+  const clientBytes = st => { const g = (st && st.storage) || {}, ev = (st && st.events) || [];
+    const data = g.api_bytes != null ? g.api_bytes : ev.reduce((a, e) => a + (e.bytes || 0), 0), media = g.media_bytes != null ? g.media_bytes : ev.reduce((a, e) => a + (e.media_bytes || 0), 0);
+    return { data, media, web: g.web_bytes || 0, total: data + media + (g.web_bytes || 0) }; };
+  const MEDIA_SPARE = 2 << 30;          // the Client keeps this much disk free when downloading videos (client/csclient/sync.py)
+  const cap = t => t ? String(t).charAt(0).toUpperCase() + String(t).slice(1) : "";
   const stLine = p => `<div class="cx-st" data-st="${p.k}"><i class="conn-dot" aria-hidden="true"></i><div><b>${esc(p.t)}</b><span>${esc(p.d)}</span></div></div>`;
   const progress = p => p.k === "sync" && p.pc != null ? `<div class="progress cx-prog" role="progressbar" aria-label="Sync progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${p.pc}"><div style="width:${p.pc}%"></div></div>` : "";
   function browserPanel() {
@@ -781,33 +914,94 @@
     else {
       const est = !rec && !job && NET.state === "online" && CS.user ? estimate(ev) : null;
       const pc = job && job.total ? Math.min(99, Math.floor(job.done / job.total * 100)) : 0;
+      const empty = est && est.own === 0 && !est.p;          // nothing built for it yet: no pages to save (SETUP-33)
       copy = `<div class="cx-ev"><b>${esc(evName(ev))}</b>
-        ${job ? `<span class="cx-m">Saving… ${fmtB(job.done)}${job.total ? ` of ${fmtB(job.total)}` : ""}</span>
+        ${empty ? `<span class="cx-m">Nothing to save yet: this competition's pages aren't built. Save it once they are.</span>` : job ? `<span class="cx-m">Saving… ${fmtB(job.done)}${job.total ? ` of ${fmtB(job.total)}` : ""}</span>
           <div class="progress cx-prog" role="progressbar" aria-label="Saving for offline" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${pc}"><div style="width:${pc}%"></div></div>`
         : rec ? `<span class="cx-m">${CS.icon("check", "ico")} Saved · ${plural(rec.count, "file")} · ${fmtB(rec.bytes)} · updated ${agoTxt(rec.at)}</span>`
         : `<span class="cx-m">Save it to open every page of this competition without a connection${est && est.bytes != null ? ` (about ${fmtB(est.bytes)})` : ""}. Videos aren't included.</span>${est && est.err ? `<span class="cx-m warn">${esc(est.err)}</span>` : ""}`}
         <div class="cx-acts">${job ? `<button type="button" data-act="cancel" data-focus="cancel">Cancel</button>`
           : rec ? `<button type="button" data-act="save" data-ev="${esc(ev)}" data-focus="upd"${NET.state !== "online" ? " disabled" : ""}>Update now</button><button type="button" class="danger" data-act="remove" data-ev="${esc(ev)}" data-focus="rm">Remove offline copy</button>`
-          : `<button type="button" class="primary" data-act="save" data-ev="${esc(ev)}" data-focus="save"${NET.state !== "online" || !CS.user || JOB ? " disabled" : ""}>Save this event for offline</button>`}</div></div>`;
+          : empty ? "" : `<button type="button" class="primary" data-act="save" data-ev="${esc(ev)}" data-focus="save"${NET.state !== "online" || !CS.user || JOB ? " disabled" : ""}>Save this event for offline</button>`}</div></div>`;
     }
     const oth = others.length ? `<ul class="cx-saved">${others.map(r => `<li><span><b>${esc(evName(r.ev))}</b><span class="cx-m">${fmtB(r.bytes)} · updated ${agoTxt(r.at)}</span></span>
       <button type="button" class="danger" data-act="remove" data-ev="${esc(r.ev)}" data-focus="rm-${esc(r.ev)}">Remove</button></li>`).join("")}</ul>` : "";
-    const mine = OB.filter(x => x.uid === uidOf(CS.user));
+    const mine = changeList();
     const ob = mine.length ? `<section class="cx-sec"><h3>Changes on this device <span class="cx-n">${mine.length}</span></h3><ul class="cx-ob">${mine.map(obItem).join("")}</ul>
       ${pendingMine().length ? `<div class="cx-acts"><button type="button" data-act="send" data-focus="send"${FLUSHING || NET.state === "offline" ? " disabled" : ""}>Send now</button></div>` : ""}</section>` : "";
     return `${stLine(p)}${p.k === "sync" && !job ? progress(p) : ""}
       <section class="cx-sec"><h3>Offline copy</h3>${copy}${oth}<p class="cx-note cx-store" data-part="storage">${STORE.html}</p></section>${ob}`;
   }
+  const andList = l => l.length < 2 ? l.join("") : `${l.slice(0, -1).join(", ")} and ${l[l.length - 1]}`;
+  /** what differs between my picklist and theirs ({stars, dnp, order, weights}) */
+  function plDiff(mine, theirs) {
+    const a = mine || {}, b = theirs || {}, arr = x => Array.isArray(x) ? x : [];
+    const only = (x, y) => { const h = new Set(arr(y)); return arr(x).filter(k => !h.has(k)); };
+    const T = l => l.map(k => num(k)).join(", ");
+    const extra = (x, y) => { const st = only(x.stars, y.stars), dn = only(x.dnp, y.dnp), out = [];
+      if (st.length) out.push(`${st.length === 1 ? "star" : "stars"} on ${T(st)}`);
+      if (dn.length) out.push(`do-not-pick on ${T(dn)}`);
+      return out; };
+    const W = w => JSON.stringify(Object.keys(w || {}).sort().map(k => [k, +w[k]]));
+    const ord = JSON.stringify(arr(a.order)) !== JSON.stringify(arr(b.order)), wts = W(a.weights) !== W(b.weights);
+    const mineOnly = extra(a, b), theirsOnly = extra(b, a);
+    return { mineOnly, theirsOnly, ord, wts, same: !mineOnly.length && !theirsOnly.length && !ord && !wts };
+  }
+  /** a picklist conflict in plain words: who saved, and what each button keeps or drops. Nothing is merged: "Save
+   *  mine" replaces their list with the whole of yours (CLIENT-3; merging is the owner's call). */
+  function conflictText(it) {
+    const cur = it.current || {}, d = plDiff(it.body && it.body.data, cur.data), when = cur.updated_at ? " " + agoTxt(cur.updated_at * 1000) : "";
+    const me = !!(CS.user && cur.updated_by && cur.updated_by.id != null && cur.updated_by.id === CS.user.id), th = me ? "that version's" : "their";
+    const out = [me ? `You saved a newer version of the picklist${when} (on another device or tab), after the one this change started from.`
+      : `${who(cur.updated_by)} saved the picklist${when}, after the version your change started from.`];
+    if (d.same) { out.push("Both lists are the same now: either choice keeps it."); return out; }
+    const mine = [d.theirsOnly.length ? `removes ${th} ${andList(d.theirsOnly)}` : "", d.ord ? `replaces ${th} dragged order with yours` : "", d.wts ? `replaces ${th} weights with yours` : ""].filter(Boolean);
+    const theirs = [...d.mineOnly, d.ord ? "dragged order" : "", d.wts ? "weights" : ""].filter(Boolean);
+    out.push(`Save mine over theirs: ${mine.length ? andList(mine) : `nothing of ${me ? "that version" : "theirs"} is lost (you only added to it)`}.`);
+    out.push(`Use theirs: ${theirs.length ? `drops your ${andList(theirs)}` : "nothing of yours is lost"}.`);
+    out.push(`${me ? "That version" : "Their version"} stays in the picklist's history either way; yours is kept only if you save it.`);
+    return out;
+  }
+  /** one change waiting / in conflict / rejected / held for another server, with its actions (data-ref: b<seq> | c<id>) */
   function obItem(it) {
-    const L = obLabel(it), cls = it.state === "conflict" ? "warn" : it.state === "failed" ? "bad" : "";
-    const tag = it.state === "conflict" ? "Conflict" : it.state === "failed" ? "Not sent" : it.state === "sending" ? "Sending…" : "Waiting";
-    const why = it.state === "conflict" && it.current ? `${who(it.current.updated_by)} saved a newer picklist${it.current.updated_at ? " " + agoTxt(it.current.updated_at * 1000) : ""}. Keep yours on top of it, or take theirs?`
-      : it.state === "failed" ? it.error || "" : it.tries ? `Tried ${plural(it.tries, "time")}; trying again ${it.next > Date.now() ? "in " + Math.max(1, Math.round((it.next - Date.now()) / 1000)) + " s" : "soon"}.` : "";
-    const acts = it.state === "conflict" ? `<button type="button" class="primary" data-act="mine" data-seq="${it.seq}">Keep mine</button><button type="button" data-act="theirs" data-seq="${it.seq}">Take theirs</button>`
-      : it.state === "failed" ? `<button type="button" data-act="retry" data-seq="${it.seq}">Try again</button><button type="button" class="danger" data-act="discard" data-seq="${it.seq}">Discard</button>`
-      : it.state === "sending" ? "" : `<button type="button" class="danger" data-act="discard" data-seq="${it.seq}">Discard</button>`;
-    return `<li class="cx-oi"><div class="cx-oh"><b>${esc(L.t)}</b><span class="cx-tag ${cls}">${tag}</span><time datetime="${esc(new Date(it.at).toISOString())}">${esc(agoTxt(it.at))}</time></div>
-      ${L.x ? `<div class="cx-oc">${esc(L.x)}</div>` : ""}${why ? `<div class="cx-ow ${cls}">${esc(why)}</div>` : ""}${acts ? `<div class="cx-acts">${acts}</div>` : ""}</li>`;
+    const L = obLabel(it), r = esc(it.ref), pick = it.state === "conflict" && it.current && /\/picklists\//.test(it.path || "");
+    const cls = it.held ? "" : it.state === "conflict" ? "warn" : it.state === "failed" ? "bad" : "";
+    const tag = it.held ? `For ${S.host(it.server)}` : it.state === "conflict" ? "Conflict" : it.state === "failed" ? "Not sent" : it.state === "sending" ? "Sending…" : "Waiting";
+    const why = it.held ? [`Written while this computer was connected to ${S.host(it.server)}. It's sent only there, when you switch back to that server.`]
+      : pick ? conflictText(it)
+      : it.state === "failed" || it.state === "conflict" ? [it.error || ""]
+      : it.tries ? [S.mode === "client" ? `Tried ${plural(it.tries, "time")}${it.error ? ` (${it.error})` : ""}; it's sent when the server answers.`
+        : `Tried ${plural(it.tries, "time")}; trying again ${it.next > Date.now() ? "in " + Math.max(1, Math.round((it.next - Date.now()) / 1000)) + " s" : "soon"}.`] : [];
+    const del = `<button type="button" class="danger" data-act="discard" data-ref="${r}">Discard</button>`;
+    const acts = it.held ? del : pick ? `<button type="button" data-act="mine" data-ref="${r}">Save mine over theirs</button><button type="button" data-act="theirs" data-ref="${r}">Use theirs</button>`
+      : it.state === "failed" || it.state === "conflict" ? `<button type="button" data-act="retry" data-ref="${r}">Try again</button>${del}`
+      : it.state === "sending" ? "" : del;
+    return `<li class="cx-oi"><div class="cx-oh"><b>${esc(L.t)}</b><span class="cx-tag ${cls}">${esc(tag)}</span><time datetime="${esc(new Date(it.at).toISOString())}">${esc(agoTxt(it.at))}</time></div>
+      ${L.x ? `<div class="cx-oc">${esc(L.x)}</div>` : ""}${why.filter(Boolean).map(w => `<div class="cx-ow ${cls}">${esc(w)}</div>`).join("")}${acts ? `<div class="cx-acts">${acts}</div>` : ""}</li>`;
+  }
+  /** a change's button: browser mode acts on the IndexedDB outbox, client mode through the Client's outbox API */
+  async function changeAct(act, ref, b) {
+    if (!ref) return;
+    if (ref[0] === "b") return obAct(+ref.slice(1), act);
+    const it = changeList().find(x => x.ref === ref); if (!it) return;
+    const drop = () => ctl("DELETE", "outbox/" + enc(String(it.id)));
+    if (act === "discard" && !confirm(it.body && it.body.text ? "Discard this change? What you wrote is deleted from this computer." : "Discard this change? It won't be sent.")) return;
+    if (b) b.disabled = true;
+    try {
+      if (act === "discard") await drop();
+      else if ((act === "mine" || act === "theirs") && it.current) {
+        const m = /^events\/([^/]+)\/picklists\//.exec(it.path), ev = m && decodeURIComponent(m[1]);
+        if (act === "mine") {
+          const r = await CS.app("PUT", it.path, Object.assign({}, it.body, { base_version: it.current.version }));
+          if (ev && CS.picklist && r && r.version != null) CS.picklist.adopt(ev, r);
+        } else if (ev && CS.picklist) CS.picklist.adopt(ev, it.current);
+        await drop();
+        toast(act === "mine" ? "Your picklist is saved. It replaced theirs; theirs stays in the picklist's history." : `Using the picklist ${who(it.current.updated_by)} saved.`);
+        if (ev && new RegExp(`^#/${ev}/picklist`).test(location.hash)) route(false);
+      } else if (act === "retry") { await CS.app(it.method, it.path, it.body); await drop(); }
+    } catch (x) {
+      toast(x.status === 409 ? "The picklist changed on the server again meanwhile. Look at the newest version, then choose again." : x.message, { kind: "bad" });
+    } finally { if (b && b.isConnected) b.disabled = false; await refresh(); clientOutbox(S.status, true); }
   }
   const STORE = { html: "", at: 0 };      // "Using 45 MB of about 2 GB…", refreshed at most every 10 s
   async function storageLine(force) {
@@ -822,19 +1016,20 @@
   }
   async function panelClick(e, el) {
     const b = e.target.closest("[data-act]"); if (!b) return;
-    const act = b.dataset.act, ev = b.dataset.ev, seq = b.dataset.seq != null ? +b.dataset.seq : null;
+    const act = b.dataset.act, ev = b.dataset.ev;
     if (act === "save") { saveEvent(ev).catch(x => { if (x.message !== "cancelled") toast(`Couldn't save ${evName(ev)}: ${x.message}.`, { kind: "bad" }); }); paint(); }
     else if (act === "cancel") { if (JOB) JOB.ac.abort(); }
     else if (act === "remove") { if (confirm(`Remove the offline copy of ${evName(ev)} from this device?`)) await removeSaved(ev); }
     else if (act === "send") flush(true);
     else if (act === "persist") { try { const ok = await navigator.storage.persist(); toast(ok ? "Offline data is kept until you remove it." : "The browser didn't agree to keep it (it decides based on how often you use this site). Your copy stays for now."); } catch (x) { } storageLine(true); }
-    else if (seq != null) obAct(seq, act);
+    else if (b.dataset.ref) changeAct(act, b.dataset.ref, b);
   }
 
   // ================================================================ Settings: Connection (client mode) / Offline (browser mode)
   S.mountSettings = el => {
     if (!el) return;
     if (S.mode === "client") return clientSettings(el);
+    if (CS.comps) Promise.resolve(CS.comps()).then(() => paint(), () => { });       // competition names, not raw keys
     el.innerHTML = `<fieldset class="st-sec" id="offline"><legend><h2>Offline</h2></legend>
       <p class="st-why">Pages you open are kept on this device and still show when the connection drops. Save a whole competition before you go to the venue; notes, picklist changes and identity fixes made offline are sent when the connection is back.</p>
       <div class="card cx-card"></div></fieldset>`;
@@ -852,13 +1047,13 @@
         <div class="cx-row"><div class="cx-k" id="cxk-srv">Server</div><div class="cx-v">
           <form class="cx-srv" novalidate><input id="cxsrv" class="csin" aria-labelledby="cxk-srv" value="${esc(st0.server || "")}" placeholder="scout.example.org or 10.0.0.58:7560" autocomplete="url" inputmode="url" spellcheck="false" autocapitalize="none">
             <button type="button" data-act="test">Test connection</button><button type="submit" class="primary">Save</button></form>
-          <div class="cx-res" role="status" aria-live="polite"></div></div></div>
+          <div class="cx-res" role="status" aria-live="polite"></div><div data-part="alt"></div></div></div>
         <div class="cx-row"><div class="cx-k">Account</div><div class="cx-v" data-part="acct"></div></div>
         <div class="cx-row"><div class="cx-k">Sync</div><div class="cx-v" data-part="sync"></div></div>
         <div class="cx-row"><div class="cx-k" id="cxk-media">Videos</div><div class="cx-v" data-part="media"></div></div>
         <div class="cx-row"><div class="cx-k" id="cxk-evs">Competitions</div><div class="cx-v" data-part="events"></div></div>
         <div class="cx-row"><div class="cx-k">Storage</div><div class="cx-v" data-part="storage"></div></div>
-        <div class="cx-row"><div class="cx-k">Changes waiting</div><div class="cx-v" data-part="outbox"></div></div>
+        <div class="cx-row" id="cx-changes"><div class="cx-k">Changes waiting</div><div class="cx-v" data-part="outbox"></div></div>
       </div></fieldset>`;
     const $ = s => el.querySelector(s), res = $(".cx-res"), inp = $("#cxsrv");
     const say = (cls, html) => { res.className = "cx-res " + cls; res.innerHTML = html; };
@@ -869,7 +1064,7 @@
       try {
         const r = await ctl("POST", "test", { server: s }, 30000) || {};
         const info = r.info || r, ms = r.latency_ms != null ? r.latency_ms : r.latency != null ? (r.latency < 20 ? r.latency * 1000 : r.latency) : null;
-        if (r.ok === false || r.error) { say("bad", `${CS.icon("warn", "ico")}<span>${esc(errText({ error: r.error }, 0) || "Couldn't connect.")}</span>`); return null; }
+        if (r.ok === false || r.error) { say("bad", testErr(r)); return null; }
         say("good", `${CS.icon("check", "ico")}<span>Connected${info.name ? ` to <b>${esc(info.name)}</b>` : ""}${ms != null ? ` · ${Math.round(ms)} ms` : ""}${info.version ? ` · version ${esc(info.version)}` : ""}</span>`);
         return s;
       } catch (x) { say("bad", `${CS.icon("warn", "ico")}<span>${esc(x.message)}</span>`); return null; }
@@ -878,8 +1073,13 @@
     $(".cx-srv").onsubmit = async e => {
       e.preventDefault();
       const s = await test(); if (!s) return;
-      const st = S.status || {};
-      if (st.server && s !== st.server && st.signed_in && !confirm(`Switch to ${S.host(s)}? You'll sign in again there.`)) return;
+      const st = S.status || {}, n = st.outbox || 0;
+      if (st.server && s !== st.server) {
+        // queued changes belong to the server they were written for: the Client keeps them for it, never sends them
+        // to the new one (CLIENT-24)
+        const q = n ? ` ${plural(n, "change")} still waiting for ${S.host(st.server)} stay on this computer: they're sent only to ${S.host(st.server)}, when you switch back to it.` : "";
+        if ((st.signed_in || n) && !confirm(`Switch to ${S.host(s)}?${q}${st.signed_in ? ` You'll sign in again on ${S.host(s)}.` : ""}`)) return;
+      }
       try { await putConfig({ server: s }); say("good", `${CS.icon("check", "ico")}<span>Saved. ${S.status && S.status.signed_in ? "Syncing…" : "Now sign in."}</span>`); if (S.status && !S.status.signed_in && CS.reauth) setTimeout(CS.reauth, 600); }
       catch (x) { say("bad", esc(x.message)); }
     };
@@ -887,27 +1087,46 @@
     el.addEventListener("click", async e => {
       const b = e.target.closest("[data-act]"); if (!b || b.dataset.act === "test") return;
       const a = b.dataset.act;
+      if (b.dataset.ref) return changeAct(a, b.dataset.ref, b);
       try {
         if (a === "sync") { b.disabled = true; await ctl("POST", "sync", {}, 30000); await refresh(); }
         else if (a === "logout") { if (!confirm("Sign this computer out of the server? Saved data stays; syncing stops until you sign in again.")) return; await S.clientLogout(); if (CS.reauth) CS.reauth(); }
-        else if (a === "ob-del") { if (!confirm("Discard this change? It won't be sent.")) return; await ctl("DELETE", "outbox/" + enc(b.dataset.id)); await refresh(); obLoad(true); }
-        else if (a === "ob-mine" || a === "ob-theirs") {
-          const it = (OBL || []).find(x => String(x.id) === b.dataset.id), cur = it && it.response && it.response.detail && it.response.detail.current; if (!it || !cur) return;
-          const path = String(it.path).replace(/^\/?app\/v1\//, ""), m = /^events\/([^/]+)\/picklists\//.exec(path), ev = m && decodeURIComponent(m[1]);
-          b.disabled = true;
-          if (a === "ob-mine") { const r = await CS.app("PUT", path, Object.assign({}, it.body, { base_version: cur.version })); if (ev && CS.picklist && r && r.version != null) CS.picklist.adopt(ev, r); }
-          else if (ev && CS.picklist) CS.picklist.adopt(ev, cur);
-          await ctl("DELETE", "outbox/" + enc(b.dataset.id)); await refresh(); obLoad(true);
-          toast(a === "ob-mine" ? "Your picklist is saved on top of theirs." : `Using the picklist ${who(cur.updated_by)} saved.`);
-        }
+        else if (a === "ev-rm") await removeLocal(b.dataset.ev);
       } catch (x) { toast(x.message, { kind: "bad" }); b.disabled = false; }
     });
+    /** delete this computer's copy of a competition that isn't synced any more (CLIENT-19) */
+    async function removeLocal(ev) {
+      const l = ((S.status || {}).events || []).find(e => e.key === ev), sz = l ? (l.bytes || 0) + (l.media_bytes || 0) : 0, name = evLabel(ev);
+      if (!confirm(`Remove ${name} from this computer? Its ${fmtB(sz)} of data${l && l.media_bytes ? " and videos" : ""} are deleted here; the server keeps everything. Tick it again to download it again.`)) return;
+      const r = await ctl("DELETE", "events/" + enc(ev));
+      await refresh(); drawLists();
+      toast(`Removed ${name} from this computer${r && r.freed != null ? ` (${fmtB(r.freed)} freed)` : ""}.`);
+    }
+    const evLabel = ev => { const e = (D.events || []).find(x => x.key === ev) || ((S.status || {}).events || []).find(x => x.key === ev); return (e && e.name) || evName(ev); };
     el.addEventListener("change", async e => {
       const t = e.target;
       try {
-        if (t.name === "cx-media") { await putConfig({ media: t.value }); toast("Saved. The next sync follows the new video setting."); }
-        else if (t.name === "cx-ev") { const all = [...el.querySelectorAll("input[name=cx-ev]")], l = all.filter(x => x.checked).map(x => x.value);
-          await putConfig({ events: l.length === all.length ? null : l }); }
+        if (t.name === "cx-media") {
+          const want = t.value, was = cfgMedia(), back = () => { const r = el.querySelector(`input[name=cx-media][value="${was}"]`); if (r) r.checked = true; };
+          if (want !== "none" && want !== was) {
+            // a big download: say how big against the free space first, refuse what can't fit (CLIENT-18)
+            const g = (S.status || {}).storage || {}, free = g.free_bytes, have = g.media_bytes || 0;
+            const size = D.media ? (want === "proxy" ? D.media.proxy : D.media.proxy + D.media.full) : null, need = size != null ? Math.max(0, size - have) : null;
+            const label = want === "proxy" ? "Previews" : "Full videos";
+            if (need != null && free != null && need > free - MEDIA_SPARE) {
+              back(); alert(`Not enough space for ${label}: about ${fmtB(need)} more would be downloaded, and this disk has ${fmtB(free)} free (the Client keeps ${fmtB(MEDIA_SPARE)} spare). Free some space or pick fewer competitions.`); return;
+            }
+            if (!confirm(`Download ${label} to this computer?${need != null ? ` That's about ${fmtB(need)} more` : " The size isn't known yet (the server hasn't said)"}${free != null ? `; the disk has ${fmtB(free)} free` : ""}. It downloads in the background with each sync (on venue Wi-Fi this can take hours), and stops before the disk gets full. You can switch back to None any time.`)) { back(); return; }
+          }
+          await putConfig({ media: want }); drawLists();
+          toast(want === "none" ? "Saved. Videos aren't downloaded any more (the ones already here stay)." : "Saved. The next sync downloads the videos in the background.");
+        } else if (t.name === "cx-ev") {
+          const all = [...el.querySelectorAll("input[name=cx-ev]")], l = all.filter(x => x.checked).map(x => x.value);
+          await putConfig({ events: l.length === all.length ? null : l }); drawLists();
+          const name = evLabel(t.value), loc = ((S.status || {}).events || []).find(x => x.key === t.value), sz = loc ? (loc.bytes || 0) + (loc.media_bytes || 0) : 0;
+          if (t.checked) toast(`Saved. ${name} is synced again from the next sync.`);
+          else toast(`Saved. ${name} isn't synced any more${sz ? `; its ${fmtB(sz)} already on this computer stay until you remove them` : ""}.`, sz ? { action: "Remove", fn: () => removeLocal(t.value).catch(x => toast(x.message, { kind: "bad" })) } : {});
+        }
       } catch (x) { toast(`Not saved: ${x.message}`, { kind: "bad" }); }
     });
     // competitions + video sizes come from the server (through the Client); offline: what's on this computer
@@ -927,64 +1146,53 @@
     }
     function drawLists() {
       const st = S.status || {}, m = cfgMedia(), kf = cfgEvents(), keep = new Set(kf || []), local = Object.fromEntries((st.events || []).map(e => [e.key, e]));
-      const md = $("[data-part=media]"), ed = $("[data-part=events]");
-      if (md && !md.contains(document.activeElement)) {
+      const md = $("[data-part=media]"), ed = $("[data-part=events]"), a = document.activeElement;
+      // (keyboard users keep their place: the focused radio / checkbox / button is focused again after the redraw)
+      const refocus = a && (md && md.contains(a) || ed && ed.contains(a)) ? `${a.tagName}[name="${a.name || ""}"][value="${a.value || ""}"], [data-act="${a.dataset.act || "-"}"][data-ev="${a.dataset.ev || ""}"]` : null;
+      if (md) {
         const sz = k => D.media ? ` · ${fmtB(k === "proxy" ? D.media.proxy : D.media.proxy + D.media.full)}` : "";
         md.innerHTML = `<div class="cx-radios" role="radiogroup" aria-labelledby="cxk-media">
           ${[["none", "None", "Data only. Videos play from the server when you're online."], ["proxy", "Previews" + sz("proxy"), "A small copy of every match video (about 480p): enough to check what happened."],
             ["full", "Full videos" + sz("full"), "The original broadcast video and robot clips. Needs a lot of space."]].map(([v, t, d]) =>
             `<label class="cx-opt"><input type="radio" name="cx-media" value="${v}"${m === v ? " checked" : ""}><span><b>${esc(t)}</b><small>${esc(d)}</small></span></label>`).join("")}</div>
-          ${D.media ? `<p class="cx-note">Sizes are for the competitions below.</p>` : st.signed_in && st.online ? `<p class="cx-note">Working out video sizes…</p>` : ""}`;
+          ${D.media ? `<p class="cx-note">Sizes are for the competitions below${st.storage && st.storage.free_bytes != null ? `; this disk has ${fmtB(st.storage.free_bytes)} free` : ""}. You're asked before a download starts.</p>` : st.signed_in && st.online ? `<p class="cx-note">Working out video sizes…</p>` : ""}`;
       }
-      if (ed && !ed.contains(document.activeElement)) {
-        const list = D.events || (st.events || []).map(e => ({ key: e.key, name: e.key }));
+      if (ed) {
+        const list = D.events ? [...D.events] : (st.events || []).map(e => ({ key: e.key, name: e.name || e.key }));
+        for (const e of st.events || []) if (!list.some(x => x.key === e.key)) list.push({ key: e.key, name: e.name || e.key, gone: true });     // (no longer followed on the server)
         ed.innerHTML = list.length ? `<div class="cx-checks" role="group" aria-labelledby="cxk-evs">${list.map(e => {
-          const l = local[e.key];
-          return `<label class="cx-opt"><input type="checkbox" name="cx-ev" value="${esc(e.key)}"${!kf || keep.has(e.key) ? " checked" : ""}><span><b>${esc(e.name || e.key)}</b>
-            <small>${l ? `${fmtB((l.bytes || 0) + (l.media_bytes || 0))} on this computer${l.synced_at ? ` · synced ${agoTxt(l.synced_at * 1000)}` : ""}` : "not synced yet"}${e.progress && e.progress.total ? ` · ${e.progress.tracked}/${e.progress.total} matches tracked` : ""}</small></span></label>`; }).join("")}</div>
-          <p class="cx-note">${kf ? "Only the ticked competitions are kept on this computer." : "Every competition the server follows is kept (new ones too). Untick one to leave it out."}</p>
+          const l = local[e.key], on = !e.gone && (!kf || keep.has(e.key)), sz = l ? (l.bytes || 0) + (l.media_bytes || 0) : 0;
+          const what = l ? `${fmtB(sz)} on this computer${on && l.synced_at ? ` · synced ${agoTxt(l.synced_at * 1000)}` : on ? "" : " · not synced any more"}` : on ? "not synced yet" : "not on this computer";
+          return `<div class="cx-evr"><label class="cx-opt"><input type="checkbox" name="cx-ev" value="${esc(e.key)}"${on ? " checked" : ""}${e.gone ? " disabled" : ""}><span><b>${esc(e.name || e.key)}</b>
+            <small>${what}${e.progress && e.progress.total ? ` · ${e.progress.tracked}/${e.progress.total} matches tracked` : ""}${e.gone ? " · the server doesn't follow it any more" : ""}</small></span></label>
+            ${!on && sz ? `<button type="button" class="danger" data-act="ev-rm" data-ev="${esc(e.key)}">Remove from this computer</button>` : ""}</div>`; }).join("")}</div>
+          <p class="cx-note">${kf ? "Only the ticked competitions are synced. An unticked one keeps what's already on this computer until you remove it." : "Every competition the server follows is synced (new ones too). Untick one to stop syncing it."}</p>
           ${D.evErr === "offline" ? `<p class="cx-note">Offline: showing what's on this computer.</p>` : D.evErr ? `<p class="cx-note warn">${esc(D.evErr)}</p>` : ""}`
           : `<p class="cx-note">${st.signed_in ? "No competitions followed on the server yet." : "Sign in to choose which competitions to keep."}</p>`;
       }
-    }
-    let OBL = null, obAt = 0;
-    async function obLoad(force) {
-      if (!force && Date.now() - obAt < 4000) return;
-      obAt = Date.now();
-      try { const r = await ctl("GET", "outbox"); OBL = Array.isArray(r) ? r : (r && (r.items || r.outbox)) || []; } catch (x) { OBL = null; }
-      drawStatus();
+      if (refocus) { const f = el.querySelector(refocus); if (f) f.focus(); }
     }
     const errsOf = st => (st.errors || []).filter(e => typeof e === "string" || (e && e.kind !== "conflict" && e.kind !== "failed"));
     function drawStatus() {
       const st = S.status || {}, p = pillState();
-      const acct = $("[data-part=acct]"), sy = $("[data-part=sync]"), sto = $("[data-part=storage]"), ob = $("[data-part=outbox]");
+      const acct = $("[data-part=acct]"), sy = $("[data-part=sync]"), sto = $("[data-part=storage]"), ob = $("[data-part=outbox]"), alt = $("[data-part=alt]");
       if (!acct) return;
+      const inUse = altInUse(st);
+      alt.innerHTML = (st.alt_servers || []).length ? `<p class="cx-note">${inUse ? `${CS.icon("warn", "ico")} Using <b>${esc(S.host(inUse))}</b> now: ${esc(S.host(st.server))} isn't answering. ` : ""}Other addresses of this server, used when this one can't be reached: ${(st.alt_servers || []).map(a => `<span class="code">${esc(S.host(a))}</span>`).join(", ")} (set when the Client is started, with <span class="code">--alt-server</span>).</p>` : "";
       acct.innerHTML = !st.server ? `<span class="muted">Set the server first.</span>` : st.signed_in && st.user
         ? `<span>Signed in as <b>${esc(st.user.display_name || "")}</b> · ${esc(st.user.role || "")}</span><button type="button" data-act="logout">Sign out</button>`
         : `<span class="muted">Not signed in.</span><a class="cmp-btn primary" href="#/login">Sign in</a>`;
+      const si = st.server_info;
       sy.innerHTML = `${stLine(p)}${progress(p)}<div class="cx-acts"><button type="button" class="primary" data-act="sync"${!st.server || !st.signed_in || st.syncing || !st.online ? " disabled" : ""}>Sync now</button>
         <span class="muted small">Last sync: ${st.last_sync ? `${esc(clock(st.last_sync * 1000))} (${agoTxt(st.last_sync * 1000)})` : "not yet"}</span></div>
-        ${st.server_info && st.server_info.version ? `<span class="muted small">${esc(st.server_info.name || S.host(st.server))} · version ${esc(st.server_info.version)}${st.server_info.latency_ms != null ? ` · ${Math.round(st.server_info.latency_ms)} ms` : ""}</span>` : ""}
-        ${errsOf(st).length ? `<ul class="cx-errs">${errsOf(st).slice(-4).map(x => `<li>${CS.icon("warn", "ico")}<span>${esc(typeof x === "string" ? x : x.message || x.error || x.detail || JSON.stringify(x))}${x.time ? ` <span class="muted">· ${esc(agoTxt(x.time * 1000))}</span>` : ""}</span></li>`).join("")}</ul>` : ""}`;
-      const ev = st.events || [], g = st.storage || {};
-      const data = g.api_bytes != null ? g.api_bytes : ev.reduce((a, e) => a + (e.bytes || 0), 0), media = g.media_bytes != null ? g.media_bytes : ev.reduce((a, e) => a + (e.media_bytes || 0), 0);
-      sto.innerHTML = `<span>${fmtB(data + media + (g.web_bytes || 0))} on this computer</span><span class="muted small">data ${fmtB(data)} · videos ${fmtB(media)} · ${plural(ev.length, "competition")}${g.free_bytes != null ? ` · ${fmtB(g.free_bytes)} free on the disk` : ""}</span>
+        ${si && si.version && st.online ? `<span class="muted small">${esc(si.name || S.host(st.server))} · version ${esc(si.version)}${si.latency_ms != null ? ` · ${Math.round(si.latency_ms)} ms` : ""}</span>` : ""}
+        ${errsOf(st).length ? `<ul class="cx-errs">${errsOf(st).slice(-4).map(x => `<li>${CS.icon("warn", "ico")}<span>${esc(cap(typeof x === "string" ? x : x.message || x.error || x.detail || JSON.stringify(x)))}${x.time ? ` <span class="muted">· ${esc(agoTxt(x.time * 1000))}</span>` : ""}</span></li>`).join("")}</ul>` : ""}`;
+      const ev = st.events || [], g = st.storage || {}, b = clientBytes(st);
+      sto.innerHTML = `<span>${fmtB(b.total)} on this computer</span><span class="muted small">data ${fmtB(b.data)} · videos ${fmtB(b.media)} · app ${fmtB(b.web)} · ${plural(ev.length, "competition")}${g.free_bytes != null ? ` · ${fmtB(g.free_bytes)} free on the disk` : ""}</span>
         ${g.data_dir ? `<span class="muted small">Folder: <span class="code">${esc(g.data_dir)}</span></span>` : ""}`;
-      const items = OBL || [];
-      const curOf = it => { const r = it.response; return r && r.detail && r.detail.current || null; };
+      const items = changeList();
       ob.innerHTML = !st.outbox && !items.length ? `<span class="muted">Nothing waiting. Changes made offline wait here until the server is back.</span>`
-        : `<ul class="cx-ob">${items.map(it => {
-            const L = obLabel(it), state = it.state || "", cur = curOf(it), pick = /\/picklists\//.test(it.path || "") && cur;
-            const tag = state === "conflict" ? ["warn", "Conflict"] : state === "failed" ? ["bad", "Not sent"] : state === "sending" ? ["", "Sending…"] : ["", "Waiting"];
-            const why = state === "conflict" && pick ? `${who(cur.updated_by)} saved a newer picklist${cur.updated_at ? " " + agoTxt(cur.updated_at * 1000) : ""}. Keep yours on top of it, or take theirs?`
-              : it.error ? String(it.error) : it.attempts ? `Tried ${plural(it.attempts, "time")}.` : "";
-            const t = it.created || it.at;
-            return `<li class="cx-oi"><div class="cx-oh"><b>${esc(L.t)}</b><span class="cx-tag ${tag[0]}">${tag[1]}</span>${t ? `<time>${esc(agoTxt(t * 1000))}</time>` : ""}</div>
-              ${L.x ? `<div class="cx-oc">${esc(L.x)}</div>` : ""}${why ? `<div class="cx-ow ${tag[0]}">${esc(why)}</div>` : ""}
-              <div class="cx-acts">${pick ? `<button type="button" class="primary" data-act="ob-mine" data-id="${esc(String(it.id))}">Keep mine</button><button type="button" data-act="ob-theirs" data-id="${esc(String(it.id))}">Take theirs</button>`
-                : state === "sending" ? "" : `<button type="button" class="danger" data-act="ob-del" data-id="${esc(String(it.id))}">Discard</button>`}</div></li>`; }).join("")}</ul>
-          ${st.outbox && !items.length ? `<span class="muted">${plural(st.outbox, "change")} waiting.</span>` : ""}`;
-      obLoad();
+        : `<ul class="cx-ob">${items.map(obItem).join("")}</ul>${st.outbox && !items.length ? `<span class="muted">${plural(st.outbox, "change")} waiting.</span>` : ""}`;
     }
     let was = JSON.stringify([st0.server, st0.signed_in, st0.online]);
     live($(".cx-grid"), () => {
@@ -992,7 +1200,7 @@
       const st = S.status || {}, now = JSON.stringify([st.server, st.signed_in, st.online]);
       if (now !== was) { was = now; loadLists(); }
     });
-    drawLists(); loadLists();
+    drawLists(); loadLists(); clientOutbox(S.status, true);
   }
 
   // ================================================================ #/connect: Cyber-Scout Client, first run (or "Change server")
@@ -1017,7 +1225,7 @@
       inp.value = s; say("", "Testing…");
       try {
         const r = await ctl("POST", "test", { server: s }, 30000) || {};
-        if (r.ok === false || r.error) { say("bad", `${CS.icon("warn", "ico")}<span>${esc(errText({ error: r.error }, 0) || "Couldn't connect.")}</span>`); return null; }
+        if (r.ok === false || r.error) { say("bad", testErr(r)); return null; }
         const info = r.info || r, ms = r.latency_ms != null ? r.latency_ms : r.latency != null ? (r.latency < 20 ? r.latency * 1000 : r.latency) : null;
         say("good", `${CS.icon("check", "ico")}<span>Found${info.name ? ` <b>${esc(info.name)}</b>` : " the server"}${ms != null ? ` · ${Math.round(ms)} ms` : ""}${info.version ? ` · version ${esc(info.version)}` : ""}</span>`);
         return s;

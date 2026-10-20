@@ -221,9 +221,10 @@ async function flush() {
   const run = async () => {
     const db = await idb();
     try {
-      const all = (await tx(db, "readonly", s => s.getAll())) || [];
-      let sent = 0, retry = false;
-      for (const it of all.sort((a, b) => a.seq - b.seq)) {
+      const all = ((await tx(db, "readonly", s => s.getAll())) || []).sort((a, b) => a.seq - b.seq);
+      let retry = false, conflicts = 0, failed = 0;
+      const keys = [];
+      for (const it of all) {
         if (it.state !== "pending") continue;
         let r;
         try {
@@ -233,14 +234,29 @@ async function flush() {
             body: it.body !== undefined ? JSON.stringify(it.body) : undefined,
           });
         } catch (err) { retry = true; break; }
-        if (r.ok || r.status === 202) { await tx(db, "readwrite", s => s.delete(it.seq)); sent++; continue; }
+        if (r.ok || r.status === 202) {
+          let d = null; if (r.status !== 204) { try { d = await r.json(); } catch (x) { } }
+          await tx(db, "readwrite", s => s.delete(it.seq)); keys.push(it.key);
+          // like sync.js: later saves of the same picklist made on top of this one now build on the version it created
+          if (it.method === "PUT" && /\/picklists\//.test(it.path) && d && d.version != null) {
+            const base = it.body && it.body.base_version;
+            for (const x of all) if (x.seq > it.seq && x.path === it.path && x.state === "pending" && x.body && x.body.base_version === base) {
+              x.body = Object.assign({}, x.body, { base_version: d.version });
+              if (x.tries) x.key = self.crypto.randomUUID ? self.crypto.randomUUID() : String(Date.now()) + Math.random().toString(16).slice(2);
+              await tx(db, "readwrite", s => s.put(x));
+            }
+          }
+          continue;
+        }
         if (r.status === 401 || r.status === 403 || r.status === 429 || r.status >= 500) { retry = r.status !== 401 && r.status !== 403; break; }   // the page sorts these out
         let d = null; try { d = await r.json(); } catch (x) { }
         const cur = r.status === 409 && d && d.detail && d.detail.current;
         Object.assign(it, cur ? { state: "conflict", current: cur } : { state: "failed" }, { status: r.status, error: (d && typeof d.detail === "string" && d.detail) || "HTTP " + r.status });
+        if (cur) conflicts++; else failed++;
         await tx(db, "readwrite", s => s.put(it));
       }
-      for (const c of await self.clients.matchAll({ type: "window" })) c.postMessage({ type: "cs-outbox", sent });
+      // keys: the page counts each sent change once, also when it sent the same change itself (one toast, CLIENT-8)
+      for (const c of await self.clients.matchAll({ type: "window" })) c.postMessage({ type: "cs-outbox", sent: keys.length, keys, conflicts, failed });
       if (retry) throw new Error("server unreachable: retry later");
     } finally { db.close(); }
   };
