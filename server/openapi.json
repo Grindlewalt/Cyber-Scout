@@ -1871,6 +1871,47 @@
     }
    }
   },
+  "/app/v1/events/{ev}/sources/webcasts": {
+   "get": {
+    "tags": [
+     "sources"
+    ],
+    "summary": "The event's webcasts listed on TBA, to add on the Video page (admin)",
+    "description": "webcasts: TBA's YouTube / Twitch streams for the event, with `source` = the id of the source that already has\nthat link (null: not added yet) and `dismissed`.  No TBA key or TBA unreachable: an empty list and a `note`\n(the page just doesn't offer any), never an error.",
+    "operationId": "tba_webcasts_app_v1_events__ev__sources_webcasts_get",
+    "parameters": [
+     {
+      "name": "ev",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "title": "Ev"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
   "/app/v1/events/{ev}/sources/{sid}": {
    "patch": {
     "tags": [
@@ -3306,6 +3347,18 @@
        "default": 100,
        "title": "Limit"
       }
+     },
+     {
+      "name": "changes",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "boolean",
+       "description": "only changes: leave out sign-ins / sign-outs / failed sign-ins and raw request entries (http.*)",
+       "default": false,
+       "title": "Changes"
+      },
+      "description": "only changes: leave out sign-ins / sign-outs / failed sign-ins and raw request entries (http.*)"
      }
     ],
     "responses": {
@@ -6566,6 +6619,12 @@
       "type": "number",
       "title": "Since",
       "description": "unix seconds: undo this account's changes made at or after this time"
+     },
+     "dry_run": {
+      "type": "boolean",
+      "title": "Dry Run",
+      "description": "only count: what would be undone / skipped, nothing changes",
+      "default": false
      }
     },
     "additionalProperties": false,
@@ -6733,6 +6792,19 @@
       "title": "Passwordless Ok",
       "description": "accounts without a password can sign in from here",
       "default": true
+     },
+     "processing": {
+      "anyOf": [
+       {
+        "additionalProperties": true,
+        "type": "object"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Processing",
+      "description": "signed in only: the worker's state {paused: bool|null (null = unknown), worker_seen: unix|null (its last pass), reason: 'paused'|'no_key'|'no_events'|null, why: sentence|null}"
      }
     },
     "type": "object",
@@ -6923,7 +6995,7 @@
       "type": "string",
       "maxLength": 2000,
       "title": "Url",
-      "description": "YouTube/Twitch URL (video, livestream, playlist, channel), direct .mp4/.m3u8 URL, or a file path under the media/data dir"
+      "description": "YouTube/Twitch URL (video, livestream, playlist, channel), direct video URL (.mp4/.m3u8/...: checked with one HEAD request), or a file path under the media/data dir; any other web page is refused (422, a sentence for the admin)"
      },
      "role": {
       "type": "string",
