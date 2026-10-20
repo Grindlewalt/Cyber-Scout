@@ -75,7 +75,15 @@ samdev-7/autoscout (MIT, credited).
 - Honesty: strategist-facing numbers carry coverage/uncertainty; video counts as censored evidence; "measured" only
   when statistically significant. Don't remove those labels.
 
-## Status / open items (2026-10-19)
+## Status / open items (2026-10-20)
+- **Fresh-install test in progress (2026-10-20):** the old production stack is stopped and moved to
+  `/opt/stacks/cyber-scout.pre-fresh-20261020` (all data, `.env`, the 2026wabon video setup; images tagged
+  `cyber-scout-*:pre-fresh-20261020`; DB copy in the NAS backups). The owner is reinstalling from scratch with the
+  one-liners (`curl -fsSL http://10.0.0.58:7580/downloads/get.sh | bash`, default dir `/opt/cyber-scout`) and the Client
+  one-liner on the main Mac (old client moved to `~/CyberScout.pre-fresh-20261020` and
+  `~/Library/Application Support/CyberScout.pre-fresh-20261020`). The paths in "Production" above are the old stack's:
+  check where the new one lives before deploying. Restore the old one: `docker compose down` in the new folder,
+  `mv /opt/stacks/cyber-scout.pre-fresh-20261020 /opt/stacks/cyber-scout`, `docker compose up -d` there.
 - atomosserver is the main server again (HEAD deployed 2026-10-19, still `PAUSE_PROCESSING=1`). The 2026wagg comp
   data lives on the M2 (offline since 2026-10-18): copy it over once the M2 is on (see the memory notes).
 - Detector training is local: `live/train/cstrain.py` on atomosserver (both GPUs while processing is paused).

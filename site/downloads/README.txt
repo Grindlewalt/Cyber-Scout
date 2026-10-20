@@ -1,8 +1,12 @@
-Cyber-Scout downloads. Install notes: client/README.md and deploy/README.md in the source.
+Cyber-Scout downloads (code 529bbde). Install notes: client/README.md and deploy/README.md in the source.
 
-One-line server install (works where <this site> is reachable; downloads the code and the model from it):
-  Linux / macOS:        curl -fsSL <this site>/downloads/get.sh | bash
-  Windows (PowerShell): irm <this site>/downloads/get.ps1 | iex
+One-line server install (works where http://10.0.0.58:7580 is reachable; downloads the code and the model from it):
+  Linux / macOS:        curl -fsSL http://10.0.0.58:7580/downloads/get.sh | bash
+  Windows (PowerShell): irm http://10.0.0.58:7580/downloads/get.ps1 | iex
+
+One-line Client install (installs, starts at login, opens it; connects to http://10.0.0.58:7560):
+  macOS / Linux:        curl -fsSL http://10.0.0.58:7580/downloads/get-client.sh | bash
+  Windows (PowerShell): irm http://10.0.0.58:7580/downloads/get-client.ps1 | iex
 
   cyberscout-client-windows-x64.exe   Cyber-Scout Client, Windows 10/11 x64 (unsigned: the browser may ask to Keep it; SmartScreen > More info > Run anyway)
   cyberscout-client-macos-arm64       Cyber-Scout Client, macOS Apple silicon (unsigned: see macOS below)
@@ -13,11 +17,13 @@ One-line server install (works where <this site> is reachable; downloads the cod
   install.ps1                         server installer, Windows
   get.sh                              one-line server install, Linux and macOS (checks the installer and code SHA-256)
   get.ps1                             one-line server install, Windows (checks the installer and code SHA-256)
+  get-client.sh                       one-line Client install, macOS and Linux (checks the build's SHA-256; starts at login)
+  get-client.ps1                      one-line Client install, Windows (checks the build's SHA-256; starts at sign-in)
   robot.onnx                          the robot detector model (the installers download it with --model / -Model)
   cyberscout-src.tar.gz               the source code at this version
   SHA256SUMS                          SHA-256 of the files above
 
-macOS Client: in Terminal (Intel Macs: the -x64 file instead of -arm64):
+macOS Client by hand (the one-liner above skips all of this): in Terminal (Intel Macs: -x64, not -arm64):
   cd ~/Downloads
   xattr -d com.apple.quarantine cyberscout-client-macos-arm64
   chmod +x cyberscout-client-macos-arm64
