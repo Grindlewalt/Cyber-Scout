@@ -63,6 +63,8 @@ MIN_BEAT = 5.0                   # heartbeat interval floor (s)
 WARN_MB = 100                    # default "warn before a clip download over N MB" (config process_warn_mb; 0 = off)
 SLOW_MIN = 25.0                  # minutes per match: slower than this, Clip only helps the event more
 SERVER_MIN = 3.5                 # what the server's own worker takes per match (RTX 3060 Ti), for the comparison
+# what a GPU we have measured takes per match (client/README.md, "How fast"), shown before this computer is measured
+TYPICAL = ((re.compile(r"^Apple M1(?! (Pro|Max|Ultra))\b"), 5.2, "an Apple M1, Core ML"),)
 BENCH_V = 1                      # bump to re-run every client's benchmark
 # minutes per match from the benchmark: a livestream clip is ~190 s at 60 fps; the detector runs at 30 Hz over all of
 # it (process.detect_video), and the rest of the pipeline (decode, fuel tracker on every frame, OCR, shots, intakes,
@@ -385,7 +387,12 @@ class Processor:
                  gpu=self.gpu_info)
         m, how = self.per_match_min()
         b = dict(self.bench or {}) if self.bench else None
+        g = self.gpu_info or {}
+        typ = next(((mins, what) for rx, mins, what in TYPICAL if g.get("ok") and rx.match(g.get("name") or "")), None)
+        u = self.app.session.user if self.cfg["server"] else None
+        s["user"] = {"display_name": u.get("display_name"), "role": u.get("role")} if u else None    # (admin only)
         s["speed"] = {"per_match_min": m, "from": how, "measured_min": self.measured_min(), "slow": self.slow(),
+                      "typical_min": typ[0] if typ else None, "typical_of": typ[1] if typ else None,
                       "slow_min": SLOW_MIN, "server_min": SERVER_MIN, "bench": b, "running": self.bench_st,
                       "jobs": [{k: x.get(k) for k in ("key", "process_s", "download_s", "total_s", "at")}
                                for x in self.perf[-5:]]}
@@ -423,7 +430,11 @@ class Processor:
             return "paused: too slow to track here; Clip only helps more"
         if st == "benchmarking":
             return "benchmarking this computer" + (f" ({s['message']})" if s.get("message") else "")
-        return f"{st}: {s.get('message') or ''}".rstrip(": ") + (f" ({done})" if s.get("done") or s.get("failed") else "")
+        tail = f" ({done})" if s.get("done") or s.get("failed") else ""
+        if st == "waiting" and s.get("message"):           # the reason alone, not "waiting: ..." (CLIENT-16)
+            return s["message"] + tail
+        label = {"needs_setup": "set up needed", "checking": "checking this computer", "updating": "updating"}.get(st, st)
+        return f"{label}: {s.get('message') or ''}".rstrip(": ") + tail
 
     # ------------------------------------------------------------------------------------------------ loop
     def run(self):

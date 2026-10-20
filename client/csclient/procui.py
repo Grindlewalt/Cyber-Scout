@@ -35,8 +35,10 @@ overflow-wrap:anywhere}
 background:var(--soft);color:var(--mute)}
 .verdict.go{background:var(--goT);color:var(--go)}.verdict.warn{background:var(--warnT);color:var(--warn)}
 .verdict.stop{background:var(--stopT);color:var(--stop)}
-.lnk{background:none;border:0;padding:0;margin:8px 0 0 10px;font:inherit;font-size:13px;color:var(--acc);cursor:pointer;
-text-decoration:underline;text-underline-offset:2px}.lnk:disabled{color:var(--mute);cursor:default;text-decoration:none}
+.lnk{background:var(--sheet);border:1px solid var(--line);border-radius:6px;padding:3px 10px;margin:8px 0 0 10px;font:inherit;
+font-size:13px;color:var(--acc);cursor:pointer}.lnk:hover{border-color:var(--acc)}
+.lnk:disabled{color:var(--mute);cursor:not-allowed;border-style:dashed;background:transparent}
+.ro.off .v,.ro.off .k{color:var(--mute)}
 .verdict[hidden]+.lnk{margin-left:0}
 .notes{margin:14px 0 0;display:grid;gap:8px}
 .note{border-left:4px solid var(--warn);background:var(--sheet);padding:10px 14px;border-radius:0 6px 6px 0}
@@ -60,7 +62,7 @@ background:var(--acc);transition:width .4s}
 .stats b{color:var(--ink);font-weight:650}
 button.b{border:1px solid var(--line);background:var(--sheet);color:var(--ink);border-radius:6px;padding:7px 14px;
 font:inherit;cursor:pointer}button.b.p{background:var(--acc);border-color:var(--acc);color:var(--acc-ink);font-weight:650}
-button.b:disabled{opacity:.55;cursor:default}.btns{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
+button.b:disabled{opacity:.55;cursor:not-allowed}.sw:disabled{opacity:.5;cursor:not-allowed}.btns{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
 .sw:focus-visible,button:focus-visible,input:focus-visible,summary:focus-visible{outline:3px solid var(--acc);
 outline-offset:2px}
 .hint{color:var(--mute);font-size:13px;margin:8px 0 0;max-width:72ch}
@@ -93,6 +95,7 @@ match clips (Clip only). Needs an admin account.</p></div><a href="/">Back to Cy
  <div class="ro"><div class="k">Wi-Fi to the server</div><div class="v" id="nv">&ndash;</div><div class="s" id="ns"></div>
   <span class="verdict" id="nj"></span><button class="lnk" id="netcheck">Check connection</button></div>
 </section>
+<div class="note bad" id="role" hidden></div>
 <div class="notes" id="notes" aria-live="polite"></div>
 
 <section class="panel" aria-labelledby="swl">
@@ -164,10 +167,18 @@ SCRIPT = b"""\"use strict\";
       else verdict("gj", g.ok ? "go" : "warn", g.ok ? "Can track" : "Clip only");
     }
     const m = sp.per_match_min;
-    $("bench").disabled = !!(run && run.state === "running") || !s.python || !!(g && !g.ok);
-    if (g && !g.ok && !(run && run.state === "running")) { $("sv").textContent = "\\u2013"; $("ss").textContent = "Tracking needs a usable GPU."; verdict("sj", "", ""); }
+    const clipOnly = s.mode === "clip";
+    $("bench").disabled = !!(run && run.state === "running") || !s.python || !!(g && !g.ok) || clipOnly;
+    // a disabled button says why (CLIENT-17)
+    $("bench").textContent = !s.python && !clipOnly ? "Run benchmark (after Set up)" : "Run benchmark";
+    $("bench").title = clipOnly ? "Clip only doesn't track: no benchmark needed" : !s.python ? "Set up processing first (below)" : "";
+    $("sv").closest(".ro").classList.toggle("off", clipOnly);
+    if (clipOnly && !(run && run.state === "running")) { $("sv").textContent = "\\u2013"; $("ss").textContent = "Not used in Clip only: this computer records and uploads, it doesn't track."; verdict("sj", "", ""); }
+    else if (g && !g.ok && !(run && run.state === "running")) { $("sv").textContent = "\\u2013"; $("ss").textContent = "Tracking needs a usable GPU."; verdict("sj", "", ""); }
     else if (run && run.state === "running") { $("sv").textContent = (run.pct || 0) + "%"; $("ss").textContent = "Benchmarking: " + (run.message || ""); verdict("sj", "", ""); }
-    else if (m == null) { $("sv").textContent = "\\u2013"; $("ss").textContent = s.python ? "Not measured yet." : "Measured after Set up."; verdict("sj", "", ""); }
+    else if (m == null) { $("sv").textContent = "\\u2013";
+      $("ss").textContent = (s.python ? "Not measured yet." : "Measured after Set up.") + (sp.typical_min ? " " + sp.typical_of + " takes about " + sp.typical_min + " min per match; the server about " + sp.server_min + "." : "");
+      verdict("sj", "", ""); }
     else {
       $("sv").innerHTML = (m < 10 ? m.toFixed(1) : Math.round(m)) + "<small>min</small>";
       const src = sp.from === "measured" ? "Measured on real matches here" : "Benchmark estimate (" + (b && b.provider ? b.provider.replace("ExecutionProvider", "") : "") + ")";
@@ -232,7 +243,9 @@ SCRIPT = b"""\"use strict\";
     if (s.python_setting) t = "Using the Processing Python set under Advanced (" + s.python_setting + "). " + (pl && !pl.installed ? "Set up would install its own instead: " + t.replace(/^Installs /, "") : "");
     $("plan").textContent = t || "Checking what this computer needs\\u2026";
     const running = !!(st && st.state === "running");
-    $("setup").disabled = running || !!(pl && !pl.ok);
+    const u = s.user, admin = !!(u && u.role === "admin");
+    $("setup").disabled = running || !!(pl && !pl.ok) || !admin;
+    $("setup").title = admin ? "" : "Needs an admin account";
     $("setup").textContent = pl && pl.installed ? "Set up again" : "Set up processing";
     const pr = st && st.progress;
     $("setupbar").hidden = !(running && pr); if (pr) $("setuppct").style.width = pr.pct + "%";
@@ -240,6 +253,12 @@ SCRIPT = b"""\"use strict\";
   }
   function paint(s) {
     last = s;
+    // the server gives processing jobs to admins only: say who is signed in, and don't offer what can't run (CLIENT-16)
+    const u = s.user, admin = !!(u && u.role === "admin"), role = $("role");
+    role.hidden = admin;
+    role.textContent = admin ? "" : u ? "Signed in as " + (u.display_name || "a user") + " (" + (u.role || "no role") + "): helping process matches needs an admin account. Sign in as an admin in Cyber-Scout on this computer to use this."
+      : "Not signed in: sign in with an admin account in Cyber-Scout on this computer first.";
+    $("sw").disabled = !admin && !s.enabled;          // (it can always be switched off)
     $("sw").setAttribute("aria-checked", s.enabled ? "true" : "false");
     $("m-track").setAttribute("aria-pressed", s.mode === "track" ? "true" : "false");
     $("m-clip").setAttribute("aria-pressed", s.mode === "clip" ? "true" : "false");
@@ -274,7 +293,11 @@ SCRIPT = b"""\"use strict\";
   $("save").addEventListener("click", () => { typing = false; act("PUT", "processing", { python: $("py").value.trim() || null }); });
   $("allow").addEventListener("click", () => act("PUT", "processing", { allow_large: true }));
   $("savewarn").addEventListener("click", () => { const v = parseInt($("warn").value, 10); act("PUT", "processing", { warn_mb: isNaN(v) ? 0 : v }); });
-  $("setup").addEventListener("click", () => act("POST", "processing/setup", {}));
+  $("setup").addEventListener("click", () => {
+    const pl = last && last.plan;           // a big download: ask first (a metered hotspot, CLIENT-17)
+    if (pl && pl.download && !confirm("Download about " + gb(pl.download) + " now (" + gb(pl.disk) + " on disk, " + gb(pl.free) + " free)? On venue Wi-Fi this can take a while.")) return;
+    act("POST", "processing/setup", {});
+  });
   refresh(); setInterval(refresh, 2000);
 })();
 """

@@ -655,7 +655,9 @@ class TestUnits(unittest.TestCase):
                          "idle, done 2, failed 1")
         self.assertEqual(L({"enabled": False, "state": "off"}), "off")
         self.assertEqual(L({"enabled": True, "state": "needs_setup", "message": "choose a Python"}),
-                         "needs_setup: choose a Python")
+                         "set up needed: choose a Python")
+        self.assertEqual(L({"enabled": True, "state": "waiting", "message": "offline: waiting for the server"}),
+                         "offline: waiting for the server")
 
     def test_extract_code_refuses_unsafe_archives(self):
         tmp = tempfile.mkdtemp(prefix="csc-x-")
