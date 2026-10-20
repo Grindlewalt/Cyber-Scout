@@ -115,6 +115,7 @@
 :T .toolbar { background: color-mix(in srgb, var(--bg) 82%, transparent); }
 :T .sb-item[aria-current="page"] { box-shadow: none; }
 :T h1, :T .qid h2, :T .qb-n, :T .cd > span, :T .oe dd, :T .bigp { letter-spacing: -.03em; }
+:T .oe dd small, :T .bigp small { letter-spacing: normal; }
 :T .qb-n { font-weight: 600; font-size: 72px; }
 :T .qid h2 { font-weight: 600; }
 :T .qcard, :T .dsec, :T .card { border-color: var(--line); }

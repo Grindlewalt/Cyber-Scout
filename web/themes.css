@@ -23,8 +23,17 @@
 @font-face { font-family: "Gabarito"; font-style: normal; font-weight: 400 900; font-display: swap; src: url("fonts/c-gabarito.woff2") format("woff2"); }
 
 /* ---- Sand & Earth: Warm sandstone paper by day, bark and umber at night, with moss green only where you are. */
-:root {
+html[data-style="sandearth"] {
   color-scheme: light;
+  --font: "Sofia Sans", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-num: "Sofia Sans Condensed", "Sofia Sans", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --num-stretch: 100%;
+  --r-tag: 4px;
+  --r-s: 6px;
+  --r-p: 9px;
+  --r-m: 13px;
+  --fs-body: 15px;
+  --fs-foot: 14px;
   --bg: #eee5d6;
   --surface: #fbf7f0;
   --surface-2: #f4ede1;
@@ -70,17 +79,6 @@
   --pick-chip: transparent;
   --sel: color-mix(in srgb, var(--accent) 9%, transparent);
   --hover: color-mix(in srgb, var(--ink) 5%, transparent);
-}
-html:is([data-style="sandearth"], :not([data-style])) {
-  --font: "Sofia Sans", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-  --font-num: "Sofia Sans Condensed", "Sofia Sans", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-  --num-stretch: 100%;
-  --r-tag: 4px;
-  --r-s: 6px;
-  --r-p: 9px;
-  --r-m: 13px;
-  --fs-body: 15px;
-  --fs-foot: 14px;
 }
 html[data-style="sandearth"][data-mode="dark"] {
   color-scheme: dark;
@@ -132,7 +130,7 @@ html[data-style="sandearth"][data-mode="dark"] {
   --shadow-pop: 0 2px 6px rgba(0, 0, 0, .25), 0 16px 40px rgba(0, 0, 0, .4);
 }
 @media (prefers-color-scheme: dark) {
-  html:is([data-style="sandearth"][data-mode="auto"], :not([data-style])) {
+  html[data-style="sandearth"][data-mode="auto"] {
     color-scheme: dark;
     --bg: #1d1915;
     --surface: #26211b;
@@ -182,24 +180,24 @@ html[data-style="sandearth"][data-mode="dark"] {
     --shadow-pop: 0 2px 6px rgba(0, 0, 0, .25), 0 16px 40px rgba(0, 0, 0, .4);
   }
 }
-html:is([data-style="sandearth"], :not([data-style])) .sidebar { border-right: 1px solid var(--line-strong); }
-html:is([data-style="sandearth"], :not([data-style])) .sb-item:hover { background: color-mix(in srgb, var(--plate-ink) 7%, transparent); }
-html:is([data-style="sandearth"], :not([data-style])) .sb-item[aria-current="page"] { background: var(--cur-bg); color: var(--cur-ink); box-shadow: inset 0 0 0 1px var(--cur-ring); }
-html:is([data-style="sandearth"], :not([data-style])) .sb-item[aria-current="page"] svg { color: var(--cur-icon); }
-html:is([data-style="sandearth"], :not([data-style])) .sb-h { letter-spacing: .02em; }
-html:is([data-style="sandearth"], :not([data-style])) h1, html:is([data-style="sandearth"], :not([data-style])) .qid h2 { letter-spacing: -.01em; font-weight: 800; }
-html:is([data-style="sandearth"], :not([data-style])) .qb-n { font-weight: 800; font-size: 72px; }
-html:is([data-style="sandearth"], :not([data-style])) .cd > span { font-weight: 700; }
-html:is([data-style="sandearth"], :not([data-style])) .rl-m.upc.on { background: var(--pick-bg); color: var(--pick-ink); border-color: var(--pick-line); box-shadow: inset 0 0 0 1px var(--pick-line); }
-html:is([data-style="sandearth"], :not([data-style])) .rl-m.upc.on.red { border-top-color: var(--red-fill); }
-html:is([data-style="sandearth"], :not([data-style])) .rl-m.upc.on.blue { border-top-color: var(--blue-fill); }
-html:is([data-style="sandearth"], :not([data-style])) .rl-m.upc.on .rl-k small, html:is([data-style="sandearth"], :not([data-style])) .rl-m.upc.on .rl-r { color: var(--pick-ink-2); }
-html:is([data-style="sandearth"], :not([data-style])) .rl-m.upc.on .rl-r b { color: var(--pick-ink); }
-html:is([data-style="sandearth"], :not([data-style])) .rl-m.upc.on .rpg { background: var(--pick-chip); color: var(--pick-ink); border-color: currentColor; }
-html:is([data-style="sandearth"], :not([data-style])) .dchip.us { background: var(--accent-fill); color: var(--on-accent); box-shadow: none; border-color: var(--accent-fill); }
-html:is([data-style="sandearth"], :not([data-style])) .dchip.us .rt, html:is([data-style="sandearth"], :not([data-style])) .dchip.us .ustag { color: var(--on-accent); }
-html:is([data-style="sandearth"], :not([data-style])) .dchip.us .mcov { color: var(--on-accent); border-color: color-mix(in srgb, var(--on-accent) 50%, transparent); }
-html:is([data-style="sandearth"], :not([data-style])) .oe-spark, html:is([data-style="sandearth"], :not([data-style])) .trends2 { color: var(--spark); }
+html[data-style="sandearth"] .sidebar { border-right: 1px solid var(--line-strong); }
+html[data-style="sandearth"] .sb-item:hover { background: color-mix(in srgb, var(--plate-ink) 7%, transparent); }
+html[data-style="sandearth"] .sb-item[aria-current="page"] { background: var(--cur-bg); color: var(--cur-ink); box-shadow: inset 0 0 0 1px var(--cur-ring); }
+html[data-style="sandearth"] .sb-item[aria-current="page"] svg { color: var(--cur-icon); }
+html[data-style="sandearth"] .sb-h { letter-spacing: .02em; }
+html[data-style="sandearth"] h1, html[data-style="sandearth"] .qid h2 { letter-spacing: -.01em; font-weight: 800; }
+html[data-style="sandearth"] .qb-n { font-weight: 800; font-size: 72px; }
+html[data-style="sandearth"] .cd > span { font-weight: 700; }
+html[data-style="sandearth"] .rl-m.upc.on { background: var(--pick-bg); color: var(--pick-ink); border-color: var(--pick-line); box-shadow: inset 0 0 0 1px var(--pick-line); }
+html[data-style="sandearth"] .rl-m.upc.on.red { border-top-color: var(--red-fill); }
+html[data-style="sandearth"] .rl-m.upc.on.blue { border-top-color: var(--blue-fill); }
+html[data-style="sandearth"] .rl-m.upc.on .rl-k small, html[data-style="sandearth"] .rl-m.upc.on .rl-r { color: var(--pick-ink-2); }
+html[data-style="sandearth"] .rl-m.upc.on .rl-r b { color: var(--pick-ink); }
+html[data-style="sandearth"] .rl-m.upc.on .rpg { background: var(--pick-chip); color: var(--pick-ink); border-color: currentColor; }
+html[data-style="sandearth"] .dchip.us { background: var(--accent-fill); color: var(--on-accent); box-shadow: none; border-color: var(--accent-fill); }
+html[data-style="sandearth"] .dchip.us .rt, html[data-style="sandearth"] .dchip.us .ustag { color: var(--on-accent); }
+html[data-style="sandearth"] .dchip.us .mcov { color: var(--on-accent); border-color: color-mix(in srgb, var(--on-accent) 50%, transparent); }
+html[data-style="sandearth"] .oe-spark, html[data-style="sandearth"] .trends2 { color: var(--spark); }
 
 /* ---- Jet: True black, graphite hairlines, colour only for match data. Always dark. */
 html[data-style="jetdark"] {
@@ -253,6 +251,7 @@ html[data-style="jetdark"] .sidebar { border-right: 1px solid var(--line); }
 html[data-style="jetdark"] .toolbar { background: color-mix(in srgb, var(--bg) 82%, transparent); }
 html[data-style="jetdark"] .sb-item[aria-current="page"] { box-shadow: none; }
 html[data-style="jetdark"] h1, html[data-style="jetdark"] .qid h2, html[data-style="jetdark"] .qb-n, html[data-style="jetdark"] .cd > span, html[data-style="jetdark"] .oe dd, html[data-style="jetdark"] .bigp { letter-spacing: -.03em; }
+html[data-style="jetdark"] .oe dd small, html[data-style="jetdark"] .bigp small { letter-spacing: normal; }
 html[data-style="jetdark"] .qb-n { font-weight: 600; font-size: 72px; }
 html[data-style="jetdark"] .qid h2 { font-weight: 600; }
 html[data-style="jetdark"] .qcard, html[data-style="jetdark"] .dsec, html[data-style="jetdark"] .card { border-color: var(--line); }
@@ -475,15 +474,8 @@ html[data-style="sandstone"] .dchip.us .mcov { color: var(--on-accent); border-c
 html[data-style="sandstone"] .oe-spark, html[data-style="sandstone"] .trends2 { color: var(--spark); }
 
 /* ---- Jet & Paper: True black at night, clean white Paper by day. 'Us' is the one inverse tag. */
-html[data-style="jet"] {
+:root {
   color-scheme: light;
-  --font: "Instrument Sans", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-  --font-num: "Instrument Sans", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-  --num-stretch: 75%;
-  --r-tag: 3px;
-  --r-s: 5px;
-  --r-p: 6px;
-  --r-m: 10px;
   --bg: #f3f3f1;
   --surface: #ffffff;
   --surface-2: #f4f4f2;
@@ -520,6 +512,15 @@ html[data-style="jet"] {
   --field-bg: #2a2c2e;
   --sel: color-mix(in srgb, var(--accent) 9%, transparent);
   --hover: color-mix(in srgb, var(--ink) 5%, transparent);
+}
+html:is([data-style="jet"], :not([data-style])) {
+  --font: "Instrument Sans", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-num: "Instrument Sans", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --num-stretch: 75%;
+  --r-tag: 3px;
+  --r-s: 5px;
+  --r-p: 6px;
+  --r-m: 10px;
 }
 html[data-style="jet"][data-mode="dark"] {
   color-scheme: dark;
@@ -562,7 +563,7 @@ html[data-style="jet"][data-mode="dark"] {
   --shadow-pop: 0 2px 6px rgba(0, 0, 0, .25), 0 16px 40px rgba(0, 0, 0, .4);
 }
 @media (prefers-color-scheme: dark) {
-  html[data-style="jet"][data-mode="auto"] {
+  html:is([data-style="jet"][data-mode="auto"], :not([data-style])) {
     color-scheme: dark;
     --bg: #050505;
     --surface: #0f0f10;
@@ -603,22 +604,23 @@ html[data-style="jet"][data-mode="dark"] {
     --shadow-pop: 0 2px 6px rgba(0, 0, 0, .25), 0 16px 40px rgba(0, 0, 0, .4);
   }
 }
-html[data-style="jet"] .sidebar { border-right: 1px solid var(--line); }
-html[data-style="jet"] .toolbar { background: color-mix(in srgb, var(--bg) 82%, transparent); }
-html[data-style="jet"] .sb-item[aria-current="page"] { box-shadow: none; }
-html[data-style="jet"] h1, html[data-style="jet"] .qid h2, html[data-style="jet"] .qb-n, html[data-style="jet"] .cd > span, html[data-style="jet"] .oe dd, html[data-style="jet"] .bigp { letter-spacing: -.03em; }
-html[data-style="jet"] .qb-n { font-weight: 600; font-size: 72px; }
-html[data-style="jet"] .qid h2 { font-weight: 600; }
-html[data-style="jet"] .qcard, html[data-style="jet"] .dsec, html[data-style="jet"] .card { border-color: var(--line); }
-html[data-style="jet"] .rl-m.upc.on { background: var(--accent-fill); color: var(--on-accent); border-color: var(--accent-fill); box-shadow: none; }
-html[data-style="jet"] .rl-m.upc.on .rl-k small, html[data-style="jet"] .rl-m.upc.on .rl-r, html[data-style="jet"] .rl-m.upc.on .rl-r b { color: var(--on-accent); }
-html[data-style="jet"] .rl-m.upc.on .rpg { background: transparent; color: var(--on-accent); border-color: currentColor; }
-html[data-style="jet"] .dchip.us { background: var(--accent-fill); color: var(--on-accent); box-shadow: none; border-color: var(--accent-fill); }
-html[data-style="jet"] .dchip.us .rt, html[data-style="jet"] .dchip.us .ustag { color: var(--on-accent); }
-html[data-style="jet"] .dchip.us .mcov { color: var(--on-accent); border-color: color-mix(in srgb, var(--on-accent) 50%, transparent); }
-html[data-style="jet"] .tab.on { border-bottom-width: 1px; }
-html[data-style="jet"] .oe-spark, html[data-style="jet"] .trends2 { color: var(--spark); }
-html[data-style="jet"] .weare { letter-spacing: .02em; }
+html:is([data-style="jet"], :not([data-style])) .sidebar { border-right: 1px solid var(--line); }
+html:is([data-style="jet"], :not([data-style])) .toolbar { background: color-mix(in srgb, var(--bg) 82%, transparent); }
+html:is([data-style="jet"], :not([data-style])) .sb-item[aria-current="page"] { box-shadow: none; }
+html:is([data-style="jet"], :not([data-style])) h1, html:is([data-style="jet"], :not([data-style])) .qid h2, html:is([data-style="jet"], :not([data-style])) .qb-n, html:is([data-style="jet"], :not([data-style])) .cd > span, html:is([data-style="jet"], :not([data-style])) .oe dd, html:is([data-style="jet"], :not([data-style])) .bigp { letter-spacing: -.03em; }
+html:is([data-style="jet"], :not([data-style])) .oe dd small, html:is([data-style="jet"], :not([data-style])) .bigp small { letter-spacing: normal; }
+html:is([data-style="jet"], :not([data-style])) .qb-n { font-weight: 600; font-size: 72px; }
+html:is([data-style="jet"], :not([data-style])) .qid h2 { font-weight: 600; }
+html:is([data-style="jet"], :not([data-style])) .qcard, html:is([data-style="jet"], :not([data-style])) .dsec, html:is([data-style="jet"], :not([data-style])) .card { border-color: var(--line); }
+html:is([data-style="jet"], :not([data-style])) .rl-m.upc.on { background: var(--accent-fill); color: var(--on-accent); border-color: var(--accent-fill); box-shadow: none; }
+html:is([data-style="jet"], :not([data-style])) .rl-m.upc.on .rl-k small, html:is([data-style="jet"], :not([data-style])) .rl-m.upc.on .rl-r, html:is([data-style="jet"], :not([data-style])) .rl-m.upc.on .rl-r b { color: var(--on-accent); }
+html:is([data-style="jet"], :not([data-style])) .rl-m.upc.on .rpg { background: transparent; color: var(--on-accent); border-color: currentColor; }
+html:is([data-style="jet"], :not([data-style])) .dchip.us { background: var(--accent-fill); color: var(--on-accent); box-shadow: none; border-color: var(--accent-fill); }
+html:is([data-style="jet"], :not([data-style])) .dchip.us .rt, html:is([data-style="jet"], :not([data-style])) .dchip.us .ustag { color: var(--on-accent); }
+html:is([data-style="jet"], :not([data-style])) .dchip.us .mcov { color: var(--on-accent); border-color: color-mix(in srgb, var(--on-accent) 50%, transparent); }
+html:is([data-style="jet"], :not([data-style])) .tab.on { border-bottom-width: 1px; }
+html:is([data-style="jet"], :not([data-style])) .oe-spark, html:is([data-style="jet"], :not([data-style])) .trends2 { color: var(--spark); }
+html:is([data-style="jet"], :not([data-style])) .weare { letter-spacing: .02em; }
 
 /* ---- Field Day: The venue itself: grey arena carpet, aluminium, hi-vis safety yellow, scoreboard numerals. Dark = under the lights. */
 html[data-style="fieldday"] {
