@@ -218,9 +218,11 @@ class Project:
                    and (not view or str(self.frames[i].get("view") or "") == view)]
         if q == "uncertain":
             ids = [i for i in ids if i not in rev]
+            imp = self.imported.items
             def key(i):
                 a = auto.get(i)
-                u, n_bg, n_mid = (a[0], a[1], a[2]) if a else (1.0, 0, 0)    # no teacher output = most uncertain
+                # no teacher output = most uncertain, unless the frame has imported human labels (a public set): last
+                u, n_bg, n_mid = (a[0], a[1], a[2]) if a else (-1.0, 0, 0) if i in imp else (1.0, 0, 0)
                 return (-u, -n_bg, -n_mid)
             ids = sorted(ids, key=key)                                      # stable: ties keep match/time order
         elif q == "gold":

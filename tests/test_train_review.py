@@ -177,6 +177,15 @@ def test_uncertain_order(proj):
     assert [x["id"] for x in p.queue("uncertain")["items"]][0] == "f5"
 
 
+def test_uncertain_puts_imported_human_labels_last(proj):
+    _auto(proj, "f1", [{"c": 0, "b": [0, 0, 9, 9], "p": 0.9, "src": "teacher:r2"}], u=0.2)
+    os.makedirs(os.path.join(proj, "labels", "import"), exist_ok=True)
+    with open(os.path.join(proj, "labels", "import", "f6.json"), "w") as f:
+        json.dump({"id": "f6", "boxes": [{"c": 0, "b": [0, 0, 9, 9]}]}, f)
+    ids = [x["id"] for x in rs.Project(proj).queue("uncertain")["items"]]
+    assert ids[0] != "f6" and ids[-1] == "f6"
+
+
 def test_gold_random_mine_filters(proj):
     _review(proj, "f5", by="ann", at=10)
     _review(proj, "f1", by="bob", at=20)
