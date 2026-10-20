@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import random
+import shutil
 import threading
 import time
 from urllib.parse import quote, urlencode
@@ -22,6 +23,7 @@ CHUNK_BYTES = 32 * 1024 * 1024        # client-side bundle size (server max is 6
 CHUNK_FILES = 4000
 BIG_FILE = 48 * 1024 * 1024           # a data file this big is fetched on its own with GET (bundle max is 64 MB)
 MAX_CONCURRENT = 2
+MEDIA_SPARE = 2 * 1024 ** 3           # videos never fill the disk past this much free space (web/sync.js says the same)
 _SHA = set("0123456789abcdef")
 
 
@@ -653,6 +655,22 @@ class SyncEngine:
             want.append((rel, size, sha))
         if not want:
             return
+        need = sum(w[1] for w in want)
+        free = self._free()
+        if free is not None and need > free - MEDIA_SPARE:
+            # take what fits (smallest first: the most matches), and say plainly that the rest needs space (CLIENT-18)
+            fit, room = [], free - MEDIA_SPARE
+            for w in sorted(want, key=lambda w: w[1]):
+                if w[1] <= room:
+                    fit.append(w)
+                    room -= w[1]
+            short = need - sum(w[1] for w in fit)
+            self.note_error("media", f"not enough disk space for all of {ev}'s videos: {len(want) - len(fit)} of "
+                                     f"{len(want)} ({short / 1e9:.1f} GB) aren't downloaded, to keep "
+                                     f"{MEDIA_SPARE / 1e9:.0f} GB free ({free / 1e9:.1f} GB free now)", ev=ev)
+            want = fit
+            if not want:
+                return
         self._progress(ev=ev, phase="media", **{"+total": len(want), "+total_bytes": sum(w[1] for w in want)})
         log.info("%s: %d media files to download (%.1f MB, mode %s)", ev, len(want), sum(w[1] for w in want) / 1e6,
                  mode)
@@ -660,6 +678,11 @@ class SyncEngine:
 
         def one(w):
             rel, size, sha = w
+            free = self._free()
+            if free is not None and size > free - MEDIA_SPARE:     # (something else filled the disk meanwhile)
+                failed.append(rel)
+                log.warning("%s: skipped, not enough disk space (%.1f GB free)", rel, free / 1e9)
+                return
             part, meta = self._part_paths("media", rel)
             self._resumable("GET", "/" + quote(rel), None, part, meta, rel, expect_size=size)
             with open(part, "rb") as src:
@@ -685,7 +708,38 @@ class SyncEngine:
             if err:
                 raise err
         if failed:
-            raise RuntimeError(f"{ev}: {len(failed)} media file(s) failed verification")
+            raise RuntimeError(f"{ev}: {len(failed)} media file(s) failed verification or didn't fit on the disk")
+
+    def _free(self):
+        try:
+            return shutil.disk_usage(self.site_root).free
+        except OSError:
+            return None
+
+    def remove_event(self, ev):
+        """Delete this computer's copy of one competition (data + videos), e.g. one that isn't synced any more. Files
+        another competition here also lists (the global api/*.json) stay. -> bytes freed."""
+        st = EventState(self.state_dir, ev)
+        keep = set()
+        for o in list_event_states(self.state_dir):
+            if o.ev != ev:
+                keep.update(o.files)
+                keep.update(o.media)
+        freed = 0
+        for rel in list(st.files) + list(st.media):
+            if rel in keep:
+                continue
+            try:
+                freed += os.path.getsize(target_path(self.site_root, rel))
+            except (ValueError, OSError):
+                pass
+            remove_file(self.site_root, rel)
+        try:
+            os.remove(st.path)
+        except OSError:
+            pass
+        log.info("%s: local copy removed (%.1f MB)", ev, freed / 1e6)
+        return freed
 
     # ------------------------------------------------------------------------------------------------ outbox
     def flush_outbox(self):

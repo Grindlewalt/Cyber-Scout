@@ -13,7 +13,7 @@ import socket
 import threading
 import time
 import uuid
-from urllib.parse import quote, unquote
+from urllib.parse import quote, unquote, urlsplit
 
 from . import VERSION
 from .net import MUTATING, Conn, HTTPError, NetError, detail_text
@@ -442,6 +442,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.send_header("Cache-Control", "no-store")
             self.send_header("X-CS-Offline", "1")
             self.send_header("X-CS-Cached-At", str(int(row["stored"])))
+            self.send_header("X-CS-At", str(int(row["stored"] * 1000)))     # (ms, like the service worker's x-cs-at)
             self._common(CSP_API)
             self.end_headers()
             if method != "HEAD":
@@ -526,9 +527,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
         try:
             sess = app.login(str(d.get("username") or ""), str(d.get("password") or ""))
         except HTTPError as e:
-            return self.send_json(e.status if 400 <= e.status < 600 else 502, {"detail": str(e)})
+            return self.send_json(e.status if 400 <= e.status < 600 else 502, {"detail": _cap(str(e))})
         except NetError as e:
-            return self.send_json(503, {"offline": True, "detail": f"can't reach the server: {e}"})
+            return self.send_json(503, {"offline": True, "detail": f"Can't reach the server: {e}."})
         return self.send_session(sess)
 
     def queue_write(self, method, full, body):
@@ -592,10 +593,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 try:
                     sess = app.login(str(d.get("username") or ""), str(d.get("password") or ""))
                 except HTTPError as e:
-                    return self.send_json(e.status if 400 <= e.status < 600 else 502, {"ok": False, "detail": str(e)})
+                    return self.send_json(e.status if 400 <= e.status < 600 else 502,
+                                          {"ok": False, "detail": _cap(str(e))})
                 except NetError as e:
                     return self.send_json(503, {"ok": False, "offline": True,
-                                                "detail": f"can't reach the server: {e}"})
+                                                "detail": f"Can't reach the server: {e}."})
                 u = sess.get("user") or {}
                 return self.send_json(200, {"ok": True, "user": {"display_name": u.get("display_name"),
                                                                  "role": u.get("role")}})
@@ -632,6 +634,17 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 return self.send_json(200, {"gpu": g})
             if sub == "outbox" and m == "GET":
                 return self.send_json(200, app.db.items())
+            me = re.match(r"^events/([^/]+)$", sub)
+            if me and m == "DELETE":
+                ev = me.group(1)
+                if not EVENT_RE.match(ev):
+                    return self.send_json(422, {"detail": "ev: an event key like 2026wasam"})
+                chosen = app.config["events"]
+                if ev in chosen if chosen is not None else any(e.get("key") == ev for e in app.engine.events_list):
+                    return self.send_json(409, {"detail": "This competition is still synced: untick it first."})
+                if app.engine.syncing:
+                    return self.send_json(409, {"detail": "A sync is running: try again in a moment."})
+                return self.send_json(200, {"ok": True, "freed": app.engine.remove_event(ev)})
             mm = re.match(r"^outbox/(\d+)$", sub)
             if mm and m == "DELETE":
                 oid = int(mm.group(1))
@@ -749,12 +762,19 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._write(body)
 
     def ctl_test(self, d):
+        """Test connection: always 200 {ok, server?, latency_ms?, version?, name?, error?}; errors are one plain
+        sentence for the person typing the address (CLIENT-11)."""
         app = self.app
         s = d.get("server") or app.config["server"]
         try:
             base = normalize_server(s)
         except ValueError as e:
-            return self.send_json(200, {"ok": False, "error": str(e)})
+            return self.send_json(200, {"ok": False, "error": _cap(str(e)) + "."})
+        u = urlsplit(base)
+        if (u.hostname or "").lower() in ("127.0.0.1", "localhost", "::1") and (u.port or 80) == app.port:
+            return self.send_json(200, {"ok": False, "server": base, "error":
+                                        "That's this Cyber-Scout Client's own address. Enter your team's server: the "
+                                        "address you use for Cyber-Scout in a browser."})
         c = Conn(base, ca_file=app.config.get("ca_file"), pool_size=0)
         t0 = time.time()
         try:
@@ -763,17 +783,36 @@ class Handler(http.server.BaseHTTPRequestHandler):
             ms = round((time.time() - t0) * 1000)
             info = r.json()
             if r.status != 200 or not isinstance(info, dict) or info.get("app") != "cyber-scout":
-                msg = (f"{base} answers, but not like a Cyber-Scout server (GET /app/v1/info: HTTP {r.status})"
-                       + (". The server may need updating to a version with offline sync." if r.status == 404
-                          else ""))
+                if self._looks_like_cyber_scout(c):
+                    msg = (f"{base} is a Cyber-Scout server, but a version without offline sync (GET /app/v1/info: "
+                           f"HTTP {r.status}). Ask your admin to update it.")
+                else:
+                    msg = (f"Something answers at {base}, but it isn't Cyber-Scout (GET /app/v1/info: HTTP {r.status})."
+                           " Check the address.")
                 return self.send_json(200, {"ok": False, "server": base, "latency_ms": ms, "error": msg})
             out = {"ok": True, "server": base, "latency_ms": ms, "version": info.get("version"),
                    "name": info.get("name"), "api": info.get("api"), "time": info.get("time")}
             if info.get("api") != 1:
-                out.update(ok=False, error=f"the server speaks sync API v{info.get('api')}; this client speaks v1 "
-                                           "- update the client")
+                out.update(ok=False, error=f"This server speaks sync API v{info.get('api')} and this Client speaks "
+                                           "v1: update the Client.")
             return self.send_json(200, out)
         except NetError as e:
-            return self.send_json(200, {"ok": False, "server": base, "error": f"can't reach {base}: {e}"})
+            if getattr(e, "kind", None) == "no_tls" and base.startswith("https://"):
+                return self.send_json(200, {"ok": False, "server": base, "suggest": "http://" + base[8:], "error":
+                                            f"This address doesn't use HTTPS. Try http://{base[8:]}"})
+            return self.send_json(200, {"ok": False, "server": base, "error": f"Can't reach {base}: {e}."})
         finally:
             c.close()
+
+    @staticmethod
+    def _looks_like_cyber_scout(c):
+        """Does the site at this address serve the Cyber-Scout web app (an older server without /app/v1/info)?"""
+        try:
+            r = c.request("GET", "/", headers={"Accept": "text/html"}, timeout=6, max_body=512 * 1024)
+        except NetError:
+            return False
+        return r.status == 200 and b"Cyber-Scout" in (r.body or b"")
+
+
+def _cap(t):
+    return t[:1].upper() + t[1:] if t else t

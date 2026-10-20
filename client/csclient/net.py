@@ -20,7 +20,12 @@ MUTATING = ("POST", "PUT", "PATCH", "DELETE")
 
 
 class NetError(Exception):
-    """The server could not be reached / the connection broke (=> offline)."""
+    """The server could not be reached / the connection broke (=> offline). kind: "no_tls" when an https:// address
+    answers in plain http (Test connection then suggests http://)."""
+
+    def __init__(self, msg="", kind=None):
+        super().__init__(msg)
+        self.kind = kind
 
 
 class HTTPError(Exception):
@@ -160,7 +165,9 @@ class Conn:
         hdrs = {"User-Agent": UA}
         hdrs.update(headers or {})
         for attempt in (0, 1):
-            c, reused = self._get(timeout)
+            # the retry after a dead pooled connection always opens a new one (the pool may hold more dead ones, e.g.
+            # behind a server or proxy with a short keep-alive)
+            c, reused = self._get(timeout) if attempt == 0 else (self._new(timeout), False)
             try:
                 c.request(method, path, body=body, headers=hdrs)
                 r = c.getresponse()
@@ -175,7 +182,7 @@ class Conn:
                 raise NetError(f"{e.__class__.__name__}: {e}")
             except (socket.timeout, OSError, ssl.SSLError, http.client.HTTPException) as e:
                 c.close()
-                raise NetError(_os_err_text(e))
+                raise NetError(_os_err_text(e), kind="no_tls" if _plain_http(e) else None)
             if stream:
                 return Response(r.status, r.msg, None, raw=r, conn=c, pool=self)
             try:
@@ -200,7 +207,16 @@ class Conn:
         raise NetError("connection failed")
 
 
+def _plain_http(e) -> bool:
+    """An https:// request answered by a plain-http server: OpenSSL reads "HTTP/1.1 400" as a bad TLS record."""
+    return isinstance(e, ssl.SSLError) and (getattr(e, "reason", None) in (
+        "WRONG_VERSION_NUMBER", "RECORD_LAYER_FAILURE", "UNKNOWN_PROTOCOL", "HTTP_REQUEST", "PACKET_LENGTH_TOO_LONG")
+        or "wrong version number" in str(e).lower())
+
+
 def _os_err_text(e) -> str:
+    if _plain_http(e):
+        return "it doesn't use HTTPS at this address"
     if isinstance(e, socket.timeout):
         return "timed out"
     if isinstance(e, socket.gaierror):

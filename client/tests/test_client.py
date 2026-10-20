@@ -277,6 +277,34 @@ class TestSync(Base):
         self.assertEqual(b, vid[10:20])
         self.assertEqual(hdrs["Content-Range"], f"bytes 10-19/{len(vid)}")
 
+    def test_media_never_fills_the_disk(self):
+        from csclient import sync as SY
+        st = self.fs.state
+        st.media[f"media/{EV}/proxy/{EV}_qm1.mp4"] = (os.urandom(3000), "proxy", "qm1")
+        st.media[f"media/{EV}/proxy/{EV}_qm2.mp4"] = (os.urandom(1000), "proxy", "qm2")
+        self.login()
+        self.c.req("PUT", "/client/v1/config", {"media": "proxy"})
+        self.app.engine._free = lambda: SY.MEDIA_SPARE + 2000          # room for the small one only
+        s = self.sync()
+        errs = [e for e in s["errors"] if e["kind"] == "media"]
+        self.assertTrue(errs and "not enough disk space" in errs[0]["message"], s["errors"])
+        root = self.app.engine.site_root
+        self.assertTrue(os.path.exists(os.path.join(root, "media", EV, "proxy", f"{EV}_qm2.mp4")))
+        self.assertFalse(os.path.exists(os.path.join(root, "media", EV, "proxy", f"{EV}_qm1.mp4")))
+
+    def test_remove_an_unsynced_competition(self):
+        self.login()
+        self.sync()
+        code, d = self.c.req("DELETE", f"/client/v1/events/{EV}")
+        self.assertEqual(code, 409, d)                                  # still synced
+        self.c.req("PUT", "/client/v1/config", {"events": []})
+        self.settle()
+        code, d = self.c.req("DELETE", f"/client/v1/events/{EV}")
+        self.assertEqual(code, 200, d)
+        self.assertGreater(d["freed"], 300_000)
+        self.assertFalse(os.path.exists(os.path.join(self.app.engine.site_root, "api", EV)))
+        self.assertEqual([e for e in self.status()["events"] if e["key"] == EV], [])
+
     def test_web_mirror_and_refresh(self):
         self.wait(lambda: self.app.mirror.version == "v1", "web mirror")
         code, hdrs, b = self.c.req("GET", "/", raw=True)
@@ -619,11 +647,40 @@ class TestSecurity(Base):
         code, d = self.c.req("POST", "/client/v1/test", {"server": "http://127.0.0.1:9"})
         self.assertFalse(d["ok"])
         self.assertIn("refused", d["error"])
+        self.assertTrue(d["error"][0].isupper(), d)
+        # an https:// address on a plain-http server -> "doesn't use HTTPS" + the http:// address to try
+        code, d = self.c.req("POST", "/client/v1/test", {"server": self.fs.url.replace("http://", "https://")})
+        self.assertFalse(d["ok"])
+        self.assertIn("doesn't use HTTPS", d["error"], d)
+        self.assertEqual(d["suggest"], self.fs.url)
+        # this client's own address
+        code, d = self.c.req("POST", "/client/v1/test", {"server": f"http://localhost:{self.app.port}"})
+        self.assertIn("own address", d["error"], d)
+        # something that isn't Cyber-Scout, and an old Cyber-Scout without /app/v1/info
+        import functools
+        import http.server
+        import threading
+        site = os.path.join(self.tmp, "www")
+        os.makedirs(site)
+        class Quiet(http.server.SimpleHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+        h = http.server.ThreadingHTTPServer(("127.0.0.1", 0), functools.partial(Quiet, directory=site))
+        threading.Thread(target=h.serve_forever, daemon=True).start()
+        self.addCleanup(h.server_close)
+        self.addCleanup(h.shutdown)
+        url = f"http://127.0.0.1:{h.server_address[1]}"
+        code, d = self.c.req("POST", "/client/v1/test", {"server": url})
+        self.assertIn("isn't Cyber-Scout", d["error"], d)
+        with open(os.path.join(site, "index.html"), "w") as f:
+            f.write("<title>Cyber-Scout</title>")
+        code, d = self.c.req("POST", "/client/v1/test", {"server": url})
+        self.assertIn("without offline sync", d["error"], d)
 
     def test_login_errors_and_logout(self):
         code, d = self.c.req("POST", "/client/v1/login", {"username": "scout", "password": "wrong"})
         self.assertEqual(code, 401)
-        self.assertIn("invalid", d["detail"])
+        self.assertEqual(d["detail"], "Invalid username or password")      # (sentence case, CLIENT-28)
         self.login()
         self.assertTrue(self.status()["signed_in"])
         code, _ = self.c.req("POST", "/client/v1/logout", {})
