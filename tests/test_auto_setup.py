@@ -84,6 +84,14 @@ def test_dynamic_follows_the_program_feed_unless_forced(env):
     assert s["dynamic"] is False and s["program_feed"] is True and s["role"] == "wide"
 
 
+def test_tba_webcast_with_an_admin_sources_url_is_not_added_twice():
+    u = "https://www.twitch.tv/firstwa_red1"
+    doc = {"sources": [dict(id="url-e6e5c488", origin="admin", kind="livestream", url=u, role="wide", primary=True)]}
+    SRC.merge(doc, [dict(id="tba-webcast-0", origin="tba", kind="livestream", url="https://www.twitch.tv/firstwa_red2"),
+                    dict(id="tba-webcast-1", origin="tba", kind="livestream", url=u)])
+    assert [s["id"] for s in doc["sources"]] == ["url-e6e5c488", "tba-webcast-0"]
+
+
 def test_trackable_carries_the_dynamic_flag(env):
     evd = env["evd"]
     (evd / "layout.json").write_text(json.dumps({"sources": {SID: {"W": 1920, "H": 1080, "regions": [

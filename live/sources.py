@@ -442,8 +442,10 @@ def set_program_feed(doc, sid, feed):
 
 
 def merge(doc, found):
-    """Add newly discovered sources; refresh TBA facts (videos, url) of known ones, keeping admin edits."""
+    """Add newly discovered sources; refresh TBA facts (videos, url) of known ones, keeping admin edits.  A new
+    source whose URL is already another source (a TBA webcast the admin pasted first) is not added again."""
     have = {s["id"]: s for s in doc.get("sources", [])}
+    urls = {s.get("url") for s in doc.get("sources", []) if s.get("url")}
     user_primary = any(s.get("primary") for s in doc.get("sources", []))
     for s in found:
         if s["id"] in have:
@@ -452,7 +454,10 @@ def merge(doc, found):
             vids = dict(old.get("videos") or {}); vids.update(s.get("videos") or {})
             old.update(s); old.update(keep)
             if vids: old["videos"] = vids
+        elif s.get("url") and s["url"] in urls:
+            continue
         else:
+            if s.get("url"): urls.add(s["url"])
             if user_primary: s.pop("primary", None)
             doc.setdefault("sources", []).append(s)
     doc["discovered_at"] = time.time()
