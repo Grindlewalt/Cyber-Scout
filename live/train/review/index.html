@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="en" data-theme="auto">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<title>Label review</title>
+<link rel="stylesheet" href="/review.css">
+<script src="/review.js" defer></script>
+</head>
+<body>
+<header class="top">
+  <div class="brand">
+    <span class="mark" aria-hidden="true"></span>
+    <div class="brand-t"><b>Label review</b><span id="projName">…</span></div>
+  </div>
+  <nav class="queues" id="queues" aria-label="Queue">
+    <button data-q="uncertain" class="q on" title="Most uncertain teacher output first">Uncertain</button>
+    <button data-q="gold" class="q" title="Unreviewed test / val frames: the gold set the model is scored on">Gold set</button>
+    <button data-q="random" class="q" title="Unreviewed, shuffled">Random</button>
+    <button data-q="mine" class="q" title="Frames you reviewed, newest first">Mine</button>
+    <button data-q="all" class="q" title="Every frame in match order">All</button>
+  </nav>
+  <div class="filters">
+    <label class="sel"><span>Event</span><select id="fEvent"><option value="">All</option></select></label>
+    <label class="sel"><span>Match</span><select id="fMatch"><option value="">All</option></select></label>
+    <label class="sel"><span>Split</span><select id="fSplit"><option value="">All</option></select></label>
+  </div>
+  <div class="tools">
+    <label class="who" title="Your name goes on every label you save"><span>Reviewer</span>
+      <input id="who" maxlength="40" placeholder="your name" autocomplete="nickname" spellcheck="false"></label>
+    <button id="themeBtn" class="ib" title="Theme: system / light / dark" aria-label="Theme">◐</button>
+    <button id="helpBtn" class="ib" title="Keyboard shortcuts (?)" aria-label="Keyboard shortcuts">?</button>
+  </div>
+</header>
+
+<main class="work">
+  <section class="stage-wrap">
+    <div class="stagebar">
+      <div class="classes" id="classes" role="radiogroup" aria-label="Class for new boxes"></div>
+      <label class="conf" title="Teacher boxes under this confidence are hidden and left out when you accept">
+        <span>Hide auto under</span>
+        <input id="conf" type="range" min="0" max="0.95" step="0.05" value="0.25">
+        <output id="confOut">0.25</output>
+      </label>
+      <div class="zoomctl">
+        <button id="zoomOut" class="ib" aria-label="Zoom out">−</button>
+        <output id="zoomOut2">100%</output>
+        <button id="zoomIn" class="ib" aria-label="Zoom in">+</button>
+        <button id="fitBtn" class="ib txt" title="Fit (F)">Fit</button>
+      </div>
+    </div>
+    <div class="stage" id="stage">
+      <canvas id="cv" aria-label="Frame with boxes; drag to draw a box"></canvas>
+      <div class="empty" id="empty" hidden></div>
+      <div class="spin" id="spin" hidden></div>
+    </div>
+  </section>
+
+  <aside class="side">
+    <div class="card frameinfo">
+      <div class="fi-top">
+        <span class="badge" id="fStatus">new</span>
+        <span class="pos" id="fPos">–</span>
+      </div>
+      <h2 id="fTitle">–</h2>
+      <dl class="meta" id="fMeta"></dl>
+    </div>
+
+    <div class="card actions">
+      <button id="accept" class="big go" title="Accept (A / Enter)"><span>Accept</span><kbd>A</kbd></button>
+      <div class="row">
+        <button id="prev" class="mid" title="Previous (←)">← Prev</button>
+        <button id="next" class="mid" title="Next without saving (→)">Next →</button>
+      </div>
+      <div class="row">
+        <button id="skip" class="mid" title="Skip: not training data for now (S)">Skip <kbd>S</kbd></button>
+        <button id="bad" class="mid warn" title="Bad frame: replay, graphics, black (B)">Bad <kbd>B</kbd></button>
+      </div>
+      <div class="row">
+        <button id="undo" class="mid" title="Undo (Ctrl+Z)">Undo</button>
+        <button id="reset" class="mid" title="Back to the auto boxes (R)">Reset</button>
+        <button id="del" class="mid" title="Delete the selected box (Delete)">Delete box</button>
+      </div>
+      <p class="diffline" id="diffLine"></p>
+    </div>
+
+    <div class="card boxes">
+      <h3>Boxes <span id="nBoxes">0</span></h3>
+      <ol id="boxList"></ol>
+    </div>
+
+    <div class="card progress">
+      <h3>Progress</h3>
+      <div class="big-n"><b id="pReviewed">0</b><span>/ <span id="pTotal">0</span> reviewed</span></div>
+      <div class="bars" id="pSplits"></div>
+      <div class="chips" id="pStatus"></div>
+      <p class="diffline" id="pDiff"></p>
+    </div>
+  </aside>
+</main>
+
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+<div class="help" id="help" hidden>
+  <div class="help-card" role="dialog" aria-modal="true" aria-labelledby="helpT">
+    <h2 id="helpT">Shortcuts</h2>
+    <div class="help-cols">
+      <dl>
+        <dt><kbd>A</kbd> <kbd>Enter</kbd></dt><dd>Accept and go on (ok if unchanged, fixed if edited)</dd>
+        <dt><kbd>S</kbd></dt><dd>Skip: leave it out of training</dd>
+        <dt><kbd>B</kbd></dt><dd>Bad frame (replay, graphics, black)</dd>
+        <dt><kbd>←</kbd> <kbd>→</kbd></dt><dd>Previous / next without saving</dd>
+        <dt><kbd>1</kbd>–<kbd>9</kbd></dt><dd>Class for new boxes (and the selected box)</dd>
+        <dt><kbd>Tab</kbd></dt><dd>Select the next box</dd>
+        <dt><kbd>Delete</kbd></dt><dd>Delete the selected box</dd>
+        <dt><kbd>Alt</kbd>+arrows</dt><dd>Nudge the selected box (Shift: 10 px)</dd>
+      </dl>
+      <dl>
+        <dt>Drag</dt><dd>On empty space: draw a box. On a box: move. On a handle: resize</dd>
+        <dt><kbd>Z</kbd></dt><dd>Zoom in at the pointer / back to fit</dd>
+        <dt>Wheel / pinch</dt><dd>Zoom; <kbd>Space</kbd>+drag, right-drag or two fingers: pan</dd>
+        <dt><kbd>F</kbd></dt><dd>Fit the frame</dd>
+        <dt><kbd>H</kbd> (hold)</dt><dd>Hide all boxes</dd>
+        <dt><kbd>R</kbd></dt><dd>Reset to the auto boxes</dd>
+        <dt><kbd>Ctrl</kbd>+<kbd>Z</kbd></dt><dd>Undo (<kbd>Shift</kbd>: redo)</dd>
+        <dt><kbd>Esc</kbd></dt><dd>Deselect / close this</dd>
+      </dl>
+    </div>
+    <p class="legend"><span class="lg auto"></span>auto (teacher, with confidence) <span class="lg imp"></span>imported
+      <span class="lg rev"></span>reviewed / edited</p>
+    <button id="helpClose" class="mid">Close</button>
+  </div>
+</div>
+</body>
+</html>
