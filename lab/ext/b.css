@@ -92,6 +92,17 @@
   html[data-theme][data-layout="command"] #sec-sched .tablewrap:focus-visible, html[data-theme][data-layout="command"] #sec-ratings .tablewrap:focus-visible { outline: 2px solid var(--focus, var(--accent)); outline-offset: -2px; }
 }
 
+/* no next match (the event is over, or none is left at this replay time): nothing tall stays on the left, so Levers moves
+   up under "Next match" and the schedule and ratings sit side by side at full height instead of leaving a hole (MATCH-40) */
+@media (min-width: 1200px) {
+  html[data-theme][data-layout="command"] .dash.db:has(.qcard.empty-q) { grid-template-columns: minmax(0, 1fr) minmax(0, 1.06fr);
+    grid-template-areas: "rail rail" "main side" "levers side" "sched ratings" "model model"; }
+  html[data-theme][data-layout="command"] .dash.db:has(.qcard.empty-q) #sec-sched .tablewrap, html[data-theme][data-layout="command"] .dash.db:has(.qcard.empty-q) #sec-ratings .tablewrap { max-height: none; overflow: visible; }
+  html[data-theme][data-layout="command"] .dash.db:has(.qcard.empty-q) .db-side { position: static; }
+  html[data-theme][data-layout="command"] .dash.db:has(.qcard.empty-q) .side { display: grid; }
+  html[data-theme][data-layout="command"] .dash.db:has(.qcard.empty-q) .side > .oe { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+}
+
 /* very wide screens: three columns, the event strip gets its own column next to the schedule */
 @media (min-width: 1720px) {
   html[data-theme][data-layout="command"] .dash.db { grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr) minmax(320px, .62fr);

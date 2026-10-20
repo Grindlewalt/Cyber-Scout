@@ -2072,13 +2072,19 @@ html[data-style="harbor"][data-mode="dark"] {
   html[data-style][data-layout="topbar"] .sb-brand { flex: none; padding: 0 4px 0 0; }
   html[data-style][data-layout="topbar"] .sb-event { flex: 0 1 auto; min-width: 0; max-width: 220px; padding: 2px 0 2px var(--sp-3); border-left: 1px solid color-mix(in srgb, var(--plate-ink) 18%, transparent); }
   html[data-style][data-layout="topbar"] .sb-event b { font-weight: 500; color: var(--plate-ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  html[data-style][data-layout="topbar"] #topnav { display: flex; align-items: center; justify-content: flex-end; gap: 2px; flex: 1; min-width: 0; }
+  html[data-style][data-layout="topbar"] #topnav { display: flex; align-items: center; justify-content: flex-start; gap: 2px; flex: 1; min-width: 0; overflow-x: auto; scrollbar-width: none; }
+  html[data-style][data-layout="topbar"] #topnav::-webkit-scrollbar { display: none; }
+  html[data-style][data-layout="topbar"] #topnav > :first-child { margin-left: auto; }   /* right-aligned, yet scrollable from the start when it overflows */
   html[data-style][data-layout="topbar"] .sb-group { flex-direction: row; align-items: center; gap: 2px; }
   html[data-style][data-layout="topbar"] .sb-group + .sb-group { margin-left: 6px; padding-left: 8px; border-left: 1px solid color-mix(in srgb, var(--plate-ink) 16%, transparent); }
   html[data-style][data-layout="topbar"] .sb-h { display: none; }
-  html[data-style][data-layout="topbar"] .sb-item { min-height: 36px; padding: 6px 9px; gap: 7px; white-space: nowrap; }
-  /* primary groups keep their labels; scouting + manage collapse to icons (name in the tooltip and for screen readers) */
-  html[data-style][data-layout="topbar"] .sb-group:nth-child(n+3) .sb-item:not([aria-current]) span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  /* every item keeps its name: a small label under the icon, so the whole navigation fits one bar without unlabeled icons
+     (on a narrow screen the bar scrolls sideways instead of hiding names) */
+  html[data-style][data-layout="topbar"] .sb-item { flex-direction: column; justify-content: center; min-height: 48px; padding: 4px 8px; gap: 2px; white-space: nowrap;
+    font-size: 11px; line-height: 1.15; font-weight: 500; flex: none; }
+  html[data-style][data-layout="topbar"] .sb-item svg { width: 18px; height: 18px; }
+  html[data-style][data-layout="topbar"] .sb-item[aria-current="page"] { font-weight: 600; }
+  html[data-style][data-layout="topbar"] .sb-item .rp { position: absolute; top: 2px; right: 2px; margin: 0; font-size: 9px; }
   html[data-style][data-layout="topbar"] .toolbar { top: 56px; }
   html[data-style][data-layout="topbar"] #sbtoggle { display: none; }
   html[data-style][data-layout="topbar"] main { max-width: 1600px; margin: 0 auto; }
@@ -2088,7 +2094,9 @@ html[data-style="harbor"][data-mode="dark"] {
 }
 @media (min-width: 761px) and (max-width: 1240px) {
   html[data-style][data-layout="topbar"] .sb-event { display: none; }
-  html[data-style][data-layout="topbar"] .sb-item:not([aria-current]) span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  html[data-style][data-layout="topbar"] .sb-brand { font-size: 0; gap: 0; }        /* logo only: the room goes to the labels */
+  html[data-style][data-layout="topbar"] .sb-item { padding: 4px 6px; }
+  html[data-style][data-layout="topbar"] #topnav { -webkit-mask-image: linear-gradient(90deg, #000 calc(100% - 20px), transparent); mask-image: linear-gradient(90deg, #000 calc(100% - 20px), transparent); }
 }
 
 
@@ -2182,6 +2190,17 @@ html[data-style="harbor"][data-mode="dark"] {
   html[data-style][data-layout="command"] #sec-ratings .tablewrap { max-height: clamp(260px, 44vh, 560px); overflow: auto; overscroll-behavior: contain; }
   html[data-style][data-layout="command"] #sec-ratings .rlegend { padding: 8px 8px 0; margin-bottom: 6px; }
   html[data-style][data-layout="command"] #sec-sched .tablewrap:focus-visible, html[data-style][data-layout="command"] #sec-ratings .tablewrap:focus-visible { outline: 2px solid var(--focus, var(--accent)); outline-offset: -2px; }
+}
+
+/* no next match (the event is over, or none is left at this replay time): nothing tall stays on the left, so Levers moves
+   up under "Next match" and the schedule and ratings sit side by side at full height instead of leaving a hole (MATCH-40) */
+@media (min-width: 1200px) {
+  html[data-style][data-layout="command"] .dash.db:has(.qcard.empty-q) { grid-template-columns: minmax(0, 1fr) minmax(0, 1.06fr);
+    grid-template-areas: "rail rail" "main side" "levers side" "sched ratings" "model model"; }
+  html[data-style][data-layout="command"] .dash.db:has(.qcard.empty-q) #sec-sched .tablewrap, html[data-style][data-layout="command"] .dash.db:has(.qcard.empty-q) #sec-ratings .tablewrap { max-height: none; overflow: visible; }
+  html[data-style][data-layout="command"] .dash.db:has(.qcard.empty-q) .db-side { position: static; }
+  html[data-style][data-layout="command"] .dash.db:has(.qcard.empty-q) .side { display: grid; }
+  html[data-style][data-layout="command"] .dash.db:has(.qcard.empty-q) .side > .oe { grid-template-columns: repeat(6, minmax(0, 1fr)); }
 }
 
 /* very wide screens: three columns, the event strip gets its own column next to the schedule */

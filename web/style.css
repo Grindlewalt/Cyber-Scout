@@ -798,7 +798,7 @@ body.bare .sb-foot { display: none; }
   #tbconn .conn-t { display: none; } #tbconn .conn-s { display: inline; }
   #tbconn[data-st="online"] { width: 32px; padding: 0; justify-content: center; border-color: transparent; background: none; }
   #tbconn[data-st="online"] .conn-s { display: none; }
-  body:not(.bare) .toolbar:has(> #tbconn:not([data-st="online"])) { flex-wrap: wrap; height: auto; min-height: var(--tb-h); row-gap: 6px; padding-top: 8px; padding-bottom: 8px; }
+  body:not(.bare) .toolbar:has(> #tbconn:not([data-st="online"])) { flex-wrap: wrap; height: auto; min-height: var(--tb-h); row-gap: 6px; padding-bottom: 8px; }
   body:not(.bare) #tbconn:not([data-st="online"]) { order: 9; flex: 1 0 100%; border-radius: var(--r-s); min-height: 30px; }
   body:not(.bare) #tbconn:not([data-st="online"]) .conn-t { display: inline; } body:not(.bare) #tbconn:not([data-st="online"]) .conn-s { display: none; }
 }
@@ -806,6 +806,75 @@ body.bare .sb-foot { display: none; }
 .tb-title .s:has(> #asof:not(:empty)) { display: block; }
 #asof { color: var(--caution); font-weight: 600; }
 #updated:not(:empty) + #asof:not(:empty)::before, #tbcomp:not([hidden]) ~ #asof:not(:empty)::before { content: "·"; margin: 0 6px; color: var(--ink-3); font-weight: 400; }
+
+/* ============================================================== toolbar at narrow widths (MATCH-9, MATCH-10, CLIENT-21, CLIENT-22)
+ * The page title stays readable and nothing leaves the screen. The toolbar measures itself (container query), so the same
+ * rules work with the sidebar open or hidden, in every layout, on a tablet and on a phone:
+ *  - the earlier crumbs give way first, the page title ends in an ellipsis;
+ *  - under 960 px the user box shrinks to the name's initial (the full name and role stay its accessible name and tooltip;
+ *    lockdown keeps its icon) and the connection pill to its short text;
+ *  - under 700 px a Live / Replay time control gets a row of its own under the title (the static "Latest data" tag stays). */
+.toolbar { container: tb / inline-size; flex-wrap: wrap; align-content: flex-start; height: auto; min-height: var(--tb-h); row-gap: 0; }
+.tb-title { min-height: var(--tb-h); display: flex; flex-direction: column; justify-content: center; }     /* the first row keeps its height when a second one is added */
+.tb-title .t > * { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tb-title .t > a { flex: 0 1000 auto; } .tb-title .t > .sep { flex: none; overflow: visible; } .tb-title .t > span:last-child { flex: 0 1 auto; }
+/* subtitle: each part truncates itself, so the competition chip's touch area isn't clipped by an overflow box */
+.tb-title #tbsub:has(> #tbcomp:not([hidden])) { display: flex; align-items: baseline; overflow: visible; }
+#tbsub > #tbcomp { flex: 0 1 auto; min-width: 0; }
+#tbsub > #updated, #tbsub > #asof { flex: 0 50 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }     /* the competition name keeps its room longest */
+#userbox { min-width: 0; }
+@container tb (max-width: 960px) {
+  .tb-title { min-width: 6.5em; }
+  #userbox { gap: var(--sp-2); }
+  #userbox .who { display: inline-block; flex: none; width: 32px; height: 32px; min-height: 0; border-radius: 50%; border: 1px solid var(--line-strong); background: var(--surface);
+    overflow: hidden; white-space: nowrap; text-align: center; line-height: 30px; font-size: 0; color: transparent; }
+  #userbox .who::first-letter { font-size: var(--fs-foot); font-weight: 600; color: var(--ink); text-transform: uppercase; }
+  #userbox .who:hover { border-color: var(--ink-3); }
+  @media (pointer: coarse) { #userbox .who { width: 40px; height: 40px; min-height: 0; line-height: 38px; } }
+  #userbox .tb-lock > span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  #tbconn .conn-t { display: none; } #tbconn .conn-s { display: inline; }
+  .timectl select { max-width: 150px; }
+}
+@container tb (max-width: 700px) {
+  #timebar:has(> .timectl:not(.static)) { order: 8; flex: 1 0 100%; padding-bottom: var(--sp-2); }
+  #timebar > .timectl:not(.static) { width: 100%; }
+  #timebar > .timectl:not(.static) select { flex: 1; max-width: none; min-width: 0; text-overflow: ellipsis; }
+  #timebar > .timectl .tc-live { display: block; margin-left: auto; }
+}
+@media (max-width: 760px) {
+  /* phones: the title row keeps only the page title (the tab bar and the competition chip below it do the navigating) */
+  .tb-title .t > a, .tb-title .t > .sep { display: none; }
+  /* the online state is a shape as well as a colour (check / cloud-off / warning / arrows / person, from sync.js), in a 44 px target */
+  #tbconn .conn-ico[hidden] { display: inline-flex !important; }
+  #tbconn .conn-ico svg { width: 18px; height: 18px; }
+  #tbconn .conn-dot { display: none; }
+  #tbconn[data-st="online"] { width: 44px; min-height: 44px; color: var(--good); }
+  #tbconn[data-st="online"] .conn-ico svg { width: 20px; height: 20px; }
+  #tbconn[data-st="offline"] .conn-ico { color: var(--caution); } #tbconn[data-st="down"] .conn-ico { color: var(--bad); }
+  #timebar > .timectl:not(.static) { position: relative; z-index: 1; }
+}
+
+/* ============================================================== touch screens: 44 px targets (MATCH-29, SETUP-27)
+ * With a finger (phones, the pit iPad) every button, select, field and chip is at least 44 px tall (Apple HIG; WCAG 2.5.5).
+ * Controls repeated in every table row (star, grip, the fold arrow) get a 40 px box so rows stay scannable. The "?" help
+ * buttons keep their small look with a larger hit area (::after, see .hlp-b). Mouse layouts are unchanged. */
+@media (pointer: coarse) {
+  button:not(.hlp-b):not(.star):not(.grip):not(.fx-x):not(.tc-step):not(.tc-live):not(#tbcomp):not(.linkish), select,
+  input:is([type=text], [type=search], [type=password], [type=number], [type=url], [type=email], [type=date], [type=time], :not([type])) { min-height: 44px; }
+  .chip { display: inline-flex; align-items: center; min-height: 40px; padding: 4px 14px; }
+  .tb-btn { width: 44px; height: 44px; }
+  .timectl { height: 44px; } .timectl .tc-step { width: 44px; height: 42px; } .timectl select { height: 42px; background-position: calc(100% - 11px) 19px, calc(100% - 7px) 19px; } .timectl .tc-live { height: 42px; }
+  button.star, .plt button.grip { width: 40px; height: 40px; }
+  .fx-x { width: 40px; height: 40px; min-height: 40px; }
+  #userbox a { display: inline-flex; align-items: center; min-height: 44px; }
+  .sb-item { min-height: 44px; }
+  .jump a { display: inline-flex; align-items: center; min-height: 40px; }
+  html .idfx-r select, html .nt-row select { min-height: 44px; }      /* "Wrong team?" and Notes forms (notes.js sets 32 px) */
+  .mv-ctl button, .mv-ctl select { min-height: 44px; }
+  .mv-yt { min-height: 44px; } .pl-hist summary { min-height: 44px; }
+  .rl-p { min-height: 44px; }
+  .hlp-b::after { inset: -13px; }                          /* 18 px "?" -> 44 px hit area */
+}
 
 /* toasts: one quiet line, bottom-right (above the tab bar on phones) */
 .toasts { position: fixed; z-index: 60; right: 16px; bottom: 16px; display: grid; gap: var(--sp-2); width: min(400px, calc(100vw - 32px)); pointer-events: none; }

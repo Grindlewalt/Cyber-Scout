@@ -25,6 +25,7 @@
 .sc tr.mrow{cursor:default} .sc tr.mrow.exp{cursor:pointer}
 .sc tr.mrow.next td{background:var(--sel)}
 .sc .t{display:inline-block;padding:0 4px;border-radius:3px;font-variant-numeric:tabular-nums;margin-right:2px}
+@media (pointer:coarse){.sc a.t{display:inline-flex;align-items:center;justify-content:center;min-height:36px;min-width:44px;margin:2px 3px 2px 0}}
 .sc .t.r{background:var(--red-soft)} .sc .t.b{background:var(--blue-soft)} .sc .t.us{outline:2px solid var(--accent);outline-offset:-1px;font-weight:700}
 .sc .pbar{display:flex;height:8px;width:80px;border-radius:4px;overflow:hidden;background:var(--surface-3);gap:1px}
 .sc .pbar i.r{background:var(--red-fill)} .sc .pbar i.b{background:var(--blue-fill)}
