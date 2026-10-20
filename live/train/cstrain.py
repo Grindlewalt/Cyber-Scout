@@ -609,6 +609,7 @@ def cmd_build(a):
         shutil.rmtree(D)
     dup = {k: int(v) for k, v in (kv.split("=", 1) for kv in a.dup or [])}
     test_ev = set(a.test_events or ())
+    skip_by = set(a.exclude_reviewers or ())
     counts = defaultdict(Counter)
     frames, negs = {}, defaultdict(list)
     for s in ("train", "val", "test"):
@@ -638,7 +639,10 @@ def cmd_build(a):
         elif pub and not a.public_val:
             split = "train"
         # the doubtful-frame rules are for train only (val / test keep every frame, or their scores would flatter)
-        srcl, boxes = K.pick_labels(label(P, "review", r["id"]), label(P, "import", r["id"]),
+        rv = label(P, "review", r["id"])
+        if rv is not None and rv.get("by") in skip_by:
+            rv = None                                   # --exclude-reviewers: as if never reviewed
+        srcl, boxes = K.pick_labels(rv, label(P, "import", r["id"]),
                                     label(P, "auto", r["id"]), a.auto_min_conf, a.auto_mid, a.auto_max_u,
                                     strict=split == "train")
         if srcl is None or (a.no_auto and srcl == "auto"):
@@ -1058,6 +1062,8 @@ def main(argv=None):
                    help="auto frames with a box in [auto-mid, auto-min-conf) left out (probably a missed robot)")
     s.add_argument("--auto-max-u", type=float, default=1.0, help="auto frames above this uncertainty left out")
     s.add_argument("--no-auto", action="store_true", help="human labels only")
+    s.add_argument("--exclude-reviewers", nargs="*", metavar="NAME",
+                   help="ignore the reviews by these reviewer names (test sessions, a reviewer to redo)")
     s.add_argument("--no-public", action="store_true")
     s.add_argument("--public-val", action="store_true", help="keep the public sets' own val split (default: train)")
     s.add_argument("--dup", nargs="*", help="SOURCE=N: repeat train frames of a label source, e.g. review=3")

@@ -73,7 +73,8 @@ lands in one split, a hash of event/match), so near-identical neighbouring frame
    background), when an unreviewed bglabel proposal is in them, or when `u > --auto-max-u` (off). Val / test keep every
    frame (filtering them would flatter the model). Public sets go to train (`--public-val` keeps their val split).
    Empty train frames: at most `--neg-max` (0.1) of the rest. `--test-events` holds whole events out;
-   `--resplit --val-frac` re-hashes train / val. A dataset is never replaced without `--force`.
+   `--resplit --val-frac` re-hashes train / val. `--exclude-reviewers NAME…` ignores those reviewers' reviews (a test
+   session, or a reviewer whose work is being redone). A dataset is never replaced without `--force`.
 7. **train** — `$T train r3 --project P --dataset d1 --model yolo11m.pt --epochs 150 --device 1 --batch 4 --detach`
    (log `runs/r3.log`, `status` shows the epoch and best val mAP; `--resume` continues). Defaults: imgsz 1280,
    mosaic, scale 0.5, no rotation, cosine LR, patience 40. `--hyp KEY=VALUE` for any ultralytics override, e.g.

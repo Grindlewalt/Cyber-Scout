@@ -236,6 +236,9 @@ def test_build(tmp_path, monkeypatch):
     man = json.load(open(os.path.join(D, "manifest.json")))
     assert not any(k.startswith("pub_") for k in man["frames"])
     assert man["frames"][K.frame_id("2026wasam", "qm2", 0)] == ["train", "auto", 0]
+    CT.main(["build", "d2", "--project", "p", "--exclude-reviewers", "t"])
+    man = json.load(open(os.path.join(P, "datasets", "d2", "manifest.json")))
+    assert man["frames"].get(rid, [None, None])[1] != "review"              # that reviewer's labels are ignored
 
 
 def test_load_index_last_wins(tmp_path, monkeypatch):
