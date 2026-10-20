@@ -61,6 +61,27 @@
     return inner(scroll);
   };
 
+  // links to match pages: only C.matches have one in the demo. Those get an "in demo" tag; the rest are dimmed and
+  // say so on hover (they still open the explanation panel), so a visitor doesn't walk into it again and again
+  var mre = new RegExp("^#/" + EV + "/[ma]/([^/?]+)");
+  function markMatches() {
+    var root = document.getElementById("app"); if (!root) return;
+    root.querySelectorAll('a[href^="#/' + EV + '/m/"], a[href^="#/' + EV + '/a/"]').forEach(function (a) {
+      if (a.hasAttribute("data-demo")) return;
+      var m = mre.exec(a.getAttribute("href")), ok = m && matches.indexOf(m[1]) >= 0;
+      a.setAttribute("data-demo", ok ? "in" : "out");
+      if (ok) {
+        if (a.closest("td") && !a.querySelector(".demo-in")) a.insertAdjacentHTML("beforeend", ' <span class="demo-in">in demo</span>');
+      } else {
+        a.classList.add("demo-off");
+        a.title = "Not in the demo: only " + matches.map(function (k) { return short(k).replace("Qualification ", "Q"); }).join(", ") + " have match pages here";
+      }
+    });
+  }
+  var pending = 0;
+  new MutationObserver(function () { if (!pending) pending = requestAnimationFrame(function () { pending = 0; markMatches(); }); })
+    .observe(document.getElementById("app") || document.body, { childList: true, subtree: true });
+
   function userBox() {
     var el = document.getElementById("userbox"); if (!el) return;
     el.innerHTML = '<span class="who demo-who" title="A demo account with the strategist role: it can edit the picklist (saved in this browser only).">Demo visitor · strategist</span><a href="' + SITE + '">Leave demo</a>';

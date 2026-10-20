@@ -5,3 +5,7 @@
 .empty.demo-gap { max-width: 640px; margin: var(--sp-6) auto; }
 .empty.demo-gap .acts { flex-wrap: wrap; }
 html[data-shot] #userbox, html[data-shot] .demo-foot { display: none; }
+a.demo-off { opacity: .5; text-decoration: none; }
+a.demo-off:hover { opacity: .75; }
+.demo-in { display: inline-block; margin-left: 4px; padding: 0 6px; border-radius: 99px; font-size: 11px; font-weight: 700;
+  line-height: 1.6; vertical-align: 1px; background: var(--accent-fill); color: var(--on-accent); white-space: nowrap; }
