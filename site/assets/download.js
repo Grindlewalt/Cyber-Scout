@@ -1,12 +1,25 @@
-/* Install + downloads (home page and install guide): fill the one-line commands with this site's own address,
- * pick the visitor's OS (?os=linux|macos|windows|android|ios overrides), OS tabs, copy buttons, the published
- * version, and grey out downloads that aren't published yet. No tracking: the OS is only read, never sent. */
+/* Install + downloads (home page and install guide): fill the install commands with this site's own address (and
+ * the model's SHA-256 from SHA256SUMS), pick the visitor's OS (?os=linux|macos|windows|android|ios overrides), OS
+ * tabs, copy buttons, the published version, file sizes, and grey out downloads that aren't published yet.
+ * No tracking: the OS is only read, never sent. */
 (function () {
   "use strict";
-  var site = location.origin;
-  document.querySelectorAll("code.js-cmd").forEach(function (el) {
-    el.textContent = el.getAttribute("data-cmd").replace("{SITE}", site);
-  });
+  var site = location.origin, baked = "", modelSha = "";
+  // get.sh / get.ps1 download from the address they were published with; reached at another one (a VPN address,
+  // another name), the one-liners pass this one along (CS_SITE)
+  function fill() {
+    document.querySelectorAll("code.js-cmd").forEach(function (el) {
+      var c = el.getAttribute("data-cmd").split("{SITE}").join(site)
+        .split("{MODEL_SHA}").join(modelSha || "<robot.onnx SHA-256 from SHA256SUMS>");
+      var one = el.getAttribute("data-one");
+      if (one && baked && baked !== site) {
+        c = one === "sh" ? c.replace("| bash", "| CS_SITE=" + site + " bash") : "$env:CS_SITE='" + site + "'; " + c;
+      }
+      el.textContent = c;
+    });
+    document.querySelectorAll(".js-origin").forEach(function (el) { el.textContent = site; });
+  }
+  fill();
 
   function detect() {
     var q = /[?&]os=(linux|macos|windows|android|ios)\b/.exec(location.search);
@@ -44,8 +57,9 @@
   var start = tabs.filter(function (t) { return t.getAttribute("data-os") === os; })[0] || tabs[0];
   if (start) select(start);
 
-  // highlight the Client build for this device (Macs: Apple silicon unless the browser says x86)
-  function mark(arch) {
+  // highlight the Client build for this device. Macs: only Chromium browsers say which chip; Safari and Firefox
+  // don't, so there it is "likely" Apple silicon (every Mac sold since 2021) and the note says how to check
+  function mark(arch, sure) {
     var picked = null;
     document.querySelectorAll(".cl[data-os]").forEach(function (a) {
       if (picked || a.getAttribute("data-os") !== os) return;
@@ -53,11 +67,16 @@
       if (aa && arch && aa !== arch) return;
       picked = a;
     });
-    if (picked) { picked.classList.add("mine"); picked.setAttribute("aria-description", "Matches this device"); }
+    if (!picked) return;
+    picked.classList.add("mine");
+    if (!sure) picked.classList.add("likely");
+    picked.setAttribute("aria-description", sure ? "Matches this device" : "Likely matches this Mac");
   }
   if (os === "macos" && navigator.userAgentData && navigator.userAgentData.getHighEntropyValues) {
-    navigator.userAgentData.getHighEntropyValues(["architecture"]).then(function (v) { mark(v.architecture === "x86" ? "x86" : "arm"); }, function () { mark("arm"); });
-  } else mark(os === "macos" ? "arm" : null);
+    navigator.userAgentData.getHighEntropyValues(["architecture"]).then(function (v) {
+      if (v.architecture) mark(v.architecture === "x86" ? "x86" : "arm", true); else mark("arm", false);
+    }, function () { mark("arm", false); });
+  } else mark(os === "macos" ? "arm" : null, os !== "macos");
 
   // copy buttons
   var status = document.getElementById("copy-status");
@@ -91,13 +110,26 @@
     });
   });
 
+  // VERSION: "<commit> <commit date> <site it was published for>" -> "2026-10-19 (26791f4)"
   var v = document.getElementById("dl-ver");
-  if (v) fetch("downloads/VERSION", { cache: "no-store" }).then(function (r) { return r.ok ? r.text() : ""; })
-    .then(function (t) { v.textContent = t.trim() || "unknown"; }).catch(function () { v.textContent = "unknown"; });
-  // grey out download links whose file isn't published yet
+  fetch("downloads/VERSION", { cache: "no-store" }).then(function (r) { return r.ok ? r.text() : ""; }).then(function (t) {
+    var p = t.trim().split(/\s+/);
+    if (v) v.textContent = p[1] ? p[1] + " (" + p[0] + ")" : p[0] || "unknown";
+    if (p[2]) { baked = p[2].replace(/\/$/, ""); fill(); }
+  }).catch(function () { if (v) v.textContent = "unknown"; });
+  if (document.querySelector('code.js-cmd[data-cmd*="{MODEL_SHA}"]')) {
+    fetch("downloads/SHA256SUMS", { cache: "no-store" }).then(function (r) { return r.ok ? r.text() : ""; }).then(function (t) {
+      var m = /^([0-9a-f]{64})\s+\*?robot\.onnx$/m.exec(t);
+      if (m) { modelSha = m[1]; fill(); }
+    }).catch(function () { });
+  }
+  // grey out download links whose file isn't published yet; show the size of the ones that are
+  function size(n) { return n >= 1e9 ? (n / 1e9).toFixed(1) + " GB" : n >= 1e6 ? Math.round(n / 1e6) + " MB" : Math.max(1, Math.round(n / 1e3)) + " kB"; }
   document.querySelectorAll('a.file[href^="downloads/"], a.cl[href^="downloads/"]').forEach(function (a) {
     fetch(a.getAttribute("href"), { method: "HEAD", cache: "no-store" }).then(function (r) {
-      if (!r.ok) { a.classList.add("missing"); a.classList.remove("mine"); a.setAttribute("aria-disabled", "true"); a.title = "Not published yet"; a.removeAttribute("href"); }
+      if (!r.ok) { a.classList.add("missing"); a.classList.remove("mine"); a.setAttribute("aria-disabled", "true"); a.title = "Not published yet"; a.removeAttribute("href"); return; }
+      var n = +r.headers.get("Content-Length"), span = a.querySelector("span");
+      if (n > 0 && span) span.textContent += ", " + size(n);
     }).catch(function () { });
   });
 })();

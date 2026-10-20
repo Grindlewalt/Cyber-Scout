@@ -36,22 +36,25 @@
     <h1 class="display">Install guide</h1>
     <p class="lead">The one-line install and the downloads are on the home page. This page has the details: what each installer does, the first run on every system, and what you need.</p>
     <div class="acts"><a class="btn primary" href="index.html#install">One-line install</a><a class="btn" href="index.html#client">Client downloads</a></div>
-    <p class="muted" style="font-size:15px;margin-top:20px">Checksums: <a href="downloads/SHA256SUMS">SHA256SUMS</a>. Version <span id="dl-ver">…</span>.</p>
+    <p class="muted" style="font-size:15px;margin-top:20px">Checksums: <a href="downloads/SHA256SUMS">SHA256SUMS</a>. Version <span id="dl-ver">…</span>. File sizes show on each download.</p>
   </div>
 
   <section class="wrap dl-sec" id="server" aria-labelledby="server-h">
     <h2 id="server-h">Server</h2>
-    <p class="lead">One script checks Docker, downloads Cyber-Scout, starts it and prints the address and a one-time setup code. Re-run it any time to update.</p>
+    <p class="lead">One script checks Docker, downloads Cyber-Scout and the robot detector model, starts it and prints the address and a one-time setup code. Re-run it any time to update.</p>
+    <p class="reach">The <a href="index.html#install">one-line install</a> does all of this for you: it downloads the installer, the code and the detector model from this site and checks their SHA-256. It works on computers that can reach this site (<span class="js-origin">this address</span>): the same network, or a VPN into it. To run the installer yourself, use the steps below.</p>
     <div class="files">
       <a class="file" href="downloads/install.sh" download><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 9l3 3-3 3M12 15h5"/></svg><b>Linux and macOS</b><span>install.sh</span></a>
       <a class="file" href="downloads/install.ps1" download><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 9l3 3-3 3M12 15h5"/></svg><b>Windows</b><span>install.ps1</span></a>
+      <a class="file" href="downloads/robot.onnx" download><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="6" width="16" height="12" rx="2"/><path d="M9 6V4M15 6V4M9 12h.01M15 12h.01"/></svg><b>Robot detector</b><span>robot.onnx (the installers fetch it for you)</span></a>
+      <a class="file" href="downloads/cyberscout-src.tar.gz" download><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 7l-5 5 5 5M16 7l5 5-5 5"/></svg><b>Source code</b><span>cyberscout-src.tar.gz (this version)</span></a>
     </div>
     <div class="steps-grid">
       <div>
         <h3>Linux</h3>
         <ol class="steps">
           <li>Install Docker with Compose. For GPU tracking, also the NVIDIA driver and the NVIDIA Container Toolkit.</li>
-          <li>Run the installer from the folder you saved it to:<pre><code>bash install.sh</code></pre>It asks before installing to <code>/opt/cyber-scout</code>; without the NVIDIA toolkit it warns and runs CPU-only.</li>
+          <li>From the folder you saved <code>install.sh</code> to:<pre><code class="js-cmd" data-cmd="bash install.sh --tarball {SITE}/downloads/cyberscout-src.tar.gz --model {SITE}/downloads/robot.onnx --model-sha256 {MODEL_SHA}">bash install.sh --tarball …/downloads/cyberscout-src.tar.gz --model …/downloads/robot.onnx</code></pre>It asks before installing to <code>/opt/cyber-scout</code>; without the NVIDIA toolkit it warns and runs CPU-only.</li>
           <li>Open the address it prints and follow the setup wizard.</li>
         </ol>
       </div>
@@ -59,7 +62,7 @@
         <h3>macOS</h3>
         <ol class="steps">
           <li>Install Docker Desktop and start it.</li>
-          <li>In Terminal:<pre><code>bash install.sh</code></pre></li>
+          <li>In Terminal, from the folder you saved <code>install.sh</code> to (usually <code>cd ~/Downloads</code>):<pre><code class="js-cmd" data-cmd="bash install.sh --tarball {SITE}/downloads/cyberscout-src.tar.gz --model {SITE}/downloads/robot.onnx --model-sha256 {MODEL_SHA}">bash install.sh --tarball …/downloads/cyberscout-src.tar.gz --model …/downloads/robot.onnx</code></pre></li>
           <li>Open the address it prints and follow the setup wizard. Macs have no NVIDIA GPU, so tracking runs on the CPU: fine for following one event, about 4 times slower per match.</li>
         </ol>
       </div>
@@ -67,7 +70,7 @@
         <h3>Windows</h3>
         <ol class="steps">
           <li>Install Docker Desktop (WSL 2 backend) and start it. NVIDIA GPUs are used through WSL 2 with a current NVIDIA driver.</li>
-          <li>In PowerShell, from the folder you saved it to:<pre><code>powershell -ExecutionPolicy Bypass -File install.ps1</code></pre></li>
+          <li>In PowerShell, from the folder you saved <code>install.ps1</code> to:<pre><code class="js-cmd" data-cmd="powershell -ExecutionPolicy Bypass -File install.ps1 -Tarball {SITE}/downloads/cyberscout-src.tar.gz -Model {SITE}/downloads/robot.onnx -ModelSha256 {MODEL_SHA}">powershell -ExecutionPolicy Bypass -File install.ps1 -Tarball …/downloads/cyberscout-src.tar.gz -Model …/downloads/robot.onnx</code></pre></li>
           <li>Open the address it prints and follow the setup wizard.</li>
         </ol>
       </div>
@@ -110,17 +113,23 @@
       <div>
         <h3>Windows</h3>
         <ol class="steps">
-          <li>Double-click <code>cyberscout-client-windows-x64.exe</code>.</li>
-          <li>If SmartScreen stops it: More info, then Run anyway.</li>
+          <li>Your browser may warn first that the file isn't commonly downloaded: choose Keep (in Edge: the … menu, Keep, then Keep anyway).</li>
+          <li>Double-click <code>cyberscout-client-windows-x64.exe</code>. If SmartScreen stops it: More info, then Run anyway.</li>
           <li>Your browser opens <code>http://127.0.0.1:7600</code>. Keep the console window open while you use it.</li>
         </ol>
       </div>
       <div>
         <h3>macOS</h3>
         <ol class="steps">
-          <li>Make it executable and start it:<pre><code>chmod +x cyberscout-client-macos-arm64
-./cyberscout-client-macos-arm64</code></pre></li>
-          <li>The file isn't signed: the first time, right-click it and choose Open, or run <code>xattr -d com.apple.quarantine</code> on it.</li>
+          <li>In Terminal. Apple silicon (M1 and later):<pre><code>cd ~/Downloads
+xattr -d com.apple.quarantine cyberscout-client-macos-arm64
+chmod +x cyberscout-client-macos-arm64
+./cyberscout-client-macos-arm64</code></pre>Intel:<pre><code>cd ~/Downloads
+xattr -d com.apple.quarantine cyberscout-client-macos-x64
+chmod +x cyberscout-client-macos-x64
+./cyberscout-client-macos-x64</code></pre>Not sure which? Apple menu, About This Mac: a Chip named Apple M… is Apple silicon, a Processor named Intel is Intel.</li>
+          <li>The builds aren't signed. If macOS still says it can't be opened: System Settings, Privacy &amp; Security, Open Anyway, then run it again. (Right-click and Open no longer does this on macOS 15.)</li>
+          <li>Your browser opens <code>http://127.0.0.1:7600</code>. Keep the Terminal window open while you use it.</li>
         </ol>
       </div>
       <div>
@@ -136,7 +145,7 @@
       <div>
         <h3>First run, every computer</h3>
         <ol class="steps">
-          <li>Settings, Connection: type your server's address, for example <code>http://10.0.0.58:7560</code> on the shop network.</li>
+          <li>Settings, Connection: type your server's address, <code>http://&lt;your server's IP&gt;:7560</code>. The server installer prints it at the end.</li>
           <li>Test connection, then sign in with your Cyber-Scout account. Syncing starts at once.</li>
           <li>Choose media: none (data only, the default), small preview videos (about 15 to 20 MB per match), or every full video.</li>
         </ol>
@@ -163,7 +172,8 @@
         <h3>Install</h3>
         <ol class="steps">
           <li>Download the APK on the phone and open it.</li>
-          <li>When Android asks, allow installing apps from this source.</li>
+          <li>When Android asks, allow installing apps from this source (your browser or Files app).</li>
+          <li>If Google Play Protect warns about an unknown app: More details, then Install anyway. The app isn't on the Play Store yet.</li>
           <li>Open Cyber-Scout, enter your server's address and sign in.</li>
         </ol>
       </div>
@@ -181,7 +191,9 @@
       <tbody>
         <tr><th scope="row">Server software</th><td>Docker with Compose (Docker Desktop on macOS and Windows). Internet access to reach The Blue Alliance and YouTube.</td></tr>
         <tr><th scope="row">Server GPU</th><td>An NVIDIA GPU is recommended: a match takes about 3 to 4 minutes. CPU-only works, about 4 times slower per match.</td></tr>
-        <tr><th scope="row">Server disk</th><td>Room for videos. Livestream recording uses about 2 GB per hour (held under 60 GB per stream by default), preview copies about 2 GB per 75-match event, plus every full match video you keep. A NAS works for the media folder.</td></tr>
+        <tr><th scope="row">Before you start</th><td>The first install downloads and builds about 4 GB of Docker images (the worker image alone is about 3.5 GB), so run it on a fast, wired connection, not venue Wi-Fi. The installer warns when Docker has under 20 GB free or under 8 GB of memory.</td></tr>
+        <tr><th scope="row">Server memory</th><td>8 GB for Docker. With Docker Desktop (macOS, Windows): Settings, Resources, at least 8 GB memory and 40 GB disk.</td></tr>
+        <tr><th scope="row">Server disk</th><td>20 GB for the Docker images, plus room for videos. Livestream recording uses about 2 GB per hour (held under 60 GB per stream by default), preview copies about 2 GB per 75-match event, plus every full match video you keep. A NAS works for the media folder.</td></tr>
         <tr><th scope="row">Blue Alliance key</th><td>A free Read API key from thebluealliance.com/account.</td></tr>
         <tr><th scope="row">Clients</th><td>Nothing to install besides the file itself. About 100 MB of data per event, more if you also keep videos.</td></tr>
       </tbody>
