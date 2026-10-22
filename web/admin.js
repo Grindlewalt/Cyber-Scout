@@ -223,7 +223,7 @@
   // (ENV_KEYS in deploy/updater/cs-updater.py); labels and help live here. Keys without a label still show (raw name).
   const ENV_UI = [
     ["Tracking", [
-      ["GPU_IDS", "Graphics cards for the worker + recorder", "Host card numbers (nvidia-smi -L): 0, 1 or 0,1. Inside the containers they're renumbered from 0."],
+      ["GPU_IDS", "Graphics cards for the worker + recorder", "Host card numbers (nvidia-smi -L): 0, 1 or 0,1. Inside the containers they're renumbered from 0. With GPU_DRIVER=cdi in .env (set by the installer when a card works only that way): one card."],
       ["PROCESSORS_GPU0", "Extra tracking jobs on card 0", "Each job tracks one match at a time: ~300 MB of graphics memory and 8-10 CPU cores. 0 = none."],
       ["PROCESSORS_GPU1", "Extra tracking jobs on card 1", "Same, on card 1 (on atomosserver card 1 is also used for experiments and training)."],
       ["WORKER_TRACK", "Main worker tracks matches too", "auto: only while no extra job is running. 1: always. 0: never (leave it to the extra jobs)."],

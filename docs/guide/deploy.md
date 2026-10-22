@@ -42,9 +42,17 @@ What `install.sh` does, in order (`install.ps1` is the same unless noted):
    Docker Desktop, or offers to start it. Windows also needs Linux containers and warns without the WSL2 backend.
 3. **Same-name guard.** If containers of the compose project `CS_PREFIX` already run from another folder, it
    stops (compose project names are global; it would otherwise recreate those containers).
-4. **GPU.** Linux: `nvidia-smi -L`, then the toolkit (docker runtime `nvidia`, `nvidia-ctk` or
-   `nvidia-container-cli`), then `docker run --rm --gpus all python:3.12-slim nvidia-smi -L`. Several GPUs: asks
-   for `GPU_IDS`. No working GPU: asks to continue CPU-only (needs Compose >= 2.24.4 for `!reset`). macOS:
+4. **GPU.** Linux: `nvidia-smi`, then the toolkit (docker runtime `nvidia`, `nvidia-ctk` or
+   `nvidia-container-cli`), then **one test container per card** (`python:3.12-slim nvidia-smi -L`), passed the
+   way compose will pass it: the NVIDIA hook (`--gpus device=N`), and when that fails, CDI
+   (`--device nvidia.com/gpu=N`). It prints a table of the cards (works / works through CDI / doesn't, and why).
+   A card neither way reaches because the CDI device list is stale or missing: it offers (asks; never with
+   `--yes`) to run `sudo nvidia-ctk cdi generate --output=<the existing spec, else /etc/cdi/nvidia.yaml>`, keeping
+   the old file as `<name>.bak-<time>` (not read by CDI), then tests again. It never restarts Docker. Then it
+   picks `GPU_IDS`: `--gpu-ids`, else `.env`'s on an update, else asks when several cards work (only working
+   cards are accepted; a list like `0,1` must pass the hook together; a card that works only through CDI goes
+   alone, since CDI hands compose one name). A choice that didn't work stops a non-interactive run before
+   anything changes. No working card: asks to continue CPU-only (needs Compose >= 2.24.4 for `!reset`). macOS:
    always CPU. Windows: `nvidia-smi` on the host + the same container test through WSL2.
    ARM hosts (Apple Silicon, Windows/Linux on ARM): `DOCKER_DEFAULT_PLATFORM=linux/amd64` in `.env`, because
    `pupil-apriltags` ships no linux/aarch64 wheel; the worker runs emulated (Rosetta / binfmt).
@@ -54,7 +62,9 @@ What `install.sh` does, in order (`install.ps1` is the same unless noted):
 6. **Port.** If `CS_PORT` is taken (listener or a container's published port) and not by this stack's own
    `web` container, it offers the next free port.
 7. **Folder.** Default `/opt/cyber-scout` (Linux; created with sudo and handed to you), `~/CyberScout` (macOS),
-   `%USERPROFILE%\CyberScout` (Windows). An existing `.env` means "update".
+   `%USERPROFILE%\CyberScout` (Windows). An existing `.env` means "update". A new install into a folder that
+   holds other things (no `.env`, no `data/app.db`, no Cyber-Scout `docker-compose.yml`) lists them and asks
+   first (default no; `--yes` stops): the containers would take over a `data/` folder there.
 8. **Code into `app/`.** `--source DIR`: copy of a checkout (no `.git .venv .work ./data node_modules
    __pycache__ .env *.key .roboflow_key`). `--tarball PATH|URL`: unpacked (one top-level folder is stripped).
    `app/.git` present: `git fetch origin BRANCH` + `checkout -B BRANCH FETCH_HEAD` (refuses with local changes).
@@ -63,28 +73,36 @@ What `install.sh` does, in order (`install.ps1` is the same unless noted):
    refuses a CRLF checkout (the container entrypoints are shell scripts). An `app/` that isn't a git checkout is
    only replaced with `--replace-app` or after you say yes (kept as `app.bak-<time>`). **The atomosserver stack
    is in that state.** Then `app/deploy/docker-compose*.yml` are copied next to `.env` (a changed old copy ->
-   `*.bak`).
+   `*.bak-<time>`).
 9. **`.env`** (only if missing, mode 600): `CS_PREFIX`, `WEB_PORT`, `WEB_BIND`, `PUID`/`PGID` (the invoking user;
    1000 on Windows), `TZ` (IANA; converted from the Windows zone on Windows), `MEDIA_DIR=./data/media`,
-   `YT_FORCE_IPV4=1`, then `GPU_IDS` or `COMPOSE_FILE=docker-compose.yml:docker-compose.cpu.yml` (`;` as the
-   separator on Windows), and `DOCKER_DEFAULT_PLATFORM` on ARM. No secrets are needed: the api makes the setup
+   `YT_FORCE_IPV4=1`, then `GPU_IDS` (+ `GPU_DRIVER=cdi` when the card works only through CDI) or
+   `COMPOSE_FILE=docker-compose.yml:docker-compose.cpu.yml` (`;` as the separator on Windows), and `DOCKER_DEFAULT_PLATFORM` on ARM. No secrets are needed: the api makes the setup
    code. Windows writes UTF-8 without BOM, LF endings. On a re-run only what you pass (`--port`, `--bind`,
    `--gpu-ids`, `--prefix`, `--gpu`) or what the hardware forces (CPU override) is changed.
 10. **Data + model.** `mkdir data/{models,media,site/api,config}`. If `data/models/robot.onnx` is missing and
     `--model PATH|URL` is given, it is copied/downloaded (checked against `--model-sha256` if given); otherwise a
     note says matches won't be processed until the file is there (the worker re-checks every 30 s).
-11. **Build + start.** `docker compose build` (with `GIT_SHA` = the checkout's short hash) then
-    `docker compose up -d --no-build`. `--services api,web` / `--no-worker` builds and starts only those (a later
+11. **Build + start.** `docker compose build worker api web` (with `GIT_SHA` = the checkout's short hash; the
+    recorder and processors share the worker image, so it's built once) then `docker compose up -d --no-build`.
+    Their output goes to `install.log` in the folder (appended per run; on screen one status line with the time
+    and the latest build step, and the end of the output when a step fails). If `up` fails (compose stops at the
+    first error), it says why in plain words (GPU hook, CDI, port, name conflict, disk) and starts the other
+    services one by one, so the site and the setup code still work without the worker. `--services api,web` / `--no-worker` builds and starts only those (a later
     plain `docker compose up -d`, or the updater, starts everything). `--worker-image IMG` tags an existing image
     as `<prefix>-worker:latest` instead of building; `--use-images` builds nothing.
-12. **Health.** Polls `/app/v1/health` (`"ok":true`) and `/` on the bound address for up to 3 minutes, then
-    prints the LAN (and Tailscale) URL and the **one-time setup code** from `data/setup-code.txt`.
+12. **Health.** Polls `/app/v1/health` (`"ok":true`) and `/` on the bound address for up to 3 minutes (skipped
+    when api or web didn't start).
 13. **Updater (Linux + systemd only).** Offers `deploy/updater/install-updater.sh` (`--updater` / `--no-updater`;
     with `--yes` the default is no). macOS, Windows and WSL: update by re-running the installer.
+14. **Summary**, printed last so it stays on screen: handy commands (logs, update, backup, uninstall, the install
+    log), the Client one-liners for laptops (when installed with `get.sh`), then a block between two rules with
+    the status, the LAN (and Tailscale) **address**, the **one-time setup code** from `data/setup-code.txt`, and
+    a Problem / Fix pair when something didn't start. Exit code 1 when anything didn't start.
 
 **Uninstall:** `install.sh --uninstall [--dir DIR]` removes the updater units (if any), runs
-`docker compose down --remove-orphans --rmi all` and removes leftover `<prefix>-{worker,api,web}:*` tags; the
-folder stays. `--purge` then deletes the folder after you type `DELETE` (or with `--yes`); files a container
+`docker compose down --remove-orphans --rmi all` and removes leftover `<prefix>-{worker,api,web}:latest` and
+`:cs-rollback` tags (other tags, e.g. a `:pre-fresh-<date>` backup, stay); the folder stays. `--purge` then deletes the folder after you type `DELETE` (or with `--yes`); files a container
 wrote as another uid are removed through a throwaway container, then sudo. A `MEDIA_DIR` outside the folder is
 left alone. `--keep-images` keeps the images. Windows: `-Uninstall [-Purge] [-KeepImages]`.
 
@@ -127,6 +145,7 @@ app falls back to the matching `.env` value.
 | `TZ` | all | |
 | `MEDIA_DIR` | compose mounts | host path; put it on a big disk |
 | `GPU_IDS` | compose GPU reservation | host card numbers (`nvidia-smi -L`) |
+| `GPU_DRIVER` | compose GPU reservation | unset = NVIDIA hook; `cdi` = pass `nvidia.com/gpu=<GPU_IDS>` (one card or `all`); set by the installer when only CDI works |
 | `GPU_DEVICE` | worker, recorder | card index **inside** the container (normally 0) |
 | `COMPOSE_FILE` | compose | CPU-only override |
 | `COOKIE_SECURE` | api | `auto`/`1`/`0` |
@@ -222,6 +241,11 @@ The two processor services have `PROCESSORS_GPU0` / `PROCESSORS_GPU1` replicas (
   passed in, keep it at 0.
 * `live/reprocess.py --gpus 0,1` round-robins jobs over container-local indices. Both cards must be passed in
   (`GPU_IDS=0,1`) for `--gpus 0,1` to mean two cards.
+* `GPU_DRIVER=cdi` passes the cards by CDI name (`nvidia.com/gpu=<GPU_IDS>`) instead of through the NVIDIA hook.
+  CDI takes one name per entry, so `GPU_IDS` is then one card (or `all`). The processors follow it unless
+  `PROCESSOR_GPU_DRIVER` / `PROCESSOR_GPUn_ID` say otherwise. CDI reads `/etc/cdi/nvidia.yaml`, which lists
+  `/dev/dri/cardN` paths; those can change at boot, so if the worker doesn't start after a reboot, re-run the
+  installer (it offers the refresh) or `sudo nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml`.
 * CPU-only: `COMPOSE_FILE=docker-compose.yml:docker-compose.cpu.yml` (sets `FORCE_CPU=1`), or Admin `cpu_only`.
   About 4× slower (~20 min per match instead of ~3–6).
 
@@ -276,7 +300,7 @@ sweep); processors never do.
 |---|---|---|
 | `PROCESSORS_GPU0`, `PROCESSORS_GPU1` | 0 | processor containers (jobs) on host card 0 / 1 |
 | `PROCESSOR_GPU0_ID`, `PROCESSOR_GPU1_ID` | 0 / 1 | the host card of each service (`nvidia-smi -L`; with CDI: `nvidia.com/gpu=N`) |
-| `PROCESSOR_GPU_DRIVER` | `nvidia` | `cdi` to pass cards by CDI name (see the GPU 1 note below) |
+| `PROCESSOR_GPU_DRIVER` | `GPU_DRIVER` (`nvidia`) | `cdi` to pass cards by CDI name (see the GPU 1 note below) |
 | `PROCESSOR_MEM_LIMIT` | 6g | per processor container (one job peaks at ~2 GB RSS) |
 | `WORKER_TRACK` | auto | main worker: `auto` / `1` / `0` (above) |
 
@@ -331,13 +355,13 @@ apps leave ≥ 300 MiB (a GPU out-of-memory error costs nothing but a 10-minute 
 `WORKER_TRACK=auto`. That is ~7 matches/h per job, against a match every ~7 min at an event. Use the FP16 export of the
 detector on GPU hosts (identical boxes within 0.5 px, −55 MiB per job); keep FP32 on Macs (Core ML).
 
-**GPU 1 cannot be passed into containers on atomosserver right now.** `--gpus device=1` and `device=all` fail
-in the NVIDIA hook (`failed to add device rules: unable to generate new device filter program`); `device=0`
-works. `/etc/cdi/nvidia.yaml` is stale: it lists `/dev/dri/card0` for GPU 1, which is `card2` since the last boot.
-Fix (owner, root): `sudo nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml`, then in `.env`
-`PROCESSOR_GPU_DRIVER=cdi` and `PROCESSOR_GPU1_ID=nvidia.com/gpu=1` (and `PROCESSOR_GPU0_ID=nvidia.com/gpu=0` if
-you use GPU 0 processors). Compose's `driver: cdi` reservation was checked to reach CDI; it fails only on that stale
-`card0` node. Until then, the benchmark used a hook-free fallback: device nodes `/dev/nvidia1`, `/dev/nvidiactl` and
+**GPU 1 on atomosserver works only through CDI.** `--gpus device=1` and `device=all` fail in the NVIDIA hook
+(`failed to add device rules: unable to generate new device filter program`, kernel 7.1.5-hardened, checked again
+2026-10-22); `device=0` works. `/etc/cdi/nvidia.yaml` was stale (it listed `/dev/dri/card0` for GPU 1, which is
+`card2` since a reboot). Fix (root): `sudo nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml` (the installer
+offers it), then `GPU_DRIVER=cdi` in `.env` (worker, recorder and processors then pass `nvidia.com/gpu=N`; the
+installer sets it when the chosen card needs it). Compose's `driver: cdi` reservation was checked end to end with
+GPU 0 (worker + recorder in a throwaway stack). Before that, the benchmark used a hook-free fallback: device nodes `/dev/nvidia1`, `/dev/nvidiactl` and
 `/dev/nvidia-uvm*`, the host's `libcuda` / `libnvidia-ptxjitcompiler` / `-gpucomp` / `-nvvm` / `-ml` mounted into
 `/usr/local/nvidia/lib64`, `LD_LIBRARY_PATH` set, and `CUDA_VISIBLE_DEVICES=<GPU 1 UUID>` (`.work/gpuscale/nvrun.sh`).
 

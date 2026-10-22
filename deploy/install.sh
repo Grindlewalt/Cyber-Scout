@@ -93,7 +93,8 @@ done
 [ "$PURGE" = 1 ] && [ "$UNINSTALL" = 0 ] && { printf -- '--purge only goes with --uninstall\n' >&2; exit 2; }
 
 # ---------------------------------------------------------------- helpers
-if [ -t 1 ]; then B=$'\033[1m'; Y=$'\033[33m'; R=$'\033[31m'; D=$'\033[2m'; N=$'\033[0m'; else B=""; Y=""; R=""; D=""; N=""; fi
+if [ -t 1 ]; then B=$'\033[1m'; Y=$'\033[33m'; R=$'\033[31m'; G=$'\033[32m'; C=$'\033[36m'; D=$'\033[2m'; N=$'\033[0m'
+else B=""; Y=""; R=""; G=""; C=""; D=""; N=""; fi
 bold() { printf '%s%s%s\n' "$B" "$*" "$N"; }
 info() { printf '  %s\n' "$*"; }
 warn() { printf '%s! %s%s\n' "$Y" "$*" "$N"; }
@@ -113,6 +114,37 @@ yes_no() { case "$(ask "$1 (y/n)" "$2")" in y|Y|yes|YES|Yes) return 0;; *) retur
 quote() { local out="" a; for a in "$@"; do out="$out $(printf '%q' "$a")"; done; printf '%s' "${out# }"; }
 run() {  # run a command that changes something (printed instead under --dry-run)
   if [ "$DRY" = 1 ]; then printf '  %s[dry-run] %s%s\n' "$D" "$(quote "$@")" "$N"; else "$@"; fi
+}
+TTY=0; [ -t 1 ] && TTY=1
+COLS="$( (tput cols 2>/dev/null || true) | tr -cd '0-9')"; COLS="${COLS:-100}"
+mmss() { printf '%d:%02d' "$(($1 / 60))" "$(($1 % 60))"; }
+step() {  # step LABEL CMD...: CMD's output goes to $LOG; meanwhile a status line (time, latest build step); its rc
+  local label="$1" t0=$SECONDS rc w
+  shift
+  if [ "$DRY" = 1 ]; then "$@"; return; fi
+  printf '\n=== %s  %s\n' "$(date '+%H:%M:%S')" "$label" >>"$LOG"
+  w=$((COLS - ${#label} - 16)); [ "$w" -ge 10 ] || w=10
+  set +e
+  "$@" 2>&1 | {
+    last=""; shown=-1
+    while IFS= read -r line; do
+      printf '%s\n' "$line" >>"$LOG"
+      case "$line" in "Step "[0-9]*|"#"[0-9]*" ["*|*" Building"*|*" Pulling"*|*" Starting"*|*" Started"*) last="${line//$'\r'/}";; esac
+      if [ "$TTY" = 1 ] && [ "$SECONDS" != "$shown" ]; then
+        shown=$SECONDS; printf '\r\033[K  %s %s  %s%s%s' "$label" "$(mmss $((SECONDS - t0)))" "$D" "${last:0:$w}" "$N"
+      fi
+    done
+  }
+  rc=${PIPESTATUS[0]}
+  set -e
+  [ "$TTY" = 1 ] && printf '\r\033[K'
+  if [ "$rc" = 0 ]; then printf '  %s %sdone%s %s(%s)%s\n' "$label" "$G" "$N" "$D" "$(mmss $((SECONDS - t0)))" "$N"
+  else printf '%s! %s failed%s (after %s; full output: %s)\n' "$Y" "$label" "$N" "$(mmss $((SECONDS - t0)))" "$LOG"; fi
+  return "$rc"
+}
+log_step() { awk '/^=== /{b=""} {b=b $0 "\n"} END{printf "%s", b}' "$LOG" 2>/dev/null || true; }   # the last step's output
+log_tail() {  # log_tail N: the last N non-empty lines of the last step's output, indented
+  log_step | grep -v -e '^[[:space:]]*$' -e '^ ---> ' -e '^=== ' | tail -n "$1" | cut -c1-$((COLS - 6)) | sed "s/^/    $D|$N /" || true
 }
 ver_ge() {  # ver_ge A B: version A >= B (no sort -V; works with macOS' bash 3.2)
   local IFS=. i a b; local -a x y
@@ -244,8 +276,8 @@ if [ "$UNINSTALL" = 1 ]; then
   fi
   if [ "$DOCKER_OK" = 1 ] && [ -f "$CS_DIR/docker-compose.yml" ]; then
     if [ "$KEEP_IMAGES" = 1 ]; then dc down --remove-orphans; else dc down --remove-orphans --rmi all || dc down --remove-orphans; fi
-    if [ "$KEEP_IMAGES" = 0 ]; then  # also the updater's rollback tags etc. of exactly this prefix
-      for img in $(dk image ls --format '{{.Repository}}:{{.Tag}}' 2>/dev/null | grep -E "^${CS_PREFIX}-(worker|api|web):" || true); do
+    if [ "$KEEP_IMAGES" = 0 ]; then  # also the updater's rollback tags; other tags (e.g. a backup someone made) stay
+      for img in $(dk image ls --format '{{.Repository}}:{{.Tag}}' 2>/dev/null | grep -E "^${CS_PREFIX}-(worker|api|web):(latest|cs-rollback)\$" || true); do
         run "${DOCKER[@]}" rmi "$img" >/dev/null 2>&1 || true
       done
     fi
@@ -283,6 +315,16 @@ if [ "$EXISTING" = 0 ]; then
   [ -f "$CS_DIR/.env" ] && EXISTING=1
 fi
 [ "$EXISTING" = 1 ] && info "existing install in $CS_DIR: updating it (data/ and .env are kept)"
+# A new install into a folder that already holds something else: ask first (the containers would take over a data/
+# folder there, ownership included). Leftovers of an earlier Cyber-Scout attempt are fine.
+if [ "$EXISTING" = 0 ] && [ -d "$CS_DIR" ] && [ -n "$(ls -A "$CS_DIR" 2>/dev/null)" ] \
+   && [ ! -f "$CS_DIR/data/app.db" ] && ! grep -qs 'cyber-scout' "$CS_DIR/docker-compose.yml"; then
+  warn "$CS_DIR isn't empty and isn't a Cyber-Scout install. It holds:"
+  find "$CS_DIR" -mindepth 1 -maxdepth 1 2>/dev/null | sed -n '1,8s#^.*/#    #p'
+  info "Nothing there would be deleted, but app/, data/, docker-compose.yml and .env would be added or taken over."
+  if [ "$CS_YES" = 1 ] || ! tty_ok; then need "pick an empty or new folder with --dir DIR"
+  else yes_no "Install into it anyway?" n || die "Nothing was changed. Pick another folder (--dir DIR)."; fi
+fi
 # what this run sets explicitly (everything else comes from an existing .env or the defaults)
 SET_PORT="$CS_PORT"; SET_BIND="$CS_BIND"; SET_PREFIX="$CS_PREFIX"; SET_GPU_IDS="$CS_GPU_IDS"
 [ -n "$CS_PREFIX" ] || CS_PREFIX="$(env_get CS_PREFIX)"; CS_PREFIX="${CS_PREFIX:-cyber-scout}"
@@ -315,8 +357,97 @@ WITH_WORKER=1
 if [ -n "$SERVICES" ]; then case " $SERVICES " in *" worker "*|*" recorder "*) ;; *) WITH_WORKER=0;; esac; fi
 
 # ---------------------------------------------------------------- GPU
-GPU=0; GPU_COUNT=0; GPU_TESTED=""
-gpu_test() { dk run --rm --gpus "\"device=$1\"" python:3.12-slim nvidia-smi -L >/dev/null 2>&1; }
+# Every card is tried in a small test container, passed the way compose will pass it: first the NVIDIA hook
+# (--gpus device=N; compose driver "nvidia"), then CDI (--device nvidia.com/gpu=N; driver "cdi", GPU_DRIVER=cdi in
+# .env). On some hosts the hook can't add one card's device rules while CDI works (atomosserver's hardened kernel:
+# GPU 1, "failed to add device rules: unable to generate new device filter program"). CDI hands the worker one card;
+# a list like 0,1 needs the hook for every card.
+GPU=0; GPU_COUNT=0; GPU_DRV=""; GPU_ERR=""; GPU_NOTES=""; GPU_TESTED=0; GT=""
+GPU_NAME=(); GPU_HOW=(); GPU_WHY=(); GPU_CDI_WHY=()
+ENV_DRV="$(env_get GPU_DRIVER)"
+gpu_why() {  # gpu_why FILE: a short reason from a failed test container's output
+  local t; t="$(cat "$1" 2>/dev/null || true)"
+  case "$t" in
+    *"failed to add device rules"*|*"device filter program"*) echo "the NVIDIA hook can't add its device rules on this kernel";;
+    *"failed to stat CDI host device"*)
+      echo "the CDI device list is out of date (it names $(printf '%s' "$t" | sed -n 's/.*failed to stat CDI host device "\([^"]*\)".*/\1/p' | head -1), which isn't there now)";;
+    *"unresolvable CDI devices"*|*"unknown CDI device"*|*"CDI device injection failed"*) echo "there's no CDI device list for it";;
+    *"could not select device driver"*) echo "Docker has no NVIDIA runtime (restart Docker after installing the toolkit)";;
+    *) printf '%s\n' "$t" | grep -v -e '^[[:space:]]*$' -e "docker run --help" | tail -1 | cut -c1-120;;
+  esac
+}
+gpu_try() {  # gpu_try hook|cdi IDS: 0 = a test container sees the card(s); else GPU_ERR says why
+  local a=() i
+  if [ "$1" = cdi ]; then for i in $(echo "$2" | tr ',' ' '); do a+=(--device "nvidia.com/gpu=$i"); done
+  else a=(--gpus "\"device=$2\""); fi
+  if dk run --rm "${a[@]}" python:3.12-slim nvidia-smi -L >"$GT" 2>&1; then GPU_ERR=""; return 0; fi
+  GPU_ERR="$(gpu_why "$GT")"
+  GPU_NOTES="$GPU_NOTES"$'\n'"GPU test ($1, $2) failed:"$'\n'"$(tail -n 4 "$GT")"
+  return 1
+}
+gpu_probe() {  # gpu_probe [cdi]: GPU_HOW[i] = hook | cdi | "" for every card (cdi: retry only the cards that failed)
+  local i first=hook second=cdi
+  [ "$ENV_DRV" = cdi ] && { first=cdi; second=hook; }   # keep CDI when .env already uses it and it still works
+  for ((i = 0; i < GPU_COUNT; i++)); do
+    if [ "${1:-}" = cdi ]; then
+      if [ -n "${GPU_HOW[i]:-}" ]; then continue; fi
+      if gpu_try cdi "$i"; then GPU_HOW[i]=cdi; else GPU_CDI_WHY[i]="$GPU_ERR"; fi
+      continue
+    fi
+    GPU_HOW[i]=""; GPU_WHY[i]=""; GPU_CDI_WHY[i]=""
+    if gpu_try "$first" "$i"; then GPU_HOW[i]="$first"; continue; fi
+    if [ "$first" = hook ]; then GPU_WHY[i]="$GPU_ERR"; else GPU_CDI_WHY[i]="$GPU_ERR"; fi
+    if gpu_try "$second" "$i"; then GPU_HOW[i]="$second"
+    elif [ "$second" = hook ]; then GPU_WHY[i]="$GPU_ERR"; else GPU_CDI_WHY[i]="$GPU_ERR"; fi
+  done
+}
+cdi_spec() {  # the NVIDIA CDI spec file Docker reads (the existing one, else /etc/cdi/nvidia.yaml)
+  local f
+  for f in /etc/cdi/*.yaml /etc/cdi/*.json /var/run/cdi/*.yaml /var/run/cdi/*.json; do
+    [ -f "$f" ] && grep -qs 'nvidia.com/gpu' "$f" && { echo "$f"; return 0; }
+  done
+  echo /etc/cdi/nvidia.yaml
+}
+cdi_refresh() {  # regenerate that spec with sudo; the old file stays next to it as <name>.bak-<time> (not read by CDI)
+  local f="$1" tmp
+  tmp="$(mktemp -d)"
+  if ! $SUDO nvidia-ctk cdi generate --output="$tmp/nvidia.${f##*.}" >"$tmp/log" 2>&1; then
+    warn "nvidia-ctk cdi generate failed: $(tail -n 1 "$tmp/log")"; $SUDO rm -rf "$tmp"; return 1
+  fi
+  if [ -f "$f" ]; then $SUDO cp -p "$f" "$f.bak-$(date +%Y%m%d-%H%M%S)" || { $SUDO rm -rf "$tmp"; return 1; }; fi
+  $SUDO mkdir -p "$(dirname "$f")" && $SUDO install -m 0644 "$tmp/nvidia.${f##*.}" "$f"
+  local rc=$?; $SUDO rm -rf "$tmp"; return $rc
+}
+gpu_table() {
+  local i w=0 s
+  for ((i = 0; i < GPU_COUNT; i++)); do [ "${#GPU_NAME[i]}" -gt "$w" ] && w="${#GPU_NAME[i]}"; done
+  for ((i = 0; i < GPU_COUNT; i++)); do
+    case "${GPU_HOW[i]:-}" in
+      hook) s="${G}works in containers${N}";;
+      cdi)  s="${G}works in containers${N} (through CDI)";;
+      *)    s="${R}doesn't work in containers${N}: ${GPU_WHY[i]:-${GPU_CDI_WHY[i]:-?}}";;
+    esac
+    printf '    GPU %s  %-*s  %s\n' "$i" "$w" "${GPU_NAME[i]}" "$s"
+  done
+}
+gpu_ok_list() { local i o=""; for ((i = 0; i < GPU_COUNT; i++)); do [ -n "${GPU_HOW[i]:-}" ] && o="$o${o:+, }$i"; done; echo "$o"; }
+gpu_pick_ok() {  # gpu_pick_ok IDS: 0 = usable as GPU_IDS (sets GPU_DRV); else GPU_ERR says why
+  local i n=0 cdi_card=""
+  [[ "$1" =~ ^[0-9]+(,[0-9]+)*$ ]] || { GPU_ERR="type card numbers, like 0 or 0,1"; return 1; }
+  for i in $(echo "$1" | tr ',' ' '); do
+    n=$((n + 1)); i=$((10#$i))
+    [ "$i" -lt "$GPU_COUNT" ] || { GPU_ERR="there's no GPU $i (this machine has 0-$((GPU_COUNT - 1)))"; return 1; }
+    [ -n "${GPU_HOW[i]:-}" ] || { GPU_ERR="GPU $i doesn't work in containers here (${GPU_WHY[i]:-${GPU_CDI_WHY[i]:-?}})"; return 1; }
+    [ "${GPU_HOW[i]}" = cdi ] && cdi_card="$i"
+  done
+  if [ "$n" = 1 ]; then GPU_DRV=""; [ -n "$cdi_card" ] && GPU_DRV=cdi; return 0; fi
+  if gpu_try hook "$1"; then GPU_DRV=""; return 0; fi
+  if [ -n "$cdi_card" ]; then
+    GPU_ERR="GPU $cdi_card works here only through CDI, which hands the worker one card: pick one"
+  else GPU_ERR="GPUs $1 together didn't work in a test container ($GPU_ERR)"; fi
+  return 1
+}
+
 if [ "$OS" = Darwin ]; then
   info "macOS: CPU mode (Docker Desktop on a Mac has no CUDA). Each match takes ~4x longer than on an NVIDIA GPU."
 elif [ "$MODE_CPU" = cpu ]; then
@@ -324,23 +455,51 @@ elif [ "$MODE_CPU" = cpu ]; then
 elif [ "$MODE_CPU" = "" ] && [ "$EXISTING" = 1 ] && grep -q '^COMPOSE_FILE=.*docker-compose.cpu.yml' "$CS_DIR/.env" 2>/dev/null; then
   info "CPU mode (from .env; re-run with --gpu to switch to the GPU)"
 elif have nvidia-smi && nvidia-smi -L >/dev/null 2>&1; then
-  GPU_COUNT="$(nvidia-smi -L | grep -c '^GPU' || true)"
-  nvidia-smi -L | sed 's/ (UUID.*//; s/^/  found /'
+  while IFS= read -r l; do GPU_NAME+=("$l"); done < <(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null)
+  GPU_COUNT="${#GPU_NAME[@]}"
   toolkit=0
   # shellcheck disable=SC2016  # a Go template, not shell
   if [ "$DOCKER_OK" = 1 ] && dk info --format '{{range $k, $v := .Runtimes}}{{$k}} {{end}}' 2>/dev/null | grep -q nvidia; then toolkit=1; fi
   { have nvidia-ctk || have nvidia-container-cli; } && toolkit=1
+  echo
+  bold "GPUs"
   if [ "$toolkit" = 1 ]; then
-    if [ "$DRY" = 1 ] || [ "$DOCKER_OK" != 1 ]; then GPU=1
+    if [ "$DRY" = 1 ] || [ "$DOCKER_OK" != 1 ]; then
+      GPU=1; for ((i = 0; i < GPU_COUNT; i++)); do info "  GPU $i  ${GPU_NAME[i]}  (not tested)"; done
     else
-      # the card(s) the worker will get, asked for the way compose does (device ids, not "all": on some hosts, e.g. a
-      # hardened kernel with one card busy, --gpus all fails while each card works)
-      T_IDS="$CS_GPU_IDS"; [ -n "$T_IDS" ] || [ "$EXISTING" != 1 ] || T_IDS="$(env_get GPU_IDS)"
-      [[ "${T_IDS:-}" =~ ^[0-9]+(,[0-9]+)*$ ]] || T_IDS=0
-      info "checking that containers can use GPU $T_IDS (docker run --gpus device=$T_IDS ... nvidia-smi)"
-      if gpu_test "$T_IDS"; then GPU=1; GPU_TESTED="$T_IDS"; info "GPU works in containers"
-      else warn "The NVIDIA Container Toolkit is installed but a test container couldn't use GPU $T_IDS."
-           warn "Try: sudo nvidia-ctk runtime configure --runtime=docker && sudo systemctl restart docker"; fi
+      info "testing which cards containers can use (a small test container per card)"
+      GT="$(mktemp)"; trap 'rm -f "$GT"' EXIT
+      dk image inspect python:3.12-slim >/dev/null 2>&1 || dk pull -q python:3.12-slim >/dev/null 2>&1 || true
+      gpu_probe; GPU_TESTED=1
+      # a card the hook can't pass and whose CDI list is stale or missing: offer to (re)generate that list
+      stale=""; cdi_why=""
+      for ((i = 0; i < GPU_COUNT; i++)); do
+        case "${GPU_HOW[i]:-}:${GPU_CDI_WHY[i]:-}" in
+          :*"CDI device list"*) stale="$stale${stale:+, }$i"; cdi_why="${GPU_CDI_WHY[i]}";;
+        esac
+      done
+      gpu_table
+      if [ -n "$stale" ] && have nvidia-ctk && { [ "$(id -u)" -eq 0 ] || [ -n "$SUDO" ]; }; then
+        spec="$(cdi_spec)"
+        echo
+        warn "GPU $stale can't be passed into containers the usual way, and Docker's other way (CDI) can't either:"
+        warn "$cdi_why."
+        info "Refreshing that list usually fixes it. With sudo, this runs:  nvidia-ctk cdi generate --output=$spec"
+        info "The current file is kept as $(basename "$spec").bak-<time>. No container restarts and nothing else changes."
+        if [ "$CS_YES" != 1 ] && tty_ok && yes_no "Refresh the CDI device list now?" y; then
+          if cdi_refresh "$spec"; then
+            info "refreshed $spec; testing again"
+            gpu_probe cdi; gpu_table
+          fi
+        else
+          info "Skipped. Later: sudo nvidia-ctk cdi generate --output=$spec   (then re-run this installer)"
+        fi
+      fi
+      if [ -n "$(gpu_ok_list)" ]; then GPU=1
+      else
+        warn "The NVIDIA Container Toolkit is installed, but no card worked in a test container."
+        info "Try: sudo nvidia-ctk runtime configure --runtime=docker && sudo systemctl restart docker  (restarts all containers)"
+      fi
     fi
   else
     warn "An NVIDIA GPU is present but the NVIDIA Container Toolkit isn't installed, so containers can't use it."
@@ -356,14 +515,41 @@ else
   info "No NVIDIA GPU found: CPU mode. Each match takes ~4x longer (~20 min instead of ~3-6). Everything else works."
 fi
 if [ "$GPU" = 1 ]; then
-  if [ -z "$CS_GPU_IDS" ] && [ "$EXISTING" = 1 ]; then CS_GPU_IDS="$(env_get GPU_IDS)"; fi
-  if [ -z "$CS_GPU_IDS" ] && [ "$GPU_COUNT" -gt 1 ]; then CS_GPU_IDS="$(ask "Which GPU(s) should the worker use (0, 1, 0,1 ...)" 0)"; SET_GPU_IDS="$CS_GPU_IDS"; fi
-  CS_GPU_IDS="${CS_GPU_IDS:-0}"
-  [[ "$CS_GPU_IDS" =~ ^[0-9]+(,[0-9]+)*$ ]] || die "--gpu-ids: like 0 or 0,1 ($CS_GPU_IDS)"
-  if [ -n "${GPU_TESTED:-}" ] && [ "$CS_GPU_IDS" != "$GPU_TESTED" ] && ! gpu_test "$CS_GPU_IDS"; then
-    warn "GPU $CS_GPU_IDS didn't work in a test container (GPU $GPU_TESTED did): the worker may not start. Re-run with --gpu-ids $GPU_TESTED"
+  ENV_IDS=""; [ "$EXISTING" = 1 ] && ENV_IDS="$(env_get GPU_IDS)"
+  want="${CS_GPU_IDS:-$ENV_IDS}"; from="--gpu-ids"; [ -n "$CS_GPU_IDS" ] || from="GPU_IDS in .env"
+  if [ "$GPU_TESTED" = 0 ]; then  # dry run / Docker not reachable: nothing tested, keep what's asked for or set
+    CS_GPU_IDS="${want:-0}"; GPU_DRV="$ENV_DRV"
+    [[ "$CS_GPU_IDS" =~ ^[0-9]+(,[0-9]+)*$ ]] || die "--gpu-ids: like 0 or 0,1 ($CS_GPU_IDS)"
+  elif [ -n "$want" ] && gpu_pick_ok "$want"; then CS_GPU_IDS="$want"
+  else
+    okl="$(gpu_ok_list)"; first="${okl%%,*}"
+    [ -n "$want" ] && warn "$from is $want, which won't work: $GPU_ERR"
+    if [ "$CS_YES" != 1 ] && tty_ok && { [ -n "$want" ] || [ "$okl" != "$first" ]; }; then
+      info "The worker tracks matches on one card (a list like 0,1 passes the others in too, e.g. for preview"
+      info "encoding). To track two matches at once, add a job on another card later (PROCESSORS_GPU0 / PROCESSORS_GPU1)."
+      hint="$okl"; [ "$okl" = "$first" ] && hint="only $first works"
+      for try in 1 2 3 4 5; do
+        pick="$(ask "Which GPU should the worker use ($hint)" "$first")"
+        if gpu_pick_ok "$pick"; then CS_GPU_IDS="$pick"; break; fi
+        warn "$GPU_ERR"
+        [ "$try" = 5 ] && die "no usable GPU chosen"
+      done
+    elif [ -n "$want" ]; then
+      need "Pick a card that works ($okl): --gpu-ids N, or re-run in a terminal to choose. Nothing was changed."
+    else
+      CS_GPU_IDS="$first"; gpu_pick_ok "$first" || true
+      [ "$GPU_COUNT" -gt 1 ] && info "using GPU $first (the first card that works in containers; --gpu-ids N picks another)"
+    fi
   fi
-  info "GPU mode, GPU_IDS=$CS_GPU_IDS"
+  [ "$CS_GPU_IDS" != "$ENV_IDS" ] && SET_GPU_IDS="$CS_GPU_IDS"
+  info "worker + recorder: GPU $CS_GPU_IDS$([ "$GPU_DRV" = cdi ] && echo " (through CDI: GPU_DRIVER=cdi)")"
+  # extra tracking jobs follow GPU_DRIVER; a card that needs CDI while the worker's doesn't needs it spelled out
+  for ((i = 0; i < GPU_COUNT && i < 2; i++)); do
+    if [ "$GPU_DRV" != cdi ] && [ "${GPU_HOW[i]:-}" = cdi ] && [ -z "$(env_get PROCESSOR_GPU_DRIVER)" ]; then
+      info "${D}(GPU $i works only through CDI: an extra tracking job there needs PROCESSORS_GPU$i=1 plus"
+      info " PROCESSOR_GPU_DRIVER=cdi and PROCESSOR_GPU${i}_ID=nvidia.com/gpu=$i in .env)$N"
+    fi
+  done
 elif [ "$DOCKER_OK" = 1 ] && [ -n "$CV" ] && ! ver_ge "$CV" 2.24.4; then
   need "CPU-only mode needs Docker Compose >= 2.24.4 (you have $CV). Update Docker."
 fi
@@ -445,7 +631,15 @@ if [ "$OS" = Darwin ]; then
   case "$CS_DIR" in /Users/*|/Volumes/*|/private/*|/tmp/*) ;;
     *) warn "Docker Desktop only shares /Users, /Volumes, /private and /tmp by default; add $CS_DIR in Settings -> Resources -> File sharing.";; esac
 fi
+echo
 bold "Installing into $CS_DIR"
+# the build's and start's output goes to install.log (on screen: one status line, and the end of it if a step fails)
+LOG=/dev/null
+if [ "$DRY" = 0 ]; then
+  LOG="$CS_DIR/install.log"
+  [ -f "$LOG" ] && [ "$(wc -c <"$LOG" | tr -d ' ')" -gt 5000000 ] && mv -f "$LOG" "$LOG.1"
+  { printf '\n######## %s  install.sh\n' "$(date '+%Y-%m-%d %H:%M:%S')"; [ -z "$GPU_NOTES" ] || printf '%s\n' "$GPU_NOTES"; } >>"$LOG"
+fi
 
 # ---------------------------------------------------------------- code
 GIT_SHA=""
@@ -541,7 +735,9 @@ fi
 if [ "$DRY" = 0 ] && [ ! -f "$CS_DIR/app/deploy/docker-compose.yml" ]; then die "$CS_DIR/app has no deploy/docker-compose.yml"; fi
 for f in docker-compose.yml docker-compose.cpu.yml; do
   if [ "$DRY" = 1 ]; then run cp "$CS_DIR/app/deploy/$f" "$CS_DIR/$f"; continue; fi
-  if [ -f "$CS_DIR/$f" ] && ! cmp -s "$CS_DIR/app/deploy/$f" "$CS_DIR/$f"; then cp "$CS_DIR/$f" "$CS_DIR/$f.bak"; info "previous $f saved as $f.bak"; fi
+  if [ -f "$CS_DIR/$f" ] && ! cmp -s "$CS_DIR/app/deploy/$f" "$CS_DIR/$f"; then
+    bak="$f.bak-$(date +%Y%m%d-%H%M%S)"; cp -p "$CS_DIR/$f" "$CS_DIR/$bak"; info "previous $f saved as $bak"
+  fi
   cp "$CS_DIR/app/deploy/$f" "$CS_DIR/$f"
 done
 
@@ -579,7 +775,12 @@ if [ "$EXISTING" = 0 ]; then
     echo "TZ=$(detect_tz)"
     echo "MEDIA_DIR=./data/media"
     echo "YT_FORCE_IPV4=1"
-    if [ "$GPU" = 1 ]; then echo "GPU_IDS=$CS_GPU_IDS"
+    if [ "$GPU" = 1 ]; then
+      echo "GPU_IDS=$CS_GPU_IDS"
+      if [ "$GPU_DRV" = cdi ]; then
+        echo "# this card works in containers only through CDI here (the NVIDIA hook fails): pass GPUs by CDI name"
+        echo "GPU_DRIVER=cdi"
+      fi
     else echo "# no usable NVIDIA GPU: CPU-only override"; echo "COMPOSE_FILE=$CPU_FILES"; fi
     [ -n "$PLATFORM" ] && echo "DOCKER_DEFAULT_PLATFORM=$PLATFORM"
     true
@@ -593,6 +794,10 @@ else
   [ -n "$SET_PREFIX" ] && [ "$(env_get CS_PREFIX)" != "$CS_PREFIX" ] && set_env CS_PREFIX "$CS_PREFIX"
   if [ "$GPU" = 1 ]; then
     { [ -n "$SET_GPU_IDS" ] || [ -z "$(env_get GPU_IDS)" ]; } && [ "$(env_get GPU_IDS)" != "$CS_GPU_IDS" ] && set_env GPU_IDS "$CS_GPU_IDS"
+    if [ "$GPU_TESTED" = 1 ] && [ "$GPU_DRV" != "$ENV_DRV" ]; then  # the way the chosen card was passed in its test
+      if [ "$GPU_DRV" = cdi ]; then set_env GPU_DRIVER cdi; info "GPU_DRIVER=cdi in .env (the card works only through CDI here)"
+      else del_env GPU_DRIVER; info "removed GPU_DRIVER from .env (the card works without CDI)"; fi
+    fi
     if env_get COMPOSE_FILE | grep -q docker-compose.cpu.yml; then
       if [ "$MODE_CPU" = gpu ]; then del_env COMPOSE_FILE; info "switched .env to GPU mode"
       else info "GPU available, but .env is CPU-only; re-run with --gpu to switch"; fi
@@ -608,7 +813,7 @@ fi
 # ---------------------------------------------------------------- data folder + robot detector
 run mkdir -p "$CS_DIR/data/models" "$CS_DIR/data/media" "$CS_DIR/data/site/api" "$CS_DIR/data/config"
 if [ "$(id -u)" -eq 0 ] && [ "$HOST_UID" != 0 ]; then  # running under sudo: hand the folder to the invoking user
-  run chown "$HOST_UID:$HOST_GID" "$CS_DIR" "$CS_DIR/.env" "$CS_DIR"/docker-compose*.yml "$CS_DIR/data" \
+  run chown "$HOST_UID:$HOST_GID" "$CS_DIR" "$CS_DIR/.env" "$CS_DIR"/docker-compose*.yml "$CS_DIR/install.log" "$CS_DIR/data" \
       "$CS_DIR/data/models" "$CS_DIR/data/media" "$CS_DIR/data/site" "$CS_DIR/data/site/api" "$CS_DIR/data/config"
   run chown -R "$HOST_UID:$HOST_GID" "$CS_DIR/app"
 fi
@@ -667,32 +872,88 @@ if [ "$WITH_WORKER" = 0 ]; then
 fi
 # shellcheck disable=SC2086  # word splitting of the service lists is intended
 if [ -n "$BUILD" ]; then
-  bold "Building$([ -n "$SERVICES" ] && echo "$BUILD") (the first build takes a few minutes$([ "$WITH_WORKER" = 1 ] && [ -z "$WORKER_IMAGE" ] && echo "; the worker image is ~3.5 GB"))"
-  if [ "$BUILD" = " worker recorder api web" ]; then dc build; else dc build $BUILD; fi
+  # recorder and the processor services run the worker's image: build it once (compose would build it per service)
+  B_LIST=""
+  for s in $BUILD; do [ "$s" = recorder ] && s=worker; case " $B_LIST " in *" $s "*) ;; *) B_LIST="$B_LIST $s";; esac; done
+  echo
+  bold "Building"
+  info "The first build takes a few minutes$([ "$WITH_WORKER" = 1 ] && [ -z "$WORKER_IMAGE" ] && echo " (the worker image is ~3.5 GB)"). Its output goes to $LOG."
+  if [ "$DRY" = 0 ] && ! dk buildx version >/dev/null 2>&1; then
+    info "${D}(Docker's buildx plugin isn't installed, so Docker uses its classic builder: it works, just slower."
+    info " For faster builds install docker-buildx / docker-buildx-plugin from your distribution.)$N"
+  fi
+  if ! step "building$B_LIST" dc build $B_LIST; then
+    log_tail 20
+    die "The build failed (full output: $LOG). Nothing was started$([ "$EXISTING" = 1 ] && echo "; the installed version keeps running")."
+  fi
 fi
+echo
 bold "Starting"
+UP_FAIL=0; DOWN=""; WHY=""; FIX=""
+up_why() {  # WHY + FIX for a failed `compose up`, from the last step's output in the log
+  local t
+  t="$(log_step)"
+  case "$t" in
+    *"failed to add device rules"*|*"device filter program"*)
+      WHY="Docker couldn't pass GPU $CS_GPU_IDS into the container: the NVIDIA hook can't add its device rules on this kernel."
+      FIX="Re-run the installer: it tests each card and offers the ones that work (or CDI). Or re-run with --cpu.";;
+    *"CDI device injection failed"*|*"unresolvable CDI devices"*)
+      WHY="Docker couldn't pass GPU $CS_GPU_IDS through CDI: its device list is missing or out of date."
+      FIX="Re-run the installer (it offers to refresh the list), or: sudo nvidia-ctk cdi generate --output=$(cdi_spec)";;
+    *"could not select device driver"*)
+      WHY="Docker has no NVIDIA runtime, so it can't pass the GPU."
+      FIX="sudo nvidia-ctk runtime configure --runtime=docker && sudo systemctl restart docker, then re-run (or --cpu)";;
+    *"port is already allocated"*|*"address already in use"*)
+      WHY="Port $CS_PORT is taken by something else."; FIX="Re-run with --port N.";;
+    *"is already in use by container"*)
+      WHY="A container with one of these names already exists (another install?). It was left alone."
+      FIX="docker ps -a shows it; a second copy needs --prefix NAME and another --port.";;
+    *"no space left on device"*)
+      WHY="The disk is full."; FIX="Free some space (docker image ls, docker image rm <unused>), then re-run.";;
+    *) WHY="$(printf '%s\n' "$t" | grep -i -E 'error|failed' | tail -n 1 | cut -c1-200 || true)"
+       FIX="cd $CS_DIR && docker compose ps, and the end of $LOG";;
+  esac
+}
+not_running() {  # the asked-for services that aren't running, "a, b"
+  local up s out=""
+  up=" $( (cd "$CS_DIR" && dk compose ps --status running --format '{{.Service}}' 2>/dev/null) | tr '\n' ' ' || true) "
+  for s in ${SERVICES:-$ALL}; do case "$up" in *" $s "*) ;; *) out="$out${out:+, }$s";; esac; done
+  echo "$out"
+}
 # shellcheck disable=SC2086
-dc up -d --no-build $SERVICES
+step "starting the containers" dc up -d --no-build $SERVICES || UP_FAIL=1
+if [ "$UP_FAIL" = 1 ]; then
+  up_why
+  log_tail 6
+  # compose stops at the first error: start the others one by one (the site, setup and scouting work without the worker)
+  printf '\n=== %s  starting the others one by one\n' "$(date '+%H:%M:%S')" >>"$LOG"
+  for s in $(not_running | tr -d ','); do dc up -d --no-build "$s" >>"$LOG" 2>&1 || true; done
+  DOWN="$(not_running)"
+fi
 
 HOST="$CS_BIND"; case "$HOST" in ""|0.0.0.0|"::"|"[::]") HOST=127.0.0.1;; esac
 BASE="http://$HOST:$CS_PORT"
 OK=0
 if [ "$DRY" = 1 ]; then OK=1; run curl -fsS "$BASE/app/v1/health"
 else
-  info "waiting for the app to answer on $BASE"
-  for _ in $(seq 1 90); do
-    if curl -fsS --max-time 5 "$BASE/app/v1/health" 2>/dev/null | grep -q '"ok": *true' \
-       && curl -fsS --max-time 5 -o /dev/null "$BASE/" 2>/dev/null; then OK=1; break; fi
-    sleep 2
-  done
+  case ", $DOWN, " in
+    *", api, "*|*", web, "*) ;;                                   # the site itself didn't start: nothing to wait for
+    *) t0=$SECONDS
+       for _ in $(seq 1 90); do
+         [ "$TTY" = 1 ] && printf '\r\033[K  waiting for the app to answer on %s  %s' "$BASE" "$(mmss $((SECONDS - t0)))"
+         if curl -fsS --max-time 5 "$BASE/app/v1/health" 2>/dev/null | grep -q '"ok": *true' \
+            && curl -fsS --max-time 5 -o /dev/null "$BASE/" 2>/dev/null; then OK=1; break; fi
+         sleep 2
+       done
+       [ "$TTY" = 1 ] && printf '\r\033[K'
+       if [ "$OK" = 1 ]; then printf '  the app answers on %s %sdone%s\n' "$BASE" "$G" "$N"
+       else warn "the app didn't answer on $BASE within 3 minutes"; fi;;
+  esac
 fi
-if [ "$OK" = 1 ]; then
-  run rm -rf "$CS_DIR/app.prev"
-else
-  warn "The app didn't answer on $BASE within 3 minutes. Look at: cd $CS_DIR && docker compose ps && docker compose logs api web"
-fi
+# the previous code (app.prev) goes only once everything runs
+[ "$OK" = 1 ] && [ "$UP_FAIL" = 0 ] && run rm -rf "$CS_DIR/app.prev"
 
-# ---------------------------------------------------------------- where to go
+# ---------------------------------------------------------------- addresses + setup code
 IP=""
 if [ "$HOST" != 127.0.0.1 ] || [ "$CS_BIND" = 127.0.0.1 ]; then IP="$HOST"
 elif [ "$OS" = Darwin ]; then
@@ -703,10 +964,7 @@ else
   [ -n "$IP" ] || IP="$( (hostname -I 2>/dev/null | awk '{print $1}') || true)"
 fi
 TS=""; [ "$CS_BIND" = 0.0.0.0 ] && have tailscale && TS="$(tailscale ip -4 2>/dev/null | head -1 || true)"
-echo
-bold "Cyber-Scout is $([ "$DRY" = 1 ] && echo "(would be) ")$([ "$OK" = 1 ] && echo running || echo starting):"
-info "http://${IP:-localhost}:$CS_PORT$([ "$CS_BIND" = 127.0.0.1 ] && echo "   (this machine only: --bind 127.0.0.1)")"
-[ -n "$TS" ] && info "http://$TS:$CS_PORT   (Tailscale)"
+SRV="http://${IP:-localhost}:$CS_PORT"
 CODEF="$CS_DIR/data/setup-code.txt"
 CODE=""
 if [ "$DRY" = 0 ]; then
@@ -714,25 +972,6 @@ if [ "$DRY" = 0 ]; then
     CODE="$(cat "$CODEF" 2>/dev/null || true)"; [ -n "$CODE" ] && break
     [ -e "$CODEF" ] || { [ "$OK" = 1 ] && break; }; sleep 1
   done
-fi
-if [ -n "$CODE" ]; then
-  echo
-  bold "First-time setup code: $CODE"
-  info "Open the site, enter the code and create the admin account. (Later: cat $CODEF)"
-elif [ "$OK" = 1 ] && [ "$EXISTING" = 1 ]; then
-  info "(setup already done: sign in with your admin account)"
-else
-  info "The one-time setup code is in $CODEF (until the admin account is created)."
-fi
-# installed with get.sh from a downloads site: each laptop gets the Client with one line, already pointed at this server
-SITE_RE='^https?://[][A-Za-z0-9.:_-]+$'                       # ] first: literal in a bracket expression
-if [ -n "${CS_SITE:-}" ] && [ "$CS_BIND" != 127.0.0.1 ] && [[ "$CS_SITE" =~ $SITE_RE ]]; then
-  SRV="http://${IP:-localhost}:$CS_PORT"
-  echo
-  bold "Laptops: the Cyber-Scout Client in one line (installs it, starts it at login, connects to this server):"
-  info "macOS / Linux:  curl -fsSL $CS_SITE/downloads/get-client.sh | bash -s -- --server $SRV"
-  info "Windows:        \$env:CS_SERVER='$SRV'; irm $CS_SITE/downloads/get-client.ps1 | iex"
-  info "Phones: open $SRV in the browser and add it to the home screen."
 fi
 
 # ---------------------------------------------------------------- one-click updates (optional host updater, Linux)
@@ -760,13 +999,70 @@ elif [ -f "$UPD" ] || [ "$DRY" = 1 ]; then
   fi
 fi
 
+# ---------------------------------------------------------------- summary (printed last, so it stays on screen)
+W=$((COLS - 23)); [ "$W" -ge 40 ] || W=40
+row() { printf '    %s%-13s%s %s\n' "$D" "$1" "$N" "$2"; }   # row LABEL TEXT (commands stay on one line: copyable)
+prose() {  # prose LABEL TEXT: like row, but long text wraps under itself
+  local l first=1
+  while IFS= read -r l; do
+    if [ "$first" = 1 ]; then row "$1" "$l"; first=0; else row "" "$l"; fi
+  done < <(printf '%s\n' "$2" | fold -s -w "$W")
+}
+UTF=0; case "${LC_ALL:-${LC_CTYPE:-${LANG:-}}} $(locale charmap 2>/dev/null || true)" in *[Uu][Tt][Ff]-8*|*[Uu][Tt][Ff]8*) UTF=1;; esac
+HRW=$((COLS - 4)); [ "$HRW" -le 76 ] || HRW=76
+hr() { local c="=" i; [ "$UTF" = 1 ] && c="━"; printf '  %s' "$C"; for ((i = 0; i < HRW; i++)); do printf '%s' "$c"; done; printf '%s\n' "$N"; }
 echo
-info "Logs:      cd $CS_DIR && docker compose logs -f worker"
-if [ "$UPDATER_OK" = 1 ]; then info "Update:    Admin -> Updates in the web app (or re-run this installer)."
-else info "Update:    re-run this installer."; fi
-info "Backup:    the whole $CS_DIR folder (data/ holds everything)."
-info "Uninstall: bash $CS_DIR/app/deploy/install.sh --uninstall --dir $CS_DIR   (add --purge to delete the data too)"
-[ "$OK" = 1 ] || exit 1
+bold "Handy commands"
+row "Logs" "cd $CS_DIR && docker compose logs -f worker"
+if [ "$UPDATER_OK" = 1 ]; then row "Update" "Admin -> Updates in the web app, or re-run this installer"
+else row "Update" "re-run this installer"; fi
+row "Backup" "the whole $CS_DIR folder (data/ holds everything)"
+row "Uninstall" "bash $CS_DIR/app/deploy/install.sh --uninstall --dir $CS_DIR  (--purge deletes the data too)"
+[ "$DRY" = 1 ] || row "Install log" "$LOG"
+# installed with get.sh from a downloads site: each laptop gets the Client with one line, already pointed at this server
+SITE_RE='^https?://[][A-Za-z0-9.:_-]+$'                       # ] first: literal in a bracket expression
+if [ -n "${CS_SITE:-}" ] && [ "$CS_BIND" != 127.0.0.1 ] && [[ "$CS_SITE" =~ $SITE_RE ]]; then
+  echo
+  bold "Laptops and phones"
+  info "${D}The Client in one line: installs it, starts it at login and connects it to this server.$N"
+  row "macOS, Linux" "curl -fsSL $CS_SITE/downloads/get-client.sh | bash -s -- --server $SRV"
+  row "Windows" "\$env:CS_SERVER='$SRV'; irm $CS_SITE/downloads/get-client.ps1 | iex"
+  row "Phones" "open $SRV in the browser and add it to the home screen"
+fi
+
+echo; echo
+hr
+echo
+ok_mark="+"; [ "$UTF" = 1 ] && ok_mark="✓"
+if [ "$DRY" = 1 ]; then printf '  %s(dry run) Cyber-Scout would now be running%s\n' "$B" "$N"
+elif [ "$OK" = 1 ] && [ "$UP_FAIL" = 0 ]; then printf '  %s%s%s Cyber-Scout is running%s\n' "$G" "$B" "$ok_mark" "$N"
+elif [ "$OK" = 1 ]; then printf '  %s%s! Cyber-Scout is running, but %s didn'"'"'t start%s\n' "$Y" "$B" "${DOWN:-a service}" "$N"
+else printf '  %s%sx Cyber-Scout didn'"'"'t come up%s\n' "$R" "$B" "$N"; fi
+echo
+row "Address" "$G$B$SRV$N$([ "$CS_BIND" = 127.0.0.1 ] && echo "   (this machine only: --bind 127.0.0.1)")"
+[ -n "$TS" ] && row "" "$G$B http://$TS:$CS_PORT$N   (Tailscale)"
+echo
+if [ -n "$CODE" ]; then
+  row "Setup code" "$B$CODE$N"
+  row "" "Open the address, enter the code and create the admin account."
+elif [ "$OK" = 1 ] && [ "$DRY" = 0 ]; then
+  row "Sign in" "with your admin account (setup is already done)"
+else
+  row "Setup code" "once the app is up:  cat $CODEF"
+fi
+if [ "$UP_FAIL" = 1 ]; then
+  echo
+  prose "Problem" "${WHY:-docker compose up failed}"
+  prose "Fix" "$FIX"
+fi
+if [ "$OK" = 0 ] && [ "$DRY" = 0 ]; then
+  echo
+  row "Look at" "cd $CS_DIR && docker compose ps && docker compose logs api web"
+fi
+echo
+hr
+echo
+[ "$OK" = 1 ] && [ "$UP_FAIL" = 0 ] || exit 1
 }
 
 usage() { sed -n '2,/^set -euo/p' "${BASH_SOURCE[0]:-install.sh}" 2>/dev/null | sed '$d; s/^# \{0,1\}//' || echo "see the top of install.sh"; }

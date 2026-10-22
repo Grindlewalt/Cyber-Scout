@@ -95,14 +95,19 @@ These exist in the local working copy and matter, but are git-ignored. No conten
 - `bold/info/warn/die/ask` print helpers. `ask` reads `/dev/tty`, so it works when piped from curl.
 - **privileges**: refuses root, needs Docker access.
 - **Docker + compose**: checks versions (`ver_ge`).
-- **GPU**: probes the NVIDIA Container Toolkit; otherwise uses the CPU override (`CS_CPU=1` forces it).
-- **where**: `CS_DIR` (default `/opt/cyber-scout`).
+- **GPU**: probes the NVIDIA Container Toolkit, then each card in a test container (`gpu_try` / `gpu_probe`: NVIDIA
+  hook, else CDI; `cdi_refresh` regenerates a stale CDI list after asking), prints `gpu_table`, validates the choice
+  (`gpu_pick_ok`) and sets `GPU_IDS` / `GPU_DRIVER=cdi`; no working card -> the CPU override (`CS_CPU=1` forces it).
+- **where**: `CS_DIR` (default `/opt/cyber-scout`); asks before a new install into a non-empty folder.
 - **code**: `git clone` / pull of `CS_REPO@CS_BRANCH`, or copies `CS_SOURCE`.
 - **.env**: writes the infra-only `.env` (`CS_PORT`, PUID/PGID from the invoking user, TZ, MEDIA_DIR).
 - **data dir + model**: creates `data/`; downloads `CS_MODEL_URL` into `data/models/robot.onnx` if it is missing.
-- **start**: copies the compose files, runs `docker compose up -d --build`, and prints the URL and the one-time
-  setup code from `data/setup-code.txt`.
+- **start**: copies the compose files, builds `worker api web` and runs `docker compose up -d --no-build` through
+  `step` (output to `<stack>/install.log`, one status line on screen); `up_why` explains a failed start, and the
+  other services are then started one by one.
 - **one-click updates**: offers `deploy/updater/install-updater.sh` (`CS_UPDATER=y|n`).
+- **summary**, last: handy commands, Client one-liners, then the address and the one-time setup code from
+  `data/setup-code.txt` between two rules (Problem / Fix rows when something didn't start).
 - Other options: `CS_PREFIX` (run a second copy side by side) and `CS_YES=1` (non-interactive).
 
 ### `deploy/updater/`

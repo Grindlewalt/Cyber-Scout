@@ -8,11 +8,13 @@
 # Hardening (security audit): every service drops all Linux capabilities and adds back only what its entrypoint
 # needs (root phase: chown of ./data + setpriv to PUID/PGID; nginx: bind :80 + switch to its worker user),
 # no-new-privileges, a pids + memory cap, and read-only root filesystems for api + web (tmpfs for scratch).
-# Optional .env knobs: GPU_IDS (default "0"; e.g. "1" or "0,1"), WEB_BIND (default 0.0.0.0; e.g. a LAN or
-# Tailscale IP), WORKER_MEM_LIMIT / RECORDER_MEM_LIMIT / API_MEM_LIMIT / WEB_MEM_LIMIT / PROCESSOR_MEM_LIMIT.
+# Optional .env knobs: GPU_IDS (default "0"; e.g. "1" or "0,1"), GPU_DRIVER (unset = the NVIDIA hook; "cdi" passes
+# the card as nvidia.com/gpu=<GPU_IDS>, one card or "all": install.sh sets it where only CDI works), WEB_BIND (default
+# 0.0.0.0; e.g. a LAN or Tailscale IP), WORKER_MEM_LIMIT / RECORDER_MEM_LIMIT / API_MEM_LIMIT / WEB_MEM_LIMIT /
+# PROCESSOR_MEM_LIMIT.
 # Extra tracking jobs (services processor-gpu0/-gpu1): PROCESSORS_GPU0 / PROCESSORS_GPU1 = jobs on host card 0 / 1
-# (default 0), PROCESSOR_GPU0_ID / PROCESSOR_GPU1_ID (host card, default 0 / 1), PROCESSOR_GPU_DRIVER (nvidia;
-# "cdi" with ..._ID=nvidia.com/gpu=N), WORKER_TRACK (auto: the worker tracks only while no processor is alive).
+# (default 0), PROCESSOR_GPU0_ID / PROCESSOR_GPU1_ID (host card, default 0 / 1), PROCESSOR_GPU_DRIVER (default:
+# GPU_DRIVER; "cdi" with ..._ID=nvidia.com/gpu=N), WORKER_TRACK (auto: the worker tracks only while no processor is alive).
 name: ${CS_PREFIX:-cyber-scout}
 services:
   worker:
@@ -42,13 +44,13 @@ services:
       - ${MEDIA_DIR:-./data/media}:/media     # kept match videos for the interactive player
     # GPU makes a match take ~3-6 min instead of ~20 (removed by docker-compose.cpu.yml).
     # GPU_IDS picks the card(s) (nvidia-smi -L numbering); inside the container they are renumbered from 0,
-    # so GPU_DEVICE (Settings) stays 0 for a single card.
+    # so GPU_DEVICE (Settings) stays 0 for a single card. GPU_DRIVER=cdi: the card by CDI name (nvidia.com/gpu=N).
     deploy:
       resources:
         reservations:
           devices:
-            - driver: nvidia
-              device_ids: ["${GPU_IDS:-0}"]
+            - driver: ${GPU_DRIVER:-nvidia}
+              device_ids: ["${GPU_DRIVER:+nvidia.com/gpu=}${GPU_IDS:-0}"]
               capabilities: [gpu]
 
   # Process-only processors (same image; live/worker.py --process-only): extra match-tracking jobs, one container
@@ -85,8 +87,8 @@ services:
       resources:
         reservations:
           devices:
-            - driver: ${PROCESSOR_GPU_DRIVER:-nvidia}
-              device_ids: ["${PROCESSOR_GPU0_ID:-0}"]
+            - driver: ${PROCESSOR_GPU_DRIVER:-${GPU_DRIVER:-nvidia}}
+              device_ids: ["${PROCESSOR_GPU0_ID:-${GPU_DRIVER:+nvidia.com/gpu=}0}"]
               capabilities: [gpu]
 
   processor-gpu1:
@@ -115,8 +117,8 @@ services:
       resources:
         reservations:
           devices:
-            - driver: ${PROCESSOR_GPU_DRIVER:-nvidia}
-              device_ids: ["${PROCESSOR_GPU1_ID:-1}"]
+            - driver: ${PROCESSOR_GPU_DRIVER:-${GPU_DRIVER:-nvidia}}
+              device_ids: ["${PROCESSOR_GPU1_ID:-${GPU_DRIVER:+nvidia.com/gpu=}1}"]
               capabilities: [gpu]
 
   # Live-stream recorder (same image as the worker): records each followed event's livestream (Video page
@@ -147,8 +149,8 @@ services:
       resources:
         reservations:
           devices:
-            - driver: nvidia
-              device_ids: ["${GPU_IDS:-0}"]
+            - driver: ${GPU_DRIVER:-nvidia}
+              device_ids: ["${GPU_DRIVER:+nvidia.com/gpu=}${GPU_IDS:-0}"]
               capabilities: [gpu]
 
   api:
