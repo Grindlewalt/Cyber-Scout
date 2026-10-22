@@ -420,7 +420,8 @@ class TestClipOnly(Base):
         self.assertEqual(rows["qm1"], "uploaded")
         self.assertEqual(rows["qm3"], "the server has it")
         rec_dir = os.path.join(self.app.data_dir, "processing", "streams", "cs0123456789", "rec", EV, "r1")
-        self.assertEqual(os.listdir(os.path.join(rec_dir, "clips")), [])              # sent clips are deleted
+        clips = os.path.join(rec_dir, "clips")                 # sent clips are deleted (just after they count as uploaded)
+        self.assertTrue(wait_for(lambda: os.listdir(clips) == [], 10), os.listdir(clips))
         self.assertTrue(os.path.isfile(os.path.join(rec_dir, "matches", "tba-qm1.json")))
         self.assertGreater(s["data"]["up"], 400_000)                                   # 2 clips, acknowledged chunks
         self.assertGreater(s["data"]["down"], 0)                                       # the recording's bytes
