@@ -105,7 +105,7 @@ http.server` of `web/` work without it.
 | `/api/` (site JSON) | `auth_request /_auth` → `GET /app/v1/auth/check`; 401 → JSON `{"detail":"sign in required"}` | `no-cache` | `$csp_data` (`default-src 'none'`) |
 | `/media/` (videos, clips) | same auth_request | `private, max-age=86400` | `$csp_data` |
 | `/app/v1/` | proxied to `api:8000` | (API's own) | `default-src 'none'; frame-ancestors 'none'`, `X-Frame-Options DENY` |
-| `= /app/v1/auth/login` | as above + `limit_req` 10/min per client IP (burst 10) | | |
+| `= /app/v1/auth/login`, `= /app/v1/auth/key-login` | as above + `limit_req` 10/min per client IP (burst 10, one zone `cs_login` for both) | | |
 
 `try_files $uri /index.html` makes any unknown path return the shell. Dotfiles and `*.db|*.bak|*.env|*.pem|…` return
 404 everywhere. `api()` additionally fetches with `{cache: "no-cache"}`.
@@ -335,7 +335,9 @@ team list every 20 s and on focus / visibility; setup.js re-reads `/session` eve
 | `CS.help(html, label)` | "?" button + popover (`.hlp`), inline content only; one open at a time; Esc/outside click closes |
 | `CS.fit()` / table fitter | every `.tablewrap > table` with a `<thead>` is fitted to its width: low-priority columns fold into a per-row "›" disclosure. Priority via `<th data-pri="N">` (0 = always folded; default keeps the first two columns). Re-fits via MutationObserver, resize and `<details>` toggle. Tables never scroll sideways. The open detail row **moves the folded cells' real nodes** in (and back on close / re-fit), so buttons, selects and links keep their handlers and state, and it copies the row's `data-*` attributes so delegated handlers reading `tr.dataset` still work. The "›" button is labelled from the first cell's `data-label` (or its `b` / `a` text). |
 | sortable headers | `th[data-k]` with a click handler gets `tabindex=0`, `aria-sort` (from the ▲ / ▼ mark) and Enter / Space sorting that keeps focus on the header (`a11ySort`, run with the fitter) |
-| `CS.icon(key, cls)` | inline SVG from the `ICON` set (24-grid, 1.8 stroke): nav icons plus `star`, `starOn`, `external`, `chevL/R`, `close`, `up`, `warn`, `check`, `ban` |
+| `CS.icon(key, cls)` | inline SVG from the `ICON` set (24-grid, 1.8 stroke): nav icons plus `star`, `starOn`, `external`, `chevL/R`, `close`, `up`, `warn`, `check`, `ban`, `key`, `copy`, `power` |
+| `CS.sheet({title, html, wide, cls, onClose})` | a modal in the competition list's look (`.compsheet`; `wide` = 760 px): centred on a desktop, a bottom sheet on phones. Esc, `[data-x]` and a backdrop click close it (a text selection that ends on the backdrop doesn't); it is removed when closed, focus returns to its opener, and a page change closes it (`cleanup`). → `{dlg, body, close}`. Used by the connection-key sheet (admin.js) |
+| `CS.ask({title, html, ok, cancel, danger, mount(body), value(body)})` | `CS.sheet` with Cancel / OK (`.sh-acts`; `danger` = a red-tinted OK and Cancel focused first); resolves to `false` or `value(body)` (default `true`). For questions with choices or lists in them (Client Stop / Uninstall); quick yes/no questions elsewhere still use `confirm()` |
 | `CS.isStream(m)`, `CS.liveTag(m)` | match row has `score_source:"livestream"` → "LIVE · stream" tag |
 | `CS.liveTracking(live, tracked)` | status text for a stream result ("Tracking from stream" / "Waiting for uploads") |
 | `CS.mediaUrl(u)` | accepts only `media/...` paths (`^/?media/[\w\-./]+$`, no `..`), else null |
@@ -388,7 +390,8 @@ name", "goal"); that input gets `aria-invalid` + `aria-describedby`, focus and s
 input. Anything else goes to the form's `.cserr`. Messages pass through `CS.sentence`. Every password input gets a
 Show / Hide toggle (`.pwrow`). First focus: the checked radio or the first input / select.
 
-**Route guard** (wrapped `route`): setup required → `#/setup`; not signed in → remember the hash in
+**Route guard** (wrapped `route`): setup required → `#/setup`; not signed in (except the Client's `#/connect`, which
+stays reachable signed out for "Change server" and connection keys) → remember the hash in
 `sessionStorage cs:next` and go to `#/login`; signed in on `#/login` → back to `cs:next` (never back to login /
 setup / the Client's `#/connect`); an admin with `configured:false` landing on `#/` → `#/setup`.
 
@@ -398,6 +401,9 @@ setup / the Client's `#/connect`); an admin with `configured:false` landing on `
 
 **Pages**:
 
+- `#/login` in Client mode also shows **Use a connection key** (a link card to `#/connect/key`). `CS.afterAuth()` (the
+  same "go to `cs:next`, or the setup wizard for an unconfigured admin" step the sign-in form ends with) is exported for
+  the Connect page's key path.
 - `#/login`: username + optional password (blank = passwordless, if the server policy allows it) →
   `POST auth/login`. A wrong password: "Invalid username or password." under the password field, which is cleared
   and focused; a "Forgot your password?" line points at the admin.
@@ -716,6 +722,23 @@ Tabs Teammates / Settings / Competitions / Server / Updates (the tab row scrolls
   teammate and Reset password follow the sign-in policy (passwordless Off → a password is required and
   pre-generated). Reset password / Disable / Delete are visible on a desktop and fold into the row's "›" on a phone;
   one delegated handler per table, errors shown in the row; the chevron is named "More for <username>".
+- **Connection key** (every row, the user's own included; Teammates): a one-time key that connects a laptop's Cyber-Scout
+  Client to this server and signs it in as that teammate, no password. A wide `CS.sheet`: who it signs in as (name,
+  username, role; admin accounts get a caution line "This key signs in as an admin … Hand it over in person"), the
+  active key if any ("A key is active until …", **Revoke** = `DELETE users/<id>/connect-key`; the key itself can't be
+  shown again), **Works once, for** 1 day / 7 days / 30 days (`hours` 24 / 168 / 720), **Server address laptops use**
+  (default: in the Client its server `CS.sync.status.server`, else this page's base address; checked with
+  `CS.sync.normServer`; a loopback address gets a warning), **Make key** (`POST users/<id>/connect-key {hours}`; "Make a
+  new key … cancels the active key"). The result: the connection string `cyberscout:<server>#<KEY>` in a big monospace
+  box (address small, the key large; one click selects it all) with **Copy**, "Works once, until <date>. Making a new
+  one cancels this one" and who can use it, then "On <name>'s laptop": 1. paste it on the Client's Connect page; 2. the
+  one-line Client install with the key added (`curl -fsSL <downloads>/downloads/get-client.sh | bash -s -- --key
+  '<string>'`, Windows `$env:CS_KEY='<string>'; irm <downloads>/downloads/get-client.ps1 | iex`). The app doesn't know
+  the downloads site: a **Downloads page address** field fills the placeholder (remembered per browser, `cs:dlsite`);
+  until then the commands show a dashed "downloads page" placeholder and their Copy is off. Revoke / Make a new key /
+  Done. The key lives only in the sheet's memory (never in storage). Disabled accounts get no form ("disabled, so a key
+  couldn't sign it in. Enable it first"; the server answers 409 and deletes keys on disable). A row with an unused key
+  shows a "key until <date>" pill (`connect_key_expires`); the list is redrawn when the sheet closes after a change.
 - **Settings**: team number + season goal (`PATCH settings`; goal radios as in the wizard, plus None), TBA key
   (`PUT settings/tba-key`, shows only the hint), a **worker status line** from `CS.processing` (paused with
   `CS.PAUSE_HOW` / running / waiting for a TBA key / idle / not heard from / unknown, with the last check time;
@@ -748,6 +771,10 @@ Tabs Teammates / Settings / Competitions / Server / Updates (the tab row scrolls
   **Undo all their changes since…** is only on other people's write rows, behind a ⋯ menu in danger style: a
   `revert-user` **`dry_run: true`** first gives the count ("Undo ALL of Sam's changes since …: 7 changes (2 more
   can't be undone)"), then the admin must type that **username** to confirm before the real call.
+- Connection keys in the log: "made a connection key" (works once, until …; "replaced the unused one"), "revoked a
+  connection key", "signed in with a connection key", "tried a connection key (not accepted)" with the reason (not a
+  key / no such key / already used / expired / account disabled); a disabled account's revoked key is noted on the
+  account change. Never the key itself.
 - Identity fixes (`#/<ev>/fixes`, one queue per competition; other competitions' waiting counts link to theirs):
   `GET events/<ev>/overrides`; pending scout requests with requested vs current mapping (robots named as the match
   page shows them, from `m/<match>.json`; "changed" when stale) and Approve / Reject
@@ -834,6 +861,37 @@ Full videos first shows the extra size against the free disk and refuses what ca
 2 GB free (`MEDIA_SPARE`, same as `client/csclient/sync.py`). One Client per data folder (`client.lock`). Details:
 `client/README.md`, `docs/SYNC.md` "Deviations".
 
+**Connection keys** (`#/connect`, Client mode). The Connect page leads with **Have a connection key?**: one paste field
+and **Connect and sign in**; the server address form follows ("or connect with the server address"). `parseConn`
+(`CS.sync.parseConn`) accepts `cyberscout:<server>#<KEY>` (also out of a pasted install line), `<server>#<KEY>`,
+`server=<s> key=<k>` (any order; spaces, `;` or new lines between) and a bare KEY (then the Client's current server);
+`normKey` (`CS.sync.normKey`) forgives case, spaces, dashes, O → 0, I / L → 1 and wants 16 characters of
+`0123456789ABCDEFGHJKMNPQRSTVWXYZ` (sent as `XXXX-XXXX-XXXX-XXXX`). While typing, a line says what it will do ("Connects to
+<host> instead of <old> and signs in", changes waiting for the old server stay and go only there); errors come on submit,
+in the page's `say()` style. Then: `POST client/v1/test {server}` (a failure says the key wasn't used), `PUT
+client/v1/config {server}` when it differs, `POST client/v1/login-key {key}` (retried twice after a server change while
+the Client still connects), `CS.refreshSession()`, a toast and `CS.afterAuth()`. While it runs (`KEYFLOW`) the Client's
+status changes don't re-route the page; a failure after a server change says the Client now uses that server. Error
+wording per status (`keyErr`): 503 / offline (the key wasn't used), 401-family (the server's sentence, which already
+says to ask the admin), 422, 429. `#/connect/key` is the sign-in page's link; **`#/connect?k=<connection string>`** (the
+Client installer opens it; URL-encoded or not) is read by `takeKeyLink()` in sync.js's `route` wrapper before the route
+checks (a `?k=` segment isn't a page, and the sign-in redirect would drop it): the key is kept in memory only, the
+address bar becomes `#/connect` (`history.replaceState`), and the page fills the field and runs it once.
+
+**This app** (Settings → Connection, last row; from `status.install {frozen, program, autostart, can_uninstall,
+data_dir}`): the program, how it starts (LaunchAgent / systemd user service / Startup shortcut / not by itself / from
+source), **Stop the Client** and, when `can_uninstall`, **Uninstall…** (redrawn only when that data changes). Stop:
+`CS.ask` (its pages stop opening until it runs again, how many changes wait unsent, when it starts again) → `POST
+client/v1/quit` → a full-page "The Client stopped" (it starts again at the next login, or from <program>; **Reload**).
+Uninstall: `CS.ask` listing the login item and the program, a checkbox **Also delete this computer's data (<size>)**
+with the folder; the line under it counts the changes not sent yet (`outbox` + held + conflicts / rejected) and says
+they're lost (red) or stay in the kept folder, with "Sync now first"; OK reads "Uninstall and delete data" when ticked →
+`POST client/v1/uninstall {delete_data}` → a full page "The Client is uninstalled" with Removed / Kept / Couldn't remove
+(paths as code). A 409 (runs from source) or other error is a toast; no answer at all shows "The Client stopped
+answering". The full pages (`gonePage`) cover the app (`.cx-gone`; the rest made `inert`) and stop status polling
+(`GONE`), since nothing on the page can reach the Client any more. From source the row says there is nothing to
+uninstall.
+
 ---
 
 ## 7. Site JSON and API endpoints the browser uses
@@ -859,7 +917,7 @@ Written but **not read by the UI**: `dashboard.<team>.json` (dash.js always load
 for an unplayed match).
 
 Platform API (`app/v1/…`), by file: setup.js `session` (+ 60 s poll), `setup`, `auth/login|logout|password|profile`,
-`settings`, `settings/tba-key`, `events`, `events/search`, `events/<ev>/sources`; admin.js `users[/<id>]`, `settings`,
+`settings`, `settings/tba-key`, `events`, `events/search`, `events/<ev>/sources`; admin.js `users[/<id>[/connect-key]]`, `settings`,
 `settings/tba-key`, `events[/<key>]`, `admin/update[/check|apply|rollback]`; audit.js `admin/security`,
 `admin/sessions/revoke`, `audit?changes=true…`, `audit/<id>/revert`, `audit/revert-user` (`dry_run` first),
 `events/<ev>/overrides` (also for the nav badge), `events/<ev>/override-requests/<id>/approve|reject`; notes.js
@@ -869,6 +927,9 @@ sources.js `events/<ev>/sources[/webcasts|/discover|/<id>|/<id>/frame|/<id>/fram
 `events/<ev>/video-mode`, `events/<ev>/video-plan[/check|/matches/<key>]`, `events/<ev>/layout[/<id>[/suggest]]`,
 `events/<ev>/calibration[/<target>/wizard|detect|fit|accept|overlay|frame.jpg]`, `events/<ev>/jobs/<id>`,
 `events/<ev>/livestream`. Full list and roles: `server.md`.
+
+Client control API (sync.js `ctl()`, Client mode only, served by the local Client): `client/v1/status`, `outbox[/<id>]`,
+`test`, `config`, `login`, `login-key`, `logout`, `sync`, `events/<ev>` (DELETE), `quit`, `uninstall` (`client/README.md`).
 
 ---
 
@@ -887,6 +948,7 @@ All access is wrapped in try/catch (private windows / blocked storage just lose 
 | `cs:scroll` | session | `{<history entry id>: scrollY}` for Back / Forward (last 60; ids in `history.state.csn`) |
 | `cs:gnotice` | session | the global notice line hidden until the next visit (`paused` / `no_key` / `stale`) |
 | `cs:wiz-video` | local | setup wizard: the Video step was left for later |
+| `cs:dlsite` | local | Admin → Teammates → Connection key: the downloads page address typed for the one-line Client install (never the key) |
 | `cyberscout:picks:<ev>` | local | picklist copy `{stars, dnp, order, weights}` (server is the source of truth when signed in) |
 | `cyberscout:picks:unsaved:<ev>:<user id>` | local | a picklist change the server doesn't have yet `{data, base, at, why}` (failed save, conflict, page closed mid-save) |
 | `cyberscout:plmode`, `cyberscout:cmp:<ev>`, `cyberscout:cols2` | local | picklist sort mode; Compare selection; Teams column visibility |

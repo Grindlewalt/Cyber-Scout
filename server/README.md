@@ -68,12 +68,14 @@ resetting their password ends their sessions; role changes apply on their next r
 | GET | `/session` | anyone | `{setup_required, setup_code_required, user: {id,username,display_name,role}\|null, csrf, configured, lockdown, network: lan\|public, passwordless_ok}` |
 | POST | `/setup` | first run | `{setup_code, username, password, display_name}` -> session (signed in) |
 | POST | `/auth/login` | anyone | `{username, password}` -> session; 401 / 429 |
+| POST | `/auth/key-login` | anyone | `{key}` (a one-time connection key from an admin) -> session; spends the key; 401 / 429 |
 | POST | `/auth/logout` | anyone | 204 |
 | POST | `/auth/password` | viewer+ | `{current_password, new_password}` -> 204 (other sessions signed out) |
 | PATCH | `/auth/profile` | scout+ | `{display_name}` (validated; 409 if too close to another account's name) |
 | GET | `/auth/check` | (nginx) | 204 + `X-CS-Role` / 401 |
 | GET/POST | `/users` | admin | create: `{username, display_name, password, role}` |
 | PATCH/DELETE | `/users/{id}` | admin | `{display_name?, role?, disabled?, password?}` |
+| POST/DELETE | `/users/{id}/connect-key` | admin | POST `{hours?: 1-720 = 168}` -> 201 `{key: "XXXX-XXXX-XXXX-XXXX", user_id, username, display_name, expires_at}` (shown once; replaces the account's previous key; 409 if disabled); DELETE -> 204 |
 | GET/PATCH | `/settings` | viewer+ / admin | `{team_number, team_name, season_goal, tba_key_set, tba_key_hint*, options*}`; PATCH `{team_number?, season_goal?, options?: {poll_seconds, gpu_device, cpu_only, hubcam}}` (null = worker default from .env) |
 | PUT/DELETE | `/settings/tba-key` | admin | `{key}`; 422 if TBA rejects it, 502 if TBA unreachable |
 | GET | `/tba/team/{n}` | admin | TBA team (nickname, city, ...) |

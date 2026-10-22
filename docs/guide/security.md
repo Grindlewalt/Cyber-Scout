@@ -79,7 +79,7 @@ Sources: the security audit of 2026-10-12 at ref `0e21afe` (`.work/security/REPO
 
 | actor | can reach | trusted for |
 |---|---|---|
-| Anonymous internet user | Only if a tunnel or port-forward publishes :7560. Then the shell, `/app/v1/session`, `/app/v1/auth/login`, `/app/v1/setup` (only while there are no users), `/app/v1/health`. | nothing |
+| Anonymous internet user | Only if a tunnel or port-forward publishes :7560. Then the shell, `/app/v1/session`, `/app/v1/auth/login`, `/app/v1/auth/key-login`, `/app/v1/setup` (only while there are no users), `/app/v1/health`. | nothing |
 | LAN / Tailscale user, not signed in | same as above | nothing |
 | viewer | site JSON, videos, picklists, notes, overrides (read) | reading |
 | scout | + notes, own display name, identity-fix *requests* | adding notes; identity fixes queue for review (`scout_overrides=review`, the default) |
@@ -119,7 +119,8 @@ Sources: the security audit of 2026-10-12 at ref `0e21afe` (`.work/security/REPO
   cloudflared, which reaches the published port through the gateway. `X-Forwarded-Proto` is trusted only from
   those peers (`$fwd_proto`). HSTS (`max-age=15552000`) is sent only when that proto is https.
 - **Login brake**: `limit_req_zone ... rate=10r/m`, `burst=10 nodelay` on `/app/v1/auth/login`, per real client IP.
-  This is on top of the API's own limiter.
+  This is on top of the API's own limiter. It is an exact-match location, so `/app/v1/auth/key-login` (§4.16) gets
+  it only if `web/nginx.conf` has the same block for that path; the API limiter applies either way.
 - Body size: 16 KB for login, 25 MB for the rest of `/app/v1/` (calibration uploads).
 
 ### 4.3 Sessions and CSRF (`server/deps.py`, `server/routers/auth.py`, `server/main.py`)
@@ -130,7 +131,7 @@ Sources: the security audit of 2026-10-12 at ref `0e21afe` (`.work/security/REPO
 - **CSRF, double submit plus session binding.** Every mutating request under `/app/v1` must send `X-CSRF-Token`
   equal to the `cs_csrf` cookie. The global middleware in `main.py` checks this. `require_role()` then checks the
   header against **the session's own** `csrf` column (`deps.check_csrf`). `/setup`, `/auth/login` and
-  `/auth/logout` use `csrf_anonymous`.
+  `/auth/logout` use `csrf_anonymous`, and so does `/auth/key-login` (§4.16).
 - API responses carry `Cache-Control: no-store`, `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`,
   `Content-Security-Policy: default-src 'none'; frame-ancestors 'none'` and `Referrer-Policy: same-origin`
   (middleware, repeated by nginx).
@@ -168,8 +169,9 @@ Sources: the security audit of 2026-10-12 at ref `0e21afe` (`.work/security/REPO
   `server/routers/admin.py` still say `lan` is the default. The code wins: the default is `never`.
 
 ### 4.6 Rate limits and write budgets (`server/security.py`)
-- `RateLimiter` (login and setup): 10 failures per (IP, username) and 30 per IP per 15 min → 429 with
-  `Retry-After`. A success clears the (IP, username) pair. It is in memory, so the API must run as **one**
+- `RateLimiter` (login, connection-key login and setup): 10 failures per (IP, username) and 30 per IP per 15 min →
+  429 with `Retry-After`. A success clears the (IP, username) pair. Connection-key sign-ins use the pseudo-username
+  `#key` (10 wrong keys per IP) and count against the same per-IP 30 as password sign-ins. It is in memory, so the API must run as **one**
   process (`server/entrypoint.sh` starts a single uvicorn).
 - `WriteLimiter`, per account (non-admins):
 
@@ -196,7 +198,8 @@ Sources: the security audit of 2026-10-12 at ref `0e21afe` (`.work/security/REPO
   agent, action, event, target, and before/after snapshots.
 - Every mutating route records an explicit entry inside its transaction. Routers without one (e.g.
   `routers/sources.py`) still get a generic `http.<method>` entry from the middleware (`_fallback_audit`). Failed
-  logins are recorded as `auth.login_failed`.
+  logins are recorded as `auth.login_failed`, failed connection-key sign-ins as `auth.key_login_failed` (with a
+  reason, never the key).
 - Revertible families: `picklist`, `note`, `override`, `settings`, `events`. Not revertible: `settings.tba_key`
   and the override request, reject and withdraw actions. `POST /audit/{id}/revert` puts back the `before` state,
   which is logged as `<family>.revert` and can itself be reverted. `POST /audit/revert-user {user_id, since}`
@@ -327,6 +330,33 @@ CapAdd, `no-new-privileges`, PidsLimit 256 and 256 MB. Worker has the listed cap
 - **Production: the updater is not installed.** No `cyber-scout*` systemd units and no `<stack>/updater/`
   directory exist, and `app/` is not a git checkout. Deployment is still by hand (see `deploy.md`).
 
+### 4.16 Connection keys (`server/routers/users.py`, `/auth/key-login` in `server/routers/auth.py`)
+Added after this review (2026-10-22). An admin makes a one-time key for an account
+(`POST /app/v1/users/{uid}/connect-key`), hands it to the teammate, and their Cyber-Scout Client signs in with it
+(`POST /app/v1/auth/key-login`). Details: `server.md` §3.11.
+- **Strength.** 16 characters of Crockford base32 from `secrets` = 80 random bits, shown as `XXXX-XXXX-XXXX-XXXX`.
+  Guessing is online only and limited to 10 wrong keys per IP and 30 failed sign-ins of any kind per IP per 15 min.
+  There is at most one live key per account, so there is nothing realistic to guess.
+- **Storage.** Only SHA-256 of the normalized key (`connect_keys.key_hash`). Unsalted is fine for an 80-bit random
+  value, as for session tokens. The key appears once, in the `POST` answer (`Cache-Control: no-store`). It is never
+  in the audit log (only `expires_at`), and `server/idempotency.py` never stores that answer for replay (the web app
+  and the Client send an `Idempotency-Key` on writes). uvicorn has no access log.
+- **Single use, short life.** Spent atomically (`BEGIN IMMEDIATE` plus `UPDATE ... WHERE used_at IS NULL`; a
+  parallel second use gets 401). Expires after `hours` (1–720, default 168). A new key replaces the account's
+  previous one. Revoked by `DELETE .../connect-key`, by disabling the account (and refused for a disabled account,
+  409), and by deleting the account.
+- **One answer.** A wrong, malformed, spent or expired key and a disabled account all get the same 401. The reason
+  goes only into the admin-only audit log. A second use of a spent key is logged as `reason: "used"` against that
+  account. That means the key reached two people (or one device retried), so check that teammate's sessions.
+- **It is a full session.** The key is the credential, so the session is not `net_locked`. An account without a
+  password that signs in with a key works through the tunnel even with passwordless sign-in `never`, until the
+  session's own idle (7 d) / absolute (30 d) expiry. Lockdown doesn't block it (it doesn't block `/auth/login`
+  either). Keys can be made for admin accounts too, and such a key signs in as that admin.
+- **Residual.** Whoever holds an unused key can sign in as that account from anywhere until it expires. Send keys
+  privately (not in a team channel), prefer short `hours`, and revoke unused ones (Admin → Teammates shows
+  `connect_key_expires`). "Sign everyone out" (`/admin/sessions/revoke`) ends sessions but leaves unused keys. The
+  nginx `limit_req` brake covers this path only if `web/nginx.conf` has a location for it (§4.2).
+
 ---
 
 ## 5. Findings and their status
@@ -446,8 +476,9 @@ All from the stack folder on the server (`cd /opt/stacks/cyber-scout`; `/opt/cyb
 | file | what |
 |---|---|
 | `server/deps.py` | sessions, `require_role`, CSRF, `via_public` / trusted nets, passwordless policy, lockdown, identifier regexes, `public_name`, `rate_limit` |
-| `server/security.py` | argon2id, tokens, `consteq`, `RateLimiter` (login), `WriteLimiter` (budgets), `atomic_write_json` |
-| `server/routers/auth.py` | `/session`, `/setup` (setup code), `/auth/login` (passwordless check, net-locked sessions), `/auth/password`, `/auth/profile`, `/auth/check` |
+| `server/security.py` | argon2id, tokens, `consteq`, connection-key format (`new_connect_key`, `normalize_connect_key`), `RateLimiter` (login), `WriteLimiter` (budgets), `atomic_write_json` |
+| `server/routers/auth.py` | `/session`, `/setup` (setup code), `/auth/login` (passwordless check, net-locked sessions), `/auth/key-login` (connection keys), `/auth/password`, `/auth/profile`, `/auth/check` |
+| `server/routers/users.py` | accounts and roles (last-admin guards), `/users/{uid}/connect-key` (make / revoke a connection key) |
 | `server/routers/admin.py` | `/admin/security`, `/admin/sessions/revoke`, `/audit`, revert endpoints |
 | `server/audit.py`, `server/db.py` | audit records and snapshots, append-only triggers, schema and migrations |
 | `server/textrules.py` | plain text, display names, look-alike skeletons, labels |
@@ -459,4 +490,4 @@ All from the stack folder on the server (`cd /opt/stacks/cyber-scout`; `/opt/cyb
 | `web/app.js` | `esc`, `CS.safeHref`, nav event-key validation |
 | `live/sources.py` | `classify_url`, `media_ok`, `file_allowed`, `safe_public_url`, `ip_blocked`, `webcast_url` |
 | `deploy/docker-compose.yml` | caps, read-only roots, limits, `WEB_BIND`, `GPU_IDS` |
-| tests | `server/tests/test_hardening.py` (33 tests), `test_auth.py` (16), `test_roles.py` (5), `test_update.py` (19), `test_data.py` (7), `tests/test_source_urls.py` (14) |
+| tests | `server/tests/test_hardening.py` (33 tests), `test_auth.py` (16), `test_connect_keys.py` (14), `test_roles.py` (5), `test_update.py` (19), `test_data.py` (7), `tests/test_source_urls.py` (14) |

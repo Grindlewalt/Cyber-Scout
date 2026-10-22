@@ -32,15 +32,15 @@ Everything below was read from the code at the commit named in `docs/guide/READM
 | `server/config.py` | `Config` / `cfg` (env-derived settings, re-read via `cfg.configure()` in tests); constants `SESSION_COOKIE="cs_session"`, `CSRF_COOKIE="cs_csrf"`, `CSRF_HEADER="x-csrf-token"`, `PREFIX="/app/v1"`, `ROLES`, `RANK` |
 | `server/db.py` | `CORE_SCHEMA` DDL, `MIGRATIONS` (add-column list), `add_schema()` hook, `connect()`, `init()`, `get_db()` dependency, `tx` (BEGIN IMMEDIATE context manager), `get_setting` / `set_setting` (JSON values), `user_count` |
 | `server/deps.py` | `User` dataclass, `client_ip`, `via_public` (LAN vs public), `passwordless_policy`, `lockdown_state`, `public_name`, `rate_limit`, cookie helpers, `load_session`, `check_csrf`, `require_role(role)` dependency factory, `valid_event`, regexes `EVENT_RE`, `MATCH_RE`, `TEAM_RE`, `USERNAME_RE` |
-| `server/security.py` | argon2id hashing (`hash_password`, `verify_password` with dummy-hash timing equaliser), `new_token`, `token_hash` (SHA-256), `consteq`, `RateLimiter` (login failures), `WriteLimiter` (per-account write budgets), `atomic_write_json` |
+| `server/security.py` | argon2id hashing (`hash_password`, `verify_password` with dummy-hash timing equaliser), `new_token`, `token_hash` (SHA-256), `consteq`, `new_connect_key` / `normalize_connect_key` (section 3.11), `RateLimiter` (login failures), `WriteLimiter` (per-account write budgets), `atomic_write_json` |
 | `server/audit.py` | `record()` (append to `audit_log`), `family()`, `revertible()`, `REVERTIBLE` |
 | `server/textrules.py` | free-text validation: `plain_text`, `display_name`, `skeleton` (look-alike folding), `has_reserved_word`, `label` |
 | `server/workerconf.py` | `build()` / `write()` of `DATA/config/worker.json` (0600) for the worker and recorder |
 | `server/workerstatus.py` | `processing_state()`: reads `DATA/worker-status.json` (written by the worker every pass) for `/session.processing`; `WHY` sentences per reason; `FRESH_S` 3600 |
 | `server/tba.py` | minimal TBA client with an in-memory TTL cache; `validate_key()` |
 | `server/manage.py` | break-glass CLI: `users`, `reset-password`, `make-admin` |
-| `server/routers/auth.py` | `/session`, `/setup`, `/auth/*`, password/display-name policy helpers |
-| `server/routers/users.py` | `/users` CRUD (admin) |
+| `server/routers/auth.py` | `/session`, `/setup`, `/auth/*` (incl. `/auth/key-login`), password/display-name policy helpers |
+| `server/routers/users.py` | `/users` CRUD (admin), `/users/{uid}/connect-key` (one-time connection keys) |
 | `server/routers/settings.py` | `/settings`, `/settings/tba-key`, `/tba/*` lookups; `apply_settings_state` (revert) |
 | `server/routers/events.py` | `/events` follow / unfollow; `apply_events_state` (revert) |
 | `server/routers/scouting.py` | picklists (+ version history), notes (soft delete / hide), identity overrides + approval queue |
@@ -154,6 +154,7 @@ cloudflared); LAN browsers get `http`.
 * Sessions are deleted on: logout (this one), password change (all others of that user), admin password reset or
   disable (all of that user), `manage.py reset-password`, `/admin/sessions/revoke`, policy switch to `never`
   (all `net_locked=1`), and account deletion (FK cascade).
+* `start_session` is also called by `/auth/key-login` (section 3.11), always with `net_locked=0`.
 
 ### 3.3 CSRF
 
@@ -161,7 +162,7 @@ Two layers, both comparing with `secrets.compare_digest`:
 
 1. Middleware (all mutating `/app/v1/*`): header `X-CSRF-Token` == cookie `cs_csrf`.
 2. `deps.check_csrf` (inside `require_role` and `csrf_anonymous`): signed in -> header == `sessions.csrf`;
-   anonymous (`/setup`, `/auth/login`, `/auth/logout`) -> header == cookie.
+   anonymous (`/setup`, `/auth/login`, `/auth/key-login`, `/auth/logout`) -> header == cookie.
 
 `GET /session` makes sure a usable `cs_csrf` cookie exists (re-sets it to the session token when signed in, or
 mints one of >= 16 chars when anonymous) and also returns it as `csrf`. The web client (`CS.app()` in
@@ -234,9 +235,12 @@ and `pw_strength = 0`.
   failure leaves the window). Checked before verifying.
 * A successful login clears that `(ip, username)` pair (not the IP counter).
 * `/setup` uses pseudo-username `#setup`; only a wrong setup code counts as a failure.
+* `/auth/key-login` uses pseudo-username `#key` (10 failed keys per IP) and shares the per-IP bucket (30) with
+  password sign-ins; checked before the key is looked up. A success clears `(ip, "#key")`.
 * A wrong `current_password` in `POST /auth/password` records a failure for `(ip, username)` but that endpoint
   doesn't itself check `blocked()`.
-* nginx adds `limit_req zone=cs_login rate=10r/m burst=10 nodelay` per real client IP on `/app/v1/auth/login`.
+* nginx adds `limit_req zone=cs_login rate=10r/m burst=10 nodelay` per real client IP on `/app/v1/auth/login`
+  (an exact-match location: `/app/v1/auth/key-login` is covered only if `web/nginx.conf` has the same block for it).
 
 ### 3.8 First run
 
@@ -253,7 +257,7 @@ and `pw_strength = 0`.
 
 Setting `lockdown` = `{"on": true, "at": <ts>, "by": <uid>}` or absent. While on, every mutating call through
 `require_role` by a non-admin gets `423 "the site is read-only right now ..."`, except
-`POST /auth/password`. Anonymous endpoints (login, logout, setup) are unaffected. Reads continue. Shown to the UI
+`POST /auth/password`. Anonymous endpoints (login, key login, logout, setup) are unaffected. Reads continue. Shown to the UI
 as `/session.lockdown`.
 
 ### 3.10 What nginx's gate checks
@@ -264,6 +268,35 @@ used), so `/api/*` and `/media/*` are gated on "signed in", not on role. nginx f
 `X-Forwarded-For` and `X-Forwarded-Proto` to `/_auth` so `net_locked` sessions are judged by the real network.
 A 401 becomes `{"detail":"sign in required"}` from `@unauthorized`; an unreachable API becomes 503 from
 `@api_down`.
+
+### 3.11 Connection keys (one-time sign-in)
+
+An admin hands a teammate one string that connects their Cyber-Scout Client and signs it in as that account, once.
+
+* **Format** (`security.new_connect_key`): 16 characters from the Crockford base32 alphabet
+  `0123456789ABCDEFGHJKMNPQRSTVWXYZ` via `secrets.choice` (80 random bits), shown as `XXXX-XXXX-XXXX-XXXX`.
+* **Input** (`security.normalize_connect_key`): upper-cased, whitespace and `-` dropped, `O` -> `0`, `I` and
+  `L` -> `1`; anything that isn't then 16 characters of the alphabet is invalid (the same 401 as a wrong key).
+* **Storage**: table `connect_keys` holds `token_hash(<16 normalized chars>)` (SHA-256, like sessions), never the
+  key. `user_id` is UNIQUE: making a key deletes that account's previous one (used or not). The key is in the
+  `POST` response only; `idempotency.py` passes `/users/<id>/connect-key` and `/auth/key-login` through without
+  storing the answer, so a retried request with the same `Idempotency-Key` makes a new key instead of replaying the
+  old one from the DB.
+* **Single use**: `/auth/key-login` runs in `BEGIN IMMEDIATE` and spends the key with
+  `UPDATE ... SET used_at=? WHERE key_hash=? AND used_at IS NULL` (rowcount must be 1), so of two parallel uses only
+  one signs in. A used row stays until its expiry so a second use is audited as `reason: "used"` against that
+  account; expired rows are deleted on every key sign-in, key creation and revoke.
+* **Expiry**: `hours` 1..720 (default 168 = 7 days) from creation, if unused.
+* **The session** is a normal one (`start_session`, `net_locked=0`): the key is the credential, so it works for an
+  account without a password, from the tunnel, and under passwordless policy `never`. It then follows the usual
+  idle / absolute expiry. Lockdown doesn't stop it (as for `/auth/login`).
+* **Refusals**: wrong, malformed, used or expired key, or a disabled account -> one answer, `401 "that connection
+  key isn't valid (it works once and expires; ask your admin for a new one)"`, a limiter failure and an
+  `auth.key_login_failed` entry with `after.reason` (`malformed` / `unknown` / `used` / `expired` / `disabled`).
+* **Revoked** by `DELETE /users/{uid}/connect-key`, by a new key for the same account, by disabling the account
+  (`PATCH /users/{uid} {"disabled": true}`; the `users.update` entry then has `after.connect_key_revoked`), and by
+  deleting the account (FK cascade). `/admin/sessions/revoke` ends sessions only; unused keys stay.
+* `UserOut.connect_key_expires` = expiry of the account's unused, unexpired key, else null.
 
 ---
 
@@ -338,13 +371,13 @@ actor's id / username / display_name / role (copied, no FK, so entries outlive a
 their transaction; it sets `request.state.audited`.
 
 Secrets are never recorded: password changes record only `has_password` / `password_reset`; TBA key changes
-record `{set, hint: "••••abcd"}`.
+record `{set, hint: "••••abcd"}`; connection keys only their expiry.
 
 ### 6.1 Actions
 
 | family | actions | target | snapshot | revertible |
 |---|---|---|---|---|
-| `auth` | `setup`, `login`, `login_failed` (actor from the looked-up row; `after = {reason, known_user}`), `logout`, `password` | `user:<id>` | | no |
+| `auth` | `setup`, `login`, `login_failed` (actor from the looked-up row; `after = {reason, known_user}`), `logout`, `password`; connection keys: `key_created` (`after = {expires_at}`, `before = {expires_at}` of a key it replaced), `key_revoked` (`before = {expires_at}`; only when an unused key existed), `key_login`, `key_login_failed` (actor = the key's account when the key was found; `after = {reason}`) | `user:<id>` (none for an unknown key) | never the key | no |
 | `users` | `create`, `update`, `delete`, `profile` | `user:<id>` | `{username, display_name, role, disabled, has_password}` | no |
 | `settings` | `update`, `security`, `tba_key`, `revert` | comma-joined keys | `{key: value}` | yes, except `settings.tba_key` |
 | `events` | `follow`, `unfollow`, `revert` | event key | `{"row": {...}}` or null | yes |
@@ -401,6 +434,7 @@ All paths are under **`/app/v1`**. "CSRF" = mutating, so both CSRF layers apply.
 | GET | `/session` | anyone | | | | always 200: `{setup_required, setup_code_required, user: {id, username, display_name, role} \| null, csrf, configured, lockdown, network: lan\|public, passwordless_ok, processing}`; ensures the `cs_csrf` cookie. `processing` is null when signed out (below) |
 | POST | `/setup` | anyone, only while no users exist | cookie | login limiter key `#setup` | `auth.setup` | body `SetupIn {setup_code?, username, password, display_name}` (`extra=forbid`). Creates the admin, signs in, deletes `setup-code.txt`. 403 wrong code, 409 already set up |
 | POST | `/auth/login` | anyone | cookie | login limiter; nginx 10 r/min | `auth.login` (`after.password` bool) / `auth.login_failed` | body `{username (1-64), password ("" allowed)}`. Generic `401 "invalid username or password"` for unknown user, wrong password or disabled account. Empty password: policy check first (section 3.5). Session is `net_locked` when the password was empty |
+| POST | `/auth/key-login` | anyone | cookie | login limiter key `#key` (+ per IP) | `auth.key_login` / `auth.key_login_failed` | body `KeyLoginIn {key (1-64)}` (`extra=forbid`); returns `SessionOut` and sets the session cookie like `/auth/login`. Spends the key (section 3.11); one generic 401 for a wrong / malformed / used / expired key or a disabled account; 429 + `Retry-After` when rate-limited. Session is never `net_locked` |
 | POST | `/auth/logout` | anyone | cookie | | `auth.logout` if a valid session | deletes this session row, clears `cs_session`, sets a fresh `cs_csrf`; 204 |
 | POST | `/auth/password` | viewer+ (exempt from lockdown) | session | `write` (non-admin) | `auth.password` | `{current_password, new_password}`; 403 if current is wrong; applies the policy for the user's role; deletes the user's other sessions; this session's `net_locked` = new password empty; 204 |
 | PATCH | `/auth/profile` | scout+ | session | `write`, `profile` | `users.profile` | `{display_name}` (2-64 in, then `display_name` rules without reserved words, 409 if look-alike to another account); returns `SessionOut` |
@@ -418,10 +452,12 @@ unchanged; this is reporting only. The web app polls `/session` every 60 s for i
 
 | method | path | audit | what |
 |---|---|---|---|
-| GET | `/users` | | list `{id, username, display_name, role, disabled, created_at, last_login, active_sessions, has_password}` ordered by username |
+| GET | `/users` | | list `{id, username, display_name, role, disabled, created_at, last_login, active_sessions, has_password, connect_key_expires}` ordered by username (`connect_key_expires`: expiry of an unused connection key, else null) |
 | POST | `/users` | `users.create` | `{username, display_name="", password="", role="viewer"}` (`extra=forbid`); default role is **viewer**; 409 username taken; admins need an admin-grade password; reserved words allowed in names set by an admin |
-| PATCH | `/users/{uid}` | `users.update` | `{display_name?, role?, disabled?, password?}`; `password=""` removes it (non-admins only). Guards: 409 if it would leave no active admin; 409 when promoting to admin without an admin-grade password; disabling or resetting the password deletes the user's sessions |
-| DELETE | `/users/{uid}` | `users.delete` | 409 for yourself or the last active admin; sessions cascade; their notes/picklists keep `author_id`/`updated_by` NULL (FK `SET NULL`) |
+| PATCH | `/users/{uid}` | `users.update` | `{display_name?, role?, disabled?, password?}`; `password=""` removes it (non-admins only). Guards: 409 if it would leave no active admin; 409 when promoting to admin without an admin-grade password; disabling or resetting the password deletes the user's sessions; disabling also deletes the connection key |
+| DELETE | `/users/{uid}` | `users.delete` | 409 for yourself or the last active admin; sessions and connection key cascade; their notes/picklists keep `author_id`/`updated_by` NULL (FK `SET NULL`) |
+| POST | `/users/{uid}/connect-key` | `auth.key_created` | body `{hours: 1..720 = 168}` (optional, `extra=forbid`) -> **201** `{key: "XXXX-XXXX-XXXX-XXXX", user_id, username, display_name, expires_at}`. Replaces the account's previous key. 404 unknown user, 409 disabled account ("enable the account first"). The key is shown only here (section 3.11) |
+| DELETE | `/users/{uid}/connect-key` | `auth.key_revoked` (only if an unused key existed) | 204, also when there was none (then no audit entry at all); 404 unknown user |
 
 ### 7.4 Settings and TBA lookups (`routers/settings.py`)
 
@@ -501,7 +537,7 @@ The mode is the setting `scout_overrides` (`review` default, or `direct`).
 | GET | `/admin/security` | | `{lockdown: null \| {on, at, by: {id, display_name}}, passwordless_login, scout_overrides}` |
 | PATCH | `/admin/security` | `settings.security` | `{lockdown?: bool, passwordless_login?: never\|lan\|everywhere, scout_overrides?: review\|direct}`; null fields ignored; switching to `never` deletes all `net_locked` sessions |
 | POST | `/admin/sessions/revoke` | `sessions.revoke_all` | `{include_admins: false}` -> deletes every other session of non-admins (or of everyone); your own stays; `{signed_out: n}` |
-| GET | `/audit?user_id=&action=&event=&since=&via=&before_id=&limit=&changes=` | | newest first; `action` is a prefix (LIKE-escaped); `changes=true` leaves out `auth.login`, `auth.login_failed`, `auth.logout` and every `http.*` entry (the Activity page's default view); `limit` 1-500 (default 100); `{entries: [{id, at, action, event, target, user: {id, username, display_name, role}, ip, via, ua, before, after, ref, revertible, reverted_by}], next_before_id}` (paging cursor, null on the last page) |
+| GET | `/audit?user_id=&action=&event=&since=&via=&before_id=&limit=&changes=` | | newest first; `action` is a prefix (LIKE-escaped); `changes=true` leaves out `auth.login`, `auth.login_failed`, `auth.key_login`, `auth.key_login_failed`, `auth.logout` and every `http.*` entry (the Activity page's default view); `limit` 1-500 (default 100); `{entries: [{id, at, action, event, target, user: {id, username, display_name, role}, ip, via, ua, before, after, ref, revertible, reverted_by}], next_before_id}` (paging cursor, null on the last page) |
 | POST | `/audit/{aid}/revert` | `<family>.revert` | section 6.2; `{reverted, entry}` |
 | POST | `/audit/revert-user` | one `*.revert` per entry (none with `dry_run`) | `{user_id, since, dry_run=false}` -> `{reverted, skipped, dry_run}` |
 
@@ -685,6 +721,10 @@ seconds (REAL). Settings values are JSON text.
 `created_at`, `last_seen`, `expires_at` REAL, `net_locked` INTEGER DEFAULT 0 (migration). Index
 `sessions_user(user_id)`.
 
+**`connect_keys`**: `key_hash` TEXT PK (sha256 hex of the normalized key), `user_id` UNIQUE FK users ON DELETE
+CASCADE, `created_at`, `expires_at` REAL NOT NULL, `created_by` (admin id, no FK), `used_at` REAL (null until spent).
+In `CORE_SCHEMA`, so existing DBs get it on the next start.
+
 **`settings`**: `key` TEXT PK, `value` TEXT (JSON), `updated_at`. Keys in use:
 
 | key | value | set by |
@@ -790,7 +830,7 @@ ${API_MEM_LIMIT:-1g}`, no published port.
 
 ```bash
 pip install -r server/requirements-dev.txt          # or use the repo's .venv
-python -m pytest server/tests                        # 256 tests at c64b813 (UX fix wave)
+python -m pytest server/tests                        # 310 tests after connection keys (586 with tests/)
 ```
 
 `conftest.py`: the `data` fixture points `cfg` at a tmp dir, clears the limiters and the TBA cache, and replaces
@@ -802,7 +842,8 @@ tests use no-password teammates), `team` (one signed-in client per role).
 | file | covers |
 |---|---|
 | `test_auth.py` | setup mode + code, cookie flags, raw token not stored, CSRF required, login/logout, login rate limit, idle and absolute expiry, password change, disable kills sessions, last-admin guard, TBA key never returned, setup without code, `.env` seeding, optional non-admin passwords, imported config still needs the wizard |
-| `test_roles.py` | parametrized role matrix (18 endpoint cases x 4 roles), anonymous 401s, options hidden from non-admins, note ownership, role change applies immediately |
+| `test_connect_keys.py` | connection keys: create -> sign in once -> second use 401; expired (and purged); a new key replaces the old; revoke (204 twice, one audit entry); disabled accounts (disable drops the key, 409 on create); account deletion cascades; admin only; `hours` validation; normalization (case, dashes, spaces, O/0, I/L/1) and malformed keys; rate limit (`#key` pair, shared per-IP bucket); key sessions are full sessions (no password, policy `never`, tunnel, lockdown); 6 parallel uses -> one wins; CSRF; the key never in `audit_log` / `connect_keys` / `idempotency` / `sessions`; the Activity `changes` filter |
+| `test_roles.py` | parametrized role matrix (20 endpoint cases x 4 roles), anonymous 401s, options hidden from non-admins, note ownership, role change applies immediately |
 | `test_data.py` | wizard flow, worker.json `events: null` until configured, picklist versioning, overrides file, note validation, admin-only OpenAPI, picklist rejects markup |
 | `test_hardening.py` | audit of every change (who/where), append-only triggers, no secrets in the log, failed logins logged without user enumeration, fallback `http.*` audit, picklist history / restore / revert-of-revert, revert-user, note soft delete / hide / restore, note markup and invisible-char refusal, scout fix approval queue, direct mode, pending cap, note flood and picklist/global write limits, display-name rules, new accounts default to viewer, passwordless LAN-only and fail-closed proxy detection, policy switching, password unlocks a session, rate limit keyed on the real IP, lockdown, sign everyone out, disable is instant, no self-promotion, no usernames leak to teammates, settings refuse markup, settings/events revert, audit filters, migrating an old DB, the compose api env allowlist (cleanup pass) |
 | `test_notes_ui.py` | (cleanup pass) the contract `web/notes.js` relies on: match notes tagged with a team appear on both pages, viewers read but can't write, own edit / delete / undo, strategist hide / restore (author can't undo a hide), lockdown answers 423 for notes and fixes while reads still work, the "Wrong team?" merge-then-PUT flow (202 pending → approve → merged file), scout "ask to clear" queued vs strategist clear applied |

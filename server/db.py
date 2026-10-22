@@ -29,6 +29,15 @@ CREATE TABLE IF NOT EXISTS sessions (
   expires_at REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS sessions_user ON sessions(user_id);
+-- one-time connection keys: an admin hands one to a teammate, it signs their Client in once; one per account
+CREATE TABLE IF NOT EXISTS connect_keys (
+  key_hash TEXT PRIMARY KEY,             -- sha256 of the normalized key; the key itself is never stored
+  user_id INTEGER NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
+  created_at REAL NOT NULL,
+  expires_at REAL NOT NULL,
+  created_by INTEGER,                    -- the admin who made it (no FK)
+  used_at REAL                           -- set by the sign-in that spent it; kept until expiry so a reuse is audited
+);
 CREATE TABLE IF NOT EXISTS settings (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL,                   -- JSON

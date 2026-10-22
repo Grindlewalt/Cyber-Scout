@@ -8,7 +8,8 @@ from .. import audit, db as DB, textrules, workerconf, workerstatus
 from ..config import cfg, CSRF_COOKIE, SESSION_COOKIE
 from ..deps import (User, client_ip, csrf_anonymous, load_session, lockdown_state, passwordless_policy, rate_limit,
                     require_role, set_csrf_cookie, set_session_cookies, via_public, USERNAME_RE)
-from ..security import consteq, hash_password, login_limiter, new_token, token_hash, verify_password
+from ..security import (consteq, hash_password, login_limiter, new_token, normalize_connect_key, token_hash,
+                        verify_password)
 
 router = APIRouter(tags=["auth"])
 
@@ -38,6 +39,12 @@ class SetupIn(BaseModel):
 class LoginIn(BaseModel):
     username: str = Field(min_length=1, max_length=64)
     password: str = Field("", max_length=256)     # empty for teammates without a password
+
+
+class KeyLoginIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    key: str = Field(min_length=1, max_length=64, description="a connection key from an admin (XXXX-XXXX-XXXX-XXXX; "
+                                                              "case, spaces and dashes don't matter, O=0, I=L=1)")
 
 
 class PasswordIn(BaseModel):
@@ -241,6 +248,43 @@ def login(body: LoginIn, request: Request, response: Response, db=Depends(DB.get
         # no password -> this session only works where passwordless sign-in is allowed (re-checked every request)
         u.csrf = start_session(db, request, response, r["id"], net_locked=not body.password)
         audit.record(db, request, u, "auth.login", f"user:{r['id']}", after={"password": bool(body.password)})
+    return _session_out(db, request, u, u.csrf)
+
+
+KEY_INVALID = "that connection key isn't valid (it works once and expires; ask your admin for a new one)"
+
+
+@router.post("/auth/key-login", response_model=SessionOut, dependencies=[Depends(csrf_anonymous)],
+             summary="Sign in with a one-time connection key from an admin (rate-limited); sets the session cookie")
+def key_login(body: KeyLoginIn, request: Request, response: Response, db=Depends(DB.get_db)):
+    ip = client_ip(request)
+    wait = login_limiter.blocked(ip, "#key")
+    if wait:
+        raise HTTPException(429, "too many failed sign-ins, try again later", headers={"Retry-After": str(wait)})
+    k, now = normalize_connect_key(body.key), time.time()
+    kh = token_hash(k) if k else None
+    with DB.tx(db):          # BEGIN IMMEDIATE: of two parallel sign-ins with one key, the second sees used_at set
+        r = db.execute("SELECT k.user_id, k.expires_at, k.used_at, u.username, u.display_name, u.role, u.disabled "
+                       "FROM connect_keys k JOIN users u ON u.id = k.user_id WHERE k.key_hash=?",
+                       (kh,)).fetchone() if kh else None
+        why = ("malformed" if not k else "unknown" if not r else "used" if r["used_at"] is not None
+               else "expired" if r["expires_at"] <= now else "disabled" if r["disabled"] else None)
+        if not why and db.execute("UPDATE connect_keys SET used_at=? WHERE key_hash=? AND used_at IS NULL",
+                                  (now, kh)).rowcount != 1:
+            why = "used"
+        if not why:
+            u = User(r["user_id"], r["username"], r["display_name"], r["role"], "")
+            u.csrf = start_session(db, request, response, u.id)     # a full session: the key was the credential
+            audit.record(db, request, u, "auth.key_login", f"user:{u.id}")
+        db.execute("DELETE FROM connect_keys WHERE expires_at < ?", (now,))
+    if why:
+        login_limiter.fail(ip, "#key")
+        actor = {"id": r["user_id"], "username": r["username"], "display_name": r["display_name"],
+                 "role": r["role"]} if r else {}
+        audit.record(db, request, None, "auth.key_login_failed", f"user:{r['user_id']}" if r else None, actor=actor,
+                     after={"reason": why})
+        raise HTTPException(401, KEY_INVALID)
+    login_limiter.success(ip, "#key")
     return _session_out(db, request, u, u.csrf)
 
 

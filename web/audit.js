@@ -55,7 +55,10 @@
     "settings.update": "changed the settings", "sources.auto_setup_accept": "accepted an automatic video set-up", "sources.dynamic": "changed a video's camera setup",
     "sources.video_mode": "changed the match-video mode", "users.create": "added a teammate", "users.delete": "deleted a teammate",
     "users.profile": "changed their display name", "users.update": "changed a teammate's account",
+    "auth.key_created": "made a connection key", "auth.key_revoked": "revoked a connection key", "auth.key_login": "signed in with a connection key",
+    "auth.key_login_failed": "tried a connection key (not accepted)",
   };
+  const KEY_WHY = { malformed: "not a key", unknown: "no such key", used: "already used", expired: "expired", disabled: "account disabled" };
   const KEYN = { team_number: "team number", team_name: "team name", season_goal: "season goal", lockdown: "lockdown", passwordless_login: "passwordless sign-in",
     scout_overrides: "scouts' identity fixes", options: "processing options", display_name: "name", has_password: "password", password_reset: "password reset", disabled: "disabled", role: "role" };
   const val = v => v == null || v === "" ? "—" : v === true ? "on" : v === false ? "off" : typeof v === "object" ? (Array.isArray(v) ? v.join(", ") : Object.entries(v).map(([k, x]) => `${k} ${val(x)}`).join(", ")) : String(v);
@@ -68,13 +71,20 @@
     if (fam === "note") return clip((a && a.text) || (b && b.text) || "");
     const B = b && typeof b === "object" && !Array.isArray(b) ? b : {}, A = a && typeof a === "object" && !Array.isArray(a) ? a : {};
     if (fam === "events") return A.row ? "now followed" : B.row ? "no longer followed" : "";
+    // connection keys: never the key, only until when it works (and why one wasn't accepted)
+    if (e.action === "auth.key_created") return `works once, until ${CS.fmtWhen(A.expires_at, { day: true })}${B.expires_at ? " (replaced the unused one)" : ""}`;
+    if (e.action === "auth.key_revoked") return B.expires_at ? `was valid until ${CS.fmtWhen(B.expires_at, { day: true })}` : "";
+    if (e.action === "auth.key_login_failed") return A.reason ? KEY_WHY[A.reason] || String(A.reason) : "";
+    if (e.action === "users.update" && A.connect_key_revoked) return [changeTxtKeys(B, A), "its connection key revoked"].filter(Boolean).join("; ");
     // an account made or deleted: who it is, not a field-by-field diff
     if (e.action === "users.create" || e.action === "users.delete" || e.action === "auth.setup") { const u = e.action === "users.delete" ? B : A;
       return [u.username, u.display_name && u.display_name !== u.username ? `“${u.display_name}”` : "", u.role, u.has_password === false ? "no password" : u.has_password ? "with a password" : ""].filter(Boolean).join(", "); }
     const keys = [...new Set([...Object.keys(B), ...Object.keys(A)])].filter(k => val(B[k]) !== val(A[k]) && k !== "password");
     if (!keys.length) return b == null && a == null ? "" : clip(val(a != null ? a : b), 120);
-    return keys.map(k => `${KEYN[k] || k.replace(/_/g, " ")}: ${clip(val(B[k]), 40)} → ${clip(val(A[k]), 40)}`).join("; ");
+    return changeTxtKeys(B, A);
   }
+  const changeTxtKeys = (B, A) => [...new Set([...Object.keys(B), ...Object.keys(A)])].filter(k => val(B[k]) !== val(A[k]) && k !== "password" && k !== "connect_key_revoked")
+    .map(k => `${KEYN[k] || k.replace(/_/g, " ")}: ${clip(val(B[k]), 40)} → ${clip(val(A[k]), 40)}`).join("; ");
 
   // ---------------------------------------------------------------- admin: activity + switches
   CS.globalRoute("activity", async () => {

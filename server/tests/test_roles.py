@@ -19,6 +19,8 @@ CASES = [
     ("delete", "/events/2026wasam/picklists/other", None, "strategist"),
     ("get", "/users", None, "admin"),
     ("post", "/users", {"username": "newbie", "password": "long enough pw", "role": "viewer"}, "admin"),
+    ("post", "/users/1/connect-key", {"hours": 1}, "admin"),
+    ("delete", "/users/1/connect-key", None, "admin"),
     ("patch", "/settings", {"season_goal": "Worlds"}, "admin"),
     ("put", "/settings/tba-key", {"key": GOOD_KEY}, "admin"),
     ("get", "/tba/events?year=2026", None, "admin"),

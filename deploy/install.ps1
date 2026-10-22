@@ -935,6 +935,8 @@ if ($env:CS_SITE -and $Bind -ne '127.0.0.1' -and $env:CS_SITE -match '^https?://
   Write-Row 'Windows' "`$env:CS_SERVER='$Srv'; irm $($env:CS_SITE)/downloads/get-client.ps1 | iex"
   Write-Row 'macOS, Linux' "curl -fsSL $($env:CS_SITE)/downloads/get-client.sh | bash -s -- --server $Srv"
   Write-Row 'Phones' "open $Srv in the browser and add it to the home screen"
+  Write-Row 'Sign-in key' 'Admin -> Users -> Connection key: one string per person that connects a Client and signs it in'
+  Write-Row '' "(paste it on the Client's Connect page, or set `$env:CS_KEY='<string>' before the line above)"
 }
 
 Write-Host ''; Write-Host ''

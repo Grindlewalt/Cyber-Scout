@@ -241,7 +241,18 @@
   S.readInfo = path => RINFO.get(path) || null;
   // every page starts without one (setup.js wraps route() first; this wraps that)
   const prevRoute = route;
-  route = function (scroll) { asof = null; paintAsOf(); return prevRoute(scroll); };
+  route = function (scroll) { takeKeyLink(); asof = null; paintAsOf(); return prevRoute(scroll); };
+  /** #/connect?k=<connection key> (the Client installer opens that): keep the key in memory for the Connect page, which
+   *  uses it once, and take it out of the address bar and history before any other code sees it. Runs before the
+   *  route checks (a "?k=" segment isn't a page, and the sign-in redirect would drop it). */
+  let KEYLINK = null;
+  function takeKeyLink() {
+    const m = /^#\/?connect\?(.*)$/s.exec(location.hash); if (!m) return;
+    let k = null; try { k = new URLSearchParams(m[1]).get("k"); } catch (e) { }
+    try { history.replaceState(history.state, "", location.pathname + location.search + "#/connect"); } catch (e) { location.replace("#/connect"); }
+    if (k) KEYLINK = k;
+  }
+  takeKeyLink();
 
   // ================================================================ CS.app: cached reads, queued writes
   const rawApp = CS.app;
@@ -633,9 +644,9 @@
   S.ctl = ctl;
   S.clientLogin = async (username, password) => { await ctl("POST", "login", { username, password }, 30000); await refresh(); };
   S.clientLogout = async () => { await ctl("POST", "logout", {}); S.forget(); await refresh(); };
-  let pollT = 0, lastErrs = "";
+  let pollT = 0, lastErrs = "", GONE = false, KEYFLOW = false;      // GONE: the Client was stopped / uninstalled from this page
   async function refresh() {
-    if (S.mode !== "client") return S.status;
+    if (S.mode !== "client" || GONE) return S.status;
     const st = await clientStatus(6000), prev = S.status;
     if (st || !prev || Date.now() - (S.statusAt || 0) > 20000) { S.status = st; if (st) S.statusAt = Date.now(); }
     clientNews(prev, S.status);
@@ -644,7 +655,7 @@
   }
   S.refresh = refresh;
   function pollSoon() {
-    clearTimeout(pollT);
+    clearTimeout(pollT); if (GONE) return;
     const st = S.status, watching = (sheet && sheet.open) || /^#\/(settings|connect|login)/.test(location.hash);
     pollT = setTimeout(refresh, document.hidden ? 60000 : !st || st.connecting || (st.syncing && watching) ? 2500 : st.syncing || watching ? 5000 : 15000);
   }
@@ -657,8 +668,9 @@
     const writes = !!(CS.user && CS.user.role && CS.user.role !== "viewer");
     if (was && a.online && !b.online) toast(`Offline. Working from this computer's copy${writes ? "; changes wait here until the server is back" : ""}.`, { kind: "warn" });
     else if (was && !a.online && b.online) toast("Back online.", { kind: "good" });
-    if (a.signed_in && !b.signed_in) { toast("Signed out of the server.", { kind: "warn" }); if (CS.user && CS.reauth) CS.reauth(); }
-    if (!a.server !== !b.server || (a.signed_in !== b.signed_in && b.signed_in && !CS.user)) { if (CS.reauth) CS.reauth(); }
+    // (not while the Connect page uses a connection key: it changes the server and signs in itself, then re-routes)
+    if (a.signed_in && !b.signed_in && !KEYFLOW) { toast("Signed out of the server.", { kind: "warn" }); if (CS.user && CS.reauth) CS.reauth(); }
+    if ((!a.server !== !b.server || (a.signed_in !== b.signed_in && b.signed_in && !CS.user)) && !KEYFLOW) { if (CS.reauth) CS.reauth(); }
     if (!a.outbox && b.outbox) { outboxSince = Date.now(); outboxOff = false; }
     if ((a.outbox && !a.online) || (b.outbox && !b.online)) outboxOff = true;
     const key = e => `${e.kind}:${e.id || ""}:${e.time || ""}:${e.message || ""}`;
@@ -901,6 +913,28 @@
   const clientBytes = st => { const g = (st && st.storage) || {}, ev = (st && st.events) || [];
     const data = g.api_bytes != null ? g.api_bytes : ev.reduce((a, e) => a + (e.bytes || 0), 0), media = g.media_bytes != null ? g.media_bytes : ev.reduce((a, e) => a + (e.media_bytes || 0), 0);
     return { data, media, web: g.web_bytes || 0, total: data + media + (g.web_bytes || 0) }; };
+  /** changes on this computer the server hasn't got: waiting, held for another server, conflicts and rejected ones */
+  const unsent = st => (st.outbox || 0) + (st.outbox_held || []).reduce((a, h) => a + (h.n || 0), 0) + clientAtt(st);
+  /** the login item the Client installer made (status.install.autostart), in words */
+  const AUTOSTART = {
+    launchagent: { item: "the login item (LaunchAgent)", when: "when you next log in to this Mac", line: "Starts when you log in to this Mac (a LaunchAgent)." },
+    systemd: { item: "the login service (systemd user unit)", when: "when you next log in", line: "Starts when you log in (a systemd user service)." },
+    startup: { item: "the Startup shortcut", when: "when you next sign in to Windows", line: "Starts when you sign in to Windows (a Startup shortcut)." },
+  };
+  /** the Client was stopped or uninstalled from this page: nothing here can reach it any more, so the whole page says so
+   *  (the app underneath is made inert, status polling stops) */
+  function gonePage(title, html) {
+    GONE = true; clearTimeout(pollT);
+    for (const d of document.querySelectorAll("dialog[open]")) d.close();
+    for (const c of document.body.children) c.inert = true;
+    const logo = document.querySelector(".sb-brand .logo"), g = document.createElement("div");
+    g.className = "cx-gone";
+    g.innerHTML = `<div class="cx-gone-in">${logo ? logo.outerHTML : ""}<h1 tabindex="-1">${esc(title)}</h1>${html}</div>`;
+    g.onclick = e => { if (e.target.closest("[data-reload]")) location.reload(); };
+    document.body.appendChild(g); document.documentElement.classList.add("cx-isgone");
+    document.title = `${title} · Cyber-Scout`;
+    g.querySelector("h1").focus();
+  }
   const MEDIA_SPARE = 2 << 30;          // the Client keeps this much disk free when downloading videos (client/csclient/sync.py)
   const cap = t => t ? String(t).charAt(0).toUpperCase() + String(t).slice(1) : "";
   const stLine = p => `<div class="cx-st" data-st="${p.k}"><i class="conn-dot" aria-hidden="true"></i><div><b>${esc(p.t)}</b><span>${esc(p.d)}</span></div></div>`;
@@ -1054,6 +1088,7 @@
         <div class="cx-row"><div class="cx-k" id="cxk-evs">Competitions</div><div class="cx-v" data-part="events"></div></div>
         <div class="cx-row"><div class="cx-k">Storage</div><div class="cx-v" data-part="storage"></div></div>
         <div class="cx-row" id="cx-changes"><div class="cx-k">Changes waiting</div><div class="cx-v" data-part="outbox"></div></div>
+        <div class="cx-row" id="cx-app"><div class="cx-k">This app</div><div class="cx-v" data-part="app"></div></div>
       </div></fieldset>`;
     const $ = s => el.querySelector(s), res = $(".cx-res"), inp = $("#cxsrv");
     const say = (cls, html) => { res.className = "cx-res " + cls; res.innerHTML = html; };
@@ -1092,6 +1127,8 @@
         if (a === "sync") { b.disabled = true; await ctl("POST", "sync", {}, 30000); await refresh(); }
         else if (a === "logout") { if (!confirm("Sign this computer out of the server? Saved data stays; syncing stops until you sign in again.")) return; await S.clientLogout(); if (CS.reauth) CS.reauth(); }
         else if (a === "ev-rm") await removeLocal(b.dataset.ev);
+        else if (a === "quit") await quitClient(b);
+        else if (a === "uninstall") await uninstallClient(b);
       } catch (x) { toast(x.message, { kind: "bad" }); b.disabled = false; }
     });
     /** delete this computer's copy of a competition that isn't synced any more (CLIENT-19) */
@@ -1194,30 +1231,158 @@
       ob.innerHTML = !st.outbox && !items.length ? `<span class="muted">Nothing waiting. Changes made offline wait here until the server is back.</span>`
         : `<ul class="cx-ob">${items.map(obItem).join("")}</ul>${st.outbox && !items.length ? `<span class="muted">${plural(st.outbox, "change")} waiting.</span>` : ""}`;
     }
+    // ---- This app: Stop / Uninstall (POST client/v1/quit | uninstall). Redrawn only when what it shows changes, so the
+    // buttons don't move under a pointer or lose keyboard focus on every status poll.
+    let appSig = "";
+    function drawApp() {
+      const box = $("[data-part=app]"); if (!box) return;
+      const st = S.status, ins = st && st.install, sig = JSON.stringify([!!st, ins || null, st ? unsent(st) : 0]);
+      if (sig === appSig) return; appSig = sig;
+      const foc = box.contains(document.activeElement) ? document.activeElement.dataset.act : null;
+      if (!st) { box.innerHTML = `<span class="muted">The Client isn't answering.</span>`; return; }
+      const a = ins && AUTOSTART[ins.autostart];
+      box.innerHTML = `<div class="cx-app"><span><b>Cyber-Scout Client</b>${st.version ? ` <span class="muted small">version ${esc(st.version)}</span>` : ""}</span>
+          ${ins && ins.program ? `<span class="muted small">Program: <span class="code">${esc(ins.program)}</span></span>` : ""}
+          ${ins ? `<span class="muted small">${a ? a.line : ins.frozen === false ? "Runs from the source code: it runs while you run it (python3 client/cyberscout_client.py)." : "Doesn't start by itself: open the program to start it."}</span>` : ""}</div>
+        <div class="cx-acts"><button type="button" data-act="quit">${CS.icon("power", "ico")}Stop the Client</button>${ins && ins.can_uninstall ? `<button type="button" class="danger" data-act="uninstall">Uninstall…</button>` : ""}</div>
+        ${ins && !ins.can_uninstall && ins.frozen === false ? `<p class="cx-note">This copy runs from the source code, so there's nothing to uninstall: stop it, then delete its folder if you don't need it.</p>` : ""}`;
+      if (foc) { const f = box.querySelector(`[data-act="${foc}"]`); if (f) f.focus(); }
+    }
+    async function quitClient(b) {
+      const st = S.status || {}, ins = st.install || {}, a = AUTOSTART[ins.autostart], n = unsent(st);
+      const ok = await CS.ask({ title: "Stop the Cyber-Scout Client?", ok: "Stop the Client", danger: true,
+        html: `<p>Its pages stop opening on this computer until it runs again${n ? `, and the ${plural(n, "change")} waiting ${n === 1 ? "isn't" : "aren't"} sent meanwhile` : ""}. Your data stays on this computer.</p>
+          <p class="cx-note">${a ? `It starts again ${a.when}` : "It doesn't start again by itself"}${ins.program ? `, or start it from <span class="code">${esc(ins.program)}</span>` : ""}.</p>` });
+      if (!ok) return;
+      b.disabled = true;
+      try { await ctl("POST", "quit", {}, 10000); }
+      catch (x) {
+        // (no answer at all: it is most likely on its way out already)
+        if (x.status) { b.disabled = false; toast(x.status === 404 ? "This Client is too old to be stopped from here: close it the way you started it." : CS.sentence(x.message), { kind: "bad" }); return; }
+      }
+      gonePage("The Client stopped", `<p>${a ? `It starts again ${a.when}` : "It doesn't start again by itself"}${ins.program ? `, or start it from <span class="code">${esc(ins.program)}</span>` : ": open “Cyber-Scout Client” to start it"}. Your data${n ? ` and the ${plural(n, "change")} waiting` : ""} stay on this computer.</p>
+        <p>This page can't reach it any more. Once it runs again, reload.</p><div class="cx-acts"><button type="button" class="primary" data-reload>Reload</button></div>`);
+    }
+    async function uninstallClient(b) {
+      const st = S.status || {}, ins = st.install || {}, a = AUTOSTART[ins.autostart], n = unsent(st), by = clientBytes(st);
+      const dir = ins.data_dir || (st.storage || {}).data_dir;
+      const warn = del => del
+        ? (n ? `<b>${plural(n, "change")} made here ${n === 1 ? "hasn't" : "haven't"} reached the server yet: ${n === 1 ? "it's" : "they're"} lost.</b> ${st.online ? "To keep them, Cancel and use Sync now first." : "The server can't be reached right now to send them first."}`
+          : "Nothing is waiting to be sent: the server has every change made here, and keeps its copy of everything.")
+        : (n ? `${plural(n, "change")} not sent yet ${n === 1 ? "stays" : "stay"} in the kept folder, but nothing sends ${n === 1 ? "it" : "them"} once the Client is gone.${st.online ? " Cancel and use Sync now first to send them." : ""}` : "The folder stays as it is; you can delete it later.");
+      const v = await CS.ask({ title: "Uninstall the Cyber-Scout Client?", ok: "Uninstall", danger: true,
+        html: `<p>This removes from this computer:</p><ul class="cx-bul">${a ? `<li>${a.item}, so it stops starting ${a.when.replace(/^when you next /, "when you ")}</li>` : ""}
+            <li>the program${ins.program ? `: <span class="code">${esc(ins.program)}</span>` : ""}</li></ul>
+          <label class="cx-opt cx-del"><input type="checkbox" name="deldata"><span><b>Also delete this computer's data (${fmtB(by.total)})</b>
+            <small>Its copy of your team's data${by.media ? ", the videos" : ""} and its settings${dir ? `, in <code class="code">${esc(dir)}</code>` : ""}.</small></span></label>
+          <p class="cx-note cx-dw" aria-live="polite">${warn(false)}</p>`,
+        mount: body => { const cb = body.querySelector("[name=deldata]"), w = body.querySelector(".cx-dw"), ok = body.querySelector("[data-ok]");
+          cb.onchange = () => { w.innerHTML = warn(cb.checked); w.classList.toggle("bad", cb.checked && n > 0); ok.textContent = cb.checked ? "Uninstall and delete data" : "Uninstall"; }; },
+        value: body => ({ delete_data: body.querySelector("[name=deldata]").checked }) });
+      if (!v) return;
+      b.disabled = true;
+      let r;
+      try { r = await ctl("POST", "uninstall", { delete_data: !!v.delete_data }, 60000); }
+      catch (x) {
+        if (x.status) { b.disabled = false; toast(CS.sentence(x.message), { kind: "bad" }); return; }
+        gonePage("The Client stopped answering", `<p>It stopped before it said what it removed. Check whether ${ins.program ? `<span class="code">${esc(ins.program)}</span>` : "the program"} is still there.</p>`);
+        return;
+      }
+      const item = p => `<li>${/^([/~]|[A-Za-z]:[\\/])/.test(String(p)) ? `<span class="code">${esc(p)}</span>` : esc(p)}</li>`;
+      const L = k => Array.isArray(r && r[k]) ? r[k] : [];
+      const srv = st.server ? S.host(st.server) : "";
+      gonePage("The Client is uninstalled", `${L("removed").length ? `<h2>Removed</h2><ul class="cx-bul">${L("removed").map(item).join("")}</ul>` : ""}
+        ${L("kept").length ? `<h2>Kept</h2><ul class="cx-bul">${L("kept").map(item).join("")}</ul>` : ""}
+        ${L("errors").length ? `<h2>Couldn't remove</h2><ul class="cx-bul bad">${L("errors").map(e => `<li>${esc(e)}</li>`).join("")}</ul>` : ""}
+        <p class="cx-note">You can close this tab.${srv ? ` Cyber-Scout still opens in a browser at <b>${esc(srv)}</b>.` : ""} To have it on this computer again, install the Client again.</p>`);
+    }
     let was = JSON.stringify([st0.server, st0.signed_in, st0.online]);
     live($(".cx-grid"), () => {
-      drawStatus();
+      drawStatus(); drawApp();
       const st = S.status || {}, now = JSON.stringify([st.server, st.signed_in, st.online]);
       if (now !== was) { was = now; loadLists(); }
     });
     drawLists(); loadLists(); clientOutbox(S.status, true);
   }
 
+  // ================================================================ connection keys (Admin → Teammates → Connection key)
+  // The admin's sheet shows "cyberscout:<server>#<KEY>". The Connect page takes that, "<server>#<KEY>", "server=<s> key=<k>"
+  // (any order; spaces, ";" or new lines between) or a bare KEY (then this computer's server), also out of a pasted install
+  // line. The key is 16 characters of Crockford base32; what people type is forgiven (lower case, spaces, dashes, O for 0,
+  // I / L for 1). It works once, until it expires (server).
+  const KEY_ABC = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+  /** "7kq2 m9xa-p4hd-w8ne" -> "7KQ2-M9XA-P4HD-W8NE"; null unless 16 characters of the key alphabet */
+  function normKey(k) {
+    const s = String(k || "").toUpperCase().replace(/[\s-]+/g, "").replace(/O/g, "0").replace(/[IL]/g, "1");
+    return s.length === 16 && [...s].every(c => KEY_ABC.includes(c)) ? s.replace(/(.{4})(?=.)/g, "$1-") : null;
+  }
+  /** a pasted connection key -> {server, key, bare} or {error} (a sentence; may quote what was pasted: escape it) */
+  function parseConn(text, current) {
+    let t = String(text || "").trim();
+    const inLine = /cyberscout:[^\s'"`]+/i.exec(t); if (inLine) t = inLine[0];
+    t = t.replace(/^["'`]+|["'`]+$/g, "").replace(/\b(server|key)\s*=\s*/gi, "$1=").trim();
+    if (!t) return { error: "Paste the connection key your admin gave you." };
+    let srv = null, key = null;
+    const kv = t.split(/[\s;]+/).filter(x => /^(server|key)=/i.test(x));
+    if (kv.length) for (const x of kv) { const i = x.indexOf("="), v = x.slice(i + 1); if (/^server/i.test(x)) srv = v; else key = v; }
+    else {
+      t = t.replace(/^cyberscout:(\/\/)?/i, "");
+      const i = t.lastIndexOf("#");
+      if (i >= 0) { srv = t.slice(0, i); key = t.slice(i + 1); } else key = t;
+    }
+    const k = normKey(key), given = !!(srv && srv.trim());
+    if (kv.length && !key) return { error: "That has the server= part but no key= part. Copy the whole line again." };
+    if (!k) {
+      if (!given && !kv.length && /[.:]/.test(t) && normServer(t)) return { error: "That's a server address, not a connection key. To connect without a key, use the server address below." };
+      return { error: given ? "The key after “#” isn't complete: it has 16 letters and digits (XXXX-XXXX-XXXX-XXXX). Copy the whole line again."
+        : "That isn't a connection key. It looks like cyberscout:https://…#XXXX-XXXX-XXXX-XXXX (or just its XXXX-XXXX-XXXX-XXXX part)." };
+    }
+    if (!given) return current ? { server: current, key: k, bare: true }
+      : { error: "That's only the key. Paste the whole line (it starts with cyberscout:), or set the server address below first." };
+    const sv = normServer(srv);
+    return sv ? { server: sv, key: k, bare: false } : { error: `The server address in it (“${srv.trim()}”) isn't an address. Ask your admin for the line again.` };
+  }
+  S.normKey = normKey; S.parseConn = parseConn;
+  /** what went wrong with POST client/v1/login-key, and what to do about it */
+  function keyErr(x) {
+    const st = x.status || 0, m0 = CS.sentence ? CS.sentence(x.message || "") : x.message || "", m = m0 && !/[.!?…]$/.test(m0) ? m0 + "." : m0;
+    if (st === 503 || (x.data && x.data.offline)) return "The server can't be reached from this computer right now, so the key wasn't used. Check the network, then try again.";
+    if (st === 400) return "Set the server address first.";
+    if (st === 429) return m || "Too many tries. Wait a minute, then try again.";
+    if ([401, 403, 404, 409, 410, 422].includes(st)) return /admin/i.test(m) ? m : `${m || "The server didn't accept this key."} Keys work once and expire: ask your admin for a new one (Admin → Teammates → Connection key).`;
+    return m || "Couldn't sign in with the key.";
+  }
+
   // ================================================================ #/connect: Cyber-Scout Client, first run (or "Change server")
+  // Two ways in: a connection key (connects and signs in, one step) or the server address (then the sign-in page).
+  // #/connect/key is the sign-in page's "Use a connection key"; #/connect?k=… (the Client installer) fills the key and
+  // runs it once (takeKeyLink).
   CS.globalRoute("connect", async () => {
     crumbs([["Connect"]]); $updated.textContent = "";
-    if (S.mode !== "client") { location.replace("#/"); return; }
-    const st = S.status || {};
+    if (S.mode !== "client") { KEYLINK = null; location.replace("#/"); return; }
+    const st = S.status || {}, link = KEYLINK; KEYLINK = null;
+    const logo = document.querySelector(".sb-brand .logo");
     $app.innerHTML = `<div class="card authcard cx-onb">
-      <div class="cx-hero">${document.querySelector(".sb-brand .logo") ? document.querySelector(".sb-brand .logo").outerHTML : ""}<div><h1>${st.server ? "Change server" : "Welcome to Cyber-Scout"}</h1>
-        <div class="sub">${st.server ? `Connected to <b>${esc(S.host(st.server))}</b> now.` : "This computer keeps a copy of your team's scouting data, so every page works even when the venue Wi-Fi doesn't."}</div></div></div>
+      <div class="cx-hero">${logo ? logo.outerHTML : ""}<div><h1>${st.server ? "Change server" : "Welcome to Cyber-Scout"}</h1>
+        <div class="sub">${st.server ? `Connected to <b>${esc(S.host(st.server))}</b> now${st.signed_in && st.user && st.user.display_name ? ` as ${esc(st.user.display_name)}` : ""}.` : "This computer keeps a copy of your team's scouting data, so every page works even when the venue Wi-Fi doesn't."}</div></div></div>
+      <form class="cx-key" novalidate>
+        <h2 id="cxkh">${CS.icon("key", "ico")}Have a connection key?</h2>
+        <p class="cx-note" id="cxkd">Your admin makes one in Admin → Teammates. Paste it here: this computer connects to your team's server and signs you in, in one step.</p>
+        <label class="vh" for="cxkin">Connection key</label>
+        <input id="cxkin" class="csin cx-kin" name="key" aria-describedby="cxkd" placeholder="cyberscout:https://…#XXXX-XXXX-XXXX-XXXX" autocomplete="off" spellcheck="false" autocapitalize="none" autocorrect="off">
+        <div class="cx-res cx-kp"></div>
+        <div class="cx-res" role="status" aria-live="polite" data-part="kres"></div>
+        <div class="cx-kgo"><button type="submit" class="primary">Connect and sign in</button></div>
+      </form>
+      <div class="cx-or"><span>or connect with the server address</span></div>
       <ol class="cx-steps"><li class="on"><span><b>Connect</b> to your team's Cyber-Scout server</span></li><li><span><b>Sign in</b> with your Cyber-Scout account</span></li><li><span><b>Sync</b>: the data downloads in the background</span></li></ol>
-      <form class="csform" novalidate><label>Server address<input name="server" value="${esc(st.server || "")}" placeholder="scout.example.org" autocomplete="url" inputmode="url" spellcheck="false" autocapitalize="none" required></label>
+      <form class="csform cx-addr" novalidate><label>Server address<input name="server" value="${esc(st.server || "")}" placeholder="scout.example.org" autocomplete="url" inputmode="url" spellcheck="false" autocapitalize="none" required></label>
         <p class="cx-note">The address you use for Cyber-Scout in a browser, like <span class="code">scout.example.org</span>, <span class="code">https://scout.example.org</span> or <span class="code">10.0.0.58:7560</span>. Ask your team's admin if you don't know it.</p>
         <div class="row"><button type="button" data-act="test">Test connection</button><button type="submit" class="primary">Connect</button></div>
         <div class="cx-res" role="status" aria-live="polite"></div></form>
       <p class="cx-note">The look of the app is in <a href="#/settings">Settings</a>.</p></div>`;
-    const f = $app.querySelector("form"), inp = f.querySelector("input"), res = f.querySelector(".cx-res"), sub = f.querySelector("button[type=submit]");
+    // ---- the server address
+    const f = $app.querySelector(".cx-addr"), inp = f.querySelector("input"), res = f.querySelector(".cx-res"), sub = f.querySelector("button[type=submit]");
     const say = (cls, html) => { res.className = "cx-res " + cls; res.innerHTML = html; };
     async function test() {
       const s = normServer(inp.value);
@@ -1243,6 +1408,54 @@
       } catch (x) { say("bad", esc(x.message)); }
       finally { sub.disabled = false; }
     };
-    inp.focus();
+    // ---- the connection key
+    const kf = $app.querySelector(".cx-key"), kin = kf.querySelector("input"), kp = kf.querySelector(".cx-kp"), kres = kf.querySelector("[data-part=kres]"), kbtn = kf.querySelector("button[type=submit]");
+    const sayK = (cls, html) => { kres.className = "cx-res " + cls; kres.innerHTML = html; if (cls === "bad") kp.innerHTML = ""; };
+    /** what the pasted key will do, before it's used (nothing while it doesn't parse: errors come on submit) */
+    function preview() {
+      const v = kin.value.trim(), cur = (S.status || {}).server, p = v ? parseConn(v, cur) : null;
+      if (!p || p.error) { kp.innerHTML = ""; return p; }
+      const n = cur && cur !== p.server ? ((S.status || {}).outbox || 0) : 0;
+      kp.innerHTML = `${CS.icon("key", "ico")}<span>${p.bare ? `Signs in on <b>${esc(S.host(p.server))}</b>, this computer's server.`
+        : `Connects to <b>${esc(S.host(p.server))}</b>${cur && cur !== p.server ? ` instead of ${esc(S.host(cur))}` : ""} and signs in.`}${n ? ` ${plural(n, "change")} waiting for ${esc(S.host(cur))} ${n === 1 ? "stays" : "stay"} on this computer and ${n === 1 ? "goes" : "go"} only there.` : ""}</span>`;
+      return p;
+    }
+    kin.addEventListener("input", () => { kin.removeAttribute("aria-invalid"); if (/bad/.test(kres.className)) sayK("", ""); preview(); });
+    let busy = false;
+    async function useKey(fromLink) {
+      if (busy) return;
+      const p = preview() || parseConn("", null);
+      if (p.error) { sayK("bad", `${CS.icon("warn", "ico")}<span>${esc(p.error)}</span>`); kin.setAttribute("aria-invalid", "true"); kin.focus(); return; }
+      busy = KEYFLOW = true; kbtn.disabled = true; kin.readOnly = true;
+      const was = (S.status || {}).server;
+      try {
+        sayK("", `${fromLink ? "Using the key from the installer. " : ""}Checking ${esc(S.host(p.server))}…`);
+        const r = await ctl("POST", "test", { server: p.server }, 30000) || {};
+        if (r.ok === false || r.error) {        // (no "Use http://…" button here: it would fill the key field)
+          sayK("bad", `${CS.icon("warn", "ico")}<span>${esc(cap(errText({ error: r.error }, 0)) || "Couldn't connect.")}${r.suggest ? ` It answers at ${esc(r.suggest)}: ask your admin for a key with that address.` : ""} The key wasn't used.</span>`);
+          return;
+        }
+        let changed = false;
+        if ((S.status || {}).server !== p.server) { sayK("", `Connecting to ${esc(S.host(p.server))}…`); await ctl("PUT", "config", { server: p.server }); changed = true; await refresh(); }
+        sayK("", "Signing in…");
+        let d = null;
+        for (let i = 0; ; i++) {
+          try { d = await ctl("POST", "login-key", { key: p.key }, 30000); break; }
+          catch (x) { if (changed && i < 2 && (x.status === 503 || (x.data && x.data.offline))) { await sleep(1500); continue; } throw x; }   // (the Client was still connecting)
+        }
+        if (!d || d.ok === false) { const e = new Error(errText(d, 0)); e.status = 401; throw e; }
+        await refresh();
+        await CS.refreshSession();
+        if (!CS.user) { sayK("bad", `${CS.icon("warn", "ico")}<span>Signed in, but the server didn't confirm it. Try signing in on the sign-in page.</span>`); return; }
+        toast(`Signed in as ${who(d.user || CS.user)}. The data syncs in the background.`, { kind: "good" });
+        if (CS.afterAuth) CS.afterAuth(); else location.hash = "#/";
+      } catch (x) {
+        const now = (S.status || {}).server;
+        sayK("bad", `${CS.icon("warn", "ico")}<span>${esc(keyErr(x))}${now && now !== was ? ` This computer is set to ${esc(S.host(now))} now: sign in there, or use another key.` : ""}</span>`);
+      }
+      finally { busy = KEYFLOW = false; if (kbtn.isConnected) { kbtn.disabled = false; kin.readOnly = false; } }
+    }
+    kf.onsubmit = e => { e.preventDefault(); useKey(false); };
+    if (link) { kin.value = link; useKey(true); } else kin.focus();
   });
 })();

@@ -11,7 +11,7 @@ browser ──► http://127.0.0.1:7600  (Cyber-Scout Client, this folder)
               ├─ /            the web app (a copy of the server's web/ files; a bundled copy before the first connect)
               ├─ /api/  /media/   from the local mirror (falls through to the server when a file isn't local yet)
               ├─ /app/v1/...  proxied to the server with the client's own session; writes go through the outbox
-              └─ /client/v1/  local control API (status, settings, sign-in, sync now, outbox)
+              └─ /client/v1/  local control API (status, settings, sign-in, sync now, outbox, stop, uninstall)
                        │
                        └──HTTPS──► your server (e.g. https://scout.example.dev or http://10.0.0.58:7560)
 ```
@@ -29,11 +29,26 @@ irm http://<site>/downloads/get-client.ps1 | iex                         # Windo
 
 It picks this computer's build, checks its SHA-256, installs it (`~/CyberScout`, Windows `%LOCALAPPDATA%\CyberScout`),
 presets the team server on a first install (the site's default, or `--server URL` / `$env:CS_SERVER`), starts it at
-login (macOS LaunchAgent `com.cyberscout.client`, Linux systemd user service, Windows Startup shortcut) and opens
-`http://127.0.0.1:7600/`: sign in and it syncs. No Gatekeeper / SmartScreen steps (a curl download isn't
-quarantined; the Windows script unblocks the file). Run it again to update; `bash -s -- --uninstall`
-(`$env:CS_CLIENT_UNINSTALL='1'`) removes it and keeps the data folder. The server installer, when run through
-`get.sh` / `get.ps1`, prints both lines with this server's address. Source: `site/tools/get-client.*.in`.
+login (macOS LaunchAgent `com.cyberscout.client`, restarted after a crash but not after a clean exit; Linux systemd
+user service, `Restart=on-failure`; Windows Startup shortcut) and opens `http://127.0.0.1:7600/`: sign in and it
+syncs. No Gatekeeper / SmartScreen steps (a curl download isn't quarantined; the Windows script unblocks the file).
+Run it again to update; `bash -s -- --uninstall` (`$env:CS_CLIENT_UNINSTALL='1'`) removes it and keeps the data
+folder (or use **Uninstall** in the app, see [Stop and uninstall](#stop-and-uninstall)). The server installer, when
+run through `get.sh` / `get.ps1`, prints both lines with this server's address. Source: `site/tools/get-client.*.in`.
+
+**With a connection key** (an admin makes one for you on the server; it works once and expires): add it and the
+Client is set up for that server and signed in, no password typed:
+
+```bash
+curl -fsSL http://<site>/downloads/get-client.sh | bash -s -- --key 'cyberscout:http://10.0.0.58:7560#7KQ2-M9XA-P4HD-W8NE'
+$env:CS_KEY = 'cyberscout:http://10.0.0.58:7560#7KQ2-M9XA-P4HD-W8NE'; irm http://<site>/downloads/get-client.ps1 | iex
+```
+
+The key may also be written `<server>#<KEY>`, `server=<server> key=<KEY>` or just `<KEY>` (env `CS_KEY` for the
+shell script too). Its server counts as `--server` / `CS_SERVER` unless that is given (it needs `http://` or
+`https://`). Once the Client answers, the script opens `http://127.0.0.1:7600/#/connect?k=<the whole key, URL-encoded>`
+instead of the plain page: the web app's Connect page connects, signs in with the key and drops it from the address.
+With `--no-open` (or no desktop) the script prints that address instead: open it once.
 
 **Standalone executable** (no Python needed): download the file for your computer from the GitHub release (or the
 `client` workflow's artifacts; see [Building](#building)) and run it. A terminal window opens with the address and
@@ -109,8 +124,10 @@ install on the same computer needs its own `--data` and `--port`.
    address doesn't use HTTPS. Try http://…" (with a button to use it), "That's this Cyber-Scout Client's own
    address", "Something answers at …, but it isn't Cyber-Scout", "… is a Cyber-Scout server, but a version without
    offline sync", "the server's certificate could not be verified".
-4. **Sign in** with your Cyber-Scout account. The client signs itself in; the browser page never sees the server
-   session. The data downloads in the background; the app is usable meanwhile.
+4. **Sign in** with your Cyber-Scout account, or with a **connection key** from an admin (`XXXX-XXXX-XXXX-XXXX`,
+   works once; the installers' `--key` / `CS_KEY` and the Connect page's `#/connect?k=…` use it, the control API is
+   `POST /client/v1/login-key`). The client signs itself in; the browser page never sees the server session. The data
+   downloads in the background; the app is usable meanwhile.
 5. Later changes are in **Settings → Connection**: the server, sign out, **Videos** (**None**: data only, the default;
    **Previews**: a ≈480p copy of every match video, ≈27 MB per match; **Full videos**: everything the server keeps,
    GBs per event: the option shows the size first and asks before downloading), **Competitions** (default: every one
@@ -371,16 +388,59 @@ local `cs_csrf` cookie (the client's own token — the server's CSRF token and s
 
 | call | answer |
 |---|---|
-| `GET status` | `{client:true, version, server, online, signed_in, user:{display_name,role}\|null, last_sync, syncing, progress:{done,total,bytes,done_bytes,total_bytes,ev,phase}\|null, outbox, events:[{key,name,synced_at,files,bytes,media_bytes}], errors:[{time,kind,message,ev?,id?,response?}]}` plus `active_server` (the address in use: `server` or one of `alt_servers`), `alt_servers`, `connecting` (the server address just changed and hasn't answered yet), `outbox_held` (`[{server, n}]`: changes written for another server), `media, followed, available_events, offline_reason, server_info, web_version, storage`. `progress.done/total` count files, `done_bytes/total_bytes` their bytes (the app's percentage uses these); `bytes` is bytes received. `outbox` = this server's changes not yet accepted. `errors[].kind`: `network`, `auth`, `sync`, `media`, `web`, `conflict`, `failed` |
+| `GET status` | `{client:true, version, server, online, signed_in, user:{display_name,role}\|null, last_sync, syncing, progress:{done,total,bytes,done_bytes,total_bytes,ev,phase}\|null, outbox, events:[{key,name,synced_at,files,bytes,media_bytes}], errors:[{time,kind,message,ev?,id?,response?}]}` plus `active_server` (the address in use: `server` or one of `alt_servers`), `alt_servers`, `connecting` (the server address just changed and hasn't answered yet), `outbox_held` (`[{server, n}]`: changes written for another server), `media, followed, available_events, offline_reason, server_info, web_version, storage`, `install:{frozen, program, autostart, can_uninstall, data_dir}` (see [Stop and uninstall](#stop-and-uninstall)). `progress.done/total` count files, `done_bytes/total_bytes` their bytes (the app's percentage uses these); `bytes` is bytes received. `outbox` = this server's changes not yet accepted. `errors[].kind`: `network`, `auth`, `sync`, `media`, `web`, `conflict`, `failed` |
 | `PUT config` `{server?, alt_servers?, media?, events?, interval?}` | `200 {ok, config}`; `422 {detail}` on bad values. `events:null` = all followed events. Changing `server` signs out and resyncs |
 | `POST test` `{server?}` | always `200`: `{ok:true, server, latency_ms, version, name, api}` or `{ok:false, server, error, suggest?}` (`suggest`: the `http://` address when an `https://` one answered in plain http) |
-| `POST login` `{username,password}` | `200 {ok:true, user}`; server's status + `{ok:false, detail}` (401 bad password, 429 …); `503 {offline:true}` |
+| `POST login` `{username,password}` | `200 {ok:true, user}`; server's status + `{ok:false, detail}` (401 bad password, 429 …); `503 {offline:true}`; `400 {ok:false}` when no server is set |
+| `POST login-key` `{key}` | sign in with a connection key (the server's `POST /app/v1/auth/key-login`); the same answers as `login`, plus `422 {ok:false, detail}` when `key` isn't a string of 1–64 characters. The page's own `POST /app/v1/auth/key-login` is handled the same way (the client keeps the session) |
+| `POST quit` | **Stop**: `200 {ok:true, how, message}`, then the client shuts down like Ctrl+C. `how`: `launchagent` (it ran under its LaunchAgent: unloaded so it isn't restarted, back at the next login), `systemd` (a clean exit; the unit restarts only on failure), `exit`. `message`: one sentence for the page |
+| `POST uninstall` `{delete_data?: bool}` | `200 {ok:true, removed:[paths], kept:[paths], errors:[sentences]}`, then stops like `quit`; `409 {detail}` when run from source; `422` for a non-boolean `delete_data`. See [Stop and uninstall](#stop-and-uninstall) |
 | `POST logout` | `200 {ok:true}` |
 | `POST sync` `{ev?, media?}` | `202 {started:true, online}` |
 | `GET outbox` | `[{id, key, method, path, created, updated, state:"queued"\|"sending"\|"conflict"\|"failed", attempts, status, error, body, response, server}]` |
 | `DELETE outbox/<id>` | `204`; `404` unknown; `409` while it is being sent |
 | `DELETE events/<ev>` | delete this computer's copy of a competition that isn't synced any more → `200 {ok, freed}`; `409` while it is still synced or a sync runs |
 | `GET processing`, `PUT processing`, `POST processing/setup`, `POST processing/{bench,netcheck,gpu}` | processor mode, see [Help process matches](#help-process-matches-processor-mode) |
+
+## Stop and uninstall
+
+The app's Settings can stop the client or remove it (`POST /client/v1/quit`, `POST /client/v1/uninstall`;
+`csclient/install.py`). `GET /client/v1/status` → `install` says what is possible:
+
+| field | |
+|---|---|
+| `frozen` | `true` for the standalone executable, `false` when run from source |
+| `program` | the executable (`null` from source) |
+| `autostart` | the login item that starts this program: `launchagent` (`~/Library/LaunchAgents/com.cyberscout.client.plist`), `systemd` (`~/.config/systemd/user/cyberscout-client.service`), `startup` (`Cyber-Scout Client.lnk` in the Windows Startup folder) or `null`. One that starts another copy (another `--dir`) doesn't count |
+| `can_uninstall` | `true` when frozen (from source there is nothing installed: Uninstall answers 409 "This Client runs from source (…): nothing is installed to remove. Use Stop instead.") |
+| `data_dir` | the data folder in use |
+
+**Stop** answers first, then shuts down exactly like Ctrl+C / `kill` (processing children stopped, claims given back,
+the data-folder lock released). Nothing restarts it before the next login: under its LaunchAgent (launchd sets
+`XPC_SERVICE_NAME=com.cyberscout.client`) the client unloads its own job afterwards (`launchctl bootout
+gui/<uid>/com.cyberscout.client`, from a separate session; launchd's SIGTERM then just ends the process), since a
+LaunchAgent from an older install has `KeepAlive` true (new installs: `KeepAlive` = `{SuccessfulExit: false}`). Under
+the systemd user unit a clean exit is enough (`Restart=on-failure`); on Windows it just exits. To start it again
+before the next login: run the program (`~/CyberScout/cyberscout-client`, Windows
+`%LOCALAPPDATA%\CyberScout\cyberscout-client.exe`) or the install line again.
+
+**Uninstall** `{delete_data}` undoes what `get-client.sh` / `get-client.ps1` installed, and nothing else:
+
+1. the login item: macOS deletes the plist (and unloads the job: right away when it isn't the one running, else
+   after the shutdown); Linux `systemctl --user disable`, deletes the unit, `daemon-reload`; Windows deletes the
+   Startup shortcut;
+2. the program file (`sys.executable`), and its folder only when it is the scripts' (the program is named
+   `cyberscout-client[.exe]` and the folder holds nothing but it and `logs/client.out`); a folder with other files
+   is listed in `kept`;
+3. with `delete_data: true`, the data folder: only the Client's own entries (`config.json`, `client.lock`,
+   `session.json`, `client.sqlite3*`, `site/`, `state/`, `parts/`, `tmp/`, `web/`, `logs/`, `processing/`), after
+   the shutdown; anything else in it stays (in `kept`, and so does the folder). Without it the data folder is in
+   `kept`. Never the home folder or a folder above it.
+
+Symbolic links are never followed or removed (listed in `kept` with a line in `errors`). The login item and (macOS /
+Linux) the program and its folder are removed before the answer; the rest right after the shutdown. A running `.exe`
+can't delete itself on Windows: a detached `cmd.exe` (no window) retries deleting it for up to ~40 s until the
+process has exited, then deletes the data entries and the emptied folders. `removed` lists those as well.
 
 ## Storage
 
@@ -415,8 +475,8 @@ Deleting the folder resets the client (queued changes are lost). Deleting `site/
   host name / port); the page sets the cookie the client requires.
 * **Port 7600 in use** — `--port 7601`. If another Cyber-Scout Client holds it (a different data folder), the log
   says so.
-* **"Client not running"** — the client process stopped (its terminal window was closed): start it again; nothing
-  is lost.
+* **"Client not running"** — the client process stopped (its terminal window was closed, or **Stop** in the app):
+  start it again; nothing is lost.
 * **Sync stuck / weird data** — look at `logs/client.log`; `status.errors` has the last error per event. Delete
   `state/<ev>.json` to make that event resync from scratch (files already present and correct are not downloaded
   again: they are re-hashed).
@@ -434,7 +494,7 @@ python3 -m unittest discover -s client/tests -v          # fake part-1 server; ~
 Code: `cyberscout_client.py` (entry) → `csclient/app.py` (wiring, CLI), `web.py` (local HTTP server, proxy,
 control API, security checks), `sync.py` (sync engine + outbox flush), `mirror.py` (safe bundle extraction, web
 mirror), `net.py` (keep-alive HTTP(S) to the server, session/CSRF), `store.py` (config, session, SQLite outbox,
-per-event state), `util.py`, `processor.py` (processor mode), `gpu.py` (the GPU check), `procsetup.py` (Set up:
+per-event state), `install.py` (Stop / Uninstall: the login item, program and data folder), `util.py`, `processor.py` (processor mode), `gpu.py` (the GPU check), `procsetup.py` (Set up:
 uv, runtimes, sizes), `procnet.py` (connection speed, the slow-Wi-Fi notice), `clipper.py` (Clip only), `procui.py`
 (the processing page), `procrunner.py` (the pipeline side: track / `--bench` / `--clip`; runs in the processing
 Python, shipped by the server).

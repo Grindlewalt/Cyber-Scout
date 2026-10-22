@@ -1028,6 +1028,8 @@ if [ -n "${CS_SITE:-}" ] && [ "$CS_BIND" != 127.0.0.1 ] && [[ "$CS_SITE" =~ $SIT
   row "macOS, Linux" "curl -fsSL $CS_SITE/downloads/get-client.sh | bash -s -- --server $SRV"
   row "Windows" "\$env:CS_SERVER='$SRV'; irm $CS_SITE/downloads/get-client.ps1 | iex"
   row "Phones" "open $SRV in the browser and add it to the home screen"
+  row "Sign-in key" "Admin -> Users -> Connection key: one string per person that connects a Client and signs it in"
+  row "" "(paste it on the Client's Connect page, or add --key '<string>' to the line above)"
 fi
 
 echo; echo

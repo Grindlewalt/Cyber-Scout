@@ -179,6 +179,7 @@
     if (CS.user && CS.user.role === "admin" && CS.session && !CS.session.configured) next = "#/setup";
     if (location.hash === next) route(); else location.hash = next;
   }
+  CS.afterAuth = afterAuth;        // (sync.js: the Client's Connect page after a connection key signed in)
 
   const appRoute = route;
   route = async function (scroll) {
@@ -198,7 +199,8 @@
     }
     if (CS.platform) {
       if (CS.session.setup_required && p[0] !== "setup") { location.replace("#/setup"); return; }
-      if (!CS.session.setup_required && !CS.user && p[0] !== "login") { goLogin(); return; }
+      // (the Client's Connect page stays reachable signed out: "Change server" and connection keys)
+      if (!CS.session.setup_required && !CS.user && p[0] !== "login" && !(CS.session.client && p[0] === "connect")) { goLogin(); return; }
       if (CS.user && p[0] === "login") { afterAuth(); return; }
       if (CS.user && CS.user.role === "admin" && !CS.session.configured && !p.length) { location.replace("#/setup"); return; }
     }
@@ -309,7 +311,8 @@
         <label>Username<input name="username" autocomplete="username" required maxlength="32" autocapitalize="none" spellcheck="false"></label>
         <label>Password<input name="password" type="password" autocomplete="current-password" placeholder="Leave blank if you don't have one"></label>
         <button type="submit" class="primary">Sign in</button><div class="cserr" aria-live="polite"></div>
-        <div class="note" style="margin:0">Forgot your password? Your team's admin can reset it (Admin → Teammates).</div></form></div>`;
+        <div class="note" style="margin:0">Forgot your password? Your team's admin can reset it (Admin → Teammates).</div></form>
+      ${cl ? `<a class="cx-keylink" href="#/connect/key">${CS.icon("key", "ico")}<span><b>Use a connection key</b><small>Your admin can make one (Admin → Teammates): it connects and signs in, no password.</small></span>${CS.icon("chevR", "ico")}</a>` : ""}</div>`;
     // a wrong password: say so under the password, and clear it for the next try
     const bad = x => {
       if (x && x.status === 401 && /username or password/i.test(x.message || "")) { const pw = $app.querySelector("input[name=password]"); if (pw) pw.value = ""; x.field = "password"; }

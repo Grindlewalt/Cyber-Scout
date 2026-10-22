@@ -16,6 +16,7 @@ import uuid
 from urllib.parse import quote, unquote, urlsplit
 
 from . import VERSION
+from .install import NotInstalled
 from .net import MUTATING, Conn, HTTPError, NetError, detail_text
 from .store import MEDIA_MODES, normalize_server
 from .util import safe_relpath, target_path
@@ -29,6 +30,10 @@ MAX_BODY = 25 * 1024 * 1024
 MAX_QUEUED_BODY = 2 * 1024 * 1024
 WRITE_WAIT_S = 20
 EVENT_RE = re.compile(r"^[0-9]{4}[a-z0-9]{1,16}$")
+KEY_MAX = 64                                     # a connection key, e.g. 7KQ2-M9XA-P4HD-W8NE (the server checks it)
+# writes whose answer is the point (an admin's "Make key": the key is only in the answer): straight to the server, never
+# queued (offline: 503)
+DIRECT_RE = re.compile(r"^/users/[^/]+/connect-key$")
 
 CSP = ("default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
        "font-src 'self' data: https://fonts.gstatic.com; img-src 'self' data: blob: https://i.ytimg.com "
@@ -415,13 +420,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self.send_json(503, {"offline": True, "detail": "no server configured: set the server address "
                                                                    "in Settings → Connection"})
         if method in MUTATING:
-            if sub == "/auth/login":
-                return self.page_login(body)
+            if sub in ("/auth/login", "/auth/key-login"):
+                return self.page_login(body, key=sub == "/auth/key-login")
             if sub == "/auth/logout":
                 app.logout()
                 return self.send_json(204, None)
-            # sign-in/out/password/setup and downloads (/sync/bundle) are never queued
-            direct = sub.startswith(("/auth/", "/sync/")) or sub == "/setup" or len(body) > MAX_QUEUED_BODY
+            # sign-in/out/password/setup, downloads (/sync/bundle) and connection keys are never queued
+            direct = (sub.startswith(("/auth/", "/sync/")) or sub == "/setup" or DIRECT_RE.match(sub)
+                      or len(body) > MAX_QUEUED_BODY)
             if direct:
                 return self.forward(method, full, body, sub)
             return self.queue_write(method, full, body)
@@ -517,15 +523,23 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._write(data)
         return True if not answer else None
 
-    def page_login(self, body):
-        """The web app's own sign-in form (POST /app/v1/auth/login) signs the *client* in."""
+    def page_login(self, body, key=False):
+        """The web app's own sign-in (POST /app/v1/auth/login, or /auth/key-login with a connection key) signs the
+        *client* in."""
         app = self.app
         try:
             d = json.loads(body.decode("utf-8") or "{}")
+            if not isinstance(d, dict):
+                raise ValueError("expected a JSON object")
         except (ValueError, UnicodeDecodeError):
             return self.send_json(422, {"detail": "bad JSON"})
+        if key and _bad_key(d.get("key")):
+            return self.send_json(422, {"detail": _bad_key(d.get("key"))})
         try:
-            sess = app.login(str(d.get("username") or ""), str(d.get("password") or ""))
+            if key:
+                sess = app.login_key(d["key"].strip())
+            else:
+                sess = app.login(str(d.get("username") or ""), str(d.get("password") or ""))
         except HTTPError as e:
             return self.send_json(e.status if 400 <= e.status < 600 else 502, {"detail": _cap(str(e))})
         except NetError as e:
@@ -586,21 +600,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 return self.send_json(200, app.config.public())
             if sub == "test" and m == "POST":
                 return self.ctl_test(self.json_body())
-            if sub == "login" and m == "POST":
-                d = self.json_body()
-                if not app.server.base:
-                    return self.send_json(400, {"ok": False, "detail": "set the server address first"})
-                try:
-                    sess = app.login(str(d.get("username") or ""), str(d.get("password") or ""))
-                except HTTPError as e:
-                    return self.send_json(e.status if 400 <= e.status < 600 else 502,
-                                          {"ok": False, "detail": _cap(str(e))})
-                except NetError as e:
-                    return self.send_json(503, {"ok": False, "offline": True,
-                                                "detail": f"Can't reach the server: {e}."})
-                u = sess.get("user") or {}
-                return self.send_json(200, {"ok": True, "user": {"display_name": u.get("display_name"),
-                                                                 "role": u.get("role")}})
+            if sub in ("login", "login-key") and m == "POST":
+                return self.ctl_login(self.json_body(), key=sub == "login-key")
             if sub == "logout" and m == "POST":
                 app.logout()
                 return self.send_json(200, {"ok": True})
@@ -634,6 +635,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 return self.send_json(200, {"gpu": g})
             if sub == "outbox" and m == "GET":
                 return self.send_json(200, app.db.items())
+            if sub == "quit" and m == "POST":
+                return self.ctl_quit()
+            if sub == "uninstall" and m == "POST":
+                return self.ctl_uninstall(self.json_body())
             me = re.match(r"^events/([^/]+)$", sub)
             if me and m == "DELETE":
                 ev = me.group(1)
@@ -657,6 +662,52 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self.send_json(404, {"detail": "unknown client endpoint"})
         except (ValueError, UnicodeDecodeError) as e:
             return self.send_json(422, {"detail": f"bad request: {e}"})
+
+    def ctl_login(self, d, key=False):
+        """POST login {username, password} / login-key {key}: the client signs itself in (the page never sees the
+        server's session) -> {ok, user: {display_name, role}}; the server's status + {ok:false, detail} (401, 429, ...);
+        503 {offline:true}."""
+        app = self.app
+        if key and _bad_key(d.get("key")):
+            return self.send_json(422, {"ok": False, "detail": _bad_key(d.get("key"))})
+        if not app.server.base:
+            return self.send_json(400, {"ok": False, "detail": "set the server address first"})
+        try:
+            if key:
+                sess = app.login_key(d["key"].strip())
+            else:
+                sess = app.login(str(d.get("username") or ""), str(d.get("password") or ""))
+        except HTTPError as e:
+            return self.send_json(e.status if 400 <= e.status < 600 else 502, {"ok": False, "detail": _cap(str(e))})
+        except NetError as e:
+            return self.send_json(503, {"ok": False, "offline": True, "detail": f"Can't reach the server: {e}."})
+        u = sess.get("user") or {}
+        return self.send_json(200, {"ok": True, "user": {"display_name": u.get("display_name"), "role": u.get("role")}})
+
+    def ctl_quit(self):
+        """Stop: answer, then shut down like Ctrl+C (main() does it) and make sure the login item doesn't start the
+        client again right away (csclient/install.py)."""
+        app = self.app
+        how, then = app.install.stop()
+        log.info("stop asked by the app (%s)", how)
+        self.close_connection = True
+        self.send_json(200, {"ok": True, "how": how, "message": app.install.stop_message(how)})
+        app.request_quit(then)
+
+    def ctl_uninstall(self, d):
+        """Uninstall {delete_data?: bool}: remove what the install scripts installed (csclient/install.py), answer
+        {ok, removed, kept, errors}, then stop; 409 when run from source."""
+        app = self.app
+        dd = d.get("delete_data", False)
+        if not isinstance(dd, bool):
+            return self.send_json(422, {"detail": "delete_data: true or false"})
+        try:
+            out, then = app.install.uninstall(dd)
+        except NotInstalled as e:
+            return self.send_json(409, {"detail": str(e)})
+        self.close_connection = True
+        self.send_json(200, out)
+        app.request_quit(then)
 
     def ctl_config(self, d):
         app = self.app
@@ -816,3 +867,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
 def _cap(t):
     return t[:1].upper() + t[1:] if t else t
+
+
+def _bad_key(k):
+    """What is wrong with a connection key, or None (a light check; the server decides)."""
+    if not isinstance(k, str) or not k.strip():
+        return "key: the connection key, e.g. 7KQ2-M9XA-P4HD-W8NE"
+    if len(k.strip()) > KEY_MAX or any(c < " " or c == "\x7f" for c in k):
+        return f"key: at most {KEY_MAX} characters, no control characters"
+    return None

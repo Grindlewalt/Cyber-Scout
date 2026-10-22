@@ -2,10 +2,14 @@
 # Cyber-Scout Client install from @SITE@ (code @SHA@, @DAY@): macOS and Linux.
 #   curl -fsSL @SITE@/downloads/get-client.sh | bash
 #   curl -fsSL @SITE@/downloads/get-client.sh | bash -s -- --server http://<your server>:7560
+#   curl -fsSL @SITE@/downloads/get-client.sh | bash -s -- --key 'cyberscout:http://<your server>:7560#XXXX-XXXX-XXXX-XXXX'
 # Downloads this computer's Client build from the site, checks it against the SHA-256 below (written when the site was
 # published), installs it to ~/CyberScout, starts it at login (macOS: a LaunchAgent; Linux: a systemd user service)
 # and opens it in the browser. Run it again to update. Options (or the variable in brackets):
 #   --server URL      your Cyber-Scout server, set on the first install [CS_SERVER] (this site's default: @SERVER_SHOWN@)
+#   --key STRING      a connection key from your admin [CS_KEY]: cyberscout:<server>#<KEY> (also <server>#<KEY>,
+#                     'server=<server> key=<KEY>' or just the KEY). Its server counts as --server (unless that is
+#                     given); the browser then opens the Client's Connect page, which signs you in with it (once)
 #   --dir DIR         where the program goes [CS_CLIENT_DIR] (~/CyberScout)
 #   --data DIR        the Client's data folder [CS_CLIENT_DATA] (default: the Client's own)
 #   --port N          local port [CS_CLIENT_PORT] (7600)
@@ -20,25 +24,38 @@ main() {
   SITE="${CS_SITE:-@SITE@}"; SITE="${SITE%/}"
   SERVER="${CS_SERVER:-@SERVER@}"; SERVER_SET=0; [ -n "${CS_SERVER:-}" ] && SERVER_SET=1
   DIR="${CS_CLIENT_DIR:-$HOME/CyberScout}"; DATA="${CS_CLIENT_DATA:-}"; PORT="${CS_CLIENT_PORT:-7600}"
-  AUTO=1; OPEN=1; UNINSTALL=0
+  KEY="${CS_KEY:-}"; AUTO=1; OPEN=1; UNINSTALL=0
   while [ $# -gt 0 ]; do
     case "$1" in
       --server) need "$@"; SERVER="$2"; SERVER_SET=1; shift 2;;
       --server=*) SERVER="${1#*=}"; SERVER_SET=1; shift;;
+      --key) need "$@"; KEY="$2"; shift 2;;      --key=*) KEY="${1#*=}"; shift;;
       --dir) need "$@"; DIR="$2"; shift 2;;      --dir=*) DIR="${1#*=}"; shift;;
       --data) need "$@"; DATA="$2"; shift 2;;    --data=*) DATA="${1#*=}"; shift;;
       --port) need "$@"; PORT="$2"; shift 2;;    --port=*) PORT="${1#*=}"; shift;;
       --no-autostart) AUTO=0; shift;;
       --no-open) OPEN=0; shift;;
       --uninstall) UNINSTALL=1; shift;;
-      -h|--help) echo "options: --server URL  --dir DIR  --data DIR  --port N  --no-autostart  --no-open  --uninstall"
+      -h|--help) echo "options: --server URL  --key STRING  --dir DIR  --data DIR  --port N  --no-autostart  --no-open  --uninstall"
+                 echo "  --key: a connection key from your admin, e.g. 'cyberscout:http://10.0.0.58:7560#7KQ2-M9XA-P4HD-W8NE'"
+                 echo "         (or <server>#<KEY>, 'server=<server> key=<KEY>', just the KEY): sets the server, signs you in once"
                  echo "(details: the top of $SITE/downloads/get-client.sh)"; return 0;;
       *) die "unknown option: $1 (try --help)";;
     esac
   done
-  SERVER="${SERVER%/}"
   [[ "$PORT" =~ ^[0-9]{2,5}$ ]] && [ "$PORT" -le 65535 ] || die "bad --port: $PORT"
   URL_RE='^https?://[][A-Za-z0-9.:_-]+(/[A-Za-z0-9._~/-]*)?$'   # ] first: literal in a bracket expression
+  KEY_RE='^[A-Za-z0-9 _-]{4,64}$'             # the server ignores case, spaces and dashes
+  KEY="${KEY#"${KEY%%[![:space:]]*}"}"; KEY="${KEY%"${KEY##*[![:space:]]}"}"; KEY_SERVER=""; KEY_CODE=""
+  if [ -n "$KEY" ] && [ "$UNINSTALL" = 0 ]; then
+    parse_key "$KEY" && [[ "$KEY_CODE" =~ $KEY_RE ]] ||
+      die "--key should look like cyberscout:http://10.0.0.58:7560#7KQ2-M9XA-P4HD-W8NE (as your admin sent it), got: $KEY"
+    KEY_SERVER="${KEY_SERVER%/}"
+    [ -z "$KEY_SERVER" ] || [[ "$KEY_SERVER" =~ $URL_RE ]] ||
+      die "the server in --key needs http:// or https://, like http://10.0.0.58:7560, got: $KEY_SERVER"
+    if [ -n "$KEY_SERVER" ] && [ "$SERVER_SET" = 0 ]; then SERVER="$KEY_SERVER"; SERVER_SET=1; fi
+  fi
+  SERVER="${SERVER%/}"
   [ -z "$SERVER" ] || [[ "$SERVER" =~ $URL_RE ]] ||
     die "--server must look like http://10.0.0.58:7560 or https://scout.example.org, got: $SERVER"
   case "$DIR" in /*) ;; *) DIR="$PWD/$DIR";; esac
@@ -96,7 +113,7 @@ main() {
     if [ ! -e "$DDIR/config.json" ]; then
       (umask 077; mkdir -p "$DDIR"; printf '{"server": "%s"}\n' "$SERVER" > "$DDIR/config.json")
       info "server: $SERVER (change it later in the Client: Settings, Connection)"
-    elif [ "$SERVER_SET" = 1 ]; then
+    elif [ "$SERVER_SET" = 1 ] && [ -z "$KEY_SERVER" ]; then
       info "kept the server already set in the Client: change it there (Settings, Connection) to use $SERVER"
     fi
   fi
@@ -113,7 +130,9 @@ main() {
       echo '<plist version="1.0"><dict>'
       echo "  <key>Label</key><string>$LABEL</string>"
       echo "  <key>ProgramArguments</key><array><string>$BIN</string>$(printf '<string>%s</string>' "${ARGS[@]}")</array>"
-      echo '  <key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>ThrottleInterval</key><integer>10</integer>'
+      # restarted after a crash, not after a clean exit (Stop in the app; it starts again at the next login)
+      echo '  <key>RunAtLoad</key><true/><key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>'
+      echo '  <key>ThrottleInterval</key><integer>10</integer>'
       echo '  <key>ProcessType</key><string>Interactive</string>'
       echo "  <key>StandardOutPath</key><string>$LOG</string><key>StandardErrorPath</key><string>$LOG</string>"
       echo '</dict></plist>'
@@ -140,14 +159,20 @@ main() {
   URL="http://127.0.0.1:$PORT/"
   for _ in $(seq 1 40); do curl -fs -o /dev/null "$URL" && break; sleep 0.5; done
   curl -fs -o /dev/null "$URL" || die "it didn't answer on $URL yet: see $LOG"
+  OPEN_URL="$URL"                              # with a key: the Connect page connects + signs in, then forgets k
+  [ -z "$KEY" ] || OPEN_URL="${URL}#/connect?k=$(urlenc "$KEY")"
   if [ "$OPEN" = 1 ]; then
-    if [ "$OS" = Darwin ]; then open "$URL" || true
-    elif [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ] && have xdg-open; then (xdg-open "$URL" >/dev/null 2>&1 &) || true; fi
+    if [ "$OS" = Darwin ]; then open "$OPEN_URL" || true
+    elif [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ] && have xdg-open; then (xdg-open "$OPEN_URL" >/dev/null 2>&1 &) || true
+    else OPEN=0; fi
   fi
   echo
   bold "Cyber-Scout Client is running: $URL"
   info "$HOW"
-  if [ -n "$SERVER" ]; then info "sign in with your Cyber-Scout account and it syncs with the server"
+  if [ -n "$KEY" ] && [ "$OPEN" = 1 ]; then info "the page that opened signs you in with your connection key"
+  elif [ -n "$KEY" ]; then info "to sign in, open this once (it uses your connection key, which works once):"
+    info "  $OPEN_URL"
+  elif [ -n "$SERVER" ]; then info "sign in with your Cyber-Scout account and it syncs with the server"
   else info "first: Settings, Connection: type your server's address (the server installer printed it)"; fi
   info "data: $DDIR   log: $LOG"
   info "update: run the same command again   remove: curl -fsSL $SITE/downloads/get-client.sh | bash -s -- --uninstall"
@@ -163,6 +188,28 @@ stop_running() {
   for _ in $(seq 1 20); do pgrep -f "$re" >/dev/null 2>&1 || break; sleep 0.25; done
 }
 user_systemd() { have systemctl && systemctl --user show-environment >/dev/null 2>&1; }
+# a connection key -> KEY_SERVER (may be empty) + KEY_CODE. Forms: cyberscout:<server>#<KEY>, <server>#<KEY>,
+# 'server=<server> key=<KEY>', or just the KEY (the web app's Connect page reads the same ones)
+parse_key() {
+  local s="${1#cyberscout:}" t; local -a w
+  KEY_SERVER=""; KEY_CODE=""
+  case "$s" in
+    *"#"*) KEY_SERVER="${s%%#*}"; KEY_CODE="${s#*#}";;
+    *=*) read -ra w <<< "$s"
+         for t in "${w[@]}"; do
+           case "$t" in server=*) KEY_SERVER="${t#server=}";; key=*) KEY_CODE="${t#key=}";; *) return 1;; esac
+         done;;
+    *) KEY_CODE="$s";;
+  esac
+}
+urlenc() {                                     # percent-encode everything but A-Z a-z 0-9 . _ ~ -
+  local LC_ALL=C s="$1" i c out=""
+  for ((i = 0; i < ${#s}; i++)); do
+    c="${s:i:1}"
+    case "$c" in [A-Za-z0-9._~-]) out="$out$c";; *) out="$out$(printf '%%%02X' "'$c")";; esac
+  done
+  printf '%s' "$out"
+}
 need() { [ $# -ge 2 ] || die "$1 needs a value"; }
 have() { command -v "$1" >/dev/null 2>&1; }
 bold() { printf '\033[1m%s\033[0m\n' "$*"; }

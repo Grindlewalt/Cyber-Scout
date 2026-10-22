@@ -825,5 +825,19 @@ class TestPathSafety(unittest.TestCase):
         self.assertFalse(os.path.exists(os.path.join(self.root, "api", "e", "b.bin")))
 
 
+class TestPlainHttp(unittest.TestCase):
+    def test_plain_http_answer_to_https(self):
+        """Test connection's "doesn't use HTTPS" (+ suggest http://): OpenSSL words it differently per version; newer
+        builds give no reason code, only the text (CI's "[SSL] record layer failure")."""
+        import ssl
+        from csclient.net import _plain_http
+        for msg in ("[SSL: WRONG_VERSION_NUMBER] wrong version number (_ssl.c:1032)",
+                    "[SSL] record layer failure (_ssl.c:1010)", "[SSL: HTTP_REQUEST] http request (_ssl.c:1000)",
+                    "[SSL] packet length too long (_ssl.c:1000)", "[SSL: UNKNOWN_PROTOCOL] unknown protocol"):
+            self.assertTrue(_plain_http(ssl.SSLError(1, msg)), msg)
+        self.assertFalse(_plain_http(ssl.SSLError(1, "[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed")))
+        self.assertFalse(_plain_http(OSError("wrong version number")))
+
+
 if __name__ == "__main__":
     unittest.main()

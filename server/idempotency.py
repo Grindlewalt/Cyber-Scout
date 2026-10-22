@@ -9,8 +9,9 @@ A signed-in POST/PUT/PATCH/DELETE with `Idempotency-Key: <1-128 chars of A-Z a-z
   * same key while the first is still running: waits up to ~10 s for it, then 429 + Retry-After (not 409, so an
     outbox never mistakes it for a picklist conflict; retry later and get the replay).
 Not stored (so a retry runs again): 5xx and transient refusals (401, 403, 408, 423, 425, 429). Requests without
-the header, without a session, and sign-in / sign-out / password / setup and /sync/bundle (a download) are
-passed through unchanged. Runs inside the CSRF guard (main.py), so a replay still needs a valid CSRF header."""
+the header, without a session, and sign-in / sign-out / password / setup, /sync/bundle (a download) and
+/users/<id>/connect-key (its answer is a one-time key: never stored) are passed through unchanged. Runs inside the
+CSRF guard (main.py), so a replay still needs a valid CSRF header."""
 import asyncio, hashlib, re, time
 
 from starlette.concurrency import run_in_threadpool
@@ -44,7 +45,10 @@ MAX_STORED_BODY = 1 << 20
 KEY_RE = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
 SAFE = {"GET", "HEAD", "OPTIONS"}
 # sign-in / out / password / setup set cookies (not replayed); the bundle is a download
-EXCLUDE = {PREFIX + p for p in ("/sync/bundle", "/setup", "/auth/login", "/auth/logout", "/auth/password")}
+EXCLUDE = {PREFIX + p for p in ("/sync/bundle", "/setup", "/auth/login", "/auth/key-login", "/auth/logout",
+                                "/auth/password")}
+# a new connection key is a secret shown once: its answer must not sit in the idempotency table for 48 h
+EXCLUDE_RE = re.compile(re.escape(PREFIX) + r"/users/[^/]+/connect-key")
 NOT_STORED = {401, 403, 408, 423, 425, 429}
 _last_purge = [0.0]
 
@@ -105,7 +109,7 @@ class IdempotencyMiddleware:
         if scope["type"] != "http" or scope["method"] in SAFE:
             return await self.app(scope, receive, send)
         path = scope["path"]
-        if not path.startswith(PREFIX + "/") or path in EXCLUDE:
+        if not path.startswith(PREFIX + "/") or path in EXCLUDE or EXCLUDE_RE.fullmatch(path):
             return await self.app(scope, receive, send)
         key = None
         for k, v in scope.get("headers") or ():

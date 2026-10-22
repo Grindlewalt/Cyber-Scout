@@ -22,7 +22,54 @@
   .envrow input, .envrow select { width: 100%; }
   @media (max-width: 560px) { .envrow { grid-template-columns: 1fr; } }
   .wk .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--ink-3); margin-top: 5px; flex: none; } .wk.ok .dot { background: var(--good); } .wk.paused .dot { background: var(--caution); }
-  @media (pointer: coarse) { .uacts button, .evacts .cmp-btn, .evacts button { min-height: 44px; } }`;
+  @media (pointer: coarse) { .uacts button, .evacts .cmp-btn, .evacts button { min-height: 44px; } }
+  /* connection key sheet */
+  .pill.ck-pill { color: var(--ink); border-color: var(--accent-line); background: var(--accent-tint); } .pill.ck-pill .ico { width: 11px; height: 11px; vertical-align: -1px; margin-right: 3px; color: var(--accent); }
+  .ck { display: grid; gap: var(--sp-4); } .ck > .cserr:empty { display: none; } .ck > p, .ck-sec > p { margin: 0; line-height: 1.55; text-wrap: pretty; }
+  .ck-who { display: inline-flex; align-items: baseline; gap: 6px; flex-wrap: wrap; }
+  .ck-note { display: flex; gap: 10px; align-items: flex-start; padding: var(--sp-3); border-radius: var(--r-p); background: var(--surface-2); font-size: var(--fs-foot); }
+  .ck-note > .ico { width: 16px; height: 16px; flex: none; margin-top: 1px; color: var(--ink-2); } .ck-note > span { flex: 1; min-width: 0; } .ck-note b { color: var(--ink); }
+  .ck-note.off { background: var(--caution-tint); border: 1px solid var(--caution-line); } .ck-note.off > .ico { color: var(--caution); }
+  .ck-note.live { align-items: center; flex-wrap: wrap; } .ck-note.live > .ico { color: var(--accent); }
+  .ck-note.done > .ico { color: var(--good); }
+  .ck-form { display: grid; gap: var(--sp-3); }
+  .ck-f { display: grid; gap: 6px; font-size: var(--fs-foot); font-weight: 500; color: var(--ink-2); border: 0; padding: 0; margin: 0; min-width: 0; }
+  .ck-f legend { padding: 0; margin-bottom: 6px; }
+  .ck-f .csin { width: 100%; min-height: 40px; font-size: var(--fs-body); }
+  .ck-f .hint { font-weight: 400; font-size: var(--fs-cap); color: var(--ink-2); } .ck-f .hint.warn { color: var(--caution); font-weight: 500; } .ck-f .hint.bad { color: var(--bad); }
+  .ck-segs { display: inline-flex; width: max-content; max-width: 100%; border: 1px solid var(--line-strong); border-radius: var(--r-s); overflow: hidden; background: var(--surface); }
+  .ck-segs label { position: relative; display: block; }
+  .ck-segs input { position: absolute; inset: 0; opacity: 0; margin: 0; cursor: pointer; }
+  .ck-segs span { display: block; padding: 8px 16px; font-size: var(--fs-body); font-weight: 500; color: var(--ink); border-left: 1px solid var(--line); white-space: nowrap; }
+  .ck-segs label:first-child span { border-left: 0; }
+  .ck-segs label:hover span { background: var(--surface-2); }
+  .ck-segs input:checked + span { background: var(--accent-fill); color: var(--on-accent); font-weight: 600; }
+  .ck-segs input:focus-visible + span { outline: 2px solid var(--focus, var(--accent)); outline-offset: -3px; }
+  .ck-go { display: flex; flex-wrap: wrap; gap: var(--sp-2); align-items: center; }
+  .ck-go button, .ck-acts button { min-height: 40px; font-size: var(--fs-body); }
+  .ck-box { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--sp-3); align-items: center; padding: var(--sp-4); border-radius: var(--r-m);
+    background: var(--accent-tint); border: 1px solid var(--accent-line); }
+  .ck-str { font-family: var(--mono); line-height: 1.45; overflow-wrap: anywhere; word-break: break-all; user-select: all; -webkit-user-select: all; cursor: text; }
+  .ck-str .ck-a { display: block; font-size: var(--fs-foot); color: var(--ink-2); }
+  .ck-str .ck-k { display: block; font-size: clamp(19px, 3.2vw, 26px); font-weight: 700; letter-spacing: .04em; color: var(--ink); font-variant-numeric: tabular-nums; }
+  .ck-str ::selection, .ck-str::selection { background: var(--accent-fill); color: var(--on-accent); }
+  .ck-box button { min-height: 40px; font-size: var(--fs-body); } .ck-box button .ico, .ck-cmd button .ico { width: 15px; height: 15px; vertical-align: -3px; margin-right: 6px; }
+  .ck-meta { font-size: var(--fs-foot); color: var(--ink-2); } .ck-meta b { color: var(--ink); } .ck-meta b.ck-adm { color: var(--caution); }
+  .cksheet .cmp-h h2 { display: flex; align-items: center; gap: 8px; } .cksheet .cmp-h h2 .ico { width: 20px; height: 20px; color: var(--accent); flex: none; }
+  .ck-sec { display: grid; gap: var(--sp-2); } .ck-sec h3 { margin: 0; font-size: var(--fs-body); }
+  .ck-steps { margin: 0; padding: 0; list-style: none; display: grid; gap: var(--sp-3); counter-reset: ck; }
+  .ck-steps > li { counter-increment: ck; display: grid; grid-template-columns: 24px minmax(0, 1fr); gap: 4px var(--sp-3); align-items: start; font-size: var(--fs-foot); color: var(--ink-2); line-height: 1.5; }
+  .ck-steps > li::before { content: counter(ck); width: 24px; height: 24px; border-radius: 50%; display: grid; place-items: center; font-size: 12px; font-weight: 700; background: var(--surface-3); color: var(--ink); }
+  .ck-steps > li > div { display: grid; gap: var(--sp-2); min-width: 0; } .ck-steps b { color: var(--ink); font-weight: 600; }
+  .ck-cmd { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px var(--sp-2); align-items: center; padding: var(--sp-2) var(--sp-2) var(--sp-2) var(--sp-3); border-radius: var(--r-p); background: var(--surface-2); }
+  .ck-cmd .ck-os { grid-column: 1 / -1; font-size: var(--fs-cap); font-weight: 600; color: var(--ink-2); }
+  .ck-cmd code { font-family: var(--mono); font-size: 12.5px; color: var(--ink); overflow-wrap: anywhere; word-break: break-all; line-height: 1.5; }
+  .ck-cmd button { min-height: 34px; align-self: end; }
+  .ck-ph { color: var(--caution); font-style: italic; text-decoration: underline dashed; text-underline-offset: 3px; }
+  .ck-acts { display: flex; flex-wrap: wrap; gap: var(--sp-2); justify-content: flex-end; align-items: center; padding-top: var(--sp-3); border-top: 1px solid var(--line); }
+  .ck-acts .grow { flex: 1; }
+  @media (max-width: 520px) { .ck-box { grid-template-columns: minmax(0, 1fr); } .ck-box button { justify-self: start; } .ck-acts button { flex: 1 1 auto; } .ck-acts .grow { display: none; } }
+  @media (pointer: coarse) { .ck-segs span { padding: 11px 16px; } .ck-cmd button { min-height: 44px; } }`;
   document.head.appendChild(css);
 
   CS.globalRoute("admin", async tab => {
@@ -42,6 +89,132 @@
   // The table is full width so Reset password / Disable / Delete show on a desktop; on a narrow screen they fold into the
   // row's "›" detail (app.js moves the real buttons there, so they keep working). One delegated handler per table.
   const MIN_ADMIN = 10, MIN_MEMBER = 4;   // server: PASSWORD_MIN / MEMBER_PASSWORD_MIN
+
+  // ---------------------------------------------------------------- connection keys
+  // A one-time key that connects a laptop's Cyber-Scout Client to this server and signs it in as one teammate, no password
+  // (POST / DELETE users/<id>/connect-key; it works once, until it expires, and a new one replaces the old). The admin
+  // hands over the connection string "cyberscout:<server>#<KEY>"; the Client's Connect page (sync.js parseConn) and the
+  // Client installer (--key / CS_KEY) take it. The key is shown only here, right after it's made: it's never stored in
+  // this browser, and the server keeps only its expiry (users list: connect_key_expires).
+  const KEY_HOURS = [[24, "1 day"], [168, "7 days"], [720, "30 days"]];
+  const secs = v => v == null || v === "" ? null : typeof v === "number" ? (v > 1e11 ? v / 1000 : v) : (Date.parse(v) / 1000 || null);
+  const keyLive = u => { const t = secs(u.connect_key_expires); return t && t > Date.now() / 1000 ? t : null; };
+  const keyPill = u => { const t = keyLive(u); return t ? ` <span class="pill ck-pill" title="A connection key for ${esc(u.username)} works once, until ${esc(CS.fmtWhen(t, { day: true }))}">${CS.icon("key", "ico")}key until ${esc(CS.fmtWhen(t, { day: true }))}</span>` : ""; };
+  const lsGet3 = k => { try { return localStorage.getItem(k) || ""; } catch (e) { return ""; } };
+  const lsSet3 = (k, v) => { try { v ? localStorage.setItem(k, v) : localStorage.removeItem(k); } catch (e) { } };
+  const normSrv = v => CS.sync && CS.sync.normServer ? CS.sync.normServer(v) : (/^https?:\/\/[^\s]+$/.test(String(v || "").trim()) ? String(v).trim().replace(/\/+$/, "") : null);
+  /** the address laptops should use: the Client's server when this page is the Client, else this page's own address */
+  function keyServer() {
+    const sy = CS.sync;
+    if (sy && sy.mode === "client" && sy.status && sy.status.server) return sy.status.server;
+    try { return new URL(".", location.href).href.replace(/\/+$/, ""); } catch (e) { return location.origin; }
+  }
+  const hostOf = s => { try { return new URL(s).hostname.toLowerCase(); } catch (e) { return ""; } };
+  const loopback = s => { const h = hostOf(s); return h === "localhost" || h.endsWith(".localhost") || /^127\./.test(h) || h === "[::1]" || h === "0.0.0.0"; };
+  // shell / PowerShell single quotes: the string never has one (normServer'd address + key alphabet), but be sure
+  const q1 = s => String(s).replace(/'/g, "%27");
+
+  function keySheet(u, after) {
+    const name = esc(u.display_name || u.username), live0 = keyLive(u);
+    let hours = 168, srv = keyServer(), made = null, done = "", changed = false, busy = false;
+    const s = CS.sheet({ title: `${CS.icon("key", "ico")}<span>Connection key <span class="muted">for ${name}</span></span>`, wide: true, cls: "cksheet", onClose: () => { made = null; if (changed && after) after(done); } });
+    const body = s.body;
+    const dlOf = () => { const v = lsGet3("cs:dlsite"); const n = v ? normSrv(v) : null; return n ? n.replace(/\/downloads(\/.*)?$/, "") : null; };
+    function render() {
+      const live = keyLive(u);
+      const who = `<span class="ck-who"><b>${name}</b>${u.display_name && u.display_name !== u.username ? ` <span class="muted small">${esc(u.username)}</span>` : ""} <span class="pill role">${esc(u.role)}</span></span>`;
+      let html = `<div class="ck">`;
+      if (!made) html += `<p>One key connects a laptop's Cyber-Scout Client to this server and signs it in as ${who}. Nobody types a password.</p>`;
+      if (u.role === "admin" && !u.disabled && !made) html += `<div class="ck-note off">${CS.icon("warn", "ico")}<span><b>This key signs in as an admin</b> (everything: accounts, settings, the server). Hand it over in person.</span></div>`;
+      if (u.disabled) html += `<div class="ck-note off">${CS.icon("ban", "ico")}<span><b>${name}'s account is disabled,</b> so a key couldn't sign it in. Enable it first (the Enable button in its row), then make a key.</span></div>`;
+      if (done) html += `<div class="ck-note done" role="status">${CS.icon("check", "ico")}<span>${esc(done)}</span></div>`;
+      if (!made && live) html += `<div class="ck-note live">${CS.icon("key", "ico")}<span><b>A key is active</b> until ${esc(CS.fmtWhen(live, { day: true }))}. It can't be shown again: make a new one to get a line to hand over.</span><button type="button" class="danger" data-k="revoke">Revoke</button></div>`;
+      if (made) html += resultHTML();
+      else if (!u.disabled) html += `<div class="ck-form">
+          <fieldset class="ck-f"><legend>Works once, for</legend><div class="ck-segs">${KEY_HOURS.map(([h, t]) => `<label><input type="radio" name="ckh" value="${h}"${h === hours ? " checked" : ""}><span>${t}</span></label>`).join("")}</div></fieldset>
+          <label class="ck-f">Server address laptops use<input class="csin" name="cksrv" value="${esc(srv)}" spellcheck="false" autocapitalize="none" autocomplete="off" inputmode="url"><span class="hint" data-part="srvhint"></span></label>
+          <div class="ck-go"><button type="button" class="primary" data-k="make">${live ? "Make a new key" : "Make key"}</button>${live ? `<span class="muted small">This cancels the active key.</span>` : ""}</div></div>`;
+      html += `<div class="cserr" role="alert" data-part="err"></div></div>`;
+      body.innerHTML = html;
+      srvHint();
+    }
+    function srvHint() {
+      const h = body.querySelector("[data-part=srvhint]"); if (!h) return;
+      const v = body.querySelector("[name=cksrv]").value, n = normSrv(v);
+      h.className = "hint" + (!n ? " bad" : loopback(n) ? " warn" : "");
+      h.textContent = !n ? "That isn't a server address (like 10.0.0.58:7560 or https://scout.example.org)."
+        : loopback(n) ? "That's this computer's own address: other laptops can't reach it. Put the server's address on the team network or the internet here."
+        : "Goes into the key. Laptops must reach it: the team network address, or the internet one if laptops connect from anywhere.";
+    }
+    function resultHTML() {
+      const str = `cyberscout:${q1(made.server)}#${made.key}`, dl = dlOf(), d = dl ? esc(dl) : `<span class="ck-ph">downloads page</span>`;
+      const sh = `curl -fsSL ${d}/downloads/get-client.sh | bash -s -- --key '${esc(str)}'`, ps = `$env:CS_KEY='${esc(str)}'; irm ${d}/downloads/get-client.ps1 | iex`;
+      return `<div class="ck-box"><div class="ck-str" id="ckstr" aria-label="Connection key for ${name}"><span class="ck-a">cyberscout:${esc(q1(made.server))}</span><span class="ck-k">#${esc(made.key)}</span></div>
+          <button type="button" class="primary" data-copy="${esc(str)}">${CS.icon("copy", "ico")}<span>Copy</span></button></div>
+        <p class="ck-meta">Works once, until <b>${esc(CS.fmtWhen(made.exp, { day: true }))}</b>. Making a new one cancels this one. ${u.role === "admin" ? `<b class="ck-adm">This key signs in as an admin: hand it over in person.</b>` : `Anyone who has it can sign in as ${name} once, so hand it to ${name} directly, not in a shared channel.`}</p>
+        <section class="ck-sec"><h3>On ${name}'s laptop</h3><ol class="ck-steps">
+          <li><div><span><b>The Client is installed:</b> open it and paste the line on its Connect page, under “Have a connection key?” (the sign-in page has a link: Use a connection key).</span></div></li>
+          <li><div><span><b>Not installed yet:</b> one line installs the Client, connects it and signs in. It's the get-client line from your team's downloads page, with the key added:</span>
+            <label class="ck-f">Downloads page address<input class="csin" name="ckdl" value="${esc(lsGet3("cs:dlsite"))}" placeholder="e.g. http://10.0.0.58:7580" spellcheck="false" autocapitalize="none" autocomplete="off" inputmode="url">
+              <span class="hint">Where your team got the installers. The app doesn't know it; this browser remembers what you type.</span></label>
+            <div data-part="cmds">${cmdsHTML(sh, ps, !!dl)}</div></div></li></ol></section>
+        <div class="ck-acts"><button type="button" class="danger" data-k="revoke">Revoke</button><span class="grow"></span><button type="button" data-k="again">Make a new key</button><button type="button" class="primary" data-x>Done</button></div>`;
+    }
+    const cmdsHTML = (sh, ps, ok) => `<div class="ck-cmd"><span class="ck-os">macOS, Linux (Terminal)</span><code>${sh}</code><button type="button" data-copy="${ok ? esc(strip(sh)) : ""}"${ok ? "" : ` disabled title="Add the downloads page address first"`}>${CS.icon("copy", "ico")}<span>Copy</span></button></div>
+      <div class="ck-cmd" style="margin-top:6px"><span class="ck-os">Windows (PowerShell)</span><code>${ps}</code><button type="button" data-copy="${ok ? esc(strip(ps)) : ""}"${ok ? "" : ` disabled title="Add the downloads page address first"`}>${CS.icon("copy", "ico")}<span>Copy</span></button></div>`;
+    const strip = h => { const t = document.createElement("textarea"); t.innerHTML = h.replace(/<[^>]+>/g, ""); return t.value; };
+    function redrawCmds() {
+      const box = body.querySelector("[data-part=cmds]"); if (!box || !made) return;
+      const str = `cyberscout:${q1(made.server)}#${made.key}`, dl = dlOf(), d = dl ? esc(dl) : `<span class="ck-ph">downloads page</span>`;
+      box.innerHTML = cmdsHTML(`curl -fsSL ${d}/downloads/get-client.sh | bash -s -- --key '${esc(str)}'`, `$env:CS_KEY='${esc(str)}'; irm ${d}/downloads/get-client.ps1 | iex`, !!dl);
+    }
+    const err = t => { const e = body.querySelector("[data-part=err]"); if (e) e.textContent = t ? CS.sentence(t) : ""; };
+    async function make(b) {
+      const inp = body.querySelector("[name=cksrv]"), n = normSrv(inp.value);
+      if (!n) { srvHint(); inp.setAttribute("aria-invalid", "true"); inp.focus(); return; }
+      busy = true; b.disabled = true; b.textContent = "Making…"; err("");
+      try {
+        const r = await CS.app("POST", `users/${u.id}/connect-key`, { hours });
+        const exp = secs(r.expires_at) || Date.now() / 1000 + hours * 3600;
+        made = { key: String(r.key || ""), server: n, exp }; srv = n; u.connect_key_expires = exp; done = ""; changed = true;
+        render();
+        const c = body.querySelector(".ck-box [data-copy]"); if (c) c.focus();
+      } catch (x) { if (b.isConnected) { b.disabled = false; b.textContent = keyLive(u) ? "Make a new key" : "Make key"; } err(x.message); }
+      finally { busy = false; }
+    }
+    async function revoke(b) {
+      b.disabled = true; err("");
+      try {
+        await CS.app("DELETE", `users/${u.id}/connect-key`);
+        made = null; u.connect_key_expires = null; changed = true;
+        done = `Revoked: ${u.display_name || u.username}'s key can't be used any more.`; render();
+      } catch (x) { if (b.isConnected) b.disabled = false; err(x.message); }
+    }
+    async function copy(b) {
+      const txt = b.dataset.copy; if (!txt) return;
+      const ok = typeof plCopy === "function" ? await plCopy(txt) : false, lab = b.querySelector("span") || b;
+      if (ok) { lab.textContent = "Copied"; setTimeout(() => { if (b.isConnected) lab.textContent = "Copy"; }, 2000); }
+      else {           // no clipboard (plain http on the team network): select the text to copy by hand
+        const t = b.parentElement.querySelector(".ck-str, code"); if (t) { const r = document.createRange(); r.selectNodeContents(t); const sel = getSelection(); sel.removeAllRanges(); sel.addRange(r); }
+        lab.textContent = "Selected: press Ctrl+C / ⌘C";
+      }
+    }
+    body.addEventListener("click", e => {
+      const b = e.target.closest("button"); if (!b || busy) return;
+      if (b.dataset.copy != null) copy(b);
+      else if (b.dataset.k === "make") make(b);
+      else if (b.dataset.k === "revoke") revoke(b);
+      else if (b.dataset.k === "again") { made = null; done = ""; render(); const m = body.querySelector("[data-k=make]"); if (m) m.focus(); }
+    });
+    body.addEventListener("change", e => { if (e.target.name === "ckh") hours = +e.target.value; });
+    body.addEventListener("keydown", e => { if (e.key === "Enter" && e.target.name === "cksrv") { e.preventDefault(); const m = body.querySelector("[data-k=make]"); if (m && !busy) make(m); } });
+    body.addEventListener("input", e => {
+      if (e.target.name === "cksrv") { srv = e.target.value; e.target.removeAttribute("aria-invalid"); srvHint(); }
+      else if (e.target.name === "ckdl") { const v = e.target.value.trim(); lsSet3("cs:dlsite", v && normSrv(v) ? v : ""); redrawCmds(); }
+    });
+    render();
+    const f = body.querySelector(live0 && !u.disabled ? "[data-k=make]" : "input[name=ckh]:checked, [data-k=make], [data-x]"); if (f) f.focus();
+  }
   async function users(el, flash) {
     const [list, sec] = await Promise.all([CS.app("GET", "users"), CS.app("GET", "admin/security").catch(() => null)]);
     const me = CS.user.id, pol = sec ? sec.passwordless_login : null;        // never | lan | everywhere
@@ -50,10 +223,10 @@
       : ` <span class="pill failed" title="passwordless sign-in is off (Activity → Sign-in rules): this account can't sign in until it has a password">no password: can't sign in</span>`) : "";
     el.innerHTML = `<div class="card"><h2>Teammates ${CS.help(CS.ROLES.map(r => `<span class="hl"><b>${r}</b>: ${esc(CS.ROLE_TIP[r])}</span>`).join(""), "What each role can do")}</h2>
       <div class="tablewrap"><table class="utab"><thead><tr><th>User</th><th>Role</th><th data-pri="300">Last sign-in</th><th data-pri="850"><span class="vh">Actions</span></th></tr></thead><tbody>
-      ${list.map(u => `<tr data-id="${u.id}" class="${u.disabled ? "dnp" : ""}"><td><b>${esc(u.username)}</b>${u.id === me ? ' <span class="pill">you</span>' : ""}${nopwPill(u)}<div class="muted small">${esc(u.display_name)}</div></td>
+      ${list.map(u => `<tr data-id="${u.id}" class="${u.disabled ? "dnp" : ""}"><td><b>${esc(u.username)}</b>${u.id === me ? ' <span class="pill">you</span>' : ""}${nopwPill(u)}${keyPill(u)}<div class="muted small">${esc(u.display_name)}</div></td>
         <td><select data-role aria-label="Role of ${esc(u.username)}" ${u.id === me ? `disabled title="you can't change your own role"` : ""}>${CS.ROLES.map(r => `<option value="${r}" ${r === u.role ? "selected" : ""}>${r}</option>`).join("")}</select>${u.id === me ? `<div class="muted small" style="white-space:normal">You can't change your own role.</div>` : ""}<div class="cserr rowerr" role="alert"></div></td>
         <td class="small">${u.disabled ? '<span class="pill failed">disabled</span>' : esc(u.last_login ? CS.fmtWhen(u.last_login) : "never")}${u.active_sessions ? `<div class="muted small">${u.active_sessions} session${u.active_sessions > 1 ? "s" : ""}</div>` : ""}</td>
-        <td><div class="uacts">${u.id === me ? `<button type="button" data-act="pw">Change my password</button>` : `<button type="button" data-act="reset" title="Set a new password (signs them out)">Reset password</button>
+        <td><div class="uacts"><button type="button" data-act="key" title="A one-time key that connects a laptop's Cyber-Scout Client and signs it in as ${esc(u.username)}">Connection key</button>${u.id === me ? `<button type="button" data-act="pw">Change my password</button>` : `<button type="button" data-act="reset" title="Set a new password (signs them out)">Reset password</button>
           <button type="button" data-act="toggle">${u.disabled ? "Enable" : "Disable"}</button> <button type="button" data-act="delete" class="danger" title="Delete the account (their notes stay)" aria-label="Delete ${esc(u.username)}">Delete</button>`}</div></td></tr>`).join("")}
       </tbody></table></div><div class="cserr" aria-live="polite" id="uerr"></div><div class="csok" role="status" aria-live="polite" id="uok"></div></div>
       <div class="card" id="uadd" style="margin-top:16px;max-width:620px"><h2>Add a teammate ${CS.help(`Admins need a password of ${MIN_ADMIN}+ characters. ${nopwOk ? `Everyone else may have none: they sign in with just the username${pol === "lan" ? " on the team network" : ""} (Activity → Sign-in rules).` : "Passwordless sign-in is off (Activity → Sign-in rules), so everyone needs a password: Generate makes one to share."} Share the username and password with them in person; they can change it under My account.`, "About passwords")}</h2>
@@ -97,6 +270,10 @@
       const u = r.u;
       try {
         if (b.dataset.act === "pw") { location.hash = "#/account"; return; }
+        if (b.dataset.act === "key") {
+          keySheet(u, m => users(el).then(() => { if (m) msg(m, true); const k = el.querySelector(`tr[data-id="${u.id}"]:not(.fx-d) button[data-act=key]`); if (k && k.getClientRects().length) k.focus(); }));
+          return;
+        }
         if (b.dataset.act === "toggle") {
           if (!u.disabled && !confirm(`Disable ${u.username}? They're signed out and can't sign in until you enable the account again.`)) return;
           await CS.app("PATCH", "users/" + r.id, { disabled: !u.disabled }); await users(el); msg(`${u.username} is ${u.disabled ? "enabled again" : "disabled"}.`, true);

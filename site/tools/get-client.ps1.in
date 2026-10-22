@@ -4,6 +4,11 @@
 # installs it to %LOCALAPPDATA%\CyberScout, starts it at sign-in (a shortcut in your Startup folder) and opens it in
 # the browser. Run it again to update. Settings, in the same PowerShell window before the command:
 #   $env:CS_SERVER = 'http://<your server>:7560'   your server, set on the first install (this site's default: @SERVER_SHOWN@)
+#   $env:CS_KEY = 'cyberscout:http://<your server>:7560#XXXX-XXXX-XXXX-XXXX'
+#                                                 a connection key from your admin (also <server>#<KEY>,
+#                                                 'server=<server> key=<KEY>' or just the KEY): its server counts as
+#                                                 CS_SERVER (unless that is set), and the browser opens the Client's
+#                                                 Connect page, which signs you in with it (once)
 #   $env:CS_CLIENT_AUTOSTART = '0'                don't start it at sign-in (it still starts now)
 #   $env:CS_CLIENT_UNINSTALL = '1'                stop it, remove the program and the shortcut (the data folder stays)
 #   $env:CS_SITE = '<address>'                    you reached this site at another address
@@ -35,7 +40,33 @@
   }
   if (-not [Environment]::Is64BitOperatingSystem) { throw 'the Cyber-Scout Client needs 64-bit Windows' }
   if (-not $want) { throw "this site has no Windows build of the Client yet: download it from $site once it's published" }
-  if ($server -and $server -notmatch '^https?://[A-Za-z0-9.:\[\]_-]+(/[A-Za-z0-9._~/-]*)?$') {
+  $urlRe = '^https?://[A-Za-z0-9.:\[\]_-]+(/[A-Za-z0-9._~/-]*)?$'
+  # a connection key: cyberscout:<server>#<KEY>, <server>#<KEY>, 'server=<server> key=<KEY>' or just the KEY (the
+  # web app's Connect page reads the same ones; the server ignores case, spaces and dashes in the KEY)
+  $key = if ($env:CS_KEY) { $env:CS_KEY.Trim() } else { '' }
+  $keyServer = ''
+  if ($key) {
+    $s = $key -replace '^cyberscout:', ''
+    $code = $null
+    if ($s.Contains('#')) { $i = $s.IndexOf('#'); $keyServer = $s.Substring(0, $i); $code = $s.Substring($i + 1) }
+    elseif ($s.Contains('=')) {
+      $code = ''
+      foreach ($t in ($s -split '\s+')) {
+        if ($t -like 'server=*') { $keyServer = $t.Substring(7) }
+        elseif ($t -like 'key=*') { $code = $t.Substring(4) }
+        else { $code = $null; break }
+      }
+    } else { $code = $s }
+    if ($null -eq $code -or $code -notmatch '^[A-Za-z0-9 _-]{4,64}$') {
+      throw "CS_KEY should look like cyberscout:http://10.0.0.58:7560#7KQ2-M9XA-P4HD-W8NE (as your admin sent it), got: $key"
+    }
+    $keyServer = $keyServer.TrimEnd('/')
+    if ($keyServer -and $keyServer -notmatch $urlRe) {
+      throw "the server in CS_KEY needs http:// or https://, like http://10.0.0.58:7560, got: $keyServer"
+    }
+    if ($keyServer -and -not $env:CS_SERVER) { $server = $keyServer }
+  }
+  if ($server -and $server -notmatch $urlRe) {
     throw "CS_SERVER must look like http://10.0.0.58:7560 or https://scout.example.org, got: $server"
   }
 
@@ -60,7 +91,7 @@
       New-Item -ItemType Directory -Force -Path $data | Out-Null
       [IO.File]::WriteAllText($cfg, (@{ server = $server } | ConvertTo-Json -Compress))   # UTF-8, no BOM
       Write-Host "  server: $server (change it later in the Client: Settings, Connection)"
-    } elseif ($env:CS_SERVER) {
+    } elseif ($env:CS_SERVER -and -not $keyServer) {
       Write-Host "  kept the server already set in the Client: change it there (Settings, Connection) to use $server"
     }
   }
@@ -74,17 +105,27 @@
     $how = 'starts when you sign in (a minimized window; Startup folder shortcut)'
   } else { $how = "running now; start it again after a restart: $exe" }
 
-  Start-Process -FilePath $exe -WorkingDirectory $dir -WindowStyle Minimized    # it opens the browser itself
+  if ($key) { Start-Process -FilePath $exe -ArgumentList '--no-browser' -WorkingDirectory $dir -WindowStyle Minimized }
+  else { Start-Process -FilePath $exe -WorkingDirectory $dir -WindowStyle Minimized }   # it opens the browser itself
   $url = 'http://127.0.0.1:7600/'
   $up = $false
   foreach ($i in 1..40) {
     try { Invoke-WebRequest -UseBasicParsing -Uri $url -TimeoutSec 2 | Out-Null; $up = $true; break } catch { Start-Sleep -Milliseconds 500 }
   }
+  # with a key: the Connect page connects + signs in, then drops k from the address
+  $connect = if ($key) { $url + '#/connect?k=' + [Uri]::EscapeDataString($key) } else { '' }
+  if ($key -and $up) { Start-Process $connect }
+  Remove-Item Env:CS_KEY -ErrorAction SilentlyContinue        # it works once: a later run in this window goes without
   Write-Host ''
   if ($up) { Write-Host "Cyber-Scout Client is running: $url" -ForegroundColor Green }
   else { Write-Host "Cyber-Scout Client is starting: $url (its window is minimized in the taskbar)" -ForegroundColor Yellow }
   Write-Host "  $how"
-  if ($server) { Write-Host '  sign in with your Cyber-Scout account and it syncs with the server' }
+  if ($key -and $up) { Write-Host '  the page that opened signs you in with your connection key' }
+  elseif ($key) {
+    Write-Host '  to sign in, open this once (it uses your connection key, which works once):'
+    Write-Host "    $connect"
+  }
+  elseif ($server) { Write-Host '  sign in with your Cyber-Scout account and it syncs with the server' }
   else { Write-Host "  first: Settings, Connection: type your server's address (the server installer printed it)" }
   Write-Host "  data: $data"
   Write-Host "  update: run the same command again   remove: `$env:CS_CLIENT_UNINSTALL='1'; irm $site/downloads/get-client.ps1 | iex"

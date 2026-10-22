@@ -390,6 +390,9 @@ class TestClipOnly(Base):
 
     def setUp(self):
         super().setUp()
+        # the real check wants 8 GB free for a recording; a CI runner may have less (the fake clips are 300 KB)
+        self._min_free, PR_C.MIN_FREE = PR_C.MIN_FREE, 0
+        self.addCleanup(setattr, PR_C, "MIN_FREE", self._min_free)
         now = time.time()
         P = self.proc
         P.stream_matches = [{"key": f"{EV}_qm{n}", "comp_level": "qm", "set_number": 1, "match_number": n,

@@ -1,7 +1,8 @@
 """A fake Cyber-Scout server implementing the part-1 endpoints of docs/SYNC.md (info, session/login/logout with the
-real cookie + double-submit CSRF rules, sync/events, sync/manifest with since/deleted, sync/bundle with Range, sync/media,
-/api + /media files with Range, notes POST with Idempotency-Key replay, picklist PUT with base_version 409), plus knobs
-to simulate failures: `down`, `cut_bundle_after`, `drop_response_once`, `latency`."""
+real cookie + double-submit CSRF rules, key-login with a connection key, sync/events, sync/manifest with
+since/deleted, sync/bundle with Range, sync/media, /api + /media files with Range, notes POST with Idempotency-Key
+replay, picklist PUT with base_version 409), plus knobs to simulate failures: `down`, `cut_bundle_after`,
+`drop_response_once`, `latency`, `key_limited`."""
 import gzip
 import hashlib
 import http.server
@@ -38,6 +39,8 @@ class State:
         self.web = dict(WEB)
         self.version = "v1"
         self.users = {"scout": ("pw-scout-1", "scout", "Scout One"), "coach": ("pw-admin-1", "admin", "Coach")}
+        self.keys = {"7KQ2-M9XA-P4HD-W8NE": "scout"}     # connection keys (POST /app/v1/auth/key-login) -> user
+        self.key_limited = False                          # key-login answers 429 (rate limit)
         self.proc = None         # fakeprocessing.FakeProcessing: the /app/v1/processing/* API (processor mode)
         self.sessions = {}       # token -> {"user":..., "csrf":...}
         self.idem = {}           # key -> (status, body)
@@ -209,6 +212,24 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self.send(200, self.session_out(sess, csrf),
                              cookies=[f"cs_session={tok}; HttpOnly; Path=/; SameSite=lax",
                                       f"cs_csrf={csrf}; Path=/; SameSite=lax"])
+        if path == "/app/v1/auth/key-login" and m == "POST":
+            if not self.csrf_ok(None):
+                return self.send(403, {"detail": "missing or bad CSRF token"})
+            if st.key_limited:
+                return self.send(429, {"detail": "too many failed sign-ins, try again later"},
+                                 headers={"Retry-After": "60"})
+            d = json.loads(self.body() or b"{}")
+            name = st.keys.get(d.get("key"))
+            if not name:
+                return self.send(401, {"detail": "that connection key isn't valid (it works once and expires; ask "
+                                                 "your admin for a new one)"})
+            pw, role, disp = st.users[name]
+            tok, csrf = secrets.token_urlsafe(24), secrets.token_urlsafe(18)
+            sess = {"user": {"id": 2, "username": name, "display_name": disp, "role": role}, "csrf": csrf}
+            st.sessions[tok] = sess
+            return self.send(200, self.session_out(sess, csrf),
+                             cookies=[f"cs_session={tok}; HttpOnly; Path=/; SameSite=lax",
+                                      f"cs_csrf={csrf}; Path=/; SameSite=lax"])
         if path == "/app/v1/auth/logout" and m == "POST":
             st.sessions.pop(self.cookies().get("cs_session", ""), None)
             return self.send(204, b"", cookies=['cs_session=""; Max-Age=0; Path=/'])
@@ -254,6 +275,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self.send(200, [{"path": p, "size": len(b), "sha256": hashlib.sha256(b).hexdigest(), "kind": k,
                                     "match": mt} for p, (b, k, mt) in sorted(st.media.items())
                                    if p.startswith(f"media/{ev}/")])
+        mm = re.match(r"^/app/v1/users/(\w+)/connect-key$", path)
+        if mm and m in ("POST", "DELETE"):         # an admin makes / withdraws a teammate's connection key
+            with st.lock:
+                st.keys = {k: u for k, u in st.keys.items() if u != mm.group(1)}
+                if m == "DELETE":
+                    return self.send(204, b"")
+                k = "-".join(secrets.token_hex(2).upper() for _ in range(4))
+                st.keys[k] = mm.group(1)
+            return self.send(201, {"key": k, "expires_at": int(time.time()) + 900})
         mm = re.match(r"^/app/v1/events/(\w+)/notes$", path)
         if mm and m == "POST":
             key = self.headers.get("Idempotency-Key")

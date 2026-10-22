@@ -106,7 +106,8 @@ def list_audit(user_id: int | None = Query(None), action: str | None = Query(Non
                                      "and raw request entries (http.*)"),
                user: User = Depends(require_role("admin")), db=Depends(DB.get_db)):
     q, a = "SELECT * FROM audit_log WHERE 1=1", []
-    if changes: q += " AND action NOT IN ('auth.login','auth.login_failed','auth.logout') AND action NOT LIKE 'http.%'"
+    if changes: q += (" AND action NOT IN ('auth.login','auth.login_failed','auth.key_login','auth.key_login_failed',"
+                      "'auth.logout') AND action NOT LIKE 'http.%'")
     if user_id is not None: q += " AND user_id=?"; a.append(user_id)
     if action: q += " AND action LIKE ? ESCAPE '\\'"; a.append(action.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%")
     if event == "none": q += " AND event IS NULL"

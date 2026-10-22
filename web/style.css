@@ -969,6 +969,53 @@ body.bare .sb-foot { display: none; }
   .cx-dl { grid-template-columns: minmax(0, 1fr); }
   .syncsheet .cx-body { padding-bottom: calc(var(--sp-4) + env(safe-area-inset-bottom)); }
 }
+/* #/connect: "Have a connection key?" (sync.js) and the sign-in page's way there (setup.js) */
+.cx-key { display: grid; gap: var(--sp-2); padding: var(--sp-4); border-radius: var(--r-m); background: var(--accent-tint); border: 1px solid var(--accent-line); }
+.cx-key h2 { margin: 0; display: flex; align-items: center; gap: 8px; font-size: var(--fs-callout); }
+.cx-key h2 .ico { width: 20px; height: 20px; flex: none; color: var(--accent); }
+.cx-key .cx-note { color: var(--ink-2); }
+.cx-kin { width: 100%; min-height: 44px; font-family: var(--mono); font-size: 15px; letter-spacing: .01em; }
+.cx-kin::placeholder { color: var(--ink-3); opacity: 1; }
+.cx-kin[aria-invalid=true] { border-color: var(--bad); }
+.cx-kin:read-only { opacity: .7; }
+.cx-kp { color: var(--ink); } .cx-kp .ico { color: var(--accent); }
+.cx-kgo button { min-height: 40px; font-size: var(--fs-body); }
+.cx-or { display: flex; align-items: center; gap: var(--sp-3); color: var(--ink-2); font-size: var(--fs-foot); }
+.cx-or::before, .cx-or::after { content: ""; flex: 1; height: 1px; background: var(--line); }
+.cx-keylink { display: grid; grid-template-columns: 22px minmax(0, 1fr) 18px; gap: var(--sp-3); align-items: center; margin-top: var(--sp-4); padding: var(--sp-3);
+  border: 1px solid var(--accent-line); border-radius: var(--r-p); background: var(--accent-tint); color: var(--ink); text-decoration: none; }
+.cx-keylink:hover { border-color: var(--accent); }
+.cx-keylink > .ico { width: 22px; height: 22px; color: var(--accent); } .cx-keylink > .ico:last-child { width: 18px; height: 18px; color: var(--ink-2); }
+.cx-keylink span { display: grid; gap: 2px; min-width: 0; } .cx-keylink b { font-weight: 600; } .cx-keylink small { color: var(--ink-2); font-size: var(--fs-foot); }
+/* Settings → Connection → This app (Stop / Uninstall) */
+.cx-app { display: grid; gap: 2px; min-width: 0; padding-top: 6px; } .cx-app .code { white-space: normal; overflow-wrap: anywhere; }
+.cx-acts button .ico { width: 15px; height: 15px; vertical-align: -3px; margin-right: 6px; }
+.cx-bul { margin: 0 0 var(--sp-3); padding-left: 1.2em; display: grid; gap: 4px; } .cx-bul li { overflow-wrap: anywhere; } .cx-bul .code { white-space: normal; }
+.cx-bul.bad { color: var(--bad); }
+.cx-del { margin: 0 0 var(--sp-2); } .cx-del .code { white-space: normal; overflow-wrap: anywhere; font-size: .95em; }
+.cx-del:has(input:checked) { border-color: color-mix(in srgb, var(--bad) 55%, transparent); background: color-mix(in srgb, var(--bad) 7%, var(--surface)); }
+.cx-dw.bad { color: var(--bad); } .cx-dw b { font-weight: 600; }
+/* the Client was stopped / uninstalled from this page: it covers the app (which can't reach the Client any more) */
+.cx-gone { position: fixed; inset: 0; z-index: 200; display: grid; place-items: center; padding: var(--sp-5) var(--sp-4); overflow: auto; background: var(--bg); color: var(--ink); }
+.cx-gone-in { width: min(520px, 100%); display: grid; gap: var(--sp-3); }
+.cx-gone-in .logo { width: 44px; height: 44px; }
+.cx-gone-in h1 { margin: 0; font-size: var(--fs-t1); line-height: 1.15; }
+html .cx-gone .cx-gone-in h1:focus, html .cx-gone .cx-gone-in h1:focus-visible { outline: none; box-shadow: none; }
+.cx-gone-in h2 { margin: var(--sp-2) 0 0; font-size: var(--fs-body); }
+.cx-gone-in p { margin: 0; line-height: 1.55; text-wrap: pretty; } .cx-gone-in .code { white-space: normal; overflow-wrap: anywhere; }
+.cx-gone-in .cx-acts button { min-height: 40px; font-size: var(--fs-body); }
+html.cx-isgone body { overflow: hidden; }
+/* CS.sheet / CS.ask (app.js) */
+.cs-sheet .sh-body > p { line-height: 1.55; text-wrap: pretty; }
+.sh-acts { display: flex; flex-wrap: wrap; gap: var(--sp-2); justify-content: flex-end; margin-top: var(--sp-4); }
+.sh-acts button { min-height: 40px; font-size: var(--fs-body); }
+.sh-acts button.sh-danger { font-weight: 600; border-color: color-mix(in srgb, var(--bad) 55%, transparent); background: color-mix(in srgb, var(--bad) 8%, var(--surface)); }
+.sh-acts button.sh-danger:hover { background: color-mix(in srgb, var(--bad) 14%, var(--surface)); }
+@media (max-width: 760px) {
+  .cs-sheet .sh-body { padding-bottom: calc(var(--sp-4) + env(safe-area-inset-bottom)); }
+  .sh-acts { justify-content: stretch; } .sh-acts button { flex: 1 1 140px; min-height: 44px; }
+}
+@media (pointer: coarse) { .cx-kgo button, .cx-acts button { min-height: 44px; } }
 /* not connected: the time control's "Live" dot stops claiming live data */
 html[data-net="off"] .timectl.live .tc-tag i { background: var(--ink-3); box-shadow: none; }
 .cx-v .code { white-space: normal; overflow-wrap: anywhere; }

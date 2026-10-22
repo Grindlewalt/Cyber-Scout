@@ -207,11 +207,19 @@ class Conn:
         raise NetError("connection failed")
 
 
+_PLAIN_HTTP_REASONS = ("WRONG_VERSION_NUMBER", "RECORD_LAYER_FAILURE", "UNKNOWN_PROTOCOL", "HTTP_REQUEST",
+                       "PACKET_LENGTH_TOO_LONG")
+
+
 def _plain_http(e) -> bool:
-    """An https:// request answered by a plain-http server: OpenSSL reads "HTTP/1.1 400" as a bad TLS record."""
-    return isinstance(e, ssl.SSLError) and (getattr(e, "reason", None) in (
-        "WRONG_VERSION_NUMBER", "RECORD_LAYER_FAILURE", "UNKNOWN_PROTOCOL", "HTTP_REQUEST", "PACKET_LENGTH_TOO_LONG")
-        or "wrong version number" in str(e).lower())
+    """An https:// request answered by a plain-http server: OpenSSL reads "HTTP/1.1 400" as a bad TLS record. Newer
+    OpenSSL builds may give no reason code, only the text ("[SSL] record layer failure (_ssl.c:1010)"), so both."""
+    if not isinstance(e, ssl.SSLError):
+        return False
+    if getattr(e, "reason", None) in _PLAIN_HTTP_REASONS:
+        return True
+    t = str(e).lower()
+    return any(r.lower().replace("_", " ") in t for r in _PLAIN_HTTP_REASONS)
 
 
 def _os_err_text(e) -> str:
@@ -306,14 +314,22 @@ class Server:
         return d
 
     def login(self, username, password) -> dict:
+        return self._sign_in("/app/v1/auth/login", {"username": username, "password": password})
+
+    def login_key(self, key) -> dict:
+        """Sign in with a connection key (the server's POST /app/v1/auth/key-login): the same session as a password
+        sign-in; 401 when the key isn't valid, 429 when rate-limited."""
+        return self._sign_in("/app/v1/auth/key-login", {"key": key})
+
+    def _sign_in(self, path, body) -> dict:
         if not self.session.csrf:
             self.refresh_session()
         self.session.bump()
-        r = self.call("POST", "/app/v1/auth/login", {"username": username, "password": password})
+        r = self.call("POST", path, body)
         if r.status == 403 and "csrf" in detail_text(r.body).lower():
             self.refresh_session()
             self.session.bump()
-            r = self.call("POST", "/app/v1/auth/login", {"username": username, "password": password})
+            r = self.call("POST", path, body)
         d = r.json()
         if r.status != 200 or not isinstance(d, dict):
             raise HTTPError(r.status, d)

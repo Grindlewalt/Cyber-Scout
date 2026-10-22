@@ -128,6 +128,47 @@
     }
    }
   },
+  "/app/v1/auth/key-login": {
+   "post": {
+    "tags": [
+     "auth"
+    ],
+    "summary": "Sign in with a one-time connection key from an admin (rate-limited); sets the session cookie",
+    "operationId": "key_login_app_v1_auth_key_login_post",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/KeyLoginIn"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/SessionOut"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
   "/app/v1/auth/logout": {
    "post": {
     "tags": [
@@ -352,6 +393,98 @@
     ],
     "summary": "Delete an account (admin; not yourself, not the last admin)",
     "operationId": "delete_user_app_v1_users__uid__delete",
+    "parameters": [
+     {
+      "name": "uid",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "integer",
+       "title": "Uid"
+      }
+     }
+    ],
+    "responses": {
+     "204": {
+      "description": "Successful Response"
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/app/v1/users/{uid}/connect-key": {
+   "post": {
+    "tags": [
+     "users"
+    ],
+    "summary": "Make a one-time connection key that signs this account in (admin; replaces its unused one)",
+    "operationId": "create_connect_key_app_v1_users__uid__connect_key_post",
+    "parameters": [
+     {
+      "name": "uid",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "integer",
+       "title": "Uid"
+      }
+     }
+    ],
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "anyOf": [
+         {
+          "$ref": "#/components/schemas/ConnectKeyIn"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "title": "Body"
+       }
+      }
+     }
+    },
+    "responses": {
+     "201": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ConnectKeyOut"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   },
+   "delete": {
+    "tags": [
+     "users"
+    ],
+    "summary": "Revoke this account's unused connection key (admin; 204 also when there was none)",
+    "operationId": "revoke_connect_key_app_v1_users__uid__connect_key_delete",
     "parameters": [
      {
       "name": "uid",
@@ -5164,6 +5297,55 @@
     "title": "ClipRecord",
     "description": "The match record a client cut (live/liveingest.py tba_cut): only these fields; the server sets the clip path."
    },
+   "ConnectKeyIn": {
+    "properties": {
+     "hours": {
+      "type": "integer",
+      "maximum": 720.0,
+      "minimum": 1.0,
+      "title": "Hours",
+      "description": "how long it works if unused (default 7 days, max 30)",
+      "default": 168
+     }
+    },
+    "additionalProperties": false,
+    "type": "object",
+    "title": "ConnectKeyIn"
+   },
+   "ConnectKeyOut": {
+    "properties": {
+     "key": {
+      "type": "string",
+      "title": "Key",
+      "description": "XXXX-XXXX-XXXX-XXXX: shown once (only its hash is stored); signs in once"
+     },
+     "user_id": {
+      "type": "integer",
+      "title": "User Id"
+     },
+     "username": {
+      "type": "string",
+      "title": "Username"
+     },
+     "display_name": {
+      "type": "string",
+      "title": "Display Name"
+     },
+     "expires_at": {
+      "type": "number",
+      "title": "Expires At"
+     }
+    },
+    "type": "object",
+    "required": [
+     "key",
+     "user_id",
+     "username",
+     "display_name",
+     "expires_at"
+    ],
+    "title": "ConnectKeyOut"
+   },
    "DoneIn": {
     "properties": {
      "processor": {
@@ -5761,6 +5943,23 @@
      "key"
     ],
     "title": "KeyIn"
+   },
+   "KeyLoginIn": {
+    "properties": {
+     "key": {
+      "type": "string",
+      "maxLength": 64,
+      "minLength": 1,
+      "title": "Key",
+      "description": "a connection key from an admin (XXXX-XXXX-XXXX-XXXX; case, spaces and dashes don't matter, O=0, I=L=1)"
+     }
+    },
+    "additionalProperties": false,
+    "type": "object",
+    "required": [
+     "key"
+    ],
+    "title": "KeyLoginIn"
    },
    "LayoutIn": {
     "properties": {
@@ -7691,6 +7890,18 @@
      "has_password": {
       "type": "boolean",
       "title": "Has Password"
+     },
+     "connect_key_expires": {
+      "anyOf": [
+       {
+        "type": "number"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Connect Key Expires",
+      "description": "expiry of the account's unused connection key, or null"
      }
     },
     "type": "object",
@@ -7703,7 +7914,8 @@
      "created_at",
      "last_login",
      "active_sessions",
-     "has_password"
+     "has_password",
+     "connect_key_expires"
     ],
     "title": "UserOut"
    },

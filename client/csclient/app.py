@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import shutil
+import signal
 import sys
 import threading
 import time
@@ -12,6 +13,7 @@ import urllib.request
 import webbrowser
 
 from . import VERSION
+from .install import Install
 from .mirror import WebMirror, bundled_web_dir
 from .net import NetError, Server
 from .processor import Processor
@@ -140,6 +142,10 @@ class App:
             self.allowed_origins |= {f"http://{host}:{self.port}"}
         self.url = f"http://127.0.0.1:{self.port}/" if loop else f"http://{host}:{self.port}/"
         self._threads = []
+        self._down = False
+        self.install = Install(self.data_dir)      # Stop / Uninstall: what the install scripts put where
+        self.quit_ev = threading.Event()            # set by request_quit: main() shuts down
+        self.after_quit = None
 
     # ------------------------------------------------------------------------------------------------ actions
     def start(self):
@@ -152,6 +158,9 @@ class App:
                  self.config["server"] or "not set")
 
     def shutdown(self):
+        if self._down:
+            return
+        self._down = True
         self.processor.stop()
         self.engine.stop()
         if self._threads:                         # (shutdown() waits for serve_forever: only once it was started)
@@ -161,10 +170,24 @@ class App:
             self.engine.thread.join(timeout=10)
         self.lock.release()
 
+    def request_quit(self, then=None, delay=0.3):
+        """Stop / Uninstall in the app: main() wakes up and shuts down like Ctrl+C, then runs `then` (unload the
+        LaunchAgent job, delete files). A little later than the answer that asked for it, so that reaches the page."""
+        self.after_quit = then
+        t = threading.Timer(delay, self.quit_ev.set)
+        t.daemon = True
+        t.start()
+
     def login(self, username, password):
-        sess = self.server.login(username, password)
+        return self._signed_in(self.server.login(username, password), "")
+
+    def login_key(self, key):
+        """Sign in with a connection key (the server's Connect page; the installers' --key opens #/connect?k=...)."""
+        return self._signed_in(self.server.login_key(key), " (connection key)")
+
+    def _signed_in(self, sess, how):
         self.db.cache_clear()
-        log.info("signed in to %s as %s", self.server.base, (sess.get("user") or {}).get("username"))
+        log.info("signed in to %s as %s%s", self.server.base, (sess.get("user") or {}).get("username"), how)
         self.engine.clear_errors("auth")
         self.engine.kick()
         self.processor.kick()
@@ -236,6 +259,7 @@ class App:
             "web_version": self.mirror.version,
             "storage": self.storage(),
             "processing": self.processor.status(),       # processor mode ("Help process matches")
+            "install": self.install.info(),              # {frozen, program, autostart, can_uninstall, data_dir}
         }
 
 
@@ -303,21 +327,29 @@ def main(argv=None):
         threading.Timer(0.6, lambda: webbrowser.open(app.url)).start()
     def on_term(*_):                            # `kill` / a service manager: shut down like Ctrl+C (stops the
         raise KeyboardInterrupt()               # processing children, gives claims back)
-    try:
-        import signal
-        signal.signal(signal.SIGTERM, on_term)
-    except (ValueError, OSError, AttributeError):
-        pass
+    _on_signal(on_term)
     print(f"\n  Cyber-Scout Client is running: {app.url}\n  Data: {data}\n"
           f"  Help process matches: {app.url}client/processing\n  Press Ctrl+C to stop.\n", flush=True)
     try:
-        while True:
-            time.sleep(3600)
+        while not app.quit_ev.is_set():          # (a short sleep: Ctrl+C interrupts it on Windows too)
+            time.sleep(0.5)
+        log.info("stopping (Stop in the app)")
     except KeyboardInterrupt:
         log.info("stopping")
     finally:
         app.shutdown()
+    if app.after_quit:
+        # everything is saved by now: unloading our own LaunchAgent job SIGTERMs this process, which then just ends
+        _on_signal(lambda *_: os._exit(0))
+        app.after_quit()
     return 0
+
+
+def _on_signal(fn):
+    try:
+        signal.signal(signal.SIGTERM, fn)
+    except (ValueError, OSError, AttributeError):
+        pass
 
 
 if __name__ == "__main__":

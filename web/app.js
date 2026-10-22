@@ -478,6 +478,9 @@ const ICON = {
   updown: '<path d="M8 9.5l4-4 4 4M8 14.5l4 4 4-4"/>',
   down: '<path d="M6.5 9.5l5.5 5.5 5.5-5.5"/>',
   plus: '<path d="M12 5.5v13M5.5 12h13"/>',
+  key: '<circle cx="8" cy="15" r="4"/><path d="M10.9 12.1L19 4M15.5 7.5l2.5 2.5M17.5 5.5l2 2"/>',
+  copy: '<rect x="8.5" y="8.5" width="11" height="11" rx="2"/><path d="M15.5 8.5V6.5a2 2 0 0 0-2-2h-7a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h2"/>',
+  power: '<path d="M12 3.5v8"/><path d="M7.2 6.6a7 7 0 1 0 9.6 0"/>',
 };
 CS.icon = (k, cls) => `<svg${cls ? ` class="${cls}"` : ""} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICON[k] || ICON.more}</svg>`;
 const withTs = (base, ts) => base + (ts ? "/" + ts : "");
@@ -994,6 +997,41 @@ async function renderTimebar(p, ev) {
   sync(); tb.insertBefore(b, ub || null);
   document.addEventListener("fullscreenchange", sync); document.addEventListener("webkitfullscreenchange", sync);
 })();
+
+// ------------------------------------------------------------------ sheets
+// CS.sheet({title, html, wide, cls, onClose}): a modal in the competition list's look (.compsheet): centred on a desktop, a
+// bottom sheet on phones. Closes on Esc, [data-x] and a click on the backdrop (not a text selection that ends there);
+// removed when closed, focus goes back to what opened it, and a page change closes it. -> {dlg, body, close}
+// CS.ask({title, html, ok, cancel, danger, mount(body), value(body)}): the same with Cancel / OK; resolves to false
+// (cancelled) or value(body) (default true). The app's quick yes/no questions still use confirm(); this is for the ones
+// that need choices or a list in them.
+CS.sheet = (o = {}) => {
+  const opener = document.activeElement, d = document.createElement("dialog"), id = "sh" + Math.random().toString(36).slice(2, 8);
+  d.className = `compsheet cs-sheet${o.wide ? " wide" : ""}${o.cls ? " " + o.cls : ""}`; d.setAttribute("aria-labelledby", id);
+  d.innerHTML = `<div class="cmp-in"><div class="cmp-h"><h2 id="${id}">${o.title || ""}</h2><button type="button" class="tb-btn" data-x aria-label="Close" title="Close">${CS.icon("close")}</button></div>
+    <div class="cmp-body sh-body">${o.html || ""}</div></div>`;
+  document.body.appendChild(d);
+  const close = () => { if (d.open) d.close(); else if (d.isConnected) { d.remove(); if (o.onClose) o.onClose(); } };
+  let downOnBackdrop = false;
+  d.addEventListener("pointerdown", e => { downOnBackdrop = e.target === d; });
+  d.addEventListener("click", e => { if ((e.target === d && downOnBackdrop) || e.target.closest("[data-x]")) close(); });
+  d.addEventListener("close", () => {
+    d.remove(); if (o.onClose) o.onClose();
+    if (opener && opener.isConnected && opener.focus && !document.querySelector("dialog[open]")) opener.focus();
+  });
+  cleanup.push(close);
+  try { d.showModal(); } catch (e) { d.setAttribute("open", ""); }
+  const f = d.querySelector("[autofocus]"); if (f) f.focus();
+  return { dlg: d, body: d.querySelector(".sh-body"), close };
+};
+CS.ask = o => new Promise(res => {
+  let done = false;
+  const s = CS.sheet({ title: o.title, cls: "cs-ask", onClose: () => { if (!done) res(false); },
+    html: `${o.html || ""}<div class="sh-acts"><button type="button" data-x${o.danger ? " autofocus" : ""}>${o.cancel || "Cancel"}</button>
+      <button type="button" class="${o.danger ? "danger sh-danger" : "primary"}" data-ok${o.danger ? "" : " autofocus"}>${o.ok || "OK"}</button></div>` });
+  if (o.mount) o.mount(s.body);
+  s.body.querySelector("[data-ok]").onclick = () => { done = true; res(o.value ? o.value(s.body) : true); s.close(); };
+});
 
 // ------------------------------------------------------------------ router
 // Every hash segment is checked once here before any page sees it (security audit: fragment XSS into hrefs / innerHTML):

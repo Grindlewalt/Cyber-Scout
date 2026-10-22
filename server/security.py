@@ -1,4 +1,4 @@
-"""Password hashing (argon2id), session tokens, login rate limiting, atomic file writes."""
+"""Password hashing (argon2id), session tokens, connection keys, login rate limiting, atomic file writes."""
 import hashlib, json, os, secrets, threading, time
 
 from argon2 import PasswordHasher
@@ -34,6 +34,24 @@ def token_hash(tok: str) -> str:
 
 def consteq(a: str | None, b: str | None) -> bool:
     return bool(a) and bool(b) and secrets.compare_digest(a.encode(), b.encode())
+
+
+# one-time connection keys (made in routers/users.py, spent by /auth/key-login): 16 Crockford base32 characters
+# (80 random bits) shown as XXXX-XXXX-XXXX-XXXX; only token_hash() of the normalized 16 characters is stored
+KEY_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+_KEY_FOLD = str.maketrans({"O": "0", "I": "1", "L": "1"})
+
+
+def new_connect_key() -> str:
+    k = "".join(secrets.choice(KEY_ALPHABET) for _ in range(16))
+    return "-".join(k[i:i + 4] for i in range(0, 16, 4))
+
+
+def normalize_connect_key(s: str) -> str | None:
+    """A typed or pasted key -> its 16 canonical characters, or None if it can't be one. Case, whitespace and dashes
+    don't matter; O reads as 0, I and L as 1."""
+    k = "".join((s or "").split()).replace("-", "").upper().translate(_KEY_FOLD)
+    return k if len(k) == 16 and all(c in KEY_ALPHABET for c in k) else None
 
 
 class RateLimiter:
