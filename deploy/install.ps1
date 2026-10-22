@@ -3,10 +3,11 @@
   Cyber-Scout server installer for Windows 10/11 (Docker Desktop with the WSL2 backend). Re-run it to update.
 
 .DESCRIPTION
-  Checks Docker Desktop (Linux containers, WSL2 backend), an NVIDIA GPU usable from containers (else CPU mode),
+  Checks Docker Desktop (Linux containers, WSL2 backend), which NVIDIA GPUs work in containers (else CPU mode),
   disk space and the port, downloads the code (git, or a tarball when git isn't installed), writes .env, puts the
-  robot detector in place, runs `docker compose up -d --build`, waits until the site answers and prints the URL
-  and the one-time setup code. Re-running it updates the code and rebuilds; data\ and .env are kept.
+  robot detector in place, builds the images and starts the stack (their output goes to install.log in the install
+  folder), waits until the site answers and prints the URL and the one-time setup code. Re-running it updates the
+  code and rebuilds; data\ and .env are kept.
 
   Run it (no execution-policy changes needed):
     powershell -ExecutionPolicy Bypass -File install.ps1
@@ -28,7 +29,7 @@
 .PARAMETER ReplaceApp   Replace an app folder that isn't a git checkout (kept as app.bak-<time>); asked otherwise.
 .PARAMETER Cpu          Force CPU-only mode.
 .PARAMETER Gpu          Force GPU mode (fails if containers can't use the GPU).
-.PARAMETER GpuIds       GPU(s) for the worker (nvidia-smi numbering), e.g. 0 or 0,1.
+.PARAMETER GpuIds       GPU(s) for the worker (nvidia-smi numbering), e.g. 0 or 0,1. Stops if they fail their test.
 .PARAMETER Prefix       Compose project / container / image prefix (default cyber-scout).
 .PARAMETER Services     Start only these services, e.g. api,web (skips the ~3.5 GB worker build).
 .PARAMETER NoWorker     Same as -Services api,web.
@@ -123,6 +124,25 @@ function Get-FreeGB([string]$path) {
     return [math]::Floor((New-Object IO.DriveInfo $root).AvailableFreeSpace / 1GB)
   } catch { return -1 }
 }
+# a console that shows status lines (redrawn in place with `r), its width, and whether it shows the summary's
+# Unicode marks (Windows Terminal / VS Code / a UTF-8 code page; else + and =)
+$Tty = $false; $Cols = 100; $Utf = $false
+try { $Tty = ($Host.Name -eq 'ConsoleHost') -and -not [Console]::IsOutputRedirected } catch { Write-Verbose 'no console' }
+if ($Tty) {
+  try { $Cols = [Console]::WindowWidth } catch { Write-Verbose 'no console width' }
+  try { $Utf = [bool]$env:WT_SESSION -or $env:TERM_PROGRAM -eq 'vscode' -or [Console]::OutputEncoding.CodePage -eq 65001 } catch { Write-Verbose 'no console encoding' }
+}
+if ($Cols -lt 40) { $Cols = 100 }
+function Format-Elapsed([double]$sec) { $s = [int][math]::Floor($sec); return ('{0}:{1:00}' -f [math]::Floor($s / 60), ($s % 60)) }
+function Write-StatusLine([string]$head, [string]$tail) {   # redraw the current console line: head, then tail dimmed
+  $w = $Cols - $head.Length - 6; if ($w -lt 10) { $w = 10 }
+  $tail = $tail -replace '[\x00-\x1f]', ' '
+  if ($tail.Length -gt $w) { $tail = $tail.Substring(0, $w) }
+  $pad = $Cols - 1 - $head.Length; if ($pad -lt 0) { $pad = 0 }
+  Write-Host ("`r" + $head) -NoNewline
+  Write-Host $tail.PadRight($pad) -NoNewline -ForegroundColor DarkGray
+}
+function Clear-StatusLine { Write-Host ("`r" + (' ' * ($Cols - 1)) + "`r") -NoNewline }
 
 if ($Purge -and -not $Uninstall) { Exit-Fail '-Purge only goes with -Uninstall' }
 $OnWindows = ($env:OS -eq 'Windows_NT')
@@ -215,6 +235,59 @@ function Invoke-Compose([string[]]$a) {
   Push-Location -LiteralPath $(if (Test-Path -LiteralPath $Dir) { $Dir } else { $HomeDir })
   try { return (Invoke-Exe 'docker' (@('compose') + $a)) } finally { Pop-Location }
 }
+# the install log ($Log, set once the folder exists): build and start output, one "=== <time>  <step>" header per step
+$Log = ''
+function Add-LogLine([string]$m) {
+  if (-not $DryRun -and $Log) { [IO.File]::AppendAllText($Log, "$m`r`n", (New-Object Text.UTF8Encoding $false)) }
+}
+# a step: `docker compose ARGS` in the install folder with all its output in the install log; on screen one status
+# line (label, time, the latest build step) redrawn in place, then "done" or "failed". -Quiet: the log only (no
+# header, no screen output). Returns the exit code.
+function Invoke-ComposeStep([string]$label, [string[]]$a, [switch]$Quiet) {
+  if ($DryRun) { return (Invoke-Compose $a) }
+  if (-not $Quiet) { Add-LogLine ''; Add-LogLine "=== $(Get-Date -Format 'HH:mm:ss')  $label" }
+  $st = @{ Last = ''; Shown = -1; Sw = [Diagnostics.Stopwatch]::StartNew(); Show = ($Tty -and -not $Quiet) }
+  $argv = @('compose') + $a
+  $rc = 1
+  $out = New-Object IO.StreamWriter -ArgumentList $Log, $true, (New-Object Text.UTF8Encoding $false)
+  $out.AutoFlush = $true
+  Push-Location -LiteralPath $Dir
+  try {
+    $ErrorActionPreference = 'Continue'   # docker writes its progress to stderr
+    & docker @argv 2>&1 | ForEach-Object {
+      $line = "$_"
+      $out.WriteLine($line)
+      if ($line -match '^(Step [0-9]|#[0-9]+ \[)| (Building|Pulling|Starting|Started)') { $st.Last = $line }
+      $sec = [int][math]::Floor($st.Sw.Elapsed.TotalSeconds)
+      if ($st.Show -and $sec -ne $st.Shown) { $st.Shown = $sec; Write-StatusLine "  $label $(Format-Elapsed $sec)  " $st.Last }
+    }
+    $rc = $LASTEXITCODE
+  } catch { $out.WriteLine("$_") }
+  finally { $out.Close(); Pop-Location }
+  if ($Quiet) { return $rc }
+  if ($Tty) { Clear-StatusLine }
+  $t = Format-Elapsed $st.Sw.Elapsed.TotalSeconds
+  if ($rc -eq 0) {
+    Write-Host "  $label " -NoNewline; Write-Host 'done' -NoNewline -ForegroundColor Green; Write-Host " ($t)" -ForegroundColor DarkGray
+  } else { Write-Host "! $label failed" -NoNewline -ForegroundColor Yellow; Write-Host " (after $t; full output: $Log)" }
+  return $rc
+}
+function Get-LogStep {   # the last step's lines in the install log (from its "=== " header on)
+  if ($DryRun -or -not $Log -or -not (Test-Path -LiteralPath $Log)) { return @() }
+  $lines = [IO.File]::ReadAllLines($Log)
+  if ($lines.Count -eq 0) { return @() }
+  $from = 0
+  for ($i = $lines.Count - 1; $i -ge 0; $i--) { if ($lines[$i].StartsWith('=== ')) { $from = $i; break } }
+  return $lines[$from..($lines.Count - 1)]
+}
+function Write-LogTail([int]$n) {   # the last N non-empty lines of the last step's output, indented
+  $max = $Cols - 6; if ($max -lt 20) { $max = 20 }
+  $tail = @(Get-LogStep | Where-Object { $_.Trim() -and -not $_.StartsWith(' ---> ') -and -not $_.StartsWith('=== ') } | Select-Object -Last $n)
+  foreach ($l in $tail) {
+    $s = $l -replace "`t", '  '; if ($s.Length -gt $max) { $s = $s.Substring(0, $max) }
+    Write-Host '    |' -NoNewline -ForegroundColor DarkGray; Write-Host " $s"
+  }
+}
 
 # ================================================================ uninstall
 if (-not $Prefix) { $Prefix = Read-EnvValue 'CS_PREFIX' }
@@ -229,8 +302,9 @@ if ($Uninstall) {
     if ($KeepImages) { [void](Invoke-Compose @('down', '--remove-orphans')) }
     else {
       if ((Invoke-Compose @('down', '--remove-orphans', '--rmi', 'all')) -ne 0) { [void](Invoke-Compose @('down', '--remove-orphans')) }
+      # also the updater's rollback tags; other tags (e.g. a backup someone made) stay
       $imgs = (Invoke-Quiet 'docker' @('image', 'ls', '--format', '{{.Repository}}:{{.Tag}}')).Out -split "`n" |
-        Where-Object { $_ -match "^$([regex]::Escape($Prefix))-(worker|api|web):" }
+        ForEach-Object { $_.Trim() } | Where-Object { $_ -match "^$([regex]::Escape($Prefix))-(worker|api|web):(latest|cs-rollback)$" }
       foreach ($i in $imgs) { [void](Invoke-Quiet 'docker' @('rmi', $i)) }
     }
   }
@@ -258,6 +332,22 @@ if (-not $Existing -and -not $PSBoundParameters.ContainsKey('Dir')) {
   $Existing = Test-Path -LiteralPath $EnvFile
 }
 if ($Existing) { Write-Info "existing install in ${Dir}: updating it (data\ and .env are kept)" }
+# A new install into a folder that already holds something else: ask first (the containers would take over a data\
+# folder there). Leftovers of an earlier Cyber-Scout attempt are fine.
+if (-not $Existing -and (Test-Path -LiteralPath $Dir -PathType Container)) {
+  $kids = @(Get-ChildItem -LiteralPath $Dir -Force -ErrorAction SilentlyContinue)
+  $cf = Join-Path $Dir 'docker-compose.yml'; $il = Join-Path $Dir 'install.log'
+  $ours = (Test-Path -LiteralPath (Join-Path $Dir 'data\app.db')) -or
+    ((Test-Path -LiteralPath $cf) -and (Select-String -LiteralPath $cf -Pattern 'cyber-scout' -SimpleMatch -Quiet)) -or
+    ((Test-Path -LiteralPath $il) -and (Select-String -LiteralPath $il -Pattern '^######## .*  install\.(ps1|sh)$' -Quiet))
+  if ($kids.Count -gt 0 -and -not $ours) {
+    Write-Warn "$Dir isn't empty and isn't a Cyber-Scout install. It holds:"
+    foreach ($k in ($kids | Select-Object -First 8)) { Write-Info "  $($k.Name)" }
+    Write-Info 'Nothing there would be deleted, but app\, data\, docker-compose.yml and .env would be added or taken over.'
+    if (-not (Test-Interactive)) { Test-Need 'pick an empty or new folder with -Dir DIR' }
+    elseif (-not (Test-YesAnswer 'Install into it anyway?' 'n')) { Exit-Fail 'Nothing was changed. Pick another folder (-Dir DIR).' }
+  }
+}
 $SetPort = ($Port -ne 0); $SetBind = [bool]$Bind; $SetPrefix = $PSBoundParameters.ContainsKey('Prefix'); $SetGpuIds = [bool]$GpuIds
 if (-not $Bind) { $Bind = Read-EnvValue 'WEB_BIND' }; if (-not $Bind) { $Bind = '0.0.0.0' }
 if ($Port -eq 0) { $ep = Read-EnvValue 'WEB_PORT'; if ($ep) { $Port = [int]$ep } else { $Port = 7560 } }
@@ -288,26 +378,69 @@ if ($Services) {
 $WithWorker = ($Svc.Count -eq 0) -or ($Svc -contains 'worker') -or ($Svc -contains 'recorder')
 
 # ---------------------------------------------------------------- GPU
-$UseGpu = $false
+# Every card is tried in a small test container, passed the way compose passes it (--gpus device=N), and the worker
+# only gets cards that passed. Docker Desktop hands GPUs to containers through WSL2 (no CDI fallback as on Linux).
+$UseGpu = $false; $GpuTested = $false; $GpuErr = ''; $GpuNotes = ''
+$GpuName = @(); $GpuOk = @{}; $GpuWhy = @{}
+function Get-GpuWhy([string]$t) {   # a short reason from a failed test container's output
+  if ($t -match 'failed to add device rules|device filter program') { return "the NVIDIA hook can't add its device rules" }
+  if ($t -match 'could not select device driver') { return "Docker has no GPU support here (NVIDIA driver with WSL support, Docker Desktop)" }
+  if ($t -match 'no adapters were found') { return 'WSL sees no GPU (update the NVIDIA driver, then: wsl --update)' }
+  $last = @($t -split "`n" | Where-Object { $_.Trim() -and $_ -notmatch 'docker run --help' } | Select-Object -Last 1)
+  if ($last.Count -eq 0) { return 'no output' }
+  $s = $last[0].Trim(); if ($s.Length -gt 120) { $s = $s.Substring(0, 120) }
+  return $s
+}
+function Test-GpuRun([string]$dev) {   # a test container with --gpus DEV sees the GPU? else $script:GpuErr says why
+  $t = Invoke-Quiet 'docker' @('run', '--rm', '--gpus', $dev, 'python:3.12-slim', 'sh', '-c', 'nvidia-smi -L || /usr/lib/wsl/lib/nvidia-smi -L')
+  if ($t.Code -eq 0 -and $t.Out -match 'GPU') { $script:GpuErr = ''; return $true }
+  $script:GpuErr = Get-GpuWhy $t.Out
+  $script:GpuNotes += "`nGPU test (--gpus $dev) failed:`n" + (@($t.Out -split "`n" | Select-Object -Last 4) -join "`n")
+  return $false
+}
+function Get-GpuOkList { return (@(for ($i = 0; $i -lt $GpuName.Count; $i++) { if ($GpuOk[$i]) { "$i" } }) -join ', ') }
+function Test-GpuPick([string]$ids) {   # usable as GPU_IDS? else $script:GpuErr says why
+  if ($ids -notmatch '^[0-9]+(,[0-9]+)*$') { $script:GpuErr = 'type card numbers, like 0 or 0,1'; return $false }
+  $list = @($ids -split ',' | ForEach-Object { [int]$_ })
+  foreach ($i in $list) {
+    if ($i -ge $GpuName.Count) { $script:GpuErr = "there's no GPU $i (this machine has 0-$($GpuName.Count - 1))"; return $false }
+    if (-not $GpuOk[$i]) { $script:GpuErr = "GPU $i doesn't work in containers here ($($GpuWhy[$i]))"; return $false }
+  }
+  if ($list.Count -eq 1) { return $true }
+  # several cards, each fine alone: test them together ("all": Windows PowerShell mangles a quoted device=0,1)
+  if (Test-GpuRun 'all') { return $true }
+  $script:GpuErr = "GPUs $ids together didn't work in a test container ($script:GpuErr)"
+  return $false
+}
 $envCpu = (Read-EnvValue 'COMPOSE_FILE') -match 'docker-compose\.cpu\.yml'
 if ($Cpu) { Write-Info 'CPU mode (asked for)' }
 elseif ($Existing -and $envCpu -and -not $Gpu) { Write-Info 'CPU mode (from .env; run with -Gpu to switch)' }
 elseif (Test-Cmd 'nvidia-smi') {
   $l = Invoke-Quiet 'nvidia-smi' @('-L')
-  if ($l.Code -eq 0 -and $l.Out -match 'GPU') {
-    foreach ($g in ($l.Out -split "`n")) { if ($g -match '^GPU') { Write-Info ("found " + ($g -replace ' \(UUID.*', '')) } }
-    if (-not $Wsl2) { Write-Warn 'NVIDIA GPUs only work in Docker Desktop with the WSL2 backend.' }
-    elseif ($DryRun -or -not $DockerOk) { $UseGpu = $true }
-    else {
-      # the card the worker will get, asked for by id the way compose does (some hosts fail "--gpus all" while each
-      # card works); a list like 0,1 needs embedded quotes that Windows PowerShell mangles, so that one tests "all"
-      $tIds = if ($GpuIds) { $GpuIds } elseif ($Existing) { Read-EnvValue 'GPU_IDS' } else { '' }
-      $tGpus = if ($tIds -match '^[0-9]+$') { "device=$tIds" } elseif (-not $tIds) { 'device=0' } else { 'all' }
-      Write-Info "checking that containers can use the GPU (docker run --gpus $tGpus ... nvidia-smi)"
-      $t = Invoke-Quiet 'docker' @('run', '--rm', '--gpus', $tGpus, 'python:3.12-slim', 'sh', '-c', 'nvidia-smi -L || /usr/lib/wsl/lib/nvidia-smi -L')
-      if ($t.Code -eq 0 -and $t.Out -match 'GPU') { $UseGpu = $true; Write-Info 'GPU works in containers' }
+  if ($l.Code -eq 0) { foreach ($g in ($l.Out -split "`n")) { if ($g -match '^GPU [0-9]+: (.+?)( \(UUID.*)?$') { $GpuName += $Matches[1].Trim() } } }
+  if ($GpuName.Count -gt 0) {
+    Write-Host ''
+    Write-Bold 'GPUs'
+    if (-not $Wsl2) {
+      for ($i = 0; $i -lt $GpuName.Count; $i++) { Write-Info "  GPU $i  $($GpuName[$i])" }
+      Write-Warn 'NVIDIA GPUs only work in Docker Desktop with the WSL2 backend.'
+    } elseif ($DryRun -or -not $DockerOk) {
+      $UseGpu = $true
+      for ($i = 0; $i -lt $GpuName.Count; $i++) { Write-Info "  GPU $i  $($GpuName[$i])  (not tested)" }
+    } else {
+      Write-Info 'testing which cards containers can use (a small test container per card)'
+      if ((Invoke-Quiet 'docker' @('image', 'inspect', 'python:3.12-slim')).Code -ne 0) { [void](Invoke-Quiet 'docker' @('pull', '-q', 'python:3.12-slim')) }
+      for ($i = 0; $i -lt $GpuName.Count; $i++) { if (Test-GpuRun "device=$i") { $GpuOk[$i] = $true } else { $GpuWhy[$i] = $GpuErr } }
+      $GpuTested = $true
+      $nw = [int]($GpuName | Measure-Object -Property Length -Maximum).Maximum
+      for ($i = 0; $i -lt $GpuName.Count; $i++) {
+        Write-Host ("    GPU $i  " + $GpuName[$i].PadRight($nw) + '  ') -NoNewline
+        if ($GpuOk[$i]) { Write-Host 'works in containers' -ForegroundColor Green }
+        else { Write-Host "doesn't work in containers" -NoNewline -ForegroundColor Red; Write-Host ": $($GpuWhy[$i])" }
+      }
+      if (Get-GpuOkList) { $UseGpu = $true }
       else {
-        Write-Warn 'A test container could not use the GPU. Update the NVIDIA driver (Game Ready / Studio drivers include'
+        Write-Warn 'No card worked in a test container. Update the NVIDIA driver (Game Ready / Studio drivers include'
         Write-Warn 'WSL support) and Docker Desktop, run "wsl --update", restart, and run this again for GPU mode.'
       }
     }
@@ -322,10 +455,36 @@ if (-not $UseGpu -and -not $Cpu -and -not ($Existing -and $envCpu)) {
   Write-Info 'CPU mode: each match takes ~4x longer than on an NVIDIA GPU (~20 min instead of ~3-6). Everything else works.'
 }
 if ($UseGpu) {
-  if (-not $GpuIds -and $Existing) { $GpuIds = Read-EnvValue 'GPU_IDS' }
-  if (-not $GpuIds) { $GpuIds = '0' }
-  if ($GpuIds -notmatch '^[0-9]+(,[0-9]+)*$') { Exit-Fail "-GpuIds: like 0 or 0,1 ($GpuIds)" }
-  Write-Info "GPU mode, GPU_IDS=$GpuIds"
+  $envIds = ''; if ($Existing) { $envIds = Read-EnvValue 'GPU_IDS' }
+  $want = $envIds; $from = 'GPU_IDS in .env'
+  if ($GpuIds) { $want = $GpuIds; $from = '-GpuIds' }
+  if (-not $GpuTested) {   # dry run / Docker not reachable: nothing tested, keep what's asked for or set
+    $GpuIds = $want; if (-not $GpuIds) { $GpuIds = '0' }
+    if ($GpuIds -notmatch '^[0-9]+(,[0-9]+)*$') { Exit-Fail "-GpuIds: like 0 or 0,1 ($GpuIds)" }
+  } elseif ($want -and (Test-GpuPick $want)) { $GpuIds = $want }
+  else {
+    # never carry on with cards that failed their test: ask again in a console, else stop
+    $okl = Get-GpuOkList; $first = ($okl -split ', ')[0]
+    if ($want) { Write-Warn "$from is $want, which won't work: $GpuErr" }
+    if ($want -and $SetGpuIds) { Exit-Fail "Pick a card that works ($okl): -GpuIds N. Nothing was changed." }
+    elseif ((Test-Interactive) -and ($want -or $okl -ne $first)) {
+      Write-Info 'The worker tracks matches on one card (a list like 0,1 passes the others in too, e.g. for preview'
+      Write-Info 'encoding). To track two matches at once, add a job on another card later (PROCESSORS_GPU0 / PROCESSORS_GPU1).'
+      $hint = $okl; if ($okl -eq $first) { $hint = "only $first works" }
+      for ($n = 1; $n -le 5; $n++) {
+        $ans = Read-Answer "Which GPU should the worker use ($hint)" $first
+        if (Test-GpuPick $ans) { $GpuIds = $ans; break }
+        Write-Warn $GpuErr
+        if ($n -eq 5) { Exit-Fail 'no usable GPU chosen' }
+      }
+    } elseif ($want) { Exit-Fail "Pick a card that works ($okl): -GpuIds N, or run this again in a console to choose. Nothing was changed." }
+    else {
+      $GpuIds = $first
+      if ($GpuName.Count -gt 1) { Write-Info "using GPU $first (the first card that works in containers; -GpuIds N picks another)" }
+    }
+  }
+  if ($GpuIds -ne $envIds) { $SetGpuIds = $true }
+  Write-Info "worker + recorder: GPU $GpuIds"
 } elseif ($ComposeVer -and -not (Test-VersionAtLeast $ComposeVer '2.24.4')) {
   Test-Need "CPU-only mode needs Docker Compose >= 2.24.4 (you have $ComposeVer). Update Docker Desktop."
 }
@@ -382,7 +541,19 @@ Write-Info "web port $Port on $Bind"
 
 # ---------------------------------------------------------------- folder + code
 if (-not (Test-Path -LiteralPath $Dir)) { Invoke-Step "New-Item -ItemType Directory $Dir" { New-Item -ItemType Directory -Path $Dir -Force | Out-Null } }
+Write-Host ''
 Write-Bold "Installing into $Dir"
+# the build's and start's output goes to install.log (on screen: one status line, and the end of it if a step fails)
+$Log = Join-Path $Dir 'install.log'
+if (-not $DryRun) {
+  if ((Test-Path -LiteralPath $Log) -and (Get-Item -LiteralPath $Log).Length -gt 5000000) {
+    if (Test-Path -LiteralPath "$Log.1") { Remove-Item -LiteralPath "$Log.1" -Force }
+    Move-Item -LiteralPath $Log -Destination "$Log.1"
+  }
+  Add-LogLine ''
+  Add-LogLine "######## $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')  install.ps1"
+  if ($GpuNotes) { Add-LogLine $GpuNotes.Trim() }
+}
 $App = Join-Path $Dir 'app'
 $GitSha = ''
 $env:GIT_TERMINAL_PROMPT = '0'
@@ -488,7 +659,8 @@ foreach ($f in @('docker-compose.yml', 'docker-compose.cpu.yml')) {
   $src = Join-Path $App "deploy\$f"; $dst = Join-Path $Dir $f
   Invoke-Step "copy $src -> $dst" {
     if ((Test-Path -LiteralPath $dst) -and ((Get-FileHash -LiteralPath $src).Hash -ne (Get-FileHash -LiteralPath $dst).Hash)) {
-      Copy-Item -LiteralPath $dst -Destination "$dst.bak" -Force; Write-Info "previous $f saved as $f.bak"
+      $bak = "$f.bak-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
+      Copy-Item -LiteralPath $dst -Destination (Join-Path $Dir $bak) -Force; Write-Info "previous $f saved as $bak"
     }
     Copy-Item -LiteralPath $src -Destination $dst -Force
   }
@@ -608,25 +780,82 @@ if ($UseImages -and $DockerOk -and -not $DryRun) {
 }
 if (-not $WithWorker) { Write-Info "starting only: $($Svc -join ' ') (no worker: matches aren't processed; 'docker compose up -d' starts everything)" }
 if ($GitSha) { $env:GIT_SHA = $GitSha }
+$UpFail = $false; $Down = @(); $Why = ''; $Fix = ''
+function Get-DownService {   # the asked-for services that aren't running
+  Push-Location -LiteralPath $Dir
+  try { $up = @((Invoke-Quiet 'docker' @('compose', 'ps', '--status', 'running', '--format', '{{.Service}}')).Out -split "`n" | ForEach-Object { $_.Trim() }) }
+  finally { Pop-Location }
+  return @($Run | Where-Object { $up -notcontains $_ })
+}
+function Get-UpReason {   # $Why + $Fix for a failed `compose up`, from the last step's output in the log
+  $t = @(Get-LogStep) -join "`n"
+  if ($t -match 'failed to add device rules|device filter program') {
+    $script:Why = "Docker couldn't pass GPU $GpuIds into the container: the NVIDIA hook can't add its device rules."
+    $script:Fix = 'Run this installer again: it tests each card and offers the ones that work. Or run it with -Cpu.'
+  } elseif ($t -match 'CDI device injection failed|unresolvable CDI devices') {
+    $script:Why = "Docker couldn't pass GPU $GpuIds through CDI: its device list is missing or out of date."
+    $script:Fix = 'Update Docker Desktop and run this installer again, or run it with -Cpu.'
+  } elseif ($t -match 'could not select device driver|no adapters were found') {
+    $script:Why = "Docker has no NVIDIA GPU support here, so it can't pass the GPU."
+    $script:Fix = 'Update the NVIDIA driver and Docker Desktop, run "wsl --update", restart Windows, then run this installer again (or with -Cpu).'
+  } elseif ($t -match 'nvidia-container-cli') {
+    $script:Why = "Docker couldn't pass GPU $GpuIds into the container (the NVIDIA container runtime failed)."
+    $script:Fix = 'Run this installer again: it tests each card and offers the ones that work. Or run it with -Cpu.'
+  } elseif ($t -match 'port is already allocated|address already in use|ports are not available') {
+    $script:Why = "Port $Port is taken by something else (or reserved by Windows)."
+    $script:Fix = 'Run this installer again with -Port N.'
+  } elseif ($t -match 'is already in use by container') {
+    $script:Why = 'A container with one of these names already exists (another install?). It was left alone.'
+    $script:Fix = 'docker ps -a shows it; a second copy needs -Prefix NAME and another -Port.'
+  } elseif ($t -match 'no space left on device') {
+    $script:Why = 'The disk is full.'
+    $script:Fix = 'Free some space (docker image ls, docker image rm <unused>), then run this installer again.'
+  } else {
+    $e = @($t -split "`n" | Where-Object { $_ -match 'error|failed' } | Select-Object -Last 1)
+    $script:Why = ''; if ($e.Count -gt 0) { $script:Why = $e[0].Trim() }
+    if ($script:Why.Length -gt 200) { $script:Why = $script:Why.Substring(0, 200) }
+    $script:Fix = "cd `"$Dir`"; docker compose ps, and the end of $Log"
+  }
+}
 try {
   if ($Build.Count -gt 0) {
-    $note = 'the first build takes a few minutes'; if ($Build -contains 'worker') { $note += '; the worker image is ~3.5 GB' }
-    Write-Bold "Building ($note)"
-    $a = @('build'); if ($Build.Count -lt 4) { $a += $Build }
-    if ((Invoke-Compose $a) -ne 0) { Test-Need "the build failed; see the output above (cd `"$Dir`"; docker compose build)" }
+    # recorder and the processor services run the worker's image: build it once (compose would build it per service)
+    $BList = @()
+    foreach ($s in $Build) { $b = if ($s -eq 'recorder') { 'worker' } else { $s }; if ($BList -notcontains $b) { $BList += $b } }
+    Write-Host ''
+    Write-Bold 'Building'
+    $note = 'The first build takes a few minutes'; if ($BList -contains 'worker') { $note += ' (the worker image is ~3.5 GB)' }
+    Write-Info "$note. Its output goes to $Log."
+    if ((Invoke-ComposeStep "building $($BList -join ' ')" (@('build') + $BList)) -ne 0) {
+      Write-LogTail 20
+      $kept = ''; if ($Existing) { $kept = '; the installed version keeps running' }
+      Exit-Fail "The build failed (full output: $Log). Nothing was started$kept."
+    }
   }
+  Write-Host ''
   Write-Bold 'Starting'
   $a = @('up', '-d', '--no-build'); if ($Svc.Count -gt 0) { $a += $Svc }
-  if ((Invoke-Compose $a) -ne 0) { Test-Need "docker compose up failed (cd `"$Dir`"; docker compose logs)" }
+  if ((Invoke-ComposeStep 'starting the containers' $a) -ne 0) {
+    $UpFail = $true
+    Get-UpReason
+    Write-LogTail 6
+    # compose stops at the first error: start the others one by one (the site, setup and scouting work without the worker)
+    Add-LogLine ''
+    Add-LogLine "=== $(Get-Date -Format 'HH:mm:ss')  starting the others one by one"
+    foreach ($s in @(Get-DownService)) { [void](Invoke-ComposeStep $s @('up', '-d', '--no-build', $s) -Quiet) }
+    $Down = @(Get-DownService)
+  }
 } finally { Remove-Item Env:\GIT_SHA -ErrorAction SilentlyContinue }
 
 $HostAddr = $Bind; if ($HostAddr -in @('', '0.0.0.0', '::', '[::]')) { $HostAddr = '127.0.0.1' }
 $Base = "http://${HostAddr}:$Port"
 $Ok = $false
 if ($DryRun) { $Ok = $true; Write-Host "  [dry-run] wait for $Base/app/v1/health" -ForegroundColor DarkGray }
+elseif ($Down -contains 'api' -or $Down -contains 'web') { Write-Verbose 'the site itself did not start: nothing to wait for' }
 else {
-  Write-Info "waiting for the app to answer on $Base"
+  $sw = [Diagnostics.Stopwatch]::StartNew()
   for ($i = 0; $i -lt 90 -and -not $Ok; $i++) {
+    if ($Tty) { Write-StatusLine "  waiting for the app to answer on $Base  $(Format-Elapsed $sw.Elapsed.TotalSeconds)" '' }
     try {
       $h = Invoke-WebRequest -Uri "$Base/app/v1/health" -UseBasicParsing -TimeoutSec 5
       $r = Invoke-WebRequest -Uri "$Base/" -UseBasicParsing -TimeoutSec 5
@@ -634,11 +863,14 @@ else {
     } catch { Write-Verbose 'not up yet' }
     Start-Sleep -Seconds 2
   }
+  if ($Tty) { Clear-StatusLine }
+  if ($Ok) { Write-Host "  the app answers on $Base " -NoNewline; Write-Host 'done' -ForegroundColor Green }
+  else { Write-Warn "the app didn't answer on $Base within 3 minutes" }
 }
-if ($Ok) { $prev = Join-Path $Dir 'app.prev'; if (Test-Path -LiteralPath $prev) { Invoke-Step "remove $prev" { Remove-Item -LiteralPath $prev -Recurse -Force } } }
-else { Write-Warn "The app didn't answer on $Base within 3 minutes. Look at: cd `"$Dir`"; docker compose ps; docker compose logs api web" }
+# the previous code (app.prev) goes only once everything runs
+if ($Ok -and -not $UpFail) { $prev = Join-Path $Dir 'app.prev'; if (Test-Path -LiteralPath $prev) { Invoke-Step "remove $prev" { Remove-Item -LiteralPath $prev -Recurse -Force } } }
 
-# ---------------------------------------------------------------- where to go
+# ---------------------------------------------------------------- addresses + setup code
 $Ip = ''
 if ($HostAddr -ne '127.0.0.1' -or $Bind -eq '127.0.0.1') { $Ip = $HostAddr }
 elseif (Get-Command Get-NetRoute -ErrorAction SilentlyContinue) {
@@ -648,10 +880,13 @@ elseif (Get-Command Get-NetRoute -ErrorAction SilentlyContinue) {
   } catch { $Ip = '' }
 }
 if (-not $Ip) { $Ip = 'localhost' }
-Write-Host ''
-Write-Bold "Cyber-Scout is $(if ($DryRun) { '(would be) ' })$(if ($Ok) { 'running' } else { 'starting' }):"
-Write-Info "http://${Ip}:$Port"
-Write-Info "http://localhost:$Port   (on this PC)"
+$Ts = ''
+if ($Bind -eq '0.0.0.0' -and (Test-Cmd 'tailscale')) {
+  $tsOut = Invoke-Quiet 'tailscale' @('ip', '-4')
+  $tsIp = @($tsOut.Out -split "`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ -match '^[0-9]+(\.[0-9]+){3}$' })
+  if ($tsOut.Code -eq 0 -and $tsIp.Count -gt 0) { $Ts = $tsIp[0] }
+}
+$Srv = "http://${Ip}:$Port"
 $CodeFile = Join-Path $Dir 'data\setup-code.txt'
 $Code = ''
 if (-not $DryRun) {
@@ -661,27 +896,80 @@ if (-not $DryRun) {
     Start-Sleep -Seconds 1
   }
 }
-if ($Code) {
-  Write-Host ''
-  Write-Bold "First-time setup code: $Code"
-  Write-Info "Open the site, enter the code and create the admin account. (Later: type `"$CodeFile`")"
-} elseif ($Ok -and $Existing) { Write-Info '(setup already done: sign in with your admin account)' }
-else { Write-Info "The one-time setup code is in $CodeFile (until the admin account is created)." }
+
+# ---------------------------------------------------------------- summary (printed last, so it stays on screen)
+# a row: a dim label padded to 13 columns, then the text in -Color (commands stay on one line: copyable), then -Rest
+function Write-Row([string]$label, [string]$text, [string]$Color = '', [string]$Rest = '') {
+  Write-Host ('    ' + $label.PadRight(13) + ' ') -NoNewline -ForegroundColor DarkGray
+  if ($Color) { Write-Host $text -NoNewline -ForegroundColor $Color } else { Write-Host $text -NoNewline }
+  Write-Host $Rest
+}
+function Write-Prose([string]$label, [string]$text) {   # like Write-Row, but long text wraps under itself
+  $w = $Cols - 23; if ($w -lt 40) { $w = 40 }
+  $line = ''
+  foreach ($word in ($text.Trim() -split '\s+')) {
+    if ($line -and ($line.Length + 1 + $word.Length) -gt $w) { Write-Row $label $line; $label = ''; $line = $word }
+    elseif ($line) { $line += " $word" } else { $line = $word }
+  }
+  Write-Row $label $line
+}
+function Write-Rule {   # a horizontal rule (a heavy line where the console shows it, else =)
+  $n = $Cols - 4; if ($n -gt 76) { $n = 76 }
+  $c = '='; if ($Utf) { $c = [string][char]0x2501 }
+  Write-Host ('  ' + ($c * $n)) -ForegroundColor Cyan
+}
+Write-Host ''
+Write-Bold 'Handy commands'
+Write-Row 'Logs' "cd `"$Dir`"; docker compose logs -f worker"
+Write-Row 'Update' 'run this installer again (the one-click updater in Admin -> Updates needs a Linux server)'
+Write-Row 'Backup' "the whole $Dir folder (data\ holds everything)"
+Write-Row 'Uninstall' "powershell -ExecutionPolicy Bypass -File `"$App\deploy\install.ps1`" -Uninstall -Dir `"$Dir`"  (-Purge deletes the data too)"
+if (-not $DryRun) { Write-Row 'Install log' $Log }
+Write-Row 'Keep running' 'Docker Desktop -> Settings -> General -> "Start Docker Desktop when you sign in"'
+Write-Row 'Firewall' 'allow the port if Windows asks (Private networks), so other devices on your network reach it'
 # installed with get.ps1 from a downloads site: each laptop gets the Client with one line, already pointed at this server
 if ($env:CS_SITE -and $Bind -ne '127.0.0.1' -and $env:CS_SITE -match '^https?://[A-Za-z0-9.:\[\]_-]+$') {
-  $Srv = "http://${Ip}:$Port"
   Write-Host ''
-  Write-Bold 'Laptops: the Cyber-Scout Client in one line (installs it, starts it at sign-in, connects to this server):'
-  Write-Info "Windows:        `$env:CS_SERVER='$Srv'; irm $($env:CS_SITE)/downloads/get-client.ps1 | iex"
-  Write-Info "macOS / Linux:  curl -fsSL $($env:CS_SITE)/downloads/get-client.sh | bash -s -- --server $Srv"
-  Write-Info "Phones: open $Srv in the browser and add it to the home screen."
+  Write-Bold 'Laptops and phones'
+  Write-Host '  The Client in one line: installs it, starts it at sign-in and connects it to this server.' -ForegroundColor DarkGray
+  Write-Row 'Windows' "`$env:CS_SERVER='$Srv'; irm $($env:CS_SITE)/downloads/get-client.ps1 | iex"
+  Write-Row 'macOS, Linux' "curl -fsSL $($env:CS_SITE)/downloads/get-client.sh | bash -s -- --server $Srv"
+  Write-Row 'Phones' "open $Srv in the browser and add it to the home screen"
 }
 
+Write-Host ''; Write-Host ''
+Write-Rule
 Write-Host ''
-Write-Info 'Other devices on your network: allow the port in Windows Firewall if Windows asks (Private networks).'
-Write-Info 'Keep it running: Docker Desktop -> Settings -> General -> "Start Docker Desktop when you sign in".'
-Write-Info "Logs:      cd `"$Dir`"; docker compose logs -f worker"
-Write-Info 'Update:    run this installer again (the one-click updater in Admin -> Updates needs a Linux server).'
-Write-Info "Backup:    the whole $Dir folder (data\ holds everything)."
-Write-Info "Uninstall: powershell -ExecutionPolicy Bypass -File `"$App\deploy\install.ps1`" -Uninstall -Dir `"$Dir`"   (add -Purge to delete the data)"
-if (-not $Ok) { exit 1 }
+$okMark = '+'; if ($Utf) { $okMark = [string][char]0x2713 }
+if ($DryRun) { Write-Host '  (dry run) Cyber-Scout would now be running' -ForegroundColor White }
+elseif ($Ok -and -not $UpFail) { Write-Host "  $okMark Cyber-Scout is running" -ForegroundColor Green }
+elseif ($Ok) {
+  $downText = $Down -join ', '; if (-not $downText) { $downText = 'a service' }
+  Write-Host "  ! Cyber-Scout is running, but $downText didn't start" -ForegroundColor Yellow
+} else { Write-Host "  x Cyber-Scout didn't come up" -ForegroundColor Red }
+Write-Host ''
+$addrNote = ''; if ($Bind -eq '127.0.0.1') { $addrNote = '   (this machine only: -Bind 127.0.0.1)' }
+Write-Row 'Address' $Srv -Color Green -Rest $addrNote
+if ($Ip -ne 'localhost' -and $Bind -in @('', '0.0.0.0', '::', '[::]')) { Write-Row '' "http://localhost:$Port" -Rest '   (on this PC)' }
+if ($Ts) { Write-Row '' "http://${Ts}:$Port" -Color Green -Rest '   (Tailscale)' }
+Write-Host ''
+if ($Code) {
+  Write-Row 'Setup code' $Code -Color White
+  Write-Row '' 'Open the address, enter the code and create the admin account.'
+} elseif ($Ok -and -not $DryRun) { Write-Row 'Sign in' 'with your admin account (setup is already done)' }
+else { Write-Row 'Setup code' "once the app is up:  type `"$CodeFile`"" }
+if ($UpFail) {
+  Write-Host ''
+  $problem = $Why; if (-not $problem) { $problem = 'docker compose up failed' }
+  Write-Prose 'Problem' $problem
+  Write-Prose 'Fix' $Fix
+}
+if (-not $Ok -and -not $DryRun) {
+  Write-Host ''
+  Write-Row 'Look at' "cd `"$Dir`"; docker compose ps; docker compose logs api web"
+}
+Write-Host ''
+Write-Rule
+Write-Host ''
+if (-not $Ok -or $UpFail) { exit 1 }
+exit 0

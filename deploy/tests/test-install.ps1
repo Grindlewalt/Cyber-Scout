@@ -52,6 +52,10 @@ try {
   if ($r.Code -eq 0) { Write-Pass 'dry-run exit code 0' } else { Write-Fail "dry-run exit code $($r.Code)"; Write-Host $r.Out }
   Test-Output 'dry-run fresh install' $r @('dry run', '\.env: WEB_PORT=7599', '\.env: CS_PREFIX=cyber-scout', '\.env: TZ=\S+',
     '(GPU_IDS=|COMPOSE_FILE=docker-compose\.yml;docker-compose\.cpu\.yml)', 'docker compose build', 'docker compose up -d --no-build')
+  # the worker image is built once (recorder uses it); the summary comes last
+  Test-Output 'dry-run build list + summary' $r @('(?m)compose build worker api web\r?$', 'install\.log', 'Handy commands',
+    'Uninstall\s+powershell .*-Uninstall', '\(dry run\) Cyber-Scout would now be running', 'Address\s+http://\S+:7599', 'Setup code')
+  if ($r.Out -match 'compose build[^\n]*recorder') { Write-Fail 'dry-run builds the recorder separately' } else { Write-Pass 'dry-run builds the worker image once' }
   if (Test-Path -LiteralPath $dir) { Write-Fail "dry-run created $dir" } else { Write-Pass 'dry-run changed nothing' }
 
   $r = Invoke-Installer @('-DryRun', '-Yes', '-Dir', $dir, '-Cpu', '-NoWorker', '-Prefix', 'cs-test', '-Bind', '127.0.0.1', '-Port', '7598',
@@ -59,6 +63,15 @@ try {
   Test-Output 'dry-run -Cpu -NoWorker -Tarball -Model' $r @('COMPOSE_FILE=docker-compose\.yml;docker-compose\.cpu\.yml', 'CS_PREFIX=cs-test',
     'WEB_BIND=127\.0\.0\.1', 'compose build api web', 'up -d --no-build api web', 'example\.invalid/src\.tar\.gz', 'example\.invalid/robot\.onnx', 'starting only')
   if (Test-Path -LiteralPath $dir) { Write-Fail "dry-run 2 created $dir" } else { Write-Pass 'dry-run 2 changed nothing' }
+
+  # a new install into a folder that holds something else: stops without -DryRun (here: notes it and carries on)
+  $other = Join-Path $tmp 'other'
+  New-Item -ItemType Directory -Path $other -Force | Out-Null
+  [IO.File]::WriteAllText((Join-Path $other 'notes.txt'), "not ours`n")
+  $r = Invoke-Installer @('-DryRun', '-Yes', '-Dir', $other, '-Port', '7597')
+  Test-Output 'dry-run into a non-empty folder' $r @("isn't empty and isn't a Cyber-Scout install", 'notes\.txt',
+    'would stop here: pick an empty or new folder')
+  if (@(Get-ChildItem -LiteralPath $other -Force).Count -eq 1) { Write-Pass 'dry-run left that folder alone' } else { Write-Fail "dry-run changed $other" }
 
   New-Item -ItemType Directory -Path $dir -Force | Out-Null
   [IO.File]::WriteAllText((Join-Path $dir 'docker-compose.yml'), "services: {}`n")
