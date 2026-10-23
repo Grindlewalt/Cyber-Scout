@@ -1,4 +1,4 @@
-Cyber-Scout downloads (code dc5ce8a). Install notes: client/README.md and deploy/README.md in the source.
+Cyber-Scout downloads (code 3a540df). Install notes: client/README.md and deploy/README.md in the source.
 
 One-line server install (works where http://10.0.0.58:7580 is reachable; downloads the code and the model from it):
   Linux / macOS:        curl -fsSL http://10.0.0.58:7580/downloads/get.sh | bash
