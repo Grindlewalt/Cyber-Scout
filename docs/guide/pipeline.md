@@ -31,9 +31,10 @@ start with `DATA/` (the `data/` dir of the stack, `/data` in the containers) or 
    camera is calibrated, the clip is tried first.
 3. **Download.** `videos.py:download` runs yt-dlp over IPv4, video only, ≤1080p, with 4
    attempts, into `DATA/cache/<match>_<ytid>.mp4`.
-4. **Camera pose.** `process.py:check_pose` looks for AprilTags in about 28 frames. If the
-   camera was nudged, it re-solves the pose with the tags plus the white centre line, starting
-   from the last verified pose (`DATA/events/<ev>/pose_latest.json`).
+4. **Camera pose.** `process.py:check_pose` (`live/camcheck.py`) looks for AprilTags in about 28 frames. If the
+   camera was bumped (a few degrees, a slight zoom), it re-aims it with the tags plus the white centre line,
+   starting from the last verified pose (`DATA/events/<ev>/pose_latest.json`), and labels the match
+   `ok` / `re_aimed` / `unverified` / `drift_unfixed` with a plain-words `why` (§2.4).
 5. **Detect.** `process.py:detect_video` runs the YOLO ONNX detector (`detector.py:Detector`)
    at 30 Hz over the field ROI. Along the way it fixes colour-swapped frames, marks feed gaps
    and samples the clock box. The same pass feeds the bumper OCR sampler (`ocr.py:OcrSampler`).
@@ -685,7 +686,7 @@ little; it rarely moves it. The check re-aims the camera automatically and, when
      > 4 px off both in that fit and when the others (fitting each other ≤ 2 px) predict it — a good tag alone on
      one side of the field fits with a vote and stays;
    - zoom: if that fit ends > 1 px, dropped a tag, moved the camera > `SHIFT_M` 0.25 m, or the carried camera was
-     zoomed, the fit again with the focal length free (fx = fy scaled, 5 % prior, principal point and distortion
+     zoomed, the fit again with the focal length free (fx = fy scaled, 10 % prior, principal point and distortion
      kept). Kept if it explains more tags, fits clearly better (< 0.6×), or needs half the shift (on 3 tags a
      fixed-lens fit fakes a zoom by moving the camera ~0.5 m).
    - Applied only if the tag error at least halves (or ends ≤ 1 px) **and** the centre-line score

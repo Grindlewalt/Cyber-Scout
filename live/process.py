@@ -87,7 +87,9 @@ def hsv_desc(img, x0, y0, x1, y1):
 
 
 # ---------------------------------------------------------------- camera check
-_TAGDET = None
+# the per-match check and the re-aim live in camcheck.py (names kept here for callers of process.*)
+import camcheck as CC  # noqa: E402
+centreline_pixels, centreline_score, resolve_pose = CC.centreline_pixels, CC.centreline_score, CC.resolve_pose
 
 
 def view_thumb(im, roi):
@@ -116,127 +118,32 @@ def on_air(im, ref, roi):
     return ref is None or float((view_thumb(im, roi) * ref).mean()) >= VIEW_NCC
 
 
-def check_pose(video, cam, tag_csv, log=print, view_ref=None):
-    """AprilTags near their predicted pixels in ~28 frames -> re-solve pose
-    (intrinsics fixed) when the camera moved.  Returns (cam, info).  view_ref: only frames showing that view."""
-    try:
-        from pupil_apriltags import Detector as TagDet
-    except ImportError:
-        return cam, {"checked": False}
-    import csv
-    IN = 0.0254
-    tags = {int(r["ID"]): np.array([float(r["X"]), float(r["Y"]), float(r["Z"])]) * IN
-            for r in csv.DictReader(open(tag_csv, encoding="utf-8-sig"))}
+def pose_frames(video, cam, view_ref=None, t0=8.0, step=6.0, t1=170.0):
+    """Grey frames for the camera check: one every 6 s from t=8 to 170 s (~28), feed-lost frames (field mean
+    <= NO_FEED_LEVEL) and, with view_ref, frames of other cameras left out."""
     c = av.open(video); s = c.streams.video[0]; s.thread_type = "AUTO"
-    frames, nxt, vref, vdone = [], 8.0, None, view_ref is None
+    frames, nxt, vref, vdone = [], t0, None, view_ref is None
     roi = cam.roi()
-    for f in c.decode(s):
-        if f.time is None or f.time < nxt: continue
-        g = cv2.cvtColor(f.to_ndarray(format="bgr24"), cv2.COLOR_BGR2GRAY); nxt += 6.0
-        if not vdone: vref, vdone = view_reference(view_ref, g.shape, roi), True
-        if g[::16, ::16].mean() > NO_FEED_LEVEL and on_air(g, vref, roi): frames.append(g)
-        if nxt > 170: break
-    c.close()
-    if len(frames) < 5:
-        return cam, {"checked": False}
-    # per-frame detection (a median plate blurs the tiny tags), median of the hits
-    # one detector for the process lifetime: pupil_apriltags' destructor intermittently
-    # segfaults (libapriltag, seen twice in 40 runs right after the pose check)
-    global _TAGDET
-    if _TAGDET is None:
-        _TAGDET = TagDet(families="tag36h11", quad_decimate=1.0, decode_sharpening=0.25)
-    det = _TAGDET
-    hits = {}
-    for g in frames:
-        for tid, P in tags.items():
-            u, v = cam.project(P[None])[0]
-            if not (40 <= u < cam.W - 40 and 40 <= v < cam.H - 40): continue
-            x0, y0 = int(u) - 40, int(v) - 40
-            roi = cv2.resize(g[y0:y0 + 80, x0:x0 + 80], None, fx=4, fy=4, interpolation=cv2.INTER_CUBIC)
-            for d in det.detect(roi):
-                if d.tag_id == tid and d.hamming == 0 and d.decision_margin > 15:
-                    hits.setdefault(tid, []).append(d.center / 4 + [x0, y0])
-    found = {k: np.median(v, 0) for k, v in hits.items() if len(v) >= 3}
-    if len(found) < 3:
-        log(f"  pose check: only {len(found)} tags, keeping calibration")
-        return cam, {"checked": True, "tags": len(found), "moved_px": None}
-    ids = sorted(found)
-    P = np.array([tags[i] for i in ids]); uv = np.array([found[i] for i in ids])
-    err = np.linalg.norm(cam.project(P) - uv, axis=1)
-    info = {"checked": True, "tags": len(ids), "moved_px": round(float(np.median(err)), 2)}
-    if np.median(err) > 2.0:
-        plate = np.median(np.stack(frames), 0).astype(np.uint8)
-        cam2 = resolve_pose(cam, P, uv, plate)
-        e2 = np.linalg.norm(cam2.project(P) - uv, axis=1)
-        # accept only if the tags fit AND the centre line lines up at least as well
-        s_old, s_new = centreline_score(cam, plate), centreline_score(cam2, plate)
-        info.update(resolved_px=round(float(np.median(e2)), 2), line_old_px=round(s_old, 1), line_new_px=round(s_new, 1))
-        if np.median(e2) < 0.5 * np.median(err) and s_new <= max(s_old, 3.0):
-            cam = cam2; info["applied"] = True
-    log(f"  pose check: {info}")
-    return cam, info
+    try:
+        for f in c.decode(s):
+            if f.time is None or f.time < nxt: continue
+            g = cv2.cvtColor(f.to_ndarray(format="bgr24"), cv2.COLOR_BGR2GRAY); nxt += step
+            if not vdone: vref, vdone = view_reference(view_ref, g.shape, roi), True
+            if g[::16, ::16].mean() > NO_FEED_LEVEL and on_air(g, vref, roi): frames.append(g)
+            if nxt > t1: break
+    finally:
+        c.close()
+    return frames
 
 
-def centreline_pixels(cam, plate, search=25):
-    """White centre-line pixels near where `cam` predicts it, from a robot-free plate."""
-    Y = np.linspace(0.5, CAMM.WID - 0.5, 70)
-    pred = cam.project(np.c_[np.full(70, CAMM.LEN / 2), Y, np.zeros(70)])
-    g = cv2.GaussianBlur(plate, (3, 3), 0).astype(float)
-    pts = []
-    for u, v in pred:
-        u, v = int(round(u)), int(round(v))
-        if not (search <= u < g.shape[1] - search and 0 <= v < g.shape[0]): continue
-        row = g[v, u - search:u + search + 1]
-        k = int(row.argmax())
-        if row[k] - np.median(row) < 50: continue          # no clear white line here (ball/robot)
-        w = np.clip(row - np.median(row), 0, None); xs = np.arange(len(row))
-        w[np.abs(xs - k) > 3] = 0
-        pts.append([u - search + float((xs * w).sum() / w.sum()), float(v)])
-    return np.array(pts).reshape(-1, 2)
-
-
-def resolve_pose(cam, P, uv, plate=None):
-    """Camera was nudged: re-fit its pose from the tags plus the white centre line
-    (tags alone may all sit on one side), intrinsics fixed, position held near the
-    calibrated one by a soft prior (a bump mostly re-aims, it doesn't relocate)."""
-    from scipy.optimize import least_squares
-    C0 = cam.C.copy()
-    line = np.zeros((0, 2))
-    def proj(x, X):
-        rv, C = x[:3], x[3:]
-        R, _ = cv2.Rodrigues(rv); tv = -R @ C
-        q, _ = cv2.projectPoints(X.reshape(-1, 1, 3), rv, tv, cam.K, cam.D)
-        return q.reshape(-1, 2)
-    Yl = np.linspace(-0.3, CAMM.WID + 0.3, 200)
-    LW = np.c_[np.full(200, CAMM.LEN / 2), Yl, np.zeros(200)]
-    def res(x):
-        r = [(proj(x, P) - uv).ravel()]
-        if len(line):
-            poly = proj(x, LW)
-            d = np.abs(np.interp(line[:, 1], poly[:, 1], poly[:, 0]) - line[:, 0])   # line is near-vertical
-            r.append(d * np.sqrt(2 * len(P) / max(len(line), 1)))                    # line ~ as much weight as the tags
-        r.append((x[3:] - C0) / 0.25)                                              # camera position prior, 25 cm
-        return np.concatenate(r)
-    x = np.r_[cam.rvec, C0]
-    for _ in range(2):          # fit, then re-extract the line near the improved guess
-        x = least_squares(res, x, loss="soft_l1", f_scale=2.0).x
-        if plate is not None:
-            R, _ = cv2.Rodrigues(x[:3]); tmp = dict(cam.raw); tmp["rvec"] = x[:3].tolist(); tmp["tvec"] = (-R @ x[3:]).tolist()
-            line = centreline_pixels(CAMM.Camera(tmp), plate)
-    x = least_squares(res, x, loss="soft_l1", f_scale=2.0).x
-    rv = x[:3]; R, _ = cv2.Rodrigues(rv); tv = -R @ x[3:]
-    new = dict(cam.raw); new["rvec"] = np.ravel(rv).tolist(); new["tvec"] = np.ravel(tv).tolist()
-    return CAMM.Camera(new)
-
-
-def centreline_score(cam, plate):
-    """Median pixel offset between the predicted and the actual white centre line
-    (lower = the calibration lines up).  inf if the line isn't found."""
-    pts = centreline_pixels(cam, plate)
-    if len(pts) < 10: return float("inf")
-    Y = np.linspace(-0.3, CAMM.WID + 0.3, 200)
-    poly = cam.project(np.c_[np.full(200, CAMM.LEN / 2), Y, np.zeros(200)])
-    return float(np.median(np.abs(np.interp(pts[:, 1], poly[:, 1], poly[:, 0]) - pts[:, 0])))
+def check_pose(video, cam, tag_csv, log=print, view_ref=None):
+    """AprilTags near their predicted pixels in ~28 frames -> re-aim the camera when it moved (live/camcheck.py:
+    windows, leave-one-out, whole-frame fallback, zoom).  Returns (cam, info); info["status"] ok | re_aimed |
+    unverified | drift_unfixed and info["why"] in plain words.  view_ref: only frames showing that view."""
+    if CC.tag_detector() is None:
+        return cam, CC.describe({"checked": False, "reason": "no_detector"})
+    frames = pose_frames(video, cam, view_ref)
+    return CC.check_frames(frames, cam, tag_csv, log)
 
 
 # ---------------------------------------------------------------- detection
@@ -588,8 +495,8 @@ def process(video, cam_path, onnx, tag_csv=None, log=print, start_hint=None, pos
     when neither the clock nor robot motion gives one.  start_trusted=True: start_hint is a measured
     auto start (a livestream clip's auto_start_in_clip, live/livestream.py) -> used when the clock check
     finds nothing, BEFORE robot motion (start_source "livestream").  Default False = unchanged.
-    pose_guess: {rvec, tvec} of
-    the camera as last seen (a bump persists across matches).
+    pose_guess: {rvec, tvec[, K]} of
+    the camera as last seen (a bump persists across matches; K when an earlier check found a zoom).
     teams: {"red": [3 team keys], "blue": [3 team keys]} in TBA station order.  With
     it, bumper numbers are read during detection and every output track is one team
     (tracks ordered red 1-3, blue 1-3; .team, .team_conf, per-frame .conf); without it
@@ -618,10 +525,13 @@ def process(video, cam_path, onnx, tag_csv=None, log=print, start_hint=None, pos
     fixed_gaps: fuel and shots come from the fixed camera only -- hooks get only its frames) and the pose coverage.
     Default False = unchanged."""
     raw = json.load(open(cam_path)) if cam_path or not dynamic else None
+    K_cal = np.array(raw["K"], float) if raw is not None else None
     if pose_guess and raw is not None:
         raw = dict(raw, rvec=pose_guess["rvec"], tvec=pose_guess["tvec"])
+        if np.shape(pose_guess.get("K")) == (3, 3):     # a zoom found by an earlier match's check persists too
+            raw["K"] = pose_guess["K"]
     cam = CAMM.Camera(raw) if raw is not None else None
-    pose = {"checked": False}
+    pose = CC.describe({"checked": False, "reason": "no_tags" if cam is not None else None})
     if tag_csv and cam is not None:
         cam, pose = check_pose(video, cam, tag_csv, log, view_ref=view_ref)
     dyn = None
@@ -667,7 +577,7 @@ def process(video, cam_path, onnx, tag_csv=None, log=print, start_hint=None, pos
     if dyn is not None:
         st["dyn_info"] = dict(dyn.summary(), ref_from=("event calibration" if raw is not None else "estimated")
                               if dyn.ref is not None else None)
-    st.update(camera_pose=dict(rvec=cam.rvec.tolist(), tvec=cam.tvec.tolist()), pose=pose,
+    st.update(camera_pose=camera_pose(cam, K_cal, pose), pose=pose,
               cam_raw=cam.raw, teams=team_list, ocr_ok=sampler is not None)
     if open_teams and sampler is not None:
         st.update(open_teams=open_teams, event_lineups=_lineups(event), match_key=(event or {}).get("key"))
@@ -686,6 +596,17 @@ def process(video, cam_path, onnx, tag_csv=None, log=print, start_hint=None, pos
     if view_ref is not None and dyn is None:    # program feed: feed_ok = the calibrated camera's on-air share
         res["view_check"] = dict(threshold=VIEW_NCC, on_air=res["feed_ok"])
     return res
+
+
+def camera_pose(cam, K_cal, pose):
+    """res["camera_pose"]: {rvec, tvec} of the camera used, K when its focal length differs from the calibration's
+    (a zoom the check found), and the check's status / why (ok | re_aimed | unverified | drift_unfixed)."""
+    out = dict(rvec=cam.rvec.tolist(), tvec=cam.tvec.tolist())
+    if K_cal is not None and not np.allclose(cam.K, K_cal):
+        out["K"] = cam.K.tolist()
+    if pose.get("status"):
+        out.update(status=pose["status"], why=pose.get("why"))
+    return out
 
 
 def overlay_params(cam, cam_path=None, video=None, layout=None):
