@@ -129,7 +129,7 @@
         : `<td class="muted">–</td><td class="hide-s"></td>`;
     }
     const ours = m.us ? ` <span class="small ${m.us === "red" ? "" : ""}" title="${tn(team)} is on ${m.us}"><span class="adot ${m.us}"></span></span>` : "";
-    const wp = ls && m.us ? `<span class="res ${ls.winner === m.us ? "w" : ls.winner === "tie" ? "" : "l"}">${ls.winner === m.us ? "W" : ls.winner === "tie" ? "T" : "L"}</span>` : !m.played && hasB ? `<b class="${m.breakdown.win_prob >= .5 ? "pos" : "neg"}">${P(m.breakdown.win_prob)}</b>` : (m.played && m.us ? `<span class="res ${m.result.winner === m.us ? "w" : m.result.winner === "tie" ? "" : "l"}">${m.result.winner === m.us ? "W" : m.result.winner === "tie" ? "T" : "L"}</span>` : "");
+    const wp = ls && m.us ? `<span class="res ${ls.winner === m.us ? "w" : ls.winner === "tie" ? "" : "l"}">${ls.winner === m.us ? "W" : ls.winner === "tie" ? "T" : "L"}</span>` : !m.played && m.breakdown ? `<b class="${m.breakdown.win_prob >= .5 ? "pos" : "neg"}">${P(m.breakdown.win_prob)}</b>` : (m.played && m.us ? `<span class="res ${m.result.winner === m.us ? "w" : m.result.winner === "tie" ? "" : "l"}">${m.result.winner === m.us ? "W" : m.result.winner === "tie" ? "T" : "L"}</span>` : "");
     const open = S.open.has(m.key), id = "d-" + m.key;
     return `<tr class="mrow exp ${open ? "open" : ""} ${S.nextKey === m.key ? "next" : ""}" id="r-${m.key}" data-k="${m.key}">
       <td><button type="button" class="rowbtn" aria-expanded="${open}" aria-controls="${id}" aria-label="${H(m.label || m.short)}, ${open ? "hide" : "show"} the match plan"><span class="chev">${CS.icon("chevR")}</span><b>${H(m.short)}</b></button>${ours}<span class="mt">${fmtT(m.time)}</span>${pill(m)}</td>

@@ -1039,10 +1039,13 @@ def site_build(data_dir, event, team=DEFAULT_TEAM, out_dir=None, goal=None, sims
     out_dir = out_dir or os.path.join(data_dir, "site", "api", event)
     rk, sc = build_event_json(data_dir, event, team, goal, sims, asof, offline, ctx, True, log)
     sel = rk.pop("_selection", None)
-    if asof is not None and sel:      # replay build: dated selection snapshot
-        c = _dump(sel, os.path.join(out_dir, "selection", f"{int(asof)}.json"))
-        if snapshot_only:             # (never overwrite the live files)
-            return {"selection_kb": c // 1024, "build_s": rk["build_s"]}
+    if asof is not None and snapshot_only:   # replay build: a dated selection snapshot, never the live files (an event
+        # without a selection projection used to fall through here and overwrite the live schedule.json / rankings.json
+        # with the last snapshot's: 2026wamil showed "as of 12:30" at 13:42 and lost its match-plan links)
+        c = _dump(sel, os.path.join(out_dir, "selection", f"{int(asof)}.json")) if sel else 0
+        return {"selection_kb": c // 1024, "build_s": rk["build_s"]}
+    if asof is not None and sel:
+        _dump(sel, os.path.join(out_dir, "selection", f"{int(asof)}.json"))
     a = _dump(rk, os.path.join(out_dir, "rankings.json"))
     b = _dump(sc, os.path.join(out_dir, "schedule.json"))
     c = _dump(sel, os.path.join(out_dir, "selection.json")) if sel else 0
