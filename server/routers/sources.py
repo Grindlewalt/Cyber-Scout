@@ -17,7 +17,7 @@ import json, os, shutil, sys, time
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from fastapi.responses import FileResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, StrictBool
 
 from .. import audit, db as DB
 from ..config import cfg
@@ -721,8 +721,14 @@ def calib_overlay(target: str, ev: str = Depends(valid_event), user: User = Depe
     return _job(ev, "overlay", {"target": _target(target)}, user)
 
 
+class CalibAcceptIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    force: StrictBool = Field(False, description="save a fit whose verdict is bad (the page asks first; audited)")
+
+
 @router.post("/events/{ev}/calibration/{target}/accept", summary="Save the fitted camera for the pipeline (admin)")
-def calib_accept(target: str, ev: str = Depends(valid_event), user: User = Depends(require_role("admin"))):
+def calib_accept(target: str, request: Request, body: CalibAcceptIn | None = None, ev: str = Depends(valid_event),
+                 user: User = Depends(require_role("admin")), db=Depends(DB.get_db)):
     _target(target)
     w = os.path.join(_evd(ev), "calib_wizard", f"{target}.json")
     try:
@@ -732,13 +738,26 @@ def calib_accept(target: str, ev: str = Depends(valid_event), user: User = Depen
     cam = st.get("camera")
     if not cam:
         raise HTTPException(409, "no fitted camera yet: run fit")
+    # live/calibrate.py report(): a "bad" fit (tags that don't line up, an impossible lens) places robots wrongly on
+    # the field, so it is saved only when the admin confirmed "Save anyway" (force), and that is audited
+    verdict = (st.get("report") or {}).get("verdict")
+    force = bool(body and body.force)
+    if verdict == "bad" and not force:
+        raise HTTPException(409, "This fit can't be trusted (its check says bad): calibrate by hand, or confirm "
+                                 "Save anyway.")
     name = "camera.json" if target == "overhead" else f"{target}.json"
     dst = os.path.join(_evd(ev), name)
     if os.path.exists(dst):
         shutil.copy2(dst, f"{dst}.bak-{int(time.time())}")
     cam = dict(cam); cam.setdefault("calib", {})["accepted_by"] = user.display_name or f"Teammate #{user.id}"   # never the username (it can be a credential)
     cam["calib"]["accepted_at"] = time.time()
+    cam["calib"]["verdict"] = verdict
     atomic_write_json(dst, cam)
+    if verdict == "bad":
+        with DB.tx(db):
+            audit.record(db, request, user, "sources.calibration_forced", target, ev, None,
+                         {"verdict": verdict, "reasons": [r.get("text") for r in (st.get("report") or {})
+                                                          .get("verdict_reasons", []) if isinstance(r, dict)][:6]})
     if target == "overhead":
         # the worker starts each match from the last verified pose: a new calibration replaces it
         pl = os.path.join(_evd(ev), "pose_latest.json")

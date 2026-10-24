@@ -130,9 +130,9 @@
   // ---------------------------------------------------------------- livestream recorder status
   // GET events/<ev>/livestream (signed in; server/routers/sources.py), else event.json "livestream" (small summary written by the
   // worker, may be minutes old). Shown as a card on the Sources tab and as one quiet line on the Dashboard (dash.js) while live.
-  const LS_LABEL = { recording: "Recording", waiting: "Waiting for the stream", starting: "Starting", stream_over: "Stream over", idle: "Idle",
+  const LS_LABEL = { recording: "Recording", waiting: "Waiting for the stream", starting: "Starting the recorder", stream_over: "Stream over", idle: "Idle",
                      error: "Error", no_source: "No livestream source", disabled: "Off", stopped: "Stopped", not_running: "Not running" };
-  const LS_ACTIVE = ["recording", "waiting", "starting", "error"];
+  const LS_ACTIVE = ["recording", "waiting", "starting", "error", "not_running"];
   const dur = x => x == null ? "–" : x < 90 ? `${Math.round(x)} s` : x < 5400 ? `${Math.round(x / 60)} min` : `${(x / 3600).toFixed(1)} h`;
   const gb = x => x == null ? "–" : x >= 100 ? `${Math.round(x)} GB` : `${Number(x).toFixed(1)} GB`;
   const lsScore = sc => sc && sc.red != null && sc.blue != null ? `<span class="team r">${h(sc.red)}</span>–<span class="team b">${h(sc.blue)}</span>` : "";
@@ -158,13 +158,15 @@
       if (st.stale && LS_ACTIVE.includes(st.state)) return st.message && !st.summary && !short ? st.message : `recorder not reporting for ${dur(st.age_s)}`;
       return "";
     },
-    dot: st => st.state === "error" ? "bad" : liveRec.warn(st) ? "warn" : st.state === "recording" ? "on" : "",
+    // "start" pulses: starting up, or connected but no video yet (recording with a message)
+    dot: st => st.state === "error" || st.state === "not_running" ? "bad" : liveRec.warn(st) ? "warn"
+      : st.state === "starting" || (st.state === "recording" && st.message) ? "warn start" : st.state === "recording" ? "on" : "",
     /** one quiet line (Dashboard) */
     line(st, ev) {
       if (!liveRec.active(st)) return "";
       const w = liveRec.warn(st, true), lm = st.last_match;
       return `<div class="lsline" role="status"><span class="ls-dot ${liveRec.dot(st)}" aria-hidden="true"></span><span><b>Livestream</b> ${h((LS_LABEL[st.state] || st.state).toLowerCase())}</span>
-        ${st.behind_live_s != null && st.state === "recording" && !w ? `<span>${dur(st.behind_live_s)} behind live</span>` : ""}
+        ${(st.state === "recording" || st.state === "starting") && st.message && !w ? `<span>${h(st.message)}</span>` : st.behind_live_s != null && st.state === "recording" && !w ? `<span>${dur(st.behind_live_s)} behind live</span>` : ""}
         ${lm ? `<span>last match ${lsMatch(lm)}</span>` : ""}
         ${w ? `<span class="ls-warn">${CS.icon("warn", "ico")} ${h(w)}</span>` : st.state === "error" && st.message ? `<span class="ls-err">${h(st.message)}</span>` : ""}
         ${CS.can && CS.can("admin") && ev ? `<a href="#/${ev}/sources">Recorder</a>` : ""}</div>`;
@@ -301,14 +303,20 @@
   const ytVideo = u => /(?:youtu\.be\/|[?&]v=|\/live\/|\/shorts\/)[A-Za-z0-9_-]{11}/.test(u || "") || /^[A-Za-z0-9_-]{11}$/.test((u || "").trim());
   const fitQ = c => c ? [c.tag_rms_px != null ? `tags ${c.tag_rms_px} px` : "", c.point_rms_px != null ? `points ${c.point_rms_px} px` : "",
                          c.line_med_px != null ? `centre line ${c.line_med_px} px` : ""].filter(Boolean).join(", ") : "";
-  /** recorder status -> {c: on | warn | bad | "", t: plain state, why} */
-  function recPlain(st) {
+  /** recorder status -> {c: on | warn | bad | "", t: plain state, why}; evj (event.json) for "Q1 is scheduled for …" */
+  function recPlain(st, evj) {
     if (!st) return { c: "", t: "No recorder status", why: "the recorder hasn't reported for this event yet" };
     if (st.stale && LS_ACTIVE.includes(st.state)) return { c: "bad", t: "Recorder not reporting", why: `no update for ${dur(st.age_s)}: is the recorder service running?` };
     const nx = st.next_check_in_s ? ` · checks again in ${dur(st.next_check_in_s)}` : "";
     switch (st.state) {
-      case "recording": return { c: "on", t: "Recording", why: st.behind_live_s != null ? `${dur(st.behind_live_s)} behind live` : "" };
-      case "waiting": case "starting": return { c: "warn", t: "Waiting for the stream", why: (st.message || "not live yet") + nx };
+      case "starting": return { c: "warn start", t: "Starting the recorder", why: st.message || "" };
+      case "recording": {
+        if (st.message) return { c: "warn start", t: "Recording", why: st.message };       // connected, no video yet
+        const nq = !st.last_match && evj && evj.queue && evj.queue.next;
+        return { c: "on", t: "Recording", why: [st.behind_live_s != null ? `${dur(st.behind_live_s)} behind live` : "",
+          nq ? `no match on the stream yet; ${nq.short} is scheduled for ${CS.fmtWhen(nq.time)}` : ""].filter(Boolean).join(" · ") };
+      }
+      case "waiting": return { c: "warn", t: "Waiting for the stream to go live", why: (st.message || "not live yet") + nx };
       case "stream_over": return { c: "warn", t: "Not live", why: (st.message || "the stream ended") + nx };
       case "error": return { c: "bad", t: "Problem", why: st.message || "the recorder failed" };
       case "not_running": return { c: "bad", t: "Recorder not running", why: st.message || "" };
@@ -451,7 +459,7 @@
         if (bad && !confirm(`This fit can't be trusted: ${shortBad(rp)}. Robots and shots would be placed wrongly on the field. Save it anyway?`)) return;
         e.target.disabled = true; say("saving…");
         try {
-          await A("POST", `events/${ev}/calibration/overhead/accept`);
+          await A("POST", `events/${ev}/calibration/overhead/accept`, bad ? { force: true } : undefined);
           let note = "";
           if (f.field_roi) {
             const L = await A("GET", `events/${ev}/layout`), cur = ((L.layout || {}).sources || {})[sid];
@@ -563,7 +571,7 @@
       const live = s.kind === "livestream", mine = live && recFor(s);
       let out = "";
       if (live) {
-        const r = mine || !(lsSt && lsSt.source) ? recPlain(lsSt) : { c: "", t: "Not being recorded", why: `the recorder records ${recName(lsSt.source)} first` };
+        const r = mine || !(lsSt && lsSt.source) ? recPlain(lsSt, evj) : { c: "", t: "Not being recorded", why: `the recorder records ${recName(lsSt.source)} first` };
         out += `<div class="vw-rec"><span class="ls-dot ${r.c}" aria-hidden="true"></span><span><b>${h(r.t)}</b>${r.why ? ` <span class="muted">· ${h(r.why)}</span>` : ""}</span></div>`;
         const tr = mine && lsSt.tracking;
         if (tr) out += `<div class="vw-tr small">${tr.ok ? `${CS.icon("check", "ico")} Robots are tracked from this stream` : `Robots aren't tracked from this stream yet <span class="muted">· ${h(tr.note || "")}</span>`}</div>`;
@@ -1478,7 +1486,7 @@
     el.querySelector("#acc").onclick = async () => {
       if (!confirm(verdictOf(report) === "bad" ? `This fit can't be trusted: ${shortBad(report)}. Robots and shots would be placed wrongly on the field. Save it anyway? (the old file is kept as a backup)`
         : "Save this calibration? The pipeline uses it for the next matches (the old file is kept as a backup).")) return;
-      try { await A("POST", `events/${ev}/calibration/${target}/accept`); st("saved"); route(false); } catch (e) { stE(e); }
+      try { await A("POST", `events/${ev}/calibration/${target}/accept`, verdictOf(report) === "bad" ? { force: true } : undefined); st("saved"); route(false); } catch (e) { stE(e); }
     };
     const sc = el.querySelector("#showcur");
     if (sc) sc.onclick = async () => {

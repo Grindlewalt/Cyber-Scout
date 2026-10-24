@@ -2990,6 +2990,23 @@
       }
      }
     ],
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "anyOf": [
+         {
+          "$ref": "#/components/schemas/CalibAcceptIn"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "title": "Body"
+       }
+      }
+     }
+    },
     "responses": {
      "200": {
       "description": "Successful Response",
@@ -5040,6 +5057,19 @@
      "paths"
     ],
     "title": "BundleIn"
+   },
+   "CalibAcceptIn": {
+    "properties": {
+     "force": {
+      "type": "boolean",
+      "title": "Force",
+      "description": "save a fit whose verdict is bad (the page asks first; audited)",
+      "default": false
+     }
+    },
+    "additionalProperties": false,
+    "type": "object",
+    "title": "CalibAcceptIn"
    },
    "ClaimIn": {
     "properties": {

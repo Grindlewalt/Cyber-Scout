@@ -1058,6 +1058,8 @@ html[data-net="off"] .timectl.live .tc-tag i { background: var(--ink-3); box-sha
 .vw-rec .ls-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--ink-3); flex: none; transform: translateY(1px); }
 .vw-rec .ls-dot.on { background: var(--good); box-shadow: 0 0 0 3px color-mix(in srgb, var(--good) 22%, transparent); }
 .vw-rec .ls-dot.warn { background: var(--caution); } .vw-rec .ls-dot.bad { background: var(--bad); }
+.ls-dot.start { animation: cs-pulse 1.4s ease-in-out infinite; }   /* recorder starting / connected, no video yet */
+@media (prefers-reduced-motion: reduce) { .ls-dot.start { animation: none; } }
 .vw-tr .ico { color: var(--good); }
 .vw-found { display: grid; gap: 4px; min-width: 0; }
 .vw-ms { display: flex; flex-wrap: wrap; gap: 4px; }
