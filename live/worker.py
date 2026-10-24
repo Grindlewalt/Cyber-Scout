@@ -1002,6 +1002,25 @@ def _recorded(ev):
         return False
 
 
+CUT_AHEAD = int(os.environ.get("CUT_AHEAD", "8"))
+
+
+def cut_ahead(ev, ms, lv, status, limit=CUT_AHEAD):
+    """Cut the played matches the stream analyser missed (no clip, no upload) from the recording by TBA time BEFORE
+    tracking any, a few seconds each, so processors on other cards have clips to take while this worker tracks one
+    (it used to cut one, track it for minutes, then cut the next: the GPU 1 processor sat idle).  -> the LiveView."""
+    n = 0
+    for m in ms:
+        k = m["key"]
+        if n >= limit: break
+        if not is_played(m) or (m.get("videos") or []) or status.get(k, {}).get("state") == "failed": continue
+        if os.path.exists(os.path.join(ev_dir(ev), "matches", f"{k}.json")) or claimed_elsewhere(ev, k): continue
+        if live_input(lv, m, True, status) is not None: continue            # it has a clip already
+        live, lv, _ = live_only_input(ev, lv, m, True, status)
+        n += live is not None
+    return lv
+
+
 def live_only_input(ev, lv, m, played, status):
     """Livestream-only mode: the match's clip (a record not rejected / failed twice), else a cut by TBA time
     (liveingest.tba_cut) when the stream analyser missed it.  -> (live input | None, LiveView, why-not note)."""
@@ -1172,6 +1191,8 @@ def sync(ev, tba, max_new=None, track=True):
     elif has_cam:
         _NEEDS_SETUP_LOGGED.discard(ev)
     done_any = False; n = 0; more = False; dirty = False
+    if track and (only_live or (has_cam and _recorded(ev))):
+        lv = cut_ahead(ev, ms, lv, status)
     for m in ms:
         played = is_played(m)
         if played and (status.get(m["key"], {}).get("live_reconcile") or needs_reconcile(ev, m["key"])):

@@ -362,3 +362,25 @@ def test_auto_mode_cuts_a_missed_match_by_tba_time(env, monkeypatch):
     m5 = dict(tba(5, score=40, actual=T), videos=[{"type": "youtube", "key": "abcdefghijk"}])
     W.sync(EV, FakeTBA([m5]))
     assert len(cuts) == 1
+
+
+def test_missed_matches_are_cut_before_any_tracking(env, monkeypatch):
+    """All missed played matches get their TBA-time cut first, so processors on other cards have clips to take while
+    the worker tracks one (it used to cut one, track it for minutes, then cut the next)."""
+    import worker as W
+    monkeypatch.setattr(W, "DATA", str(env["data"]))
+    monkeypatch.setattr(W, "build_site", lambda ev, tba: None)
+    T = T0 + 600.0
+    write_dir(env, "vidB", [], chunks=400, analysed_to=1990.0)
+    order = []
+
+    def fake_cut(d, t0, t1, dst):
+        order.append(("cut", os.path.basename(dst))); open(dst, "wb").write(b"clip"); return t0 + 0.2
+    real = LI.tba_cut
+    monkeypatch.setattr(LI, "tba_cut", lambda ev, m, **kw: real(ev, m, now=T + 1400, cut=fake_cut, measure=lambda c: None,
+                                                                 log=kw.get("log", print)))
+    monkeypatch.setattr(W, "process_match", lambda ev, m, cfg, st, mc, live=None: order.append(("track", m["key"])) or False)
+    monkeypatch.setattr(W.time, "time", lambda: T + 1400)
+    W.sync(EV, FakeTBA([tba(4, score=40, actual=T), tba(5, score=40, actual=T + 400)]))
+    kinds = [k for k, _ in order]
+    assert kinds[:2] == ["cut", "cut"] and "track" in kinds[2:]
