@@ -47,11 +47,6 @@
     return { [us]: a, [op]: b, won: L.winner === us, tie: L.winner === "tie" || (!L.winner && a === b), row: L };
   };
 
-  function mchip(k, R) {
-    const r = R[k];
-    return `<a class="dchip${k === US ? " us" : ""}" href="#/${S.ev}/t/${k}" title="${r ? `${tn(k)} ${H(r.nickname || "")}: model rating ${n0(r.blend?.total)} ± ${n0(r.blend?.sd)} pts/match; ${H(r.coverage?.label || "")}` : ""}">
-      <b>${tn(k)}</b>${k === US ? `<span class="ustag">us</span>` : ""}<span class="rt">${r ? n0(r.blend?.total) : "–"}<small> pts</small></span>${covTag(r?.coverage)}</a>`;
-  }
   function stamp(pl) {
     const a = pl.as_of; if (!a) return "";
     return `plan as of ${fmtT(a.ts)} · ${a.quals_played} quals posted${a.last_result ? ` (through ${H(a.last_result)})` : ""}`;
@@ -121,9 +116,35 @@
     const lab = { energized: "ENERGIZED", supercharged: "SUPERCHARGED", traversal: "TRAVERSAL" };
     return `<tr class="${cls}"><th scope="row">${who}</th><td>Win <b>${wp5(o.win)}</b></td>${shown.map(b => `<td>${lab[b]} <b>${wp5(o[b])}</b></td>`).join("")}<td class="muted">exp. RP <b>${n0(o.rp_mean, 1)}</b></td></tr>`;
   }
+  // one line: red teams | blue teams (our team marked); an alliance without enough info turns yellow once its plan is known
+  function teamsLine(pl, mp) {
+    const grp = a => { const nei = mp && mp.alliances?.[a]?.enough === false;
+      return `<span class="mgrp ${a}${nei ? " nei" : ""}"${nei ? ` title="${H(CS.matchNote(mp, a))}"` : ""}>${(pl.teams?.[a] || []).map(k =>
+        `<a class="mtm${k === US ? " us" : ""}" href="#/${S.ev}/t/${k}"${k === US ? ' aria-label="' + tn(k) + ', our team"' : ""}>${tn(k)}${k === US ? "<i>us</i>" : ""}</a>`).join("")}</span>`; };
+    return grp("red") + `<span class="mdiv" aria-hidden="true">|</span>` + grp("blue");
+  }
+  const MPC = {};      // match key -> mp json (null: none)
+  async function loadMp(key) {
+    if (!(key in MPC)) MPC[key] = await api(`${S.ev}/mp/${key}.json`).catch(() => null);
+    return MPC[key];
+  }
+  // fill the field + predicted scoreboard of the open plan; yellow bar/line/board for an alliance without enough info
+  async function paintMp(d, pl) {
+    const my = S, mp = await loadMp(pl.key), calib = await CS.mpCalib(S.ev);
+    const fe = document.getElementById("mpfield"); if (S !== my || !fe || fe.dataset.key !== pl.key) return;
+    const bd = document.getElementById("mpboard"), bar = document.getElementById("mbar"), ln = document.getElementById("mline");
+    if (!mp || !mp.robots || !mp.alliances) {
+      fe.innerHTML = `<div class="mpnote">No field plan for this match yet: older data, or this event has no tracked matches. The plan below still applies.</div>`; if (bd) bd.innerHTML = ""; return; }
+    const al = pl.alliance, nei = mp.alliances[al]?.enough === false;
+    if (bar) { bar.classList.toggle("nei", nei); bar.textContent = nei ? `We are ${al.toUpperCase()} · ${CS.matchNote(mp, al)}` : bar.textContent; }
+    if (ln) ln.innerHTML = teamsLine(pl, mp);
+    
+    if (bd) bd.innerHTML = `<div class="mpb-h"><h3>${mp.played && !(d.event?.asof && mp.time > d.event.asof) ? "Predicted vs actual score" : "Predicted score"}</h3>${CS.help(`Points per period for each alliance, from each robot's past tracked matches (everything before this match${mp.as_of ? ", as of " + fmtT(mp.as_of) : ""}). A <b>yellow</b> bar means at least one robot has too little tracked video to predict, so the numbers are unreliable.`, "How to read the predicted score")}</div><div id="mpper"></div>`;
+    const per = v => { const e = document.getElementById("mpper"); if (e) e.innerHTML = CS.matchPeriods(mp, { asof: d.event?.asof, calib, view: v }); };
+    CS.matchField(fe, mp, { us: US, asof: d.event?.asof, calib, onChange: st => per(st.view) });
+  }
   function queueCard(pl, d, R, first) {
     const q = pl.queue || {}, p = pl.prediction || {}, al = pl.alliance, op = al === "red" ? "blue" : "red";
-    const usTeams = pl.teams?.[al] || [], themTeams = pl.teams?.[op] || [];
     const wp = p.win_prob, goal = q.mode === "goal" && q.lever, epa = q.win_prob_epa;
     const disagree = q.models_disagree ? `<span class="mchipw" title="model and EPA differ by 15 points or more (as shown) — treat the number with care">models disagree</span>` : "";
     const bar = wp == null ? "" : `<div class="wbar" role="img" aria-label="model: ${ALLY(al)} wins ${wp5(wp)}"><i class="${al}" style="width:${(wp * 100).toFixed(1)}%"></i><i class="${op}" style="width:${(100 - wp * 100).toFixed(1)}%"></i></div>`;
@@ -162,8 +183,10 @@
         ${first ? `<div class="cd"><span id="cd">–</span><small id="cdsub"></small></div>` : `<div class="cd later"><span>${later}</span><small>after the earlier match${(d.plans || []).findIndex(x => x.key === pl.key) > 1 ? "es" : ""}</small></div>`}
         ${pl.preview_url ? `<a class="dbtn" href="#/${S.ev}/m/${pl.key}">Full preview</a>` : ""}
       </header>
-      <div class="qteams"><div class="aline ${al}"><span class="atag">Us</span>${usTeams.map(k => mchip(k, R)).join("")}</div>
-        <div class="aline ${op}"><span class="atag">Them</span>${themTeams.map(k => mchip(k, R)).join("")}</div></div>
+      <div class="mbar ${al}" id="mbar" data-al="${al}">We are ${al.toUpperCase()} · ${H(pl.short || pl.label)} · ${fmtT(pl.time)}</div>
+      <div class="mline" id="mline" role="group" aria-label="Red alliance, then blue alliance">${teamsLine(pl)}</div>
+      <div class="mpfield" id="mpfield" data-key="${H(pl.key)}"><div class="muted small">Loading the field plan…</div></div>
+      <div class="mpboard" id="mpboard"></div>
       ${head}
       <ol class="qlines">${L1}${L2 ? L2.replace('<div class="ql-body">', `<div class="ql-body"><div class="ql-fieldwrap">${miniField(pl, q)}</div>`) : ""}${L3}${L4}${L5}</ol>
       <details class="qdetails"><summary>Details: every defense option, auto routines, TBA auto history, key factors</summary>${planDetails(pl, R)}</details>
@@ -362,15 +385,14 @@
     $app.innerHTML = `<div class="dash db${d.event?.asof ? " isreplay" : ""}">
       <h1 class="vh">Strategy for ${tn(d.team)}, ${H(d.event?.name || S.ev)}</h1>
       ${!d.event?.asof && S.lsrec && CS.liveRecorder ? CS.liveRecorder.line(S.lsrec, S.ev) : ""}
-      ${rail(d)}
-      <div class="db-grid"><div class="db-main">${plansSection(d, R)}</div><div class="db-side">${ourEvent(d, R)}</div></div>
+      <div class="db-grid"><div class="db-main">${plansSection(d, R)}${rail(d)}</div><div class="db-side">${ourEvent(d, R)}</div></div>
       <div class="dsecs">
       ${disclosure("sched", "Schedule and results", `${sc.length - up} played · ${up} to play`, sc.length ? schedule(d) : "", CS.help("Scores and RP are us–them. Win% = model win probability before the match (5% steps).", "How to read the schedule"))}
       ${disclosure("levers", "Levers", top ? `pit material · biggest gap: ${H(LAB[top.name] || top.name)}` : "pit material", d.our_team ? levers(d) : "", CS.help("Biggest gap to the event best first. n≈ = verified matches behind our value. On each track: the filled dot is ours, the thin tick the event median, the square the event best.", "How to read the levers"))}
       ${disclosure("ratings", "Ratings", `${(d.ratings || []).length} teams · points per match · model and EPA side by side`, `<div id="rt">${ratings(d)}</div>`, ratingsHelp(d))}
       </div>
       ${model(d)}</div>`;
-    startCountdown(d); wirePlans(d, R); wireSecs();
+    startCountdown(d); wirePlans(d, R); wireSecs(); { const p = plansOf(d)[S.tab]; if (p) paintMp(d, p); }
     const rt = () => { document.getElementById("rt").innerHTML = ratings(d); wireSort(rt); };
     wireSort(rt);
     const on = document.querySelector(".rl-m.upc.on"), rl = on && on.closest(".rl");          // phones: the open plan's tab in view
@@ -389,7 +411,7 @@
       const el = document.getElementById("plans"); if (!el) return; el.outerHTML = plansSection(d, R);
       document.querySelectorAll(".rail .rl-m.upc").forEach(b => { const on = +b.dataset.i === i; b.classList.toggle("on", on); b.setAttribute("aria-pressed", on); });
       if (focus) document.getElementById("rt-" + i)?.focus();
-      wirePlans(d, R); startCountdown(d); };
+      wirePlans(d, R); startCountdown(d); paintMp(d, p); };
     const tabs = [...document.querySelectorAll(".rail .rl-m.upc")];
     tabs.forEach(b => { b.onclick = () => show(+b.dataset.i);
       b.onkeydown = e => { const k = tabs.indexOf(b), n = e.key === "ArrowRight" ? k + 1 : e.key === "ArrowLeft" ? k - 1 : null; if (n != null && tabs[n]) { e.preventDefault(); show(+tabs[n].dataset.i, true); } }; });
@@ -546,6 +568,21 @@ a.tgt { font-weight: 750; text-decoration-color: currentColor; } a.tgt.red { col
 .dmodel { padding: 10px 14px; background: transparent; border: 1px dashed var(--line-strong); border-radius: var(--r-m); font-size: var(--fs-foot); line-height: 1.6; color: var(--ink-2); }
 .dmodel b { color: var(--ink); }
 
+/* ---- match day top: our-colour bar, one teams line, the field, the predicted score */
+.mbar { margin: 4px 0 8px; padding: 10px 16px; border-radius: var(--r-p); color: #fff; font-weight: 700; font-size: var(--fs-callout); letter-spacing: .01em; }
+.mbar.red { background: var(--red-fill); } .mbar.blue { background: var(--blue-fill); }
+.mbar.nei { background: var(--nei); color: var(--nei-ink); }
+.mline { display: flex; align-items: center; justify-content: center; gap: 6px; flex-wrap: nowrap; margin-bottom: 12px; min-width: 0; }
+.mgrp { display: flex; gap: 4px; padding: 3px; border-radius: var(--r-p); min-width: 0; }
+.mgrp.red { background: var(--red-tint); } .mgrp.blue { background: var(--blue-tint); }
+.mgrp.nei { background: var(--nei); outline: 2px dashed var(--nei-ink); outline-offset: -2px; }
+.mtm { display: inline-flex; align-items: baseline; gap: 3px; padding: 3px 8px; min-height: 32px; align-items: center; border-radius: 6px; background: var(--surface); color: var(--ink); text-decoration: none;
+  font-family: var(--font-num); font-stretch: var(--num-stretch); font-size: 18px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.mtm:hover { outline: 1px solid var(--ink-3); } .mtm.us { box-shadow: 0 0 0 2px var(--accent); } .mtm i { font-style: normal; font-family: var(--font); font-size: 10px; color: var(--accent); }
+.mdiv { color: var(--ink-3); font-size: 22px; font-weight: 300; }
+.mpfield { margin-bottom: 14px; min-width: 0; } .mpnote { padding: 12px 14px; border: 1px dashed var(--line-strong); border-radius: var(--r-p); color: var(--ink-2); font-size: var(--fs-foot); }
+.mpboard { margin-bottom: 14px; } .mpb-h { display: flex; align-items: center; gap: 8px; } .mpb-h h3 { margin: 0 0 6px; font-size: var(--fs-callout); }
+@media (max-width: 760px) { .mtm { padding: 3px 5px; font-size: 16px; } .mtm i { display: none; } .mdiv { font-size: 18px; } .mbar { font-size: var(--fs-body); padding: 9px 12px; } }
 @media (max-width: 760px) {
   .dchip .rt { display: none; } .qhead { margin-bottom: var(--sp-3); } .qid h2 { font-size: 28px; }
   .qcard { padding: var(--sp-4) var(--sp-4) var(--sp-3); } .qid { min-width: 0; flex-basis: 100%; } .cd { text-align: left; } .cd > span { font-size: 32px; } .qb-n { font-size: 56px; }
@@ -554,6 +591,30 @@ a.tgt { font-weight: 750; text-decoration-color: currentColor; } a.tgt.red { col
   .plan { grid-template-columns: 1fr; } .oe dd { font-size: 20px; }
 }`;
     document.head.appendChild(st);
+  }
+
+  // The recorder line: its own timer (15 s while the recorder is starting or has a message to show, else 60 s), inserted when it
+  // wasn't there at load, removed (not hidden) when the recorder has nothing to say.
+  function recorderLine(ev, d) {
+    if (!CS.liveRecorder || d.event?.asof) return;
+    const me = S; let tm = 0, dead = false;
+    const fast = st => !!st && (st.state === "starting" || (st.state === "recording" && !!st.message));
+    const tick = async () => {
+      let st = null;
+      try { st = await CS.liveRecorder.load(ev); } catch (e) { }
+      if (dead || S !== me) return;
+      if (st) {
+        S.lsrec = st;
+        const html = CS.liveRecorder.line(st, ev), db = document.querySelector(".db"), cur = db && db.querySelector(":scope > .lsline");
+        if (!db) return;
+        if (!html) { if (cur) cur.remove(); }
+        else if (cur) cur.outerHTML = html;
+        else { const h = db.querySelector(":scope > h1.vh"); if (h) h.insertAdjacentHTML("afterend", html); }
+      }
+      tm = setTimeout(tick, fast(st) ? 15000 : 60000);
+    };
+    tm = setTimeout(tick, S.lsrec ? (fast(S.lsrec) ? 15000 : 60000) : 300);
+    cleanup.push(() => { dead = true; clearTimeout(tm); });
   }
 
   window.dashPage = async function (ev, ts) {
@@ -568,14 +629,8 @@ a.tgt { font-weight: 750; text-decoration-color: currentColor; } a.tgt.red { col
     if (d && d.team) US = d.team;
     if (evj) {
       S.live = Object.fromEntries((evj.matches || []).filter(m => CS.isStream(m)).map(m => [m.key, m]));
-      // wait briefly for the recorder line (instant on the LAN); over a slow link render first and add it when it lands
-      if (CS.liveRecorder) {
-        const late = {}, st = await Promise.race([lsP, new Promise(r => setTimeout(() => r(late), 250))]);
-        if (st !== late) S.lsrec = st;
-        else { const me = S; lsP.then(x => { if (S !== me || !x) return; S.lsrec = x;
-          const db = document.querySelector(".db"), h = db && db.querySelector(":scope > h1.vh");
-          if (h && !db.querySelector(":scope > .lsline") && !d.event?.asof) h.insertAdjacentHTML("afterend", CS.liveRecorder.line(x, ev)); }); }
-      }
+      // the recorder line has its own timer (below); the first status is used when it arrives within a moment
+      if (CS.liveRecorder) { const late = {}, st = await Promise.race([lsP, new Promise(r => setTimeout(() => r(late), 250))]); if (st !== late) S.lsrec = st; }
     }
     // linkable plan tabs: #/<ev>/dash/<ts|live>/<q51 | plan index>
     const want = (location.hash.split("/")[4] || "").toLowerCase(), ps = d.plans || [];
@@ -594,8 +649,9 @@ a.tgt { font-weight: 750; text-decoration-color: currentColor; } a.tgt.red { col
     if (!ts) {   // live: refresh every 60s without losing scroll
       const iv = setInterval(async () => { try { const n = await load(ev, null); if (JSON.stringify(n.event) !== JSON.stringify(d.event) || n.next_match?.key !== d.next_match?.key) return route(false);
         const e2 = evj && await api(`${ev}/event.json`); if (e2 && e2.updated !== evj.updated) return route(false);
-        if (CS.liveRecorder && S.lsrec) { const st = await CS.liveRecorder.load(ev, e2); const el = document.querySelector(".db > .lsline"); if (el && st) el.outerHTML = CS.liveRecorder.line(st, ev) || "<span hidden></span>"; } } catch (e) { } }, 60000);
+        } catch (e) { } }, 60000);
       cleanup.push(() => clearInterval(iv));
+      recorderLine(ev, d);
     }
   };
 })();
