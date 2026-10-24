@@ -49,3 +49,19 @@ class BehaviorTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CycleRateTests(unittest.TestCase):
+    def test_volleys_not_shots(self):
+        m = dict(key="k", hz=10, t_start=0, red=dict(teams=["frc1", "frc2", "frc3"]), blue=dict(teams=["frc4", "frc5", "frc6"]),
+                 periods=[dict(name="transition", t0=20, t1=30)],
+                 tracks=[dict(alliance="red", team="frc1", xy=[[1300, 400]] * 1600, obs=[1] * 1600, conf=[1.0] * 1600)],
+                 intakes=[],
+                 shots=[dict(shooter=dict(kind="robot", track_idx=0, alliance="red"), match_t=40 + i * 0.4 + 15 * (i // 10),
+                             target="red_hub", period="shift2", outcome="made") for i in range(30)])   # 3 bursts of 10
+        r = B.extract(m)[0]
+        self.assertEqual(r["volleys"], 3)
+        self.assertAlmostEqual(r["tele_min"], 140 / 60, 1)
+        P = B.team_plan([dict(r, key="a"), dict(r, key="b")], 1, set(), {})
+        if P.get("cycle"):
+            self.assertTrue(0.5 < P["cycle"]["per_min"] < 3)

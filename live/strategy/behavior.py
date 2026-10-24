@@ -130,8 +130,10 @@ def extract(m):
                 if len(seg) >= 5:
                     cyc.append(seg)
         rec["cycles"] = cyc
-        rec["volleys"] = len(hub)
-        rec["tele_min"] = max(1.0, (sum(1 for t, _, _ in [(p[0], 0, 0) for p in pts] if t >= 20) / hz) / 60.0)
+        # volleys = bursts of hub shots (> 3 s apart start a new one), not single shots
+        rec["volleys"] = sum(1 for i, h in enumerate(hub) if i == 0 or h - hub[i - 1] > 3.0)
+        # observed teleop minutes (gated frames), at least 0.5 so a barely seen robot is not extrapolated wildly
+        rec["tele_min"] = max(0.5, sum(1 for t, _, _ in pts if t >= 20) / hz / 60.0)
         # inactive-hub job
         act = [(p["t0"], p["t1"]) for p in (m.get("periods") or [])
                if p["name"].startswith("shift") and not (p.get("active") or {}).get(al, True)]

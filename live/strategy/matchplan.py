@@ -225,7 +225,7 @@ def _actual_robot(rec, al):
                 inactive=dict(role=(rec.get("inactive") or {}).get("role")), collect=dict(xy=cx))
 
 
-def _robot_out(team, al, station, P, hist_n, rec_actual, stand, scale):
+def _robot_out(team, al, station, P, hist_n, rec_actual, stand, scale, spot=None):
     base = dict(team=team, alliance=al, station=station, n_video=hist_n)
     if not P or not P.get("enough"):
         base.update(enough=False, why=(P or {}).get("why") or "no tracked matches yet", start=None, auto=None,
@@ -236,6 +236,9 @@ def _robot_out(team, al, station, P, hist_n, rec_actual, stand, scale):
             base["auto"] = dict(path=None, pts=dict(mean=_r(am * scale["auto"], 1), sd=None, basis=b_),
                                 fuel=dict(mean=_r(am * scale["auto"], 1), sd=None), routine=None, n=0, stand_in=True, basis=b_)
             base["stand_in"] = True
+        if spot:                              # not observed for this team: the station's usual spot at this event
+            base["start"] = dict(xy=_fld(spot[0], al), side=B.side_of(spot[0][1]), n=0, stand_in=True,
+                                 basis=f"station {station}'s usual spot at this event ({spot[1]} starts), not observed for this team")
     else:
         a = dict(P["auto"])
         a["path"] = _fpath(B.resample(a["path"], 24).tolist(), al)
@@ -300,6 +303,11 @@ def build(data_dir, event, team="frc4911", out_dir=None, log=None, tba_path=None
                 hist.setdefault(x["team"], []).append(x)
                 flat.append(x)
         smap = B.station_sides(flat)
+        spots = {}
+        for st_ in (1, 2, 3):
+            ss = sorted((x["start"] for x in flat if x["station"] == st_ and x.get("start")), key=lambda q: q[0])
+            if ss:
+                spots[st_] = ([sorted(q[0] for q in ss)[len(ss) // 2], sorted(q[1] for q in ss)[len(ss) // 2]], len(ss))
         scale = _scale(before, tbk)
         stand = _stand_in(flat) if flat else {p: (None, None) for p in PERIODS}
         tr_rec = tbk.get(key)
@@ -326,7 +334,7 @@ def build(data_dir, event, team="frc4911", out_dir=None, log=None, tba_path=None
         preds = {"red": A, "blue": Bp}
         ro = []
         for tm, al, st, P in robots:
-            o = _robot_out(tm, al, st, P, len(hist.get(tm, [])), cur.get(tm) if played else None, stand, scale)
+            o = _robot_out(tm, al, st, P, len(hist.get(tm, [])), cur.get(tm) if played else None, stand, scale, spots.get(st))
             ro.append(o)
             n_rob += 1
             n_enough += 1 if o["enough"] else 0
