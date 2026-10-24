@@ -594,6 +594,7 @@ Static, no build step, served by nginx. Script order is fixed in `index.html`: `
 | `web/manifest.webmanifest` | PWA manifest (Jet & Paper colours). |
 | `live/runlog.py` | Per-process log ring + current activity -> `DATA/logs/<role>.json`, stdout/stderr tee, secret redaction. |
 | `server/routers/logs.py` | `GET /admin/logs` (admin): the log files, read defensively. |
+| `server/routers/jobs.py`, `server/tests/test_jobs.py` | `GET /admin/jobs` (admin): running + queued + recent work per runner, from the claim / heartbeat / job files (read defensively). |
 | `tests/test_runlog.py`, `server/tests/test_logs.py` | Redaction, ring, file, tee; the endpoint (roles, since, stale, garbage, symlink). |
 | `web/admin.js` | `#/admin[/users\|settings\|events\|updates]` (admin): Teammates (full width, delegated row buttons), Settings (team, goal, TBA key, worker status line from `CS.processing`, worker options incl. GPU / HUBCAM), Competitions (follow via `CS.eventPicker`), Updates (changelog, progress, rollback). |
 | `web/audit.js` | `#/activity` (admin: audit log in sentences, `changes` filter by default, revert, undo-all behind ⋯ with a dry-run count and typed username, lockdown / passwordless / review switches, sign everyone out) and `#/<ev>/fixes` (strategist+: identity-fix approval queue per competition; nav `badge` with the waiting count). |

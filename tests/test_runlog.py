@@ -104,3 +104,26 @@ def test_writer_throttle(tmp_path):
     R.flush(); t = os.path.getmtime(R.S.path)
     time.sleep(0.01); R.add("x")
     assert os.path.getmtime(R.S.path) == t                    # add() itself never writes
+
+
+def test_gpu_stats(monkeypatch):
+    class P:                                                  # a finished nvidia-smi
+        returncode, stdout = 0, "0, NVIDIA RTX 3090, 37, 9000, 24576\nbad line\n1, RTX 3080, 5, 100, 10240\n"
+    calls = []
+    monkeypatch.setattr(R.shutil, "which", lambda n: "/usr/bin/nvidia-smi")
+    monkeypatch.setattr(R.subprocess, "run", lambda *a, **k: calls.append(k) or P)
+    monkeypatch.setenv("GPU_IDS", "0,1"); monkeypatch.setenv("GPU_DEVICE", "1")
+    R._GPU.update(at=0.0, val=None)
+    s = R.snapshot()
+    assert s["gpus"] == [dict(index=0, name="NVIDIA RTX 3090", util_pct=37, mem_used_mb=9000, mem_total_mb=24576),
+                         dict(index=1, name="RTX 3080", util_pct=5, mem_used_mb=100, mem_total_mb=10240)]
+    assert s["gpu_ids"] == "0,1" and s["gpu_device"] == "1" and calls[0]["timeout"] == R.GPU_TIMEOUT_S
+    R.snapshot(); assert len(calls) == 1                      # cached for GPU_S
+
+
+def test_gpu_stats_absent_or_failing(monkeypatch):
+    monkeypatch.setattr(R.shutil, "which", lambda n: None)
+    R._GPU.update(at=0.0, val=None); assert R.snapshot()["gpus"] is None
+    def boom(*a, **k): raise R.subprocess.TimeoutExpired("nvidia-smi", 3)
+    monkeypatch.setattr(R.shutil, "which", lambda n: "/x"); monkeypatch.setattr(R.subprocess, "run", boom)
+    R._GPU.update(at=0.0, val=None); assert R.snapshot()["gpus"] is None

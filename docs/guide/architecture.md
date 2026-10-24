@@ -199,6 +199,7 @@ atomically at most once a second (at once when the activity changes; `at` is ref
 `role` = `worker`, `recorder` or `processor-<WORKER_ID>`. Secrets are redacted before a line enters the ring (the TBA key,
 `key=`/`token=`/`sig=`/`auth=`/`password=` values, `Bearer` tokens, Discord webhook URLs, opaque tokens of 32+ characters;
 match keys, video ids and paths stay). The API reads the files (`GET /admin/logs`, untrusted: no symlinks, size cap, typed
+The same heartbeat also carries `gpus` (nvidia-smi: card, utilisation, memory; at most every 15 s, only where nvidia-smi exists) and the process's `GPU_IDS` / `GPU_DEVICE`; Admin → Jobs (`GET /admin/jobs`, `server/routers/jobs.py`) combines these with claims, processor heartbeats, `status.json`, Video-page job files and the site rows' `wait` reasons into one running / queued / recent snapshot.
 fields) for Admin → Worker.
 
 ### Worker → API: processing state (`data/worker-status.json`)

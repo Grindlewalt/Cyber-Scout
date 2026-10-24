@@ -4,7 +4,11 @@ A per-process ring buffer of the last LINES log lines (each <= LINE_MAX chars, w
 current activity ("doing"), written atomically to DATA/logs/<role>.json at most once a second (right away when the activity
 changes) by a small daemon thread:
 
-  {role, pid, started, at, doing, doing_since, also: [{text, since}], seq, lines: [{seq, t, text}]}
+  {role, pid, started, at, doing, doing_since, also: [{text, since}], gpu_ids, gpu_device, gpus, seq, lines: [{seq, t, text}]}
+
+gpus = [{index, name, util_pct, mem_used_mb, mem_total_mb}] from nvidia-smi, only in a process that can run it (the worker
+container; at most every GPU_S, 3 s timeout, absent / failing -> omitted); gpu_ids / gpu_device = GPU_IDS / GPU_DEVICE of this
+process, so Admin → Jobs can say which card it uses.
 
 role = "worker", "recorder" or "processor-<id>".  `at` is refreshed every HEART_S even when nothing is logged (the process is
 alive), so the app tells "alive but quiet" from "stopped".  `also` = other threads' activities (the Video-page job thread).
@@ -14,13 +18,15 @@ start(data, role, secrets=()) tees sys.stdout / sys.stderr into the buffer (ever
 modules' prints included; the original streams still get it, so `docker logs` is unchanged).  Secrets never reach the file:
 redact() runs on every line (the TBA key given to add_secret, key=/token=/sig=/auth=/password= values, Bearer tokens, Discord
 webhook URLs, long opaque tokens; match keys, YouTube / Twitch ids and paths stay)."""
-import collections, json, os, re, sys, threading, time
+import collections, json, os, re, shutil, subprocess, sys, threading, time
 
 LINES = 400                    # ring size
 LINE_MAX = 400                 # chars per line
 WRITE_S = 1.0                  # at most one file write per second
 HEART_S = 15.0                 # ... and at least one this often (alive, nothing new)
 MAIN = "main"
+GPU_S = 15.0                   # nvidia-smi at most this often
+GPU_TIMEOUT_S = 3.0
 
 # ---------------------------------------------------------------- redaction
 _SECRETS = set()               # exact strings (the TBA key), >= 8 chars
@@ -102,13 +108,43 @@ def doing(text, key=MAIN):
         S.dirty = S.urgent = True
 
 
+_GPU = {"at": 0.0, "val": None}
+
+
+def gpu_stats(now=None):
+    """-> [{index, name, util_pct, mem_used_mb, mem_total_mb}] | None (no nvidia-smi / it failed).  Cached GPU_S."""
+    now = now or time.time()
+    if now - _GPU["at"] < GPU_S: return _GPU["val"]
+    _GPU["at"] = now
+    exe = shutil.which("nvidia-smi")
+    val = None
+    if exe:
+        try:
+            r = subprocess.run([exe, "--query-gpu=index,name,utilization.gpu,memory.used,memory.total",
+                                "--format=csv,noheader,nounits"], capture_output=True, text=True, timeout=GPU_TIMEOUT_S)
+            out = []
+            for ln in (r.stdout if r.returncode == 0 else "").splitlines():
+                p = [x.strip() for x in ln.split(",")]
+                if len(p) != 5: continue
+                try: out.append(dict(index=int(p[0]), name=p[1][:60], util_pct=int(float(p[2])),
+                                     mem_used_mb=int(float(p[3])), mem_total_mb=int(float(p[4]))))
+                except ValueError: continue
+            val = out or None
+        except (OSError, subprocess.SubprocessError):
+            val = None
+    _GPU["val"] = val
+    return val
+
+
 def snapshot():
+    gpus = gpu_stats()                                           # outside the lock: it can take up to GPU_TIMEOUT_S
     with S.lock:
         main = S.doing.get(MAIN, ("", 0.0))
         return {"role": S.role, "pid": os.getpid(), "started": round(S.started, 1), "at": round(time.time(), 1),
                 "doing": main[0], "doing_since": round(main[1], 1) if main[0] else None,
                 "also": [{"text": t, "since": round(s, 1)} for k, (t, s) in S.doing.items() if k != MAIN and t],
-                "seq": S.seq, "lines": list(S.buf)}
+                "gpu_ids": os.environ.get("GPU_IDS") or None, "gpu_device": os.environ.get("GPU_DEVICE") or None,
+                "gpus": gpus, "seq": S.seq, "lines": list(S.buf)}
 
 
 def flush():

@@ -5017,6 +5017,25 @@
      }
     }
    }
+  },
+  "/app/v1/admin/jobs": {
+   "get": {
+    "tags": [
+     "admin"
+    ],
+    "summary": "Everything running and queued, per processor (admin)",
+    "operationId": "get_jobs_app_v1_admin_jobs_get",
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     }
+    }
+   }
   }
  },
  "components": {

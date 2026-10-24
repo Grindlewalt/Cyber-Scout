@@ -5,7 +5,7 @@
   CS.nav({ label: "Admin", key: "admin", href: () => "#/admin", order: 95, global: true, group: "manage", icon: "admin", roles: ["admin"] });
 
   const when = ts => ts ? CS.fmtWhen(ts) : "never";
-  const TABS = [["users", "Teammates"], ["settings", "Settings"], ["events", "Competitions"], ["server", "Server"], ["updates", "Updates"], ["worker", "Worker"]];
+  const TABS = [["users", "Teammates"], ["settings", "Settings"], ["events", "Competitions"], ["server", "Server"], ["updates", "Updates"], ["jobs", "Jobs"], ["worker", "Worker"]];
   const css = document.createElement("style");
   css.textContent = `
   .uacts { display: flex; flex-wrap: wrap; gap: 6px; } .uacts button { white-space: nowrap; }
@@ -85,7 +85,7 @@
     const el = document.getElementById("adm");
     const on = $app.querySelector(".admtabs .tab.on"), row = on && on.parentElement;      // phones: the tab row scrolls; show the current one
     if (row && row.scrollWidth > row.clientWidth) row.scrollLeft = on.offsetLeft - row.offsetLeft - 16;
-    await ({ users, settings, events, server, updates, worker })[tab](el);
+    await ({ users, settings, events, server, updates, jobs, worker })[tab](el);
   });
 
   // ---------------------------------------------------------------- users
@@ -623,6 +623,103 @@
       } catch (e) { err(e.message); }
       await poll();
     };
+    await poll();
+  }
+
+  // ---------------------------------------------------------------- jobs (running + queued)
+  // GET admin/jobs every 3 s while visible: per runner (server worker, GPU processors, helping Clients, the recorder) what it does now
+  // and its GPU; then the queue (Video-page jobs, matches in processing order with why they wait) and what finished lately.
+  // The server reads files the containers write, so every string here is escaped.
+  const WAIT_LABEL = { queued: "queued", retry: "retrying", video: "no video yet", setup: "needs video setup", stream: "waiting for the clip", model: "needs the model", failed: "failed" };
+  const WAIT_CLS = { queued: "", retry: "no_video", video: "no_video", setup: "no_video", stream: "no_video", model: "no_video", failed: "failed" };
+  const KIND_LABEL = { frames: "Grab frames", suggest: "Suggest layout", auto_setup: "Auto set-up", calibrate: "Calibrate camera", scan: "Channel scan" };
+  const kindTxt = k => KIND_LABEL[k] || String(k || "job").replace(/_/g, " ");
+  const evShort = e => String(e || "").replace(/^\d{4}/, "");
+
+  async function jobs(el) {
+    el.innerHTML = `<style>
+      .jb-sec { margin-bottom: var(--sp-4); min-width: 0; } .jb-sec > h2 { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+      .jb-n { font-size: var(--fs-foot); font-weight: 600; color: var(--ink-2); }
+      .jb-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 330px), 1fr)); gap: var(--sp-3); }
+      .jb-r { border: 1px solid var(--line); border-radius: var(--r-m); padding: var(--sp-3); background: var(--surface); min-width: 0; }
+      .jb-r.off { opacity: .7; }
+      .jb-h { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-weight: 600; }
+      .jb-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--ink-3); flex: none; } .jb-dot.on { background: var(--good); } .jb-dot.off { background: var(--bad); }
+      .jb-where { font-size: var(--fs-foot); color: var(--ink-3); overflow-wrap: anywhere; }
+      .jb-do { margin: var(--sp-2) 0 2px; overflow-wrap: anywhere; } .jb-do b { color: var(--ink); }
+      .jb-meter { display: grid; grid-template-columns: 4.5em 1fr auto; gap: 6px 8px; align-items: center; font-size: var(--fs-foot); color: var(--ink-2); margin-top: 6px; }
+      .jb-bar { height: 8px; border-radius: 4px; background: var(--surface-2); border: 1px solid var(--line); overflow: hidden; }
+      .jb-bar > i { display: block; height: 100%; background: var(--accent); }
+      .jb-card { font-size: var(--fs-foot); color: var(--ink-3); margin-top: 4px; overflow-wrap: anywhere; }
+      .jb-list { display: grid; gap: 0; margin: 0; padding: 0; list-style: none; }
+      .jb-list li { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; padding: 8px 0; border-top: 1px solid var(--line); min-width: 0; }
+      .jb-list li:first-child { border-top: 0; } .jb-list .jb-main { font-weight: 600; } .jb-list .jb-why { flex: 1 1 220px; color: var(--ink-2); font-size: var(--fs-foot); overflow-wrap: anywhere; }
+      .jb-list .jb-t { color: var(--ink-3); font-size: var(--fs-foot); white-space: nowrap; }
+      .jb-list li.bad { border-left: 3px solid var(--bad); padding-left: 8px; } .jb-list li.bad .jb-why { color: var(--bad); }
+      .jb-sub { font-weight: 600; margin: var(--sp-3) 0 var(--sp-1); }
+      .jb-none { color: var(--ink-3); font-size: var(--fs-foot); }
+    </style>
+    <div class="sub" style="margin-bottom:var(--sp-3)">Everything running and queued: the server's worker, each graphics card's processor, Clients that are helping, and the livestream recorder. ${CS.help(`<b>Running now</b> is what each one is doing right now. <b>Queued</b> are Video-page jobs (oldest first) and matches that aren't tracked yet, in the order they will be tracked, with the reason each one waits. A <b>green dot</b> means it reported in during the last 1.5 to 3 minutes; a red one means it stopped (its work is not counted as running). Clients show up while they hold a match or a stream; an idle Client isn't listed. Open a runner's log for what it printed.`, "Reading this page")}</div>
+    <div id="jbody"><div class="muted">Loading…</div></div><div class="cserr" role="alert" id="jerr"></div>`;
+    const body = el.querySelector("#jbody"), err = el.querySelector("#jerr");
+    const P = n => Math.max(0, Math.min(100, Math.round(n)));
+    const bar = (pct, label) => `<div class="jb-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${P(pct)}" aria-label="${esc(label)}"><i style="width:${P(pct)}%"></i></div>`;
+
+    function runnerHTML(r, d, sk) {
+      const t = d.now, cur = r.current;
+      const cards = (r.gpu.cards || []).filter(c => r.kind !== "processor" || r.gpu.device == null || String(c.index) === String(r.gpu.device) || r.gpu.cards.length === 1);
+      const gp = cards.map(c => {
+        const mem = c.mem_total_mb ? c.mem_used_mb / c.mem_total_mb * 100 : 0;
+        return `<div class="jb-meter"><span>GPU ${c.index}</span>${bar(c.util_pct || 0, "GPU " + c.index + " utilisation")}<span>${c.util_pct == null ? "?" : c.util_pct} %</span>
+          <span>Memory</span>${bar(mem, "GPU " + c.index + " memory")}<span>${c.mem_used_mb == null ? "?" : (c.mem_used_mb / 1024).toFixed(1)} / ${c.mem_total_mb == null ? "?" : (c.mem_total_mb / 1024).toFixed(0)} GB</span></div><div class="jb-card">${esc(c.name)}</div>`;
+      }).join("");
+      const dsince = r.doing_since != null ? t - r.doing_since : null;
+      const curSince = cur && cur.since != null ? t - cur.since : null;
+      const doing = !r.alive ? `<span class="muted">Stopped${r.age_s != null ? ` · no heartbeat for ${esc(spanTxt(r.age_s))}` : " · never reported"}</span>`
+        : cur ? `<b>Tracking ${esc(cur.label)}</b> <span class="muted">(${esc(evShort(cur.ev))})${curSince != null ? ` · for ${esc(spanTxt(curSince))}` : ""}</span>`
+        : r.doing ? `<b>${esc(r.doing)}</b>${dsince != null ? ` <span class="muted">· for ${esc(spanTxt(dsince))}</span>` : ""}` : `<span class="muted">Idle: nothing to do right now</span>`;
+      const prog = cur && cur.progress != null ? `<div class="jb-meter"><span>${esc(cur.stage || "Progress")}</span>${bar(cur.progress * 100, "Progress of " + cur.label)}<span>${P(cur.progress * 100)} %</span></div>` : (cur && cur.stage ? `<div class="jb-card">stage: ${esc(cur.stage)}</div>` : "");
+      const others = r.doing && cur && !r.doing.includes(cur.label) ? `<div class="jb-card">${esc(r.doing)}</div>` : "";
+      const vids = d.running.filter(x => x.by === r.id && x.type !== "match").map(x => `<div class="jb-card">${x.type === "video" ? esc(kindTxt(x.kind)) + " (Video page)" : esc(x.label)} · ${esc(evShort(x.ev))} · for ${esc(spanTxt(t - x.since))}</div>`).join("");
+      return `<div class="jb-r ${r.alive ? "" : "off"}"><div class="jb-h"><span class="jb-dot ${r.alive ? "on" : "off"}" aria-hidden="true"></span><span>${esc(r.label)}</span>${r.state === "unhealthy" ? '<span class="pill failed">paused after a failure</span>' : ""}</div>
+        <div class="jb-where">${esc(r.where || "")}${r.log_role ? ` · <a href="#/admin/worker">log</a>` : ""}</div>
+        <div class="jb-do">${doing}</div>${prog}${others}${vids}${r.alive ? gp : ""}${r.note ? `<div class="jb-card">${esc(r.note)}</div>` : ""}</div>`;
+    }
+
+    function render(d) {
+      const t = d.now, running = d.running.length;
+      const rn = d.runners.filter(r => r.alive || r.kind === "worker" || r.kind === "processor");
+      const q = d.queued, mq = q.matches;
+      const reasons = Object.entries(Object.values(q.counts || {}).reduce((a, c) => { for (const k in c) a[k] = (a[k] || 0) + c[k]; return a; }, {})).map(([k, n]) => `${n} ${WAIT_LABEL[k] || esc(k)}`).join(" · ");
+      body.innerHTML = `
+        <div class="card jb-sec"><h2>Running now <span class="jb-n">${running} ${running === 1 ? "job" : "jobs"}</span></h2>
+          <div class="jb-grid">${rn.map(r => runnerHTML(r, d)).join("")}</div></div>
+        <div class="card jb-sec"><h2>Queued ${CS.help("Matches are tracked in this order: time order, with any priority you set first. Whichever of the server's worker, a GPU processor or a Client is free takes the next one. A match that is waiting for video or set-up isn't blocked by the ones in front of it.", "Queue order")}</h2>
+          <div class="jb-sub">Video page jobs <span class="jb-n">${q.videos.length}</span></div>
+          ${q.videos.length ? `<ul class="jb-list">${q.videos.map(v => `<li><span class="jb-main">${esc(kindTxt(v.kind))}</span><span class="jb-why">${esc(v.ev || "")}</span><span class="jb-t">waiting ${esc(spanTxt(t - v.created))}</span></li>`).join("")}</ul>`
+            : `<div class="jb-none">No Video-page jobs waiting.</div>`}
+          <div class="jb-sub">Matches to track <span class="jb-n">${q.matches_total}${reasons ? " · " + reasons : ""}</span></div>
+          ${mq.length ? `<ul class="jb-list">${mq.map(m => `<li><span class="jb-main">${m.wait === "queued" ? "#" + m.pos + " " : ""}${esc(m.label)}</span><span class="pill ${WAIT_CLS[m.wait] || ""}">${esc(WAIT_LABEL[m.wait] || m.wait)}</span><span class="jb-why">${esc(m.note || "")}${m.takers ? `<br><span class="muted">Can be taken by: ${esc(m.takers)}.</span>` : ""}</span><span class="jb-t">${esc(evShort(m.ev))}</span></li>`).join("")}</ul>${q.matches_total > mq.length ? `<div class="jb-none">and ${q.matches_total - mq.length} more</div>` : ""}`
+            : `<div class="jb-none">Nothing queued: every played match with video is tracked.</div>`}</div>
+        <div class="card jb-sec"><h2>Recently finished ${CS.help("The last video jobs and tracked matches. A failed one shows why, in plain words; failed matches are retried a few times before they are left alone.", "Recent work")}</h2>
+          ${d.recent.length ? `<ul class="jb-list">${d.recent.map(x => `<li class="${x.ok ? "" : "bad"}"><span class="jb-main">${x.type === "video" ? esc(kindTxt(x.kind)) : "Tracked " + esc(x.label)}</span><span class="pill ${x.ok ? "done" : "failed"}">${x.ok ? "done" : "failed"}</span>${x.error ? `<span class="jb-why">${esc(x.error)}</span>` : '<span class="jb-why"></span>'}<span class="jb-t">${esc(evShort(x.ev))} · ${esc(spanTxt(t - x.at))} ago${x.took_s != null ? ` · took ${esc(spanTxt(x.took_s))}` : ""}</span></li>`).join("")}</ul>`
+            : `<div class="jb-none">Nothing has finished recently.</div>`}</div>`;
+    }
+
+    let busy = false;
+    async function poll() {
+      if (busy || document.hidden) return; busy = true;
+      try {
+        const d = await CS.app("GET", "admin/jobs");
+        if (!el.isConnected) return;
+        err.textContent = "";
+        render(d);                                                 // elapsed times use the server's own `now` (its clock stamps the files)
+      } catch (e) { if (el.isConnected) err.textContent = CS.sentence(e.message); }
+      finally { busy = false; }
+    }
+    const iv = setInterval(() => { if (!el.isConnected || !/^#\/admin\/jobs/.test(location.hash)) { clearInterval(iv); document.removeEventListener("visibilitychange", onVis); return; } poll(); }, 3000);
+    const onVis = () => { if (!document.hidden) poll(); };
+    document.addEventListener("visibilitychange", onVis);
     await poll();
   }
 

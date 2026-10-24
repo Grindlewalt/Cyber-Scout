@@ -10,7 +10,7 @@ from . import audit, db as DB, workerconf
 from .idempotency import IdempotencyMiddleware
 from .config import cfg, PREFIX, CSRF_COOKIE, CSRF_HEADER
 from .deps import EVENT_RE, User, load_session, require_role
-from .routers import admin, auth, events, logs, processing, scouting, settings, sources, sync, update, users
+from .routers import admin, auth, events, jobs, logs, processing, scouting, settings, sources, sync, update, users
 from .security import consteq
 
 log = logging.getLogger("cyberscout.api")
@@ -112,7 +112,7 @@ def create_app() -> FastAPI:
         return {"ok": True, "version": VERSION}
 
     for r in (auth.router, users.router, settings.router, events.router, scouting.router, sources.router, admin.router,
-              update.router, sync.router, processing.router, logs.router):
+              update.router, sync.router, processing.router, logs.router, jobs.router):
         app.include_router(r, prefix=PREFIX)
     return app
 
