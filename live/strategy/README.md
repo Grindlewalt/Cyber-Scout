@@ -326,3 +326,17 @@ Auto (round 3): on top of the default, the auto time trend cuts the alliance-aut
   (draft + playoffs + points re-run with C's first pick forced to us vs forbidden, common random numbers, only sims where C captains
   and we are available); pitches get `resim`, `fit` (lanes, auto, on-the-move, defended retention, defense played). `draft` (client
   re-draft sample) removed.
+
+## Match plans (`matchplan.py` + `behavior.py`)
+`python -m live.strategy.matchplan DATA_DIR EVENT` (the worker calls `matchplan.build` after `goals.site_build`; ~2 s for
+74 matches, per-file extraction cached by mtime) writes `api/<ev>/mp/<match>.json` and `mp/index.json`, and adds `video`
+and `mp` to every `schedule.json` row. Contract: `.work/redesign/CONTRACT.md` (field frame in metres, blue wall x=0).
+Rules: predictions use only tracked matches that started before the match; a robot's collection / cycle / transition /
+auto path are conditioned on the driver STATION it plays from (else the station's side if the event shows a clear one,
+else all its matches, said in `basis`); never mirrored; partner matches (>= 2 earlier together) weigh x2; < 2 tracked
+matches or no auto path -> `enough: false` + `why` (alliance `missing[]`; predicted numbers then use event averages and
+carry `pred.partial`). At 2026wasam the station does NOT determine the start side (55-75 % either way), so the side
+fallback rarely applies. Inactive-hub job per match: defense (defense episode / >= 4 s) > robber (>= 2 opp-zone intakes
+or >= 25 % opp-zone time) > ferry_neutral (>= 3 neutral-zone passes) > collect. Intake recall is about 45 %, so cycle
+counts are floors. Predictions: robot per-period made FUEL x (TBA / video ratio over earlier matches) + tower from TBA
+levels + mean fouls; shifts weighted by P(win auto) (the auto loser is active in shifts 1 and 3); range is a calibrated 80 % band.

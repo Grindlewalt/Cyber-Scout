@@ -1014,3 +1014,9 @@ Caches under `DATA/cache/` (all disposable; deleting them forces refetch / refit
 13. `goals.replay` (district strengths only) has no recorded result; the dashboard-path replay of the cleanup pass is
     in §10.5. The older quoted DCMP-odds calibration number is the 09:00 replay Brier .133 (with awards) vs .147
     (without), measured with the `/ 3` bug.
+
+## Match plans (`api/<ev>/mp/`)
+Per-match plan files for the Match Day field and the Schedule rows; see `live/strategy/README.md` ("Match plans") and
+`.work/redesign/CONTRACT.md` for the JSON. `behavior.py` is the per-team model from earlier tracked matches (station
+conditioning, partner weighting, enough-info threshold), `matchplan.py` assembles predictions as of the match start and the
+actuals afterwards. Regenerate offline: `python -m live.strategy.matchplan DATA_DIR EVENT`.

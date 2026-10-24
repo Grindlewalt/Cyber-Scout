@@ -889,6 +889,11 @@ def build_site(ev, tba):
         sys.path.insert(0, REPO)
         from live.strategy import goals
         goals.site_build(DATA, ev, team=os.environ.get("DASH_TEAM", "frc4911"))
+        try:                                           # per-match plans (mp/), predictions as of each match's start
+            from live.strategy import matchplan
+            matchplan.build(DATA, ev, team=os.environ.get("DASH_TEAM", "frc4911"), log=log)
+        except Exception:
+            traceback.print_exc()
         import subprocess                              # selection replay snapshots (only the missing ones, ~4 s each)
         subprocess.run([sys.executable, "-m", "live.strategy.goals", DATA, ev, "--selection-snapshots"],
                        cwd=REPO, timeout=900, check=False)
