@@ -71,6 +71,12 @@ Removing the units keeps `<stack>/updater/` (state, log, DB backups, key); delet
   The status file reports the allowlisted keys' values (`env`), and the run's own `env_progress` / `env_result`;
   the update's result is left alone. From a shell: `cs-updater.py --stack DIR env PROCESSORS_GPU1=2 TZ=`.
   Pausing processing is not here: it's a live switch in Admin → Settings (no restart).
+* **Containers** (read-only): every run (once a minute) copies each container's state from `docker compose ps -a` +
+  `docker inspect` into the status file (`services`: service, state, exit code, Docker's error, OOM, restarts, start /
+  stop times, the last log lines of one that stopped with an error; `services_at`). A container that can't start (a
+  GPU passthrough error, say) never writes anything itself, so this is how the app can say why: Admin → Server →
+  Containers, and the "The worker isn't running" notice, both with the reason and fix in plain words. From a shell:
+  `cs-updater.py --stack DIR services` (exit 1 when one isn't running).
 * The health check waits for every container of every service that should run (a processor service scaled to 0 has
   none; one scaled to 2 has two) and ignores leftover `docker compose run` containers.
 * **First run on a copied `app/`** (rsync or `git archive`): `app/` becomes a git checkout without changing any
@@ -116,6 +122,7 @@ Test it with `python3 updater/cs-updater.py --stack /opt/cyber-scout check`. ssh
 ```bash
 python3 updater/cs-updater.py --stack /opt/cyber-scout status            # what the Admin page sees
 python3 updater/cs-updater.py --stack /opt/cyber-scout check | apply [--ytdlp] | rollback
+python3 updater/cs-updater.py --stack /opt/cyber-scout services          # each container + Docker's error
 tail -f updater/update.log                                               # full log incl. docker build output
 ```
 

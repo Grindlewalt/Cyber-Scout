@@ -123,6 +123,101 @@ def _env(v):
     return {"schema": schema, "values": {k: _s(vals.get(k), 600) for k in schema}, "error": _s(v.get("error"), 200)}
 
 
+# ---------------------------------------------------------------- the stack's containers (updater: docker inspect)
+# A container that can't start never writes anything itself: only Docker knows why. The updater copies each
+# container's state + Docker's error every minute; these turn the usual ones into a sentence and a fix (the same
+# cases deploy/install.sh explains when it starts the stack).
+SVC_STATES = ("created", "running", "restarting", "exited", "paused", "dead", "removing")
+SVC_RE = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,62}$")
+CDI_SPEC = "/etc/cdi/nvidia.yaml"
+IN_FOLDER = "On the server, in the Cyber-Scout folder (e.g. /opt/cyber-scout): "
+
+
+def explain(c):
+    """A container from the updater -> {"why", "fix"} in plain words; None while it runs normally."""
+    svc, st = c.get("service") or "it", c.get("state")
+    if st == "running":
+        return None
+    t = " ".join(x for x in (c.get("error"), c.get("log")) if x)
+    start = f"docker compose up -d {svc}"
+    if "failed to add device rules" in t or "device filter program" in t:
+        return {"why": "Docker can't pass the GPU into it: the NVIDIA container hook can't add its device rules on "
+                       "this kernel (this tends to start after a kernel, driver or NVIDIA Container Toolkit update, "
+                       "once the server reboots). Often only some cards are affected.",
+                "fix": "Set GPU_IDS to a single card that works (Admin → Server; try 0), or re-run the installer: it "
+                       "tests every card and uses CDI for the ones the hook can't pass. No working card: the CPU "
+                       "override (COMPOSE_FILE=docker-compose.yml:docker-compose.cpu.yml in .env) is slower but runs."}
+    if "failed to stat CDI host device" in t:
+        dev = re.search(r'failed to stat CDI host device "([^"]{1,80})"', t)
+        return {"why": "Docker can't pass the GPU into it: the CDI device list is out of date"
+                       + (f" (it names {dev.group(1)}, which isn't there now)" if dev else "")
+                       + ". A reboot can renumber the devices.",
+                "fix": f"On the server: sudo nvidia-ctk cdi generate --output={CDI_SPEC}, then {start} in the "
+                       "Cyber-Scout folder (re-running the installer offers the same refresh)."}
+    if any(k in t for k in ("unresolvable CDI devices", "unknown CDI device", "CDI device injection failed")):
+        return {"why": "Docker can't pass the GPU into it: there's no CDI device list for that card.",
+                "fix": f"On the server: sudo nvidia-ctk cdi generate --output={CDI_SPEC}, then {start} in the "
+                       "Cyber-Scout folder."}
+    if "could not select device driver" in t:
+        return {"why": "Docker has no NVIDIA runtime, so it can't pass the GPU.",
+                "fix": "On the server: sudo nvidia-ctk runtime configure --runtime=docker && sudo systemctl restart "
+                       f"docker, then {start} in the Cyber-Scout folder (or use the CPU override)."}
+    if "port is already allocated" in t or "address already in use" in t:
+        return {"why": "Its port is taken by another program on the server.",
+                "fix": IN_FOLDER + "change the port in .env (or stop the other program), then " + start + "."}
+    if "no space left on device" in t:
+        return {"why": "The server's disk is full.",
+                "fix": "Free some space (docker image ls / docker image rm <unused>, old videos), then " + start + "."}
+    if c.get("oom") or (st in ("exited", "restarting") and c.get("exit_code") == 137):
+        return {"why": "It ran out of memory and the system stopped it.",
+                "fix": "Raise its memory limit (Admin → Server, e.g. WORKER_MEM_LIMIT) or free memory on the server; "
+                       "then " + start + "."}
+    if st == "restarting" or ((c.get("restarts") or 0) >= 3 and st != "created"):
+        return {"why": f"It keeps crashing and restarting ({c.get('restarts') or 0} restarts so far).",
+                "fix": IN_FOLDER + f"docker compose logs --tail 80 {svc} shows why."}
+    if st == "created":
+        return {"why": "It was created but never started" + (f": Docker said {c['error'][:300]}" if c.get("error")
+                                                              else "."),
+                "fix": IN_FOLDER + start + " (Docker prints why if it still can't)."}
+    if st in ("exited", "dead"):
+        code = c.get("exit_code")
+        return {"why": "It was stopped." if code == 0 else f"It stopped with an error (exit code {code}).",
+                "fix": IN_FOLDER + (start if code == 0 else f"docker compose logs --tail 80 {svc} shows why; "
+                                    f"{start} starts it again") + "."}
+    if st == "paused":
+        return {"why": "Docker has it paused.", "fix": IN_FOLDER + f"docker compose unpause {svc}."}
+    return {"why": f"It's {st or 'not running'}.", "fix": IN_FOLDER + start + "."}
+
+
+def _services(v):
+    """The updater's container list -> checked copy, each with why/fix when it isn't running."""
+    out = []
+    for c in (v[:30] if isinstance(v, list) else []):
+        if not isinstance(c, dict) or not isinstance(c.get("service"), str) or not SVC_RE.match(c["service"]):
+            continue
+        ec, rs = c.get("exit_code"), c.get("restarts")
+        e = {"service": c["service"], "name": _s(c.get("name"), 100),
+             "state": c.get("state") if c.get("state") in SVC_STATES else None,
+             "exit_code": ec if type(ec) is int else None, "error": _s(c.get("error"), 600) or None,
+             "oom": c.get("oom") is True, "restarts": rs if type(rs) is int else None,
+             "started_at": _num(c.get("started_at")), "finished_at": _num(c.get("finished_at")),
+             "log": _s(c.get("log"), 600) or None}
+        e["problem"] = explain(e)
+        out.append(e)
+    return out
+
+
+def container(service, t_now=None):
+    """The updater's latest view of one service's (first) container, or None (no updater, stale view, no such
+    container). For the "the worker isn't running" notice."""
+    t_now = t_now or time.time()
+    st = parse_status(_read_json(_paths()[1], MAX_STATUS_BYTES), t_now)
+    at = st.get("services_at")
+    if not st["installed"] or not at or t_now - at > HEARTBEAT_STALE:
+        return None
+    return next((c for c in st["services"] if c["service"] == service), None)
+
+
 def parse_status(raw, t_now=None):
     """The updater's status file -> the API's view. Unknown fields dropped, types checked, sizes capped."""
     t_now = t_now or time.time()
@@ -176,6 +271,8 @@ def parse_status(raw, t_now=None):
         "env_result": None if not isinstance(raw.get("env_result"), dict) else {
             "ok": raw["env_result"].get("ok") is True, "message": _s(raw["env_result"].get("message"), 1200),
             "at": _num(raw["env_result"].get("at")), "rolled_back": raw["env_result"].get("rolled_back") is True},
+        "services": _services(raw.get("services")),
+        "services_at": _num(raw.get("services_at")),
     }
 
 
@@ -279,10 +376,12 @@ def server_env_status():
     env = st.get("env") or {}
     mine = st.get("action") == "env" or (st["pending"] or {}).get("action") == "env"
     busy = st["state"] in ("checking", "applying") or bool(st["pending"])
+    fresh = st["installed"] and st.get("services_at") and time.time() - st["services_at"] <= HEARTBEAT_STALE
     return {"installed": st["installed"], "supported": "env" in st.get("features", []),
             "install_hint": st["install_hint"], "busy": busy, "running": busy and mine, "other_task": busy and not mine,
             "schema": env.get("schema") or {}, "values": env.get("values") or {}, "error": env.get("error"),
-            "progress": st.get("env_progress") or [], "result": st.get("env_result")}
+            "progress": st.get("env_progress") or [], "result": st.get("env_result"),
+            "services": st.get("services") or [] if fresh else [], "services_at": st.get("services_at") if fresh else None}
 
 
 class ServerEnvStatus(BaseModel):

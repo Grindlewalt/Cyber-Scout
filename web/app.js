@@ -598,6 +598,9 @@ CS.markActive = k => { shellKey = k; document.querySelectorAll("[data-navkey]").
   #gnotice .gn > svg { width: 18px; height: 18px; flex: none; color: var(--caution); }
   #gnotice .gn > div { flex: 1; min-width: 220px; } #gnotice b { color: var(--ink); font-weight: 600; }
   #gnotice .gn + .gn { margin-top: var(--sp-2); }
+  #gnotice .gn-why { margin-top: 4px; } #gnotice .gn-raw { margin-top: 4px; } #gnotice .gn-raw summary { cursor: pointer; width: fit-content; }
+  #gnotice .code { white-space: normal; overflow-wrap: anywhere; }
+  @media (max-width: 760px) { #gnotice .gn { align-items: flex-start; } #gnotice .gn > div { flex-basis: calc(100% - 40px); } #gnotice .gn-x { margin-left: auto; } }
   @media (min-width: 761px) { #gnotice .gn.lk { display: none; } #gnotice:not(:has(.gn:not(.lk))) { display: none; } }
   #app:focus { outline: none; }
   #gnotice .gn-x { min-height: 32px; padding: 4px 10px; font-size: var(--fs-foot); background: transparent; border-color: var(--caution-line); }
@@ -618,16 +621,31 @@ CS.markActive = k => { shellKey = k; document.querySelectorAll("[data-navkey]").
 })();
 
 // ---- processing state (server: GET app/v1/session -> processing, from the worker's live/worker.py status_beat)
-// CS.processing = {paused: bool|null, paused_by: "app"|"env"|null, worker_seen: unix|null, reason, why} | undefined before
-// the first session answer.
+// CS.processing = {paused: bool|null, paused_by: "app"|"env"|null, worker_seen: unix|null, reason, why, worker_down} |
+// undefined before the first session answer. worker_down (server/workerstatus.py): null while the worker checks in, else
+// {never, since, quiet_s, docker?}; docker (admins, host updater installed) = its container {state, error, problem: {why, fix}}.
 // setup.js sets it from every session check (and a 60 s poll); pages read it (guard for undefined) and listen to the
-// window event "cs:processing" (fired when paused / the reason / worker-stale changes). The notice above #app says it once.
-const STALE_S = 3600;
-const workerStale = p => !!(p && p.worker_seen && p.paused !== true && Date.now() / 1000 - p.worker_seen > STALE_S);
+// window event "cs:processing" (fired when paused / the reason / worker-down changes). The notice above #app says it once.
+// An older api (no worker_down): quiet for an hour, as before.
+const workerDown = p => !p ? null : p.worker_down !== undefined ? p.worker_down
+  : p.worker_seen && p.paused !== true && Date.now() / 1000 - p.worker_seen > 3600 ? { never: false, since: p.worker_seen } : null;
+CS.workerDown = workerDown;
 const sinceTxt = ts => { const s = Date.now() / 1000 - ts; return s < 90 ? "just now" : s < 5400 ? `${Math.round(s / 60)} min ago` : CS.fmtWhen(ts); };
+const downSig = x => { const d = workerDown(x); return d ? (d.never ? "never" : "down") + (d.docker ? ":" + d.docker.state : "") : ""; };
+/** "last checked in 12 min ago" / "hasn't checked in since the server started, 15 min ago" */
+const downWhen = d => d.never ? `hasn't checked in since the server started ${esc(sinceTxt(Date.now() / 1000 - (d.quiet_s || 0)))}`
+  : `last checked in ${esc(sinceTxt(d.since))}`;
+const IN_FOLDER = `on the server, in the Cyber-Scout folder (where <span class="code">docker-compose.yml</span> is, e.g. <span class="code">/opt/cyber-scout</span>)`;
+/** what to check when the worker isn't running and the updater can't tell us why (no updater, or it runs normally) */
+const DOWN_HOW = `<span class="hl"><b>What to check</b>, ${IN_FOLDER}:</span>
+  <span class="hl"><span class="code">docker compose ps -a</span>: the worker should say <i>Up</i>. <i>Created</i> or <i>Exited</i> means it isn't running.</span>
+  <span class="hl"><span class="code">docker compose up -d worker</span> starts it; if it can't, Docker prints why.</span>
+  <span class="hl"><span class="code">docker compose logs --tail 80 worker</span>: why it stopped, if it started and then quit.</span>
+  <span class="hl"><b>Common cause:</b> Docker can't pass the GPU in (<span class="code">nvidia-container-cli</span> or <span class="code">CDI</span> errors), often after a kernel, driver or NVIDIA toolkit update and a reboot. Re-running the installer tests every card and picks ones that work; setting <span class="code">GPU_IDS</span> to one card that works (e.g. <span class="code">0</span>) also does it.</span>
+  <span class="hl">With the host updater installed (<span class="code">sudo ./app/deploy/updater/install-updater.sh</span>), this notice shows Docker's own error and the fix.</span>`;
 CS.setProcessing = p => {
-  const v = p && typeof p === "object" ? { paused: p.paused ?? null, paused_by: p.paused_by ?? null, worker_seen: p.worker_seen ?? null, reason: p.reason ?? null, why: p.why ?? null } : null;
-  const sig = x => x ? [x.paused, x.reason, workerStale(x)].join("|") : "";
+  const v = p && typeof p === "object" ? { paused: p.paused ?? null, paused_by: p.paused_by ?? null, worker_seen: p.worker_seen ?? null, reason: p.reason ?? null, why: p.why ?? null, worker_down: p.worker_down } : null;
+  const sig = x => x ? [x.paused, x.reason, downSig(x)].join("|") : "";
   const ch = sig(v) !== sig(CS.processing);
   CS.processing = v;
   renderNotice();
@@ -642,12 +660,12 @@ function renderNotice() {
   let html = "", sig = "";
   if (CS.platform && CS.user && pr && !["login", "setup", "connect"].includes(p0)) {
     const seen = pr.worker_seen ? `<span class="hl">The worker last checked in ${esc(sinceTxt(pr.worker_seen))}.</span>` : "";
-    if (pr.paused) { sig = "paused";
+    const down = workerDown(pr);
+    if (down) { sig = downSig(pr); html = downNotice(down, admin); }
+    else if (pr.paused) { sig = "paused";
       html = `<b>Processing is paused on the server.</b> Nothing new is built or tracked until an admin turns it back on. ${CS.help(`<span class="hl">Schedules, results, rankings, predictions and tracked matches stay as of the last build until processing is turned back on.</span>${seen}${admin ? `<span class="hl">${PAUSE_HOW}</span>` : ""}`, "About paused processing")}`; }
     else if (pr.reason === "no_key" && admin) { sig = "no_key";
       html = `<b>Nothing is processed yet: the server has no TBA key.</b> <a href="#/admin/settings">Set it in Admin → Settings</a>.`; }
-    else if (workerStale(pr)) { sig = "stale";
-      html = `<b>The worker hasn't checked in since ${esc(CS.fmtWhen(pr.worker_seen, { day: true }))}.</b> Pages may be out of date. ${admin ? "Check that the worker container is running on the server." : "Ask an admin to check the server."}`; }
   }
   const hide = sig && sessionStorageGet("cs:gnotice") === sig;
   // lockdown: the toolbar chip says it on wider screens (setup.js renderUserBox); phones hide the user box, so it's here
@@ -659,6 +677,15 @@ function renderNotice() {
   const x = el.querySelector(".gn-x"); if (x) x.onclick = () => { sessionStorageSet("cs:gnotice", sig); renderNotice(); };
 }
 CS.renderNotice = renderNotice;
+/** the "worker isn't running" notice: what it means, and for admins Docker's reason + the fix (or what to check) */
+function downNotice(d, admin) {
+  if (!admin) return `<b>The server isn't taking in new data right now:</b> its worker ${d.never ? "hasn't started" : `stopped ${esc(sinceTxt(d.since))}`}, so schedules, results and video stay as they are. Ask an admin to check the server.`;
+  const dk = d.docker, pb = dk && dk.problem;
+  const lead = `<b>The worker isn't running</b> (it ${downWhen(d)}). Nothing new comes in until it does: no schedules or results from TBA, no video, no tracking.`;
+  if (pb) return `${lead}<div class="gn-why"><b>Why:</b> ${esc(pb.why)}</div><div class="gn-why"><b>Fix:</b> ${esc(pb.fix)}</div>${dk.error || dk.log ? `<details class="gn-raw"><summary>What Docker said</summary><span class="code">${esc(dk.error || dk.log)}</span></details>` : ""}`;
+  if (dk && dk.state === "running") return `${lead} Docker says its container is running, so it's stuck or can't write to the data folder. ${CS.help(`<span class="hl">${IN_FOLDER}: <span class="code">docker compose logs --tail 80 worker</span> shows what it's doing; <span class="code">docker compose restart worker</span> restarts it.</span>`, "What to check")}`;
+  return `${lead} Start it ${IN_FOLDER}: <span class="code">docker compose up -d worker</span>. If it can't start, Docker prints why. ${CS.help(DOWN_HOW, "What to check")}`;
+}
 
 function renderTopNav(p) {
   const el = document.getElementById("topnav"); if (!el) return;
@@ -885,7 +912,8 @@ function buildStall(admin) {
   const pr = CS.processing;
   if (pr && pr.paused) return `Processing is paused on the server, so the worker isn't building pages right now. ${admin ? `Turn it back on to build them. ${CS.help(PAUSE_HOW, "How to turn processing back on")}` : "Ask an admin to turn processing back on."}`;
   if (pr && pr.reason === "no_key") return admin ? `The server has no TBA key yet: <a href="#/admin/settings">set it in Admin → Settings</a>.` : "The server isn't set up yet (no TBA key): ask an admin.";
-  if (workerStale(pr)) return `The worker hasn't checked in since ${esc(CS.fmtWhen(pr.worker_seen, { day: true }))}. ${admin ? "Check that it's running on the server." : "Ask an admin to check the server."}`;
+  const down = workerDown(pr);
+  if (down) return `The worker isn't running (it ${downWhen(down)}), so nothing new is built. ${admin ? (down.docker && down.docker.problem ? esc(down.docker.problem.why) + " " + esc(down.docker.problem.fix) : `Start it ${IN_FOLDER}: <span class="code">docker compose up -d worker</span>. ${CS.help(DOWN_HOW, "What to check")}`) : "Ask an admin to check the server."}`;
   return "";
 }
 CS.buildStall = buildStall;
@@ -958,7 +986,7 @@ async function renderTimebar(p, ev) {
   const narrow = matchMedia("(max-width: 760px)").matches;
   // "Live" only while the competition is on, processing runs and the data is fresh; otherwise "Latest"
   const c = CS.compInfo(ev), pr = CS.processing;
-  const live = !!c && compStatus(c) === "live" && !(pr && pr.paused) && !workerStale(pr) && evj.updated && Date.now() / 1000 - evj.updated < 1800;
+  const live = !!c && compStatus(c) === "live" && !(pr && pr.paused) && !workerDown(pr) && evj.updated && Date.now() / 1000 - evj.updated < 1800;
   const opt = t => `<option value="${t.ts}"${t.ts === ts ? " selected" : ""}>${esc(t.label)}${t.q != null && !narrow ? ` · ${t.q} qual${t.q === 1 ? "" : "s"}` : ""}</option>`;
   el.innerHTML = `<div class="timectl ${ts ? "replay" : live ? "live" : "latest"}" role="group" aria-label="Data time">
     <span class="tc-tag"${!ts && !live ? tipA(`Latest data: the newest build${evj.updated ? `, ${CS.fmtWhen(evj.updated, { day: true })}` : ""}.${pr && pr.paused ? " Processing is paused on the server, so it isn't updating." : ""}`) : ""}><i aria-hidden="true"></i>${ts ? "Replay" : live ? "Live" : "Latest"}</span>

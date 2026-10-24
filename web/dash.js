@@ -16,7 +16,7 @@
   const sameDay = ts => ts != null && new Date(ts * 1000).toDateString() === new Date().toDateString();
   // "now" only while the data is current: fresh (under 30 min old), processing running, worker checking in (MATCH-11)
   const fresh = d => { const pr = CS.processing, t = d.event?.now;
-    return !d.event?.asof && t != null && Date.now() / 1000 - t < 1800 && !(pr && pr.paused) && !(pr && pr.worker_seen && Date.now() / 1000 - pr.worker_seen > 3600); };
+    return !d.event?.asof && t != null && Date.now() / 1000 - t < 1800 && !(pr && pr.paused) && !(CS.workerDown && CS.workerDown(pr)); };
   // once every qual is played these are facts, not projections (MATCH-21)
   const qualsDone = d => !!(d.event?.quals_total && d.event.quals_played >= d.event.quals_total);
   const dur = s => { const a = Math.abs(Math.round(s)), h = Math.floor(a / 3600), m = Math.floor(a % 3600 / 60), x = a % 60;

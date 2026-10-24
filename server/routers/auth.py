@@ -25,7 +25,9 @@ class SessionOut(BaseModel):
     passwordless_ok: bool = Field(True, description="accounts without a password can sign in from here")
     processing: dict | None = Field(None, description="signed in only: the worker's state {paused: bool|null (null = "
                                     "unknown), worker_seen: unix|null (its last pass), reason: 'paused'|'no_key'|"
-                                    "'no_events'|null, why: sentence|null}")
+                                    "'no_events'|null, why: sentence|null, worker_down: null while it checks in, "
+                                    "else {never, since: unix|null, quiet_s, docker (admins, with the host updater): "
+                                    "{service, state, error, exit_code, problem: {why, fix}, ...}|null}}")
 
 
 class SetupIn(BaseModel):
@@ -188,7 +190,7 @@ def _session_out(db, request, u: User | None, csrf: str, n: int | None = None) -
                       user=u.public() if u else None, csrf=csrf, configured=configured(db),
                       lockdown=bool(lockdown_state(db)), network="public" if via_public(request) else "lan",
                       passwordless_ok=passwordless_allowed(db, request),
-                      processing=workerstatus.processing_state() if u else None)
+                      processing=workerstatus.processing_state(admin=u.can("admin")) if u else None)
 
 
 @router.post("/setup", response_model=SessionOut, dependencies=[Depends(csrf_anonymous)],

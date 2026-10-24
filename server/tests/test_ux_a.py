@@ -11,9 +11,11 @@ def _status(data, **st):
     (data / "worker-status.json").write_text(json.dumps(st))
 
 
-def test_session_processing_state(client, admin, data):
+def test_session_processing_state(client, admin, data, monkeypatch):
+    monkeypatch.setattr(workerstatus, "STARTED", time.time())          # the api just started: no "never started" yet
     p = admin.get("/session").json()["processing"]
-    assert p == {"paused": None, "paused_by": None, "worker_seen": None, "reason": None, "why": None}   # unknown yet
+    assert p == {"paused": None, "paused_by": None, "worker_seen": None, "reason": None, "why": None,
+                 "worker_down": None}                                  # unknown yet
     now = time.time()
     _status(data, at=now - 20, paused=True, reason="paused")
     p = admin.get("/session").json()["processing"]
@@ -29,9 +31,48 @@ def test_session_processing_state(client, admin, data):
     _status(data, at=now - 2 * workerstatus.FRESH_S, paused=True, reason="paused")
     p = admin.get("/session").json()["processing"]
     assert p["paused"] is None and p["worker_seen"] is not None and p["why"] is None
+    assert p["worker_down"]["never"] is False and p["worker_down"]["since"] == p["worker_seen"]
     # garbage file: unknown, not an error
     (data / "worker-status.json").write_text("{nope")
     assert admin.get("/session").json()["processing"]["paused"] is None
+
+
+def _updater(data, services, at=None):
+    at = time.time() if at is None else at
+    (data / "config").mkdir(exist_ok=True)
+    (data / "config" / "update-status.json").write_text(json.dumps(
+        {"v": 1, "heartbeat": at, "state": "idle", "services": services, "services_at": at}))
+
+
+GPU_ERR = ("failed to create task for container: ... nvidia-container-cli: mount error: failed to add device rules: "
+           "unable to generate new device filter program from existing programs")
+
+
+def test_worker_down(client, admin, team, data, monkeypatch):
+    """No check-in for DOWN_S, or none at all FIRST_S after the api started = "the worker isn't running"; admins
+    also get Docker's view of its container (host updater), with the reason in plain words."""
+    now = time.time()
+    monkeypatch.setattr(workerstatus, "STARTED", now - workerstatus.FIRST_S + 60)
+    assert admin.get("/session").json()["processing"]["worker_down"] is None          # first start: still in grace
+    monkeypatch.setattr(workerstatus, "STARTED", now - workerstatus.FIRST_S - 60)
+    d = admin.get("/session").json()["processing"]["worker_down"]
+    assert d["never"] is True and d["since"] is None and d["quiet_s"] >= workerstatus.FIRST_S and d["docker"] is None
+    _status(data, at=now - 20, paused=False, reason=None)
+    assert admin.get("/session").json()["processing"]["worker_down"] is None          # checking in
+    _status(data, at=now - workerstatus.DOWN_S - 30, paused=False, reason=None)
+    d = admin.get("/session").json()["processing"]["worker_down"]
+    assert d["never"] is False and abs(d["since"] - (now - workerstatus.DOWN_S - 30)) < 1
+    # the updater says the container can't start: why + fix in plain words, Docker's own error kept
+    _updater(data, [{"service": "worker", "name": "cs-worker", "state": "created", "exit_code": 128, "error": GPU_ERR},
+                    {"service": "api", "name": "cs-api", "state": "running", "exit_code": 0, "error": ""}])
+    dk = admin.get("/session").json()["processing"]["worker_down"]["docker"]
+    assert dk["state"] == "created" and "GPU" in dk["problem"]["why"] and "GPU_IDS" in dk["problem"]["fix"]
+    assert "device rules" in dk["error"]
+    p = team["scout"].get("/session").json()["processing"]               # not admins: that it's down, not the details
+    assert p["worker_down"]["never"] is False and "docker" not in p["worker_down"]
+    # a stale updater view isn't used
+    _updater(data, [{"service": "worker", "state": "created", "error": GPU_ERR}], at=now - 600)
+    assert admin.get("/session").json()["processing"]["worker_down"]["docker"] is None
 
 
 def test_session_processing_hidden_when_signed_out(client, admin):

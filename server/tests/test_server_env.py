@@ -263,7 +263,7 @@ def test_env_run_applies_and_rolls_back(stack, tmp_path):
     assert st["env"]["values"]["PROCESSORS_GPU1"] == "2" and "TBA_KEY" not in json.dumps(st["env"])
     assert "secret" not in json.dumps(st)
     assert st["state"] == "idle" and st["action"] is None and st["result"]["message"] == "Updated to abc"
-    assert st["env_progress"] and not st["progress"] and st["features"] == ["env"]
+    assert st["env_progress"] and not st["progress"] and st["features"] == ["env", "services"]
     assert U.parse_status(st, UPD.now())["env_result"]["ok"] is True
 
     # a change that makes the worker crash: the old .env comes back by itself

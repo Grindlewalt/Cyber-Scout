@@ -197,8 +197,10 @@ means:
   (every 30 s while waiting), the api returns it in `/app/v1/session` → `processing`, and signed-in pages show
   "Processing is paused on the server" (admins get how to turn it back on), Matches says "not tracked (paused)",
   empty pages give that reason, the time control says "Latest" instead of "Live", and Admin → Settings has a
-  worker status line. The same channel reports "no TBA key" and "The worker hasn't checked in since …" (no
-  status write for over an hour: the worker re-writes it every 2 min even during a long pass, so this means it stopped). The notice goes away within about a minute of unpausing
+  worker status line. The same channel reports "no TBA key" and "The worker isn't running" (no status write for
+  5 min, or none at all 10 min after the api started: the worker re-writes it every 30 s even during a long pass, so
+  this means it stopped or never started; with the host updater installed the notice also says what Docker says and
+  the fix, e.g. a GPU the container can't get). The notice goes away within about a minute of unpausing
   (the app re-reads the session every 60 s).
 
 Production on atomosserver runs paused. The 2026wasam data is complete and frozen, and new site builds are made by
@@ -809,8 +811,13 @@ The log line names the reason: `match processing paused (PAUSE_PROCESSING=1)`, `
 followed`. It re-checks every 30 s, and a settings change wakes it at once. The same reason is in
 `data/worker-status.json` and in the app (the notice above every page, Admin → Settings worker line). A missing
 model doesn't make it wait: it logs `no detector model (…): publishing TBA + livestream results` and tracks robots
-once the file appears. "The worker hasn't checked in since …" in the app means no loop pass for over an hour: check
-`docker compose ps worker` and its log (a long backlog pass can also cause it).
+once the file appears. "The worker isn't running" in the app means no status write for 5 min (or none since the
+api started): `docker compose ps -a` (Created / Exited = not running), `docker compose up -d worker` (prints Docker's
+reason if it can't start), `docker compose logs --tail 80 worker`. With the updater installed the notice and Admin →
+Server → Containers show Docker's error and the fix; `deploy/updater/cs-updater.py --stack DIR services` prints the
+same from a shell. A GPU passthrough error (`nvidia-container-cli: … failed to add device rules`, `CDI device
+injection failed`) usually starts after a kernel / driver / toolkit update and a reboot: re-run the installer (it
+tests every card), or set `GPU_IDS` to one card that works.
 
 ### 9.8 Sign-in problems
 

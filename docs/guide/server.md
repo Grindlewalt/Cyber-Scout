@@ -36,7 +36,7 @@ Everything below was read from the code at the commit named in `docs/guide/READM
 | `server/audit.py` | `record()` (append to `audit_log`), `family()`, `revertible()`, `REVERTIBLE` |
 | `server/textrules.py` | free-text validation: `plain_text`, `display_name`, `skeleton` (look-alike folding), `has_reserved_word`, `label` |
 | `server/workerconf.py` | `build()` / `write()` of `DATA/config/worker.json` (0600) for the worker and recorder |
-| `server/workerstatus.py` | `processing_state()`: reads `DATA/worker-status.json` (written by the worker every pass) for `/session.processing`; `WHY` sentences per reason; `FRESH_S` 3600 |
+| `server/workerstatus.py` | `processing_state(admin=)`: reads `DATA/worker-status.json` (written by the worker every 30 s) for `/session.processing`; `WHY` sentences per reason; `FRESH_S` 3600; `worker_down` (`DOWN_S` 300, `FIRST_S` 600 after api start) + the updater's container view for admins |
 | `server/tba.py` | minimal TBA client with an in-memory TTL cache; `validate_key()` |
 | `server/manage.py` | break-glass CLI: `users`, `reset-password`, `make-admin` |
 | `server/routers/auth.py` | `/session`, `/setup`, `/auth/*` (incl. `/auth/key-login`), password/display-name policy helpers |
@@ -46,7 +46,7 @@ Everything below was read from the code at the commit named in `docs/guide/READM
 | `server/routers/scouting.py` | picklists (+ version history), notes (soft delete / hide), identity overrides + approval queue |
 | `server/routers/admin.py` | `/admin/security` (lockdown, passwordless, review mode), `/admin/sessions/revoke`, `/audit` list / revert |
 | `server/routers/sources.py` | Video page: sources, layout boxes, calibration wizard, jobs, livestream status (logic in `live/sources.py`, `live/layout.py`) |
-| `server/routers/update.py` | `/admin/update*` and `/admin/server-env`: writes `update-request.json`, parses `update-status.json` |
+| `server/routers/update.py` | `/admin/update*` and `/admin/server-env`: writes `update-request.json`, parses `update-status.json`; `explain()` / `container()`: the updater's container states (`services`) with why/fix in plain words |
 | `server/openapi.json` | committed snapshot of the schema (regenerated in the cleanup pass) |
 | `server/Dockerfile` | `python:3.12-slim`; installs `requirements.txt`; copies `server/` plus `live/sources.py` and `live/layout.py`; deletes `server/tests`; HEALTHCHECK on `/app/v1/health` |
 | `server/entrypoint.sh` | root phase (refuse symlinked `$DATA` / `$DATA/config`, `mkdir -p $DATA/config`, `chown -h` a fixed list of files) then `setpriv --reuid=$PUID --regid=$PGID --clear-groups --no-new-privs` uvicorn, 1 process, no access log, no server header |
@@ -443,8 +443,12 @@ All paths are under **`/app/v1`**. "CSRF" = mutating, so both CSRF layers apply.
 **Processing state** (`/session.processing`, signed in only; `server/workerstatus.py`). The worker writes
 `DATA/worker-status.json` = `{at, paused, reason}` at the top of every loop pass (`live/worker.py:status_beat`;
 every 30 s while it waits, once per pass while it works). The API turns it into `{paused: bool|null, worker_seen:
-unix|null, reason: "paused"|"no_key"|"no_events"|null, why: sentence|null}`. Missing / unreadable file (no worker,
-or one older than this change) -> all null ("unknown"). A file older than `FRESH_S` (1 h) keeps `worker_seen` but
+unix|null, reason: "paused"|"no_key"|"no_events"|null, why: sentence|null, worker_down}`. Missing / unreadable file (no worker,
+or one older than this change) -> all null ("unknown"). `worker_down` (null while it checks in) = `{never, since,
+quiet_s}` after `DOWN_S` (5 min) without a write, or `FIRST_S` (10 min) after the api started with no file at all;
+admins also get `docker` = `routers/update.container("worker")`: the host updater's latest view of that container
+(`state`, `error`, `exit_code`, `oom`, `restarts`, `log`, `problem: {why, fix}` from `update.explain()`, the same cases
+`install.sh` explains), or null without a fresh updater view. A file older than `FRESH_S` (1 h) keeps `worker_seen` but
 `paused` / `reason` become null, so a stopped worker never reads as "paused". `PAUSE_PROCESSING` semantics are
 unchanged; this is reporting only. The web app polls `/session` every 60 s for it (`web.md` §4.7).
 

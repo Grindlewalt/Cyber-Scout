@@ -19,14 +19,15 @@ the containers). Progress and results go to data/config/update-status.json (read
     cs-updater.py --stack DIR run                  systemd: heartbeat, handle a pending request, daily check
     cs-updater.py --stack DIR check | apply [--ytdlp] | rollback | status      the same, from a shell
     cs-updater.py --stack DIR env KEY=VALUE ... | KEY=                          Admin -> Server, from a shell
+    cs-updater.py --stack DIR services                 each container's state and Docker's error (read-only)
 
 Python 3.8+ standard library only. See deploy/updater/README.md.
 """
-import argparse, errno, fcntl, json, os, re, secrets, shlex, shutil, sqlite3, stat, subprocess, sys, threading, \
+import argparse, calendar, errno, fcntl, json, os, re, secrets, shlex, shutil, sqlite3, stat, subprocess, sys, threading, \
     time, urllib.error, urllib.parse, urllib.request
 
-UPDATER_VERSION = "2"
-FEATURES = ("env",)
+UPDATER_VERSION = "3"
+FEATURES = ("env", "services")
 ACTIONS = ("check", "apply", "rollback", "env")
 REQ_NAME, STATUS_NAME = "update-request.json", "update-status.json"
 REQ_KEYS = {"v", "action", "nonce", "at", "by", "ytdlp"}
@@ -243,7 +244,8 @@ class Updater:
                 "rejected": s.get("rejected"), "started_at": s.get("started_at"), "finished_at": s.get("finished_at"),
                 "paused": self._env_flag("PAUSE_PROCESSING"), "ytdlp": s.get("ytdlp"),
                 "ytdlp_allowed": self.conf["YTDLP"] == "1", "features": list(FEATURES), "env": self.env_doc(),
-                "env_progress": s.get("env_progress") or [], "env_result": s.get("env_result")}
+                "env_progress": s.get("env_progress") or [], "env_result": s.get("env_result"),
+                "services": s.get("services") or [], "services_at": s.get("services_at")}
 
     def write_status(self):
         with self._wlock:
@@ -828,6 +830,35 @@ class Updater:
             ok_parts.append("web 200")
         return True, ", ".join(ok_parts), False
 
+    def services(self):
+        """Every container of this stack as Docker sees it: [{service, name, state, exit_code, error, oom, restarts,
+        started_at, finished_at[, log]}], for Admin -> Server and the "the worker isn't running" notice. A container
+        that can't start (a GPU passthrough error, say) never writes anything itself: only Docker knows why.
+        Read-only (docker compose ps + docker inspect); `log` = its last lines when it stopped with an error."""
+        try:
+            rows = parse_ps(self.dc("ps", "-a", "--format", "json", check=False, timeout=60).stdout)
+        except ValueError:
+            return []
+        ids = [r["ID"] for r in rows if r.get("ID") and "com.docker.compose.oneoff=True" not in str(r.get("Labels") or "")]
+        if not ids:
+            return []
+        try:
+            found = json.loads(self.docker("inspect", *ids, check=False, timeout=60).stdout or "[]")
+        except ValueError:
+            return []
+        out = []
+        for c in found if isinstance(found, list) else []:
+            st, lab = c.get("State") or {}, (c.get("Config") or {}).get("Labels") or {}
+            svc = clean(lab.get("com.docker.compose.service") or "", 63)
+            e = {"service": svc, "name": clean((c.get("Name") or "").lstrip("/"), 100), "state": st.get("Status"),
+                 "exit_code": st.get("ExitCode"), "error": clean(st.get("Error") or "", 600),
+                 "oom": st.get("OOMKilled") is True, "restarts": c.get("RestartCount"),
+                 "started_at": docker_time(st.get("StartedAt")), "finished_at": docker_time(st.get("FinishedAt"))}
+            if st.get("Status") in ("exited", "dead", "restarting") and st.get("ExitCode") and svc:
+                e["log"] = last_lines(self.dc("logs", "--no-color", "--tail", "15", svc, check=False).stdout)
+            out.append(e)
+        return sorted(out, key=lambda e: (e["service"], e["name"]))
+
     # ------------------------------------------------------------------ yt-dlp
     def bump_ytdlp(self):
         """Re-pin live/requirements-ytdlp.txt to the newest yt-dlp (with hashes), in a throwaway container of the
@@ -1063,6 +1094,10 @@ class Updater:
                     self.state["current"] = info
             except Fail as e:
                 self.log(f"can't read the current commit: {e}")
+        try:
+            self.state["services"], self.state["services_at"] = self.services(), now()
+        except Fail as e:
+            self.log(f"can't read the containers: {e}")
         self.write_status()
         req = self.read_request()
         if req:
@@ -1267,6 +1302,16 @@ def redact(url):
     return re.sub(r"//[^/@]+@", "//***@", url)
 
 
+def docker_time(s):
+    """Docker's RFC 3339 time (UTC) -> unix seconds; None for its zero time (never started / never stopped)."""
+    if not isinstance(s, str) or s.startswith("0001-"):
+        return None
+    try:
+        return calendar.timegm(time.strptime(s[:19], "%Y-%m-%dT%H:%M:%S"))
+    except ValueError:
+        return None
+
+
 def parse_ps(out):
     out = (out or "").strip()
     if not out:
@@ -1300,6 +1345,7 @@ def main(argv=None):
     a.add_argument("--ytdlp", action="store_true", help="also re-pin yt-dlp to its newest release")
     sub.add_parser("rollback")
     sub.add_parser("status")
+    sub.add_parser("services", help="each container's state and Docker's error (read-only)")
     e = sub.add_parser("env", help="change allowlisted .env keys (KEY=VALUE; KEY= resets to the default), then restart")
     e.add_argument("pairs", nargs="+", metavar="KEY=VALUE")
     args = ap.parse_args(argv)
@@ -1312,6 +1358,12 @@ def main(argv=None):
         if args.cmd == "status":
             print(json.dumps(u.status_doc(), indent=1, sort_keys=True))
             return 0
+        if args.cmd == "services":
+            svcs = u.services()
+            for e in svcs:
+                st = (e["state"] or "?") + (f" (exit {e['exit_code']})" if e["state"] in ("exited", "dead") else "")
+                print(f"{e['service']:<16} {st:<16} {e['error'] or e.get('log') or ''}".rstrip())
+            return 0 if svcs and all(e["state"] == "running" for e in svcs) else 1
         if args.cmd == "run":
             return u.tick()
         if not u.lock():

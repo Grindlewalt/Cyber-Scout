@@ -16,6 +16,9 @@
   .wk.paused { background: var(--caution-tint); border: 1px solid var(--caution-line); } .wk b { color: var(--ink); }
   .envgrp { border: 0; padding: 0; margin: 0 0 var(--sp-4); display: grid; gap: var(--sp-2); }
   .envgrp legend { font-weight: 600; color: var(--ink); margin-bottom: 4px; }
+  .svcl { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; font-size: var(--fs-foot); }
+  .svcl li { display: flex; gap: 8px; align-items: flex-start; } .svcl li > span:last-child { min-width: 0; }
+  .svcl .dot { width: 9px; height: 9px; border-radius: 50%; margin-top: 5px; flex: none; background: var(--good); } .svcl .bad .dot { background: var(--bad); }
   .envrow { display: grid; grid-template-columns: minmax(0, 1fr) minmax(9rem, 14rem); gap: 4px 12px; align-items: center; }
   .envrow .k { font-family: var(--mono); font-size: var(--fs-foot); color: var(--ink-3); }
   .envrow.dirty { background: var(--caution-tint); border-radius: var(--r-s); margin: 0 -6px; padding: 2px 6px; }
@@ -296,7 +299,9 @@
   // ---------------------------------------------------------------- settings
   /** what the worker is doing, from the session's processing state (setup.js polls it) */
   function workerLine() {
-    const pr = CS.processing;
+    const pr = CS.processing, down = CS.workerDown ? CS.workerDown(pr) : null;
+    if (down) { const pb = down.docker && down.docker.problem;
+      return `<div class="wk paused"><span class="dot"></span><span><b>Worker: not running</b> · ${down.never ? "hasn't checked in since the server started" : `last check ${esc(CS.fmtWhen(down.since))}`}. Nothing new comes in (TBA schedules and results, video, tracking).${pb ? ` ${esc(pb.why)} <b>Fix:</b> ${esc(pb.fix)}` : " The notice at the top of the page says what to check."}</span></div>`; }
     if (!pr || (pr.paused == null && !pr.worker_seen)) return `<div class="wk"><span class="dot"></span><span><b>Worker status unknown.</b> It reports here after its next pass (a worker older than this version doesn't).</span></div>`;
     const seen = pr.worker_seen ? `last check ${esc(CS.fmtWhen(pr.worker_seen))}` : "";
     if (pr.paused) return `<div class="wk paused"><span class="dot"></span><span><b>Worker: paused</b> (${pr.paused_by === "app" ? "by the switch below" : "PAUSE_PROCESSING=1 in the server's .env"}) · ${seen}. Nothing new is built or tracked; Video page jobs still run.
@@ -465,8 +470,11 @@
         return;
       }
       const r = st.result, dirty = changed(), busy = st.busy;
+      const svcs = (st.services || []).map(c => { const ok = c.state === "running" && !c.problem;
+        return `<li class="${ok ? "ok" : "bad"}"><span class="dot"></span><span><b>${esc(c.service)}</b> ${esc(ok ? "running" : c.state || "?")}${c.problem ? `<div class="small"><b>Why:</b> ${esc(c.problem.why)}</div><div class="small"><b>Fix:</b> ${esc(c.problem.fix)}</div>${c.error ? `<details class="small"><summary>What Docker said</summary><span class="code" style="white-space:normal;overflow-wrap:anywhere">${esc(c.error)}</span></details>` : ""}` : ""}</span></li>`; }).join("");
       const keepFocus = document.activeElement && document.activeElement.dataset && document.activeElement.dataset.k;
       body.innerHTML = `${st.error ? `<div class="cserr" style="margin-bottom:8px">${esc(CS.sentence(st.error))}</div>` : ""}
+        ${svcs ? `<fieldset class="envgrp"><legend>Containers ${CS.help("What Docker says about each part of Cyber-Scout on this server, checked by the updater every minute. One that can't start says why here, with the fix.", "About the containers")}</legend><ul class="svcl">${svcs}</ul></fieldset>` : ""}
         <form id="envf" novalidate>${groups().map(([g, keys]) => `<fieldset class="envgrp"><legend>${esc(g)}</legend>${keys.map(k => { const [, t, h] = label(k);
           return `<div class="envrow${dirty.includes(k) ? " dirty" : ""}"><label for="env_${esc(k)}"><div>${esc(t)} ${h ? CS.help(esc(h), t) : ""}</div><div class="k">${esc(k)}${st.schema[k].api ? " · also restarts the api" : ""}</div></label>${field(k)}</div>`; }).join("")}</fieldset>`).join("")}
           <div class="row" style="display:flex;flex-wrap:wrap;gap:8px;align-items:center">

@@ -195,9 +195,11 @@ The browser polls it through the API (`GET /app/v1/events/<ev>/jobs/<id>`). Jobs
 `live/worker.py:status_beat(reason)` writes `{at, paused, reason}` (`reason` = `paused` | `no_key` | `no_events` |
 null) at the top of every main-loop pass: every 30 s while it waits, once per pass while it works. Process-only
 processors and the recorder don't write it. `server/workerstatus.py` reads it for `GET /app/v1/session` →
-`processing: {paused, worker_seen, reason, why}` (signed-in users only; missing file = unknown; older than 1 h =
-`paused: null`). The web app shows "Processing is paused on the server" / "The worker hasn't checked in since …"
-from it ([web.md](web.md) §4.7). The Admin switch (worker option `paused` in `worker.json`) wins over
+`processing: {paused, worker_seen, reason, why, worker_down}` (signed-in users only; missing file = unknown; older
+than 1 h = `paused: null`). `worker_down` = no write for 5 min, or no file 10 min after the api started ("never
+started"); for admins it carries the host updater's view of the worker container (state, Docker's error, why/fix),
+because a container that can't start (a GPU passthrough error) never writes anything. The web app shows "Processing
+is paused on the server" / "The worker isn't running" from it ([web.md](web.md) §4.7). The Admin switch (worker option `paused` in `worker.json`) wins over
 `PAUSE_PROCESSING` in `.env`; the worker reports which one paused it (`paused_by`).
 
 ### Recorder → worker: livestream records (`MEDIA/live/<ev>/<video id>/matches/*.json`)

@@ -277,3 +277,77 @@ def test_updater_conf_is_strict(tmp_path):
         p.write_text(bad + "\n")
         with pytest.raises(UPD.Fail):
             UPD.load_conf(str(p))
+
+
+# ------------------------------------------------------------------ containers (updater -> api: what Docker says)
+def test_services_parsing_and_explanations():
+    t = time.time()
+    raw = {"heartbeat": t, "services_at": t, "services": [
+        {"service": "worker", "name": "cs-worker", "state": "created", "exit_code": 128, "oom": False, "restarts": 0,
+         "error": "x" * 5000, "started_at": None},
+        {"service": "Bad Name; rm", "state": "running"}, {"service": "api", "state": "weird", "exit_code": "0"},
+        "nope", {"service": "recorder", "state": "exited", "exit_code": 137, "oom": True},
+        {"service": "web", "state": "running", "exit_code": 0, "error": ""}]}
+    sv = {c["service"]: c for c in U.parse_status(raw, t)["services"]}
+    assert set(sv) == {"worker", "api", "recorder", "web"}
+    assert len(sv["worker"]["error"]) == 600 and sv["api"]["state"] is None and sv["api"]["exit_code"] is None
+    assert sv["web"]["problem"] is None and sv["web"]["error"] is None
+    assert "memory" in sv["recorder"]["problem"]["why"]
+    assert "never started" in sv["worker"]["problem"]["why"]
+    ex = lambda **c: U.explain({"service": "worker", **c})
+    assert "CDI device list is out of date (it names /dev/dri/card0" in ex(
+        state="created", error='CDI device injection failed: failed to stat CDI host device "/dev/dri/card0"')["why"]
+    assert "nvidia-ctk cdi generate" in ex(state="created", error="unresolvable CDI devices nvidia.com/gpu=1")["fix"]
+    assert "NVIDIA runtime" in ex(state="created", error='could not select device driver "nvidia"')["why"]
+    assert "port" in ex(state="created", error="Bind for 0.0.0.0:7560 failed: port is already allocated")["why"]
+    assert "disk is full" in ex(state="exited", exit_code=1, log="OSError: no space left on device")["why"]
+    assert "exit code 2" in ex(state="exited", exit_code=2)["why"] and "logs" in ex(state="exited", exit_code=2)["fix"]
+    assert ex(state="exited", exit_code=0)["why"] == "It was stopped."
+    assert "restarting" in ex(state="restarting", restarts=7)["why"]
+    assert "unpause" in ex(state="paused")["fix"]
+    assert ex(state="running") is None
+
+
+def test_server_env_lists_containers_only_while_fresh(admin, data):
+    t = time.time()
+    write_status(data, services_at=t, services=[{"service": "worker", "state": "created", "error": "boom"}])
+    sv = admin.get("/admin/server-env").json()["services"]
+    assert sv[0]["service"] == "worker" and sv[0]["problem"]["why"].startswith("It was created but never started")
+    write_status(data, services_at=t - 3600, services=[{"service": "worker", "state": "created"}])
+    assert admin.get("/admin/server-env").json()["services"] == []
+
+
+def test_updater_reads_containers(tmp_path, monkeypatch):
+    """cs-updater.py services(): docker compose ps + docker inspect -> the fixed shape, read-only."""
+    for d in ("app", "data"):
+        (tmp_path / d).mkdir()
+    (tmp_path / "docker-compose.yml").write_text("services: {}\n")
+    u = UPD.Updater(str(tmp_path))
+    calls = []
+    inspect = [{"Name": "/cs-worker", "RestartCount": 0, "Config": {"Labels": {"com.docker.compose.service": "worker"}},
+                "State": {"Status": "created", "ExitCode": 128, "Error": "nvidia-container-cli: mount error\x07",
+                          "OOMKilled": False, "StartedAt": "0001-01-01T00:00:00Z", "FinishedAt": "0001-01-01T00:00:00Z"}},
+               {"Name": "/cs-recorder", "RestartCount": 4, "Config": {"Labels": {"com.docker.compose.service": "recorder"}},
+                "State": {"Status": "exited", "ExitCode": 1, "Error": "", "OOMKilled": False,
+                          "StartedAt": "2026-10-24T16:22:10.123456789Z", "FinishedAt": "2026-10-24T16:25:00Z"}}]
+
+    def run(argv, **kw):
+        calls.append(argv)
+        out = ""
+        if argv[:3] == ["docker", "compose", "ps"]:
+            out = "\n".join(json.dumps({"ID": i, "Service": s, "Labels": ""}) for i, s in (("c1", "worker"), ("c2", "recorder")))
+            out += "\n" + json.dumps({"ID": "c3", "Service": "worker", "Labels": "com.docker.compose.oneoff=True"})
+        elif argv[:2] == ["docker", "inspect"]:
+            out = json.dumps(inspect)
+        elif argv[:3] == ["docker", "compose", "logs"]:
+            out = "cs-recorder  | starting\ncs-recorder  | Traceback\ncs-recorder  | RuntimeError: boom\n"
+        return UPD.subprocess.CompletedProcess(argv, 0, out, "")
+    monkeypatch.setattr(u, "run", run)
+    sv = u.services()
+    assert [e["service"] for e in sv] == ["recorder", "worker"]
+    rec, wk = sv
+    assert wk["state"] == "created" and wk["started_at"] is None and "\x07" not in wk["error"] and "log" not in wk
+    assert rec["started_at"] == 1792858930 and rec["restarts"] == 4 and rec["log"].endswith("RuntimeError: boom")
+    assert ["docker", "inspect", "c1", "c2"] in calls                  # the one-off container isn't looked at
+    assert not any(a[:3] in (["docker", "compose", "up"], ["docker", "compose", "start"]) for a in calls)
+    assert U.parse_status({"heartbeat": time.time(), "services": sv}, time.time())["services"][0]["problem"]

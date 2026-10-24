@@ -7134,7 +7134,7 @@
        }
       ],
       "title": "Processing",
-      "description": "signed in only: the worker's state {paused: bool|null (null = unknown), worker_seen: unix|null (its last pass), reason: 'paused'|'no_key'|'no_events'|null, why: sentence|null}"
+      "description": "signed in only: the worker's state {paused: bool|null (null = unknown), worker_seen: unix|null (its last pass), reason: 'paused'|'no_key'|'no_events'|null, why: sentence|null, worker_down: null while it checks in, else {never, since: unix|null, quiet_s, docker (admins, with the host updater): {service, state, error, exit_code, problem: {why, fix}, ...}|null}}"
      }
     },
     "type": "object",

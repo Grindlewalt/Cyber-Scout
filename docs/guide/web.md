@@ -282,7 +282,9 @@ team list every 20 s and on focus / visibility; setup.js re-reads `/session` eve
 - **Global notice** (`#gnotice`, above `#app`, `role=status`, `renderNotice()` on every nav render and
   `CS.setProcessing`): signed-in pages except login / setup / connect show at most one processing line — "Processing
   is paused on the server" (with a "?" that has `CS.PAUSE_HOW` for admins), "Nothing is processed yet: the server has
-  no TBA key" (admins, links Admin → Settings), or "The worker hasn't checked in since <date>" — with **Hide**
+  no TBA key" (admins, links Admin → Settings), or "The worker isn't running" (first: it outranks paused; admins get
+  Docker's reason + fix from the updater, else the commands to check, `DOWN_HOW` in a "?"; others get "The server
+  isn't taking in new data right now") — with **Hide**
   (until the next visit: `sessionStorage cs:gnotice` = that line's kind). On phones (≤ 760 px) it also carries the
   lockdown line ("Read-only (lockdown)", admins get "End it" → Activity), because the toolbar's lockdown chip is hidden
   there.
@@ -328,7 +330,7 @@ team list every 20 s and on focus / visibility; setup.js re-reads `/session` eve
 | `CS.fmtWhen(ts, {sec, day})` | the one date format: "11:03 PM" today, "Oct 12, 11:03 PM" this year, "Oct 12, 2025, 11:03 PM" before; `day` forces the date, `sec` adds seconds (logs) |
 | `CS.sentence(m)` | a server message as a sentence: capital first letter, full stop added ("invalid username or password" → "Invalid username or password.") |
 | `CS.latestLabel(ev)` | "End-of-event data" once the competition is over, else "Latest data" (banners, the time control's static tag) |
-| `CS.buildStall(admin)` | why nothing new is being built, as a sentence for empty states: processing paused (admins get a "?" with `CS.PAUSE_HOW`), no TBA key (admins: link to Admin → Settings), worker not checked in since …; `""` when the worker runs normally |
+| `CS.buildStall(admin)` | why nothing new is being built, as a sentence for empty states: processing paused (admins get a "?" with `CS.PAUSE_HOW`), no TBA key (admins: link to Admin → Settings), the worker isn't running (admins: Docker's reason + fix, or what to run); `""` when the worker runs normally |
 | `CS.PAUSE_HOW` | HTML: how an admin turns processing back on (remove `PAUSE_PROCESSING=1` from `.env`, `docker compose up -d worker`; Video jobs still run) |
 | `CS.setProcessing(p)`, `CS.processing`, `CS.renderNotice()` | §4.7 |
 | `fieldCanvas(el)` | HiDPI field canvas: `{c, ctx, P(x,y), S(m), bg(alpha), size}`; broadcast orientation (red end left) |
@@ -349,13 +351,15 @@ team list every 20 s and on focus / visibility; setup.js re-reads `/session` eve
 
 Source: `GET app/v1/session` → `processing` ([server.md](server.md) §7.2, from `data/worker-status.json`).
 
-- `CS.processing` = `{paused: bool|null, worker_seen: unix|null, reason: "paused"|"no_key"|"no_events"|null, why}`,
+- `CS.processing` = `{paused: bool|null, worker_seen: unix|null, reason: "paused"|"no_key"|"no_events"|null, why,
+  worker_down}`,
   `null` when signed out, `undefined` before the first session answer (pages guard for both).
 - setup.js calls `CS.setProcessing(session.processing)` after every session check, after sign-in, and from its 60 s
   poll (visible tabs only; also on `visibilitychange`); sign-out sets it to null.
 - `CS.setProcessing` stores it, redraws the global notice, and dispatches **`cs:processing`** on `window` (detail =
-  the state) only when `paused`, `reason` or "worker stale" changed.
-- **Worker stale** = `worker_seen` older than `STALE_S` (1 h) and not `paused === true`.
+  the state) only when `paused`, `reason` or "worker down" (kind + container state) changed.
+- **Worker down** = `CS.workerDown(p)` = the server's `worker_down` (no status write for 5 min, or never since the api
+  started; server.md §7.2); an older api without the field: `worker_seen` over 1 h old and not paused.
 - Who reacts: the notice (§4.4); the time control's Live / Latest; Matches ("not tracked (paused)" instead of
   "waiting", redrawn on the event); not-built cards and Selection / page empty states (`CS.buildStall`); the
   Dashboard's "now" vs "data as of" (redrawn on the event); the untracked-match card; notes.js re-label wording;
@@ -1164,9 +1168,6 @@ Found while writing this (code at `cc6297c`), updated for the UX fix wave (`c64b
 - `dashboard.<team>.json` and `preview/<match>.json` are written but never read. The queue card's "Full preview"
   button links to `#/<ev>/m/<match>`; for an unplayed match that is now the untracked-match card ("This match hasn't
   been played or posted yet"), not an error card, but still not a preview.
-- **Worker "stale" during a long pass.** The notice and `CS.buildStall` call the worker stale when its last pass
-  started over 1 h ago. `worker-status.json` is written once per loop pass, so a pass tracking a big backlog can
-  read as "The worker hasn't checked in since …" while it is working (server.md, Docs vs code 14).
 - The Video page's private-host refusal suggests `CS_URL_ALLOW`, which the api container doesn't get (server.md,
   Docs vs code 13).
 - *(Fixed in the cleanup pass.)* Notes and identity-fix proposals now have a UI (`notes.js`).

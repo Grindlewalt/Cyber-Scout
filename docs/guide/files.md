@@ -523,7 +523,7 @@ edited** when this was written (see top note).
 | `server/textrules.py` | Validation for user text: `plain_text` (notes: no tags/entities/`javascript:`/control/bidi/zero-width), `label`, display-name rules (no staff words, no look-alikes). |
 | `server/tba.py` | Server-side TBA client; the key never leaves the server; short in-memory cache. |
 | `server/workerconf.py` | Writes `DATA/config/worker.json` (0600) from the DB on every settings or events change. |
-| `server/workerstatus.py` | Reads `DATA/worker-status.json` (the worker's last loop pass) → `processing_state()` = `{paused, worker_seen, reason, why}` for `GET /session`; a file older than 1 h is not trusted for `paused`. |
+| `server/workerstatus.py` | Reads `DATA/worker-status.json` (written every 30 s) → `processing_state(admin=)` = `{paused, worker_seen, reason, why, worker_down}` for `GET /session`; a file older than 1 h is not trusted for `paused`; `worker_down` after 5 min quiet (or no file 10 min after the api started), with the updater's view of the container for admins. |
 | `server/manage.py` | Break-glass CLI: `python -m server.manage users \| reset-password <u> \| make-admin <u>`. |
 | `server/entrypoint.sh` | Drops to PUID/PGID. chowns only the API's own files, with `chown -h`; refuses a symlinked `config/` (audit finding 5). Then runs uvicorn. |
 | `server/Dockerfile` | API image: python:3.12-slim + `server/requirements.txt`. Copies `server/` plus `live/sources.py` and `live/layout.py` (stdlib-importable; heavy jobs run in the worker). Removes tests; healthcheck on `/app/v1/health`. |
