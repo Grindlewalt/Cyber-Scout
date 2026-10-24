@@ -299,3 +299,38 @@ def test_priority_order_and_claims(env, monkeypatch):
     assert not W.claimed_elsewhere(EV, k, by="m2") and W.claim(EV, k, by="m2")
     W.release(EV, k, by="m2")
     assert not p.exists()
+
+
+def test_calibrate_reads_the_latest_minutes_or_a_chosen_time(env):
+    """Auto-calibrate (job_detect when=...): the latest minutes by default, not the newest clip (2026wamil's only clip
+    was Q1, with a raised bar moving AprilTag 1); "ago:<m>" ends m minutes back; "match:<key>" reads that clip."""
+    s = dict(id="url-abc", kind="livestream", url="https://www.youtube.com/@x/live")
+    d = write_dir(env, "vidA", [])
+    rows = []
+    for i in range(30):                                     # 30 x 60 s chunks
+        (d / "seg" / f"{i:05d}.ts").write_bytes(bytes([65 + i % 26]) * 1000)
+        rows.append(dict(sq=i, file=f"seg/{i:05d}.ts", off=0, size=1000, pts=100.0 + 60 * i, dur=60.0))
+    (d / "chunks.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+    (d / "clips" / "qm1.mp4").write_bytes(b"x" * 200_000)
+    assert SRC.recorded_media(EV, s) == (str(d / "clips" / "qm1.mp4"), 60.0)          # frame grabs: still the clip
+    latest, t = SRC.recorded_media(EV, s, when="latest")
+    b = open(latest, "rb").read()
+    assert latest == str(d / "sample.ts") and t == 0.0 and len(b) == 3000 and b[0] == 65 + 26 % 26   # chunks 26..28 (29 may still be written)
+    back, _ = SRC.recorded_media(EV, s, when="ago:10")
+    assert back == str(d / "sample_ago10.ts") and open(back, "rb").read()[0] == 65 + 16                 # 10 min earlier
+    assert SRC.recorded_media(EV, s, when="match:2026x_qm1") == (str(d / "clips" / "qm1.mp4"), 60.0)
+    assert SRC.recorded_media(EV, s, when="match:2026x_qm9") == (None, None)
+
+
+def test_jobs_cut_off_by_a_restart_are_marked_failed(tmp_path):
+    d = tmp_path / "jobs" / "sources"; d.mkdir(parents=True)
+    host = SRC.RUNNER.split(":")[0]
+    jobs = {"a1": dict(state="running", runner=f"{host}:1"), "b2": dict(state="running", runner=SRC.RUNNER),
+            "c3": dict(state="running", runner="other-box:5"), "d4": dict(state="running", started=0), "e5": dict(state="done")}
+    for k, j in jobs.items():
+        (d / f"{k}.json").write_text(json.dumps(dict(j, id=k, kind="detect")))
+    SRC.orphans(str(tmp_path), log=lambda *a: None)
+    st = {k: json.loads((d / f"{k}.json").read_text()) for k in jobs}
+    assert st["a1"]["state"] == "error" and st["a1"]["error"] == SRC.JOB_RESTARTED     # this container, an older process
+    assert st["d4"]["state"] == "error"                                                  # no runner, long ago
+    assert [st[k]["state"] for k in ("b2", "c3", "e5")] == ["running", "running", "done"]

@@ -13,7 +13,7 @@ Files (DATA = cfg.DATA):
   events/<ev>/calib_wizard/<target>.json, frames/*.jpg   wizard state / sample frames
   jobs/sources/<id>.json         job queue
 """
-import json, os, shutil, sys, time
+import json, os, re, shutil, sys, time
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from fastapi.responses import FileResponse
@@ -677,6 +677,11 @@ def calib_detect(target: str, body: dict = Body(default={}), ev: str = Depends(v
     if isinstance(body, dict):
         for k in ("source", "match"):
             if body.get(k): p[k] = str(body[k])[:80]
+        # which part of a recorded stream to read (live/sources.py recorded_media): the latest minutes (default),
+        # the 3 minutes ending N minutes ago, or one match's clip
+        w = body.get("when")
+        if isinstance(w, str) and re.fullmatch(r"latest|ago:\d{1,3}|match:[a-z0-9_]{1,40}", w):
+            p["when"] = w
     return _job(ev, "detect", p, user)
 
 

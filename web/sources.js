@@ -400,7 +400,10 @@
     const R = r && r.read, F = (r && r.frame_tags) || [];
     if (!R) return "";
     const n = R.n || F.length, span = R.t1 > R.t0 ? `${clock(R.t0)}–${clock(R.t1)}` : clock(R.t0);
-    const from = R.kind === "live" ? `read live over ${dur(R.t1 - R.t0)}` : `at ${span} of ${R.kind === "recording" ? "the recorded stream"
+    const W = R.when || "", ago = /^ago:(\d+)$/.exec(W);
+    const rec = W === "latest" ? "the latest minutes of the recorded stream" : ago ? `the recorded stream ${ago[1]} minutes ago`
+      : W.startsWith("match:") ? `${W.slice(6).split("_").pop().toUpperCase()}'s clip` : "the recorded stream";
+    const from = R.kind === "live" ? `read live over ${dur(R.t1 - R.t0)}` : `at ${span} of ${R.kind === "recording" ? rec
       : R.finished_stream ? "the stream's recording (the stream has ended)" : "the video"}`;
     const withT = F.filter(x => x.n > 0).length, mx = F.reduce((a, x) => Math.max(a, x.n), 0);
     const got = !F.length ? "" : !withT ? "none had an AprilTag" : withT === F.length ? `each had AprilTags (up to ${mx})`
@@ -414,17 +417,21 @@
   /** Auto-calibrate the overhead camera of a video: detect tags -> fit (robust, with a verdict) -> the admin checks the
    * overlay -> accept, then the layout's field box from the fitted camera's field_roi (only when the video has none).
    * A fit that can't be trusted makes "Calibrate by hand" the main button.  done(saved, message). */
-  async function autoCal(ev, box, sid, done) {
+  async function autoCal(ev, box, sid, done, when = "latest") {
     const shell = inner => { box.innerHTML = `<div class="vw-ac">${inner}</div>`; };
+    // which part of a recorded stream to read (live/sources.py recorded_media): the field can change during the day
+    // (2026wamil: a raised bar moved AprilTag 1 during set-up), so the latest minutes by default, or an earlier time
+    const WHEN = [["latest", "the latest 3 minutes"], ["ago:10", "10 minutes ago"], ["ago:20", "20 minutes ago"], ["ago:30", "30 minutes ago"], ["ago:60", "an hour ago"]];
+    const whenSel = () => `<label class="small vw-when">Read <select id="acwhen" aria-label="Which part of the recording to read">${WHEN.map(([v, t]) => `<option value="${v}" ${v === when ? "selected" : ""}>${h(t)}</option>`).join("")}</select></label>`;
     const showFrame = async (sel, W, H, draw) => {
       const FV = FrameView(box.querySelector(sel), { bin: box._bin });
       FV.draw = ctx => draw && draw(ctx, FV.s); FV.empty = "frame not available";
       try { FV.setImage(await loadImg(imgUrl(`events/${ev}/calibration/overhead/frame.jpg`)), W, H); } catch (e) { FV.W = W || 1920; FV.H = H || 1080; FV.size(); }
     };
     const wire = () => {
-      const no = box.querySelector("#acno"), re = box.querySelector("#acre");
+      const no = box.querySelector("#acno"), re = box.querySelector("#acre"), ws = box.querySelector("#acwhen");
       if (no) no.onclick = () => done(false);
-      if (re) re.onclick = () => autoCal(ev, box, sid, done);
+      if (re) re.onclick = () => autoCal(ev, box, sid, done, ws ? ws.value : when);
     };
     // a failure: what happened, what was read and the frame itself (when there is one), and the next step
     const fail = (t, r, next) => {
@@ -433,7 +440,7 @@
         ${r && r.read ? `<p class="small muted">${h(readLine(r))}</p>` : ""}${next ? `<p class="small">${h(next)}</p>` : ""}
         ${r && r.frame ? `<figure class="vc-fig"><div class="vs-wrap" id="acfv"></div><figcaption class="muted small">A frame that was read${Object.keys(r.tags || {}).length ? " (green: the AprilTags found)" : ""}.</figcaption></figure>` : ""}
         <div class="vs-row">${down ? `<button type="button" class="primary" id="acre">Try again</button><button type="button" data-sub="calib">Calibrate by hand</button>`
-          : `<button type="button" class="primary" data-sub="calib">Calibrate by hand</button><button type="button" id="acre">Try again</button>`}<button type="button" id="acno">Close</button></div>`);
+          : `<button type="button" class="primary" data-sub="calib">Calibrate by hand</button><button type="button" id="acre">Try again</button>`}${whenSel()}<button type="button" id="acno">Close</button></div>`);
       wire();
       if (r && r.frame) showFrame("#acfv", r.W, r.H, (ctx, s) => paintTags(ctx, r.tags, s));
     };
@@ -441,7 +448,7 @@
     const say = t => { const s = box.querySelector("#acst"); if (s) s.textContent = t; };
     let r = null;
     try {
-      r = await job(ev, A("POST", `events/${ev}/calibration/overhead/detect`, { source: sid }), t => t && say("reading frames and AprilTags: " + calPlain(t)));
+      r = await job(ev, A("POST", `events/${ev}/calibration/overhead/detect`, { source: sid, when }), t => t && say("reading frames and AprilTags: " + calPlain(t)));
       const ids = Object.keys(r.tags || {}), n = ids.length;
       if (n < 2) return fail(n ? `Only AprilTag ${ids[0]} was seen in enough frames: an automatic fit needs at least 2.` : "No AprilTags were found in the frames read.", r, noTagsNext(r.read));
       say(`${n} AprilTags found; fitting the camera…`);
@@ -452,7 +459,7 @@
         ${verdictHtml(rp)}${tagErrs(rp.items)}${r.read ? `<p class="muted small">${h(readLine(r))}</p>` : ""}
         <div class="vs-wrap" id="accv"></div>
         <div class="vs-row vw-acb">${bad ? `<button type="button" class="primary" data-sub="calib">Calibrate by hand</button><button type="button" id="acok" aria-describedby="acwhy">Save anyway</button><span id="acwhy" class="vc-whyshort small">not recommended: ${h(shortBad(rp))}</span>`
-          : `<button type="button" class="primary" id="acok">Looks right: save</button><button type="button" data-sub="calib">Fix it by hand</button>`}<button type="button" id="acno">Cancel</button><span id="acst" class="muted small" role="status"></span></div>`);
+          : `<button type="button" class="primary" id="acok">Looks right: save</button><button type="button" data-sub="calib">Fix it by hand</button>`}<button type="button" id="acre">Read another time</button>${whenSel()}<button type="button" id="acno">Cancel</button><span id="acst" class="muted small" role="status"></span></div>`);
       wire();
       showFrame("#accv", f.W, f.H, (ctx, s) => { paintOverlay(ctx, f.overlay, s, { grid: true, lines: true, tags: true }); paintDropped(ctx, rp.items, s); });
       box.querySelector("#acok").onclick = async e => {

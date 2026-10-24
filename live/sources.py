@@ -784,8 +784,9 @@ def livestream_url(doc):
     return ls[0]["url"] if ls else None
 
 
-def media_for(s, match_key=None):
-    """What to grab a frame from: a youtube URL / direct URL / local path (+ a default time)."""
+def media_for(s, match_key=None, when=None):
+    """What to grab a frame from: a youtube URL / direct URL / local path (+ a default time).  when (a recorded
+    livestream, recorded_media): "latest" | "ago:<minutes>" | "match:<key>" | None (the newest match clip)."""
     if s.get("kind") == "per_match":
         vids = s.get("videos") or {}
         vid = vids.get(match_key) if match_key else None
@@ -794,7 +795,7 @@ def media_for(s, match_key=None):
         return media_ok(vid), (s.get("sample") or {}).get("t") or 60.0
     smp = s.get("sample") or {}
     if s.get("kind") == "livestream" and s.get("_ev") and smp.get("video") in (None, "", s.get("url")):
-        p, t = recorded_media(s["_ev"], s)          # the recorder's copy: local, seekable, many frames
+        p, t = recorded_media(s["_ev"], s, when=when)   # the recorder's copy: local, seekable, many frames
         if p: return p, t
     v = smp.get("video") or s.get("url")
     return (media_ok(v) if v else None), smp.get("t")
@@ -804,11 +805,14 @@ def live_root():
     return os.environ.get("LIVE_DIR") or os.path.join(os.environ.get("MEDIA", "/media"), "live")
 
 
-def recorded_media(ev, s, root=None):
+def recorded_media(ev, s, root=None, when=None):
     """Local video of a livestream source recorded by the recorder service (MEDIA/live/<ev>/<video>/, see
     live/liveingest.py): the newest match clip (t = 60 s: mid-match, robots on the field), else the newest
     complete 60 s segment (t = 30 s).  -> (path, t) or (None, None).  Frame grabs, layout suggestions and the
-    calibration wizard use it for a livestream source: a live URL cannot be seeked."""
+    calibration wizard use it for a livestream source: a live URL cannot be seeked.
+    when: "latest" = the last 3 minutes recorded (calibrate from how the field looks NOW: 2026wamil's only clip was
+    Q1, with a raised bar moving AprilTag 1), "ago:<m>" = the 3 minutes ending m minutes ago, "match:<key>" = that
+    match's clip (clips/<qm1>.mp4 or tba-<qm1>.mp4)."""
     base = os.path.join(root or live_root(), ev)
     try:
         dirs = [os.path.join(base, d) for d in os.listdir(base)]
@@ -823,21 +827,34 @@ def recorded_media(ev, s, root=None):
             continue
         if meta.get("source") != s.get("id") and meta.get("url") != s.get("url"): continue
         best.append((meta.get("started") or os.path.getmtime(d), d))
+    when = when or ""
     for _, d in sorted(best, reverse=True):
         clips = sorted((os.path.join(d, "clips", f) for f in _ls(os.path.join(d, "clips")) if f.endswith(".mp4")),
                        key=os.path.getmtime)
         clips = [c for c in clips if os.path.getsize(c) > 100_000]
+        if when.startswith("match:"):
+            k = when[6:].split("_")[-1]
+            hit = [c for c in clips if os.path.basename(c) in (f"{k}.mp4", f"tba-{k}.mp4")]
+            if hit: return hit[-1], 60.0
+            continue
+        if when == "latest" or when.startswith("ago:"):
+            try: ago = max(0.0, min(600.0, float(when[4:]))) * 60 if when.startswith("ago:") else 0.0
+            except ValueError: ago = 0.0
+            p = recent_sample(d, end_ago=ago)
+            if p: return p, 0.0
+            continue
         if clips: return clips[-1], 60.0
         p = recent_sample(d)
         if p: return p, 90.0
     return None, None
 
 
-def recent_sample(d, seconds=180.0, max_age=120.0):
+def recent_sample(d, seconds=180.0, max_age=120.0, end_ago=0.0):
     """<d>/sample.ts: the last ~`seconds` of real recorded chunks, concatenated (a Twitch segment file is only
     24 s; frame grabs, layout suggestions and the calibration wizard want a few minutes to pick from) and remuxed
-    to start at 0 (_zero_based).  Rebuilt when older than max_age.  -> path or None."""
-    out = os.path.join(d, "sample.ts")
+    to start at 0 (_zero_based).  Rebuilt when older than max_age.  end_ago: the sample ends that many seconds before
+    the newest chunk (sample_ago<min>.ts).  -> path or None."""
+    out = os.path.join(d, "sample.ts" if not end_ago else f"sample_ago{int(end_ago // 60)}.ts")
     try:
         if time.time() - os.path.getmtime(out) < max_age and os.path.getsize(out) > 100_000: return out
     except OSError:
@@ -854,6 +871,9 @@ def recent_sample(d, seconds=180.0, max_age=120.0):
         if r.get("pts") is not None: n[r["pts"]] = n.get(r["pts"], 0) + 1
     rows = sorted((r for r in rows if r.get("pts") is not None and n[r["pts"]] == 1 and r.get("file")), key=lambda r: r["sq"])
     rows = rows[:-1]                                         # the newest chunk may still be written
+    skip = 0.0
+    while end_ago and rows and skip < end_ago:                # drop the newest end_ago seconds
+        skip += rows.pop().get("dur") or 5.0
     got, keep = 0.0, []
     for r in reversed(rows):
         if not os.path.exists(os.path.join(d, r["file"])): break
@@ -941,10 +961,14 @@ def vision_available():
         return False
 
 
+RUNNER = f"{socket.gethostname()}:{os.getpid()}"
+JOB_RESTARTED = "The worker restarted while this was running: run it again."
+
+
 def run_job(data, j, log=print):
     """Execute one job dict (claimed by the caller) and store its result/error."""
     p = os.path.join(jobs_dir(data), j["id"] + ".json")
-    j.update(state="running", started=time.time()); _jsave(p, j)
+    j.update(state="running", started=time.time(), runner=RUNNER); _jsave(p, j)
     try:
         fn = JOBS[j["kind"]]
         j["result"] = fn(data, j["ev"], j.get("params") or {}, log)
@@ -984,12 +1008,28 @@ def job_loop(data, poll=0.7, log=print, stop=None):
     """For the worker: `threading.Thread(target=sources.job_loop, args=(DATA,), daemon=True).start()`.
     Quick jobs (frames, suggestions, calibration) here; minutes-long ones (SLOW_JOBS: the auto set-up) and the
     auto set-up sweep in a second thread, so a Grab frame never waits behind them."""
+    orphans(data, log)
     threading.Thread(target=slow_job_loop, args=(data,), kwargs=dict(log=log, stop=stop), daemon=True).start()
     while not (stop and stop.is_set()):
         try:
             if not run_pending(data, log=log, exclude=SLOW_JOBS): time.sleep(poll)
         except Exception:
             traceback.print_exc(); time.sleep(5)
+
+
+def orphans(data, log=print):
+    """At start: jobs this container was running when it stopped (same host, another pid; or an older job with no
+    runner) can never finish -> error JOB_RESTARTED, so the Video page says so instead of "running" for 30 min."""
+    d = jobs_dir(data); host = RUNNER.split(":")[0]
+    for f in (sorted(os.listdir(d)) if os.path.isdir(d) else []):
+        if not f.endswith(".json"): continue
+        try: j = json.load(open(os.path.join(d, f)))
+        except (OSError, ValueError): continue
+        if j.get("state") != "running": continue
+        r = j.get("runner") or ""
+        if (r.split(":")[0] == host and r != RUNNER) or (not r and time.time() - (j.get("started") or 0) > 300):
+            j.update(state="error", error=JOB_RESTARTED, finished=time.time()); _jsave(os.path.join(d, f), j)
+            log(f"job {j.get('id')} ({j.get('kind')}) was cut off by a restart: marked failed")
 
 
 def slow_job_loop(data, poll=2.0, log=print, stop=None):
@@ -1186,7 +1226,10 @@ def job_detect(data, ev, p, log=print):
     target = p["target"]
     sid, crop, out, full = _target(data, ev, target)
     s = _source(data, ev, p.get("source") or sid)
-    media, t0 = media_for(s, p.get("match"))
+    when = p.get("when") or (f"match:{p['match']}" if p.get("match") else "latest")
+    media, t0 = media_for(s, p.get("match"), when=when)
+    if not media and when.startswith("match:"):
+        raise ValueError(f"There's no recorded clip of {when[6:].split('_')[-1].upper()} for this stream yet.")
     if not media: raise ValueError("This video has nothing to read yet (no match upload found for it).")
     live_now = _live_url(LY, s, media)
     stream = s.get("kind") == "livestream"                # recorded, live or a finished stream: cut-aways likely
@@ -1207,7 +1250,7 @@ def job_detect(data, ev, p, log=print):
     cv2.imwrite(os.path.join(_frames_dir(data, ev), f"calib_{target}_plate.png"), plate)
     np.save(os.path.join(_frames_dir(data, ev), f"calib_{target}_grays.npy"), np.stack(grays[:8]))
     kind = "live" if live_now else "recording" if stream and not LY.is_remote(media) else "video"
-    read = dict(kind=kind, n=len(fr), cutaways=n_read - len(fr), t0=round(min(ts), 1), t1=round(max(ts), 1),
+    read = dict(kind=kind, n=len(fr), cutaways=n_read - len(fr), t0=round(min(ts), 1), t1=round(max(ts), 1), when=when,
                 finished_stream=bool(stream and LY.is_remote(media) and not live_now))
     st = dict(target=target, source=s["id"], crop=list(crop) if crop else None, W=W, H=H, frame_W=FW, frame_H=FH,
               full_frame=full, out=out, times=ts, tags=tags, frame=os.path.basename(fn), at=time.time(),

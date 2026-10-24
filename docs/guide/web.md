@@ -769,7 +769,7 @@ a removed one), named "Event webcast · Twitch firstwa_red2". The second and lat
 **Calibration verdict** (Auto-calibrate, the wizard, the automatic set-up card): the fit's `verdict` (good / check /
 bad) and `verdict_reasons` from `live/calibrate.py report()` render as one box (`verdictHtml`: problems as a list, the
 passed checks in one muted line), the tags as chips with their px error (`tagErrs`; a left-out tag dashed red with how
-far off it is), and the left-out tag on the frame (`paintDropped`). Auto-calibrate's result screen: good / check →
+far off it is), and the left-out tag on the frame (`paintDropped`). Auto-calibrate reads the latest 3 minutes of a recorded stream; its result and failure screens have a "Read" picker (latest, 10 / 20 / 30 / 60 minutes ago) and "Read another time". Auto-calibrate's result screen: good / check →
 **Looks right: save** (primary) · Fix it by hand; **bad** → "This fit can't be trusted", **Calibrate by hand**
 (primary) · Save anyway (+ "not recommended: <reason>", confirm). Failures say what was read (`readLine`: "16 frames at
 2:00:00–6:48:00 of the stream's recording (the stream has ended): none had an AprilTag"), show the frame that was read,

@@ -197,7 +197,7 @@ def fake_imports(monkeypatch, found, per_frame):
 def test_detect_says_what_it_read_and_keeps_a_doubtful_first_fit(env, monkeypatch):
     fake_imports(monkeypatch, tags(), [5, 5, 4, 5, 5, 4, 5, 5])
     r = SRC.job_detect(env["data"], EV, {"target": "overhead"})
-    assert r["read"] == dict(kind="video", n=8, cutaways=0, t0=12.0, t1=150.0, finished_stream=False)
+    assert r["read"] == dict(kind="video", n=8, cutaways=0, t0=12.0, t1=150.0, finished_stream=False, when="latest")
     assert [x["n"] for x in r["frame_tags"]] == [5, 5, 4, 5, 5, 4, 5, 5] and r["frame_tags"][0]["t"] == 12.0
     assert r["report"]["verdict"] == "good" and [d["id"] for d in r["report"]["dropped_tags"]] == [1]
     st = json.loads((env["evd"] / "calib_wizard" / "overhead.json").read_text())

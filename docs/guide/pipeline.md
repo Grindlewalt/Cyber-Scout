@@ -562,7 +562,10 @@ python live/calibrate.py events/<ev>/calib_input.json events/<ev>/camera.json
    view most frames show: `_main_view` drops cut-aways).
    - Targets are `overhead`, `station_red` and `station_blue`; station targets use the inset
      crop from the layout.
-   - Where the frames come from: a recorded stream → the recorder's copy (`recorded_media`); a stream link that is
+   - Where the frames come from: a recorded stream → the recorder's copy (`recorded_media`), by `when`: `latest` (the
+     default: the last 3 minutes recorded, so a calibration follows the field as it is now; it used to read the newest
+     match clip, and 2026wamil's only clip was Q1 with a raised bar moving AprilTag 1), `ago:<m>` (the 3 minutes ending m
+     minutes back) or `match:<key>` (that clip); the Video page's "Read" picker sets it; a stream link that is
      live now → read forward; a stream link that has **ended** (yt-dlp gives the VOD of the whole day: it has a
      length, `_live_url`) → sampled across 25–85 % of it like a recording. (It used to be read from its start:
      2026wabon's frames were the first 42 s of the day, a results screen, 0 tags.)
