@@ -334,3 +334,31 @@ def test_jobs_cut_off_by_a_restart_are_marked_failed(tmp_path):
     assert st["a1"]["state"] == "error" and st["a1"]["error"] == SRC.JOB_RESTARTED     # this container, an older process
     assert st["d4"]["state"] == "error"                                                  # no runner, long ago
     assert [st[k]["state"] for k in ("b2", "c3", "e5")] == ["running", "running", "done"]
+
+
+def test_auto_mode_cuts_a_missed_match_by_tba_time(env, monkeypatch):
+    """Auto mode, no match upload, the stream analyser missed a played match (2026wamil: no running clock on the stream
+    during matches): it is cut from the recording by TBA's start time and tracked, as in livestream-only mode."""
+    import worker as W
+    doc = json.loads((env["evd"] / "sources.json").read_text())
+    (env["evd"] / "sources.json").write_text(json.dumps(SRC.set_video_mode(doc, "auto", "Coach")))
+    monkeypatch.setattr(W, "DATA", str(env["data"]))
+    monkeypatch.setattr(W, "build_site", lambda ev, tba: None)
+    T = T0 + 600.0
+    write_dir(env, "vidB", [], chunks=200, analysed_to=990.0)
+    cuts = []
+
+    def fake_cut(d, t0, t1, dst):
+        cuts.append((t0, t1)); open(dst, "wb").write(b"clip"); return 585.2
+    real = LI.tba_cut
+    monkeypatch.setattr(LI, "tba_cut", lambda ev, m, **kw: real(ev, m, now=T + 400, cut=fake_cut, measure=lambda c: None,
+                                                                 log=kw.get("log", print)))
+    calls = []
+    monkeypatch.setattr(W, "process_match", lambda ev, m, cfg, st, mc, live=None: calls.append((cfg["video_mode"], live)) or False)
+    monkeypatch.setattr(W.time, "time", lambda: T + 400)
+    W.sync(EV, FakeTBA([tba(4, score=40, actual=T)]))
+    assert len(cuts) == 1 and calls and calls[0][0] == "auto" and calls[0][1]["teams_from"] == "tba"
+    # a match with an upload is left to the upload (no cut)
+    m5 = dict(tba(5, score=40, actual=T), videos=[{"type": "youtube", "key": "abcdefghijk"}])
+    W.sync(EV, FakeTBA([m5]))
+    assert len(cuts) == 1

@@ -993,6 +993,15 @@ def _live_only(lv, m, played, skip):
         traceback.print_exc(); return None
 
 
+def _recorded(ev):
+    """The recorder has a recording of this event's stream (LIVE_DIR/<ev>/): a missed match can be cut from it."""
+    try:
+        import liveingest
+        return os.path.isdir(os.path.join(liveingest.live_dir(), ev))
+    except Exception:
+        return False
+
+
 def live_only_input(ev, lv, m, played, status):
     """Livestream-only mode: the match's clip (a record not rejected / failed twice), else a cut by TBA time
     (liveingest.tba_cut) when the stream analyser missed it.  -> (live input | None, LiveView, why-not note)."""
@@ -1199,6 +1208,13 @@ def sync(ev, tba, max_new=None, track=True):
                 break                                  # GPU full: the next match would fail the same way
             continue
         live = live_input(lv, m, played, status)       # trackable livestream clip: process now, TBA or not
+        if live is None and played and has_cam and _recorded(ev) and not (m.get("videos") or []) \
+                and not os.path.exists(os.path.join(ev_dir(ev), "matches", f"{m['key']}.json")) \
+                and status.get(m["key"], {}).get("state") != "failed":
+            # no match upload and the stream analyser missed it: cut it from the recording by TBA's start time, as
+            # livestream-only mode does (2026wamil: the stream shows no running clock during a match, so only Q1 was
+            # found and 15 played matches sat "queued" in auto mode)
+            live, lv, _ = live_only_input(ev, lv, m, played, status)
         if not has_cam and live is None: continue
         if not played and live is None: continue
         if os.path.exists(os.path.join(ev_dir(ev), "matches", f"{m['key']}.json")): continue
