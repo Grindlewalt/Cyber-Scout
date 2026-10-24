@@ -25,7 +25,11 @@ SERVICE  (compose service `recorder`, worker image: `python live/worker.py --rec
     segments of finished dirs after LIVE_KEEP_SEG_DAYS and, when the LIVE_DIR disk has less than
     LIVE_MIN_FREE_GB free, oldest segments of finished dirs first.
   * status for the UI: DATA/events/<ev>/livestream.json (served by GET /app/v1/events/<ev>/livestream),
-    rewritten every poll: state, source, video, recorder/analyser progress and lag, last matches, disk, errors.
+    rewritten every poll: state, source, video, recorder/analyser progress and lag, last matches, disk, errors;
+    also before each stream-link check ("starting": "checking the stream link (Twitch x)", expect_next_s =
+    how long that check may take, so a slow yt-dlp never looks like a dead recorder).  The service's own
+    heartbeat DATA/recorder-status.json {at, pid, events, events_at, expect_next_s, error, stopped} is written
+    every loop: the API tells "starting" (an event the service hasn't written yet) from "not running" with it.
 
 WORKER  (live/worker.py hooks; LiveView below)
   Records LIVE_DIR/<ev>/*/matches/*.json -> TBA match keys (qm<n>, sf<set>m1, f1m<n>).  Per key the LATEST
@@ -63,6 +67,10 @@ def data_dir(): return os.environ.get("DATA", "/data")
 def media_dir(): return os.environ.get("MEDIA", "/media")
 def live_dir(): return os.environ.get("LIVE_DIR") or os.path.join(media_dir(), "live")
 def status_path(ev, data=None): return os.path.join(data or data_dir(), "events", ev, "livestream.json")
+def beat_path(data=None): return os.path.join(data or data_dir(), "recorder-status.json")
+
+
+RESOLVE_TIMEOUT_S = 90       # one yt-dlp stream-link check (resolve) at most
 
 
 def _env_f(k, d): return float(os.environ.get(k, d))
@@ -544,6 +552,15 @@ def live_sources(doc, today=None, event=None):
     return out
 
 
+def stream_name(src):
+    """A source's short name for status messages: "Twitch firstwa_red2" (the label without TBA's "Event webcast · "
+    prefix and day), else its URL."""
+    src = src or {}
+    lab = re.sub(r"^Event webcast · ", "", str(src.get("label") or "").strip())
+    lab = re.sub(r", \d{4}-\d{2}-\d{2}$", "", lab)
+    return lab[:80] or str(src.get("url") or "the stream")[:120]
+
+
 def pick_source(doc, today=None, event=None):
     """The first livestream source to try (live_sources)."""
     ls = live_sources(doc, today, event)
@@ -558,7 +575,7 @@ def _norm_date(s):
         return None
 
 
-def resolve(url, timeout=90):
+def resolve(url, timeout=RESOLVE_TIMEOUT_S):
     """-> (video id, live_status) via yt-dlp (IPv4); raises when nothing is live / reachable."""
     if url.startswith("/"):
         return re.sub(r"[^A-Za-z0-9_-]", "_", os.path.basename(url))[:40], "is_live"
@@ -654,6 +671,19 @@ class Service:
         self.stopping = False
         self._ret_at = 0.0
         self._dates = {}        # ev -> (fetched, start, end, tz)
+        self.started = time.time()
+        self._events, self._events_at = [], None      # the followed events at the last step (heartbeat)
+
+    def beat(self, expect_next_s=None, error=None, stopped=False):
+        """The service's heartbeat DATA/recorder-status.json, every loop: the API answers "starting" for a stream
+        the service hasn't written a status for yet only while this is fresh, and "not running" without it.
+        expect_next_s: busy (a stream-link check) for up to this long before the next write."""
+        try:
+            _jsave(beat_path(self.data), dict(at=time.time(), pid=os.getpid(), started=self.started,
+                                              poll_s=_env_f("LIVE_POLL", "10"), events=self._events, events_at=self._events_at,
+                                              expect_next_s=expect_next_s, error=error, stopped=stopped))
+        except OSError as e:
+            self.log(f"cannot write the heartbeat ({e!r})")
 
     # ------------------------------------------------------------ config
     def wanted(self):
@@ -763,6 +793,7 @@ class Service:
 
     # ------------------------------------------------------------ main step
     def step(self):
+        self._events, self._events_at = list(worker_config(self.data)[1]), time.time()
         want, why_off, opts, key = self.wanted()
         now = time.time()
         for ev in list(self.kids):
@@ -799,7 +830,21 @@ class Service:
                               next_try=now + wait)
                     self.log(f"{ev}: recorder exited ({code}); restarting in {wait}s")
             if now < es.get("next_try", 0): continue
-            src, vid, ls, err = self.choose(ev, w.get("sources") or [src], es)
+            # say so before the (slow: yt-dlp, up to RESOLVE_TIMEOUT_S per link) check, and again before each link
+            again = es.get("state") in ("waiting", "stream_over")
+            if not again: es["state"] = "starting"
+
+            def checking(s2, i, n, es=es, again=again):
+                es.update(message=f"checking the stream link{' again' if again else ''} ({stream_name(s2)}"
+                                  f"{f'; link {i + 1} of {n}' if n > 1 else ''})",
+                          checking=dict(source=s2.get("id"), since=time.time()))
+                es["source"] = {k: s2.get(k) for k in ("id", "url", "label", "role", "origin", "auto")}
+                self.write_status(want, why_off, expect_next_s=RESOLVE_TIMEOUT_S + 30)
+                self.beat(expect_next_s=RESOLVE_TIMEOUT_S + 30)
+            try:
+                src, vid, ls, err = self.choose(ev, w.get("sources") or [src], es, on_try=checking)
+            finally:
+                es.pop("checking", None)
             es["source"] = {k: src.get(k) for k in ("id", "url", "label", "role", "origin", "auto")}
             if vid is None:
                 es.update(state="waiting", message=f"not live: {err}" if err else "not live yet",
@@ -825,13 +870,18 @@ class Service:
             except Exception as e:
                 self.log(f"retention failed: {e!r}")
 
-    def choose(self, ev, sources, es):
+    def choose(self, ev, sources, es, on_try=None):
         """Resolve each candidate livestream (yt-dlp: a channel's /live URL -> its current live video) and pick
         one: the first that is live, else the first upcoming, else the first that resolves.  Webcasts that
         resolve to the same video are one stream.  -> (source, video id | None, live_status, error) and
-        es["candidates"] for the status card."""
+        es["candidates"] for the status card.  on_try(source, i, n) runs before each resolve (status refresh)."""
         cands, seen, pick, err0 = [], {}, None, None
-        for s2 in sources[:5]:
+        for i, s2 in enumerate(sources[:5]):
+            if on_try:
+                try:
+                    on_try(s2, i, min(len(sources), 5))
+                except Exception as e:
+                    self.log(f"{ev}: status refresh failed ({e!r:.120})")
             c = dict(id=s2.get("id"), url=s2.get("url"), label=s2.get("label"),
                      auto=bool(s2.get("auto") or s2.get("origin") == "tba"))
             try:
@@ -850,7 +900,9 @@ class Service:
             if pick: break
         return pick or (sources[0], None, None, err0)
 
-    def write_status(self, want, why_off):
+    def write_status(self, want, why_off, expect_next_s=None):
+        """DATA/events/<ev>/livestream.json for every followed event.  expect_next_s: the service is busy (a
+        stream-link check) and may not write again for this long (the API's stale rule allows for it)."""
         evs = set(want) | set(self.ev_state)
         _, followed, _ = worker_config(self.data)
         for ev in evs:
@@ -861,9 +913,9 @@ class Service:
             elif ev not in want:
                 es.update(state="disabled" if why_off else "no_source",
                           message=why_off or "no enabled livestream source in sources.json")
-            st = dict(event=ev, updated=time.time(), service="recorder", live_dir=live_dir(), **{
+            st = dict(event=ev, updated=time.time(), service="recorder", live_dir=live_dir(), expect_next_s=expect_next_s, **{
                 k: es.get(k) for k in ("state", "message", "source", "video_id", "live_status", "pid", "restarts",
-                                       "last_exit", "candidates")})
+                                       "last_exit", "candidates", "checking")})
             st["next_check_in_s"] = max(0, round(es.get("next_try", 0) - time.time())) if es.get("next_try") else None
             out = (self.kids.get(ev) or {}).get("out") or es.get("out")
             if not out and es.get("video_id"):
@@ -875,6 +927,15 @@ class Service:
                     st.update(ds)
                 except Exception as e:
                     st["dir_error"] = repr(e)[:200]
+            k = self.kids.get(ev)
+            if st.get("state") == "recording" and k and not st.get("message"):
+                # the child is up (the link resolved) but no chunk of this run yet: its own HLS resolve, or an
+                # upcoming stream that hasn't started
+                at = (st.get("recorder") or {}).get("at")
+                if not at or at < k["started"] - 1:
+                    st["waiting_first_video_s"] = round(time.time() - k["started"])
+                    st["message"] = ("connected: the stream hasn't started yet; waiting for the first video"
+                                     if es.get("live_status") == "is_upcoming" else "connected, waiting for the first video")
             try:
                 du = shutil.disk_usage(live_dir() if os.path.isdir(live_dir()) else media_dir())
                 st.setdefault("disk", {}).update(free_gb=round(du.free / 1e9, 1),
@@ -927,12 +988,16 @@ class Service:
         signal.signal(signal.SIGINT, self.shutdown)
         self.log(f"service up: DATA={self.data} LIVE_DIR={live_dir()}")
         poll = _env_f("LIVE_POLL", "10")
+        self.beat()
         while not self.stopping:
+            err = None
             try:
                 self.step()
             except Exception as e:
                 import traceback; traceback.print_exc()
                 self.log(f"step failed: {e!r}")
+                err = repr(e)[:200]
+            self.beat(error=err)
             t = time.time() + poll
             while time.time() < t and not self.stopping:
                 time.sleep(0.5)
@@ -942,6 +1007,7 @@ class Service:
             self.write_status({}, None)
         except Exception:
             pass
+        self.beat(stopped=True)
         self.log("service stopped")
 
 

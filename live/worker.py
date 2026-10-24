@@ -583,6 +583,51 @@ def is_calibrated(ev):
 
 # ------------------------------------------------------------------ site JSON
 GRID = 0.5   # heatmap cell, metres
+SETUP_NOTE = "waiting for video setup (camera calibration on the Video page)"
+
+
+def row_wait(state, st, m, played, setup, live_ready, only_live, have_model):
+    """Why an untracked match isn't tracked yet, for the site row (Matches tab) -> (wait, note).
+    wait: not_played | setup | video | queued | model | retry | stream | failed, None while tracked / being tracked;
+    note: the reason in plain words (row state_note) or None.  state: the row's state (done / processing / ...);
+    st: the match's status.json entry; played: TBA posted it, the stream saw it, or it started (actual_time);
+    setup: the video setup tracking needs is missing (uploads: the upload camera, camera.json; livestream only: any
+    camera); live_ready: a trackable livestream clip is waiting (uploads mode needs no camera.json for it)."""
+    if state in ("done", "processing"): return None, None
+    sst = st.get("state") or "pending"
+    note = str(st["note"]) if st.get("note") and sst in ("waiting_live", "failed") else None
+    if sst == "failed":
+        return "failed", note or f"tracking failed after {st.get('attempts') or MAX_ATTEMPTS} tries; see the worker log"
+    if not played: return "not_played", None
+    if only_live:                                      # the reason the livestream-only loop wrote (note_wait)
+        if note and note.startswith("stream not trackable: "):
+            return "setup", f"waiting for video setup ({note[len('stream not trackable: '):]})"
+        if setup: return "setup", SETUP_NOTE
+        return "stream", note or "waiting for the livestream clip"
+    if not live_ready:
+        if setup: return "setup", SETUP_NOTE           # sync() skips it until the upload camera is calibrated
+        if not is_played(m):                           # the stream saw it; uploads are looked up once TBA posts
+            return "video", "TBA hasn't posted this match yet: its video is looked up once it does"
+    if not have_model: return "model", "robot tracking waits for the detector model"
+    if sst == "error":
+        return "retry", f"tracking failed (try {st.get('attempts') or 1} of {MAX_ATTEMPTS}); retried on the next pass"
+    if sst == "no_video" and not live_ready:
+        return "video", f"no match video yet: checked again every {max(1, round(RETRY_NO_VIDEO / 60))} min"
+    return "queued", note or "queued: tracked in match order"
+
+
+def queue_summary(rows, setup, now=None):
+    """event.json "queue": the Matches / Schedule queue header in one place.  {tracking: [keys being tracked now],
+    waiting: {wait reason: count} (row_wait codes), next: {key, short, time} the earliest unplayed match by TBA's
+    predicted (else scheduled) time, not older than 3 h | None, setup: the video setup tracking needs is missing}."""
+    now = time.time() if now is None else now
+    waiting = {}
+    for r in rows:
+        if r.get("wait"): waiting[r["wait"]] = waiting.get(r["wait"], 0) + 1
+    t = lambda r: r.get("pred") or r.get("time") or 0
+    nx = sorted((r for r in rows if r.get("wait") == "not_played" and t(r) > now - 3 * 3600), key=t)
+    return dict(tracking=[r["key"] for r in rows if r.get("state") == "processing"], waiting=waiting,
+                next=dict(key=nx[0]["key"], short=nx[0]["short"], time=t(nx[0])) if nx else None, setup=bool(setup))
 
 
 def team_num(k): return int(k[3:])
@@ -617,18 +662,25 @@ def build_site(ev, tba):
     L, W = 16.541, 8.069
     nx, ny = int(np.ceil(L / GRID)), int(np.ceil(W / GRID))
     match_rows = []
+    only_live = ev_video_mode(ev) == "livestream"
+    setup = not (is_calibrated(ev) if only_live else os.path.exists(ev_file(ev, "camera.json")))
+    have_model, now = os.path.exists(MODEL), time.time()
     for m in ms:
         k = m["key"]; r = results.get(k); st = status.get(k, {})
         row = dict(key=k, label=match_label(m), short=short_label(m), level=m["comp_level"],
-                   time=m.get("actual_time") or m.get("time"),
+                   time=m.get("actual_time") or m.get("time"), pred=m.get("predicted_time"),
                    red=dict(teams=m["alliances"]["red"]["team_keys"], score=m["alliances"]["red"]["score"]),
                    blue=dict(teams=m["alliances"]["blue"]["team_keys"], score=m["alliances"]["blue"]["score"]),
                    winner=m.get("winning_alliance"),
                    state="done" if r else "processing" if being_tracked(ev, k) else st.get("state", "pending"))
-        if not r and st.get("note") and row["state"] in ("waiting_live", "failed"):
-            row["state_note"] = str(st["note"])[:200]  # livestream-only mode: why there is no clip yet
         if lv:
             lv.decorate_row(row, m)                    # row["live"]; stream teams/score until TBA posts
+        if not r:                                      # why it isn't tracked yet: Matches tab pill + header
+            played = is_played(m) or bool(row.get("live")) or bool(m.get("actual_time") and now > m["actual_time"])
+            ready = not only_live and played and live_input(lv, m, is_played(m), status) is not None
+            w, note = row_wait(row["state"], st, m, played, setup, ready, only_live, have_model)
+            if w: row["wait"] = w
+            if note: row["state_note"] = str(note)[:200]
         if r:
             lab = ids.get(k, {})
             row["id_conf"] = round(min([lab.get(a, {}).get("confidence", 0) for a in ("red", "blue")]), 2)
@@ -808,7 +860,8 @@ def build_site(ev, tba):
         key=ev, name=info.get("name"), short_name=info.get("short_name"), year=info.get("year"),
         start=info.get("start_date"), end=info.get("end_date"), city=info.get("city"),
         state_prov=info.get("state_prov"), updated=now, n_done=n_done, n_total=len(match_rows),
-        calibrated=calibrated, needs_setup=not calibrated, matches=match_rows, teams=team_rows,
+        calibrated=calibrated, needs_setup=not calibrated, queue=queue_summary(match_rows, setup, now),
+        matches=match_rows, teams=team_rows,
         livestream=live_summary(ev), video_mode=ev_video_mode(ev)))
     evs = jload(os.path.join(API, "events.json"), [])
     evs = [e for e in evs if e["key"] != ev] + [dict(key=ev, name=info.get("name"), short_name=info.get("short_name"),

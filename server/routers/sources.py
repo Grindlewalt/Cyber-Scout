@@ -757,15 +757,48 @@ def calib_accept(target: str, ev: str = Depends(valid_event), user: User = Depen
 
 # ------------------------------------------------------------------ livestream recorder
 LIVE_STALE_S = 60      # the recorder service rewrites the status every ~10 s
+LIVE_BUSY_MAX_S = 300  # ... or says it's busy (a stream-link check, expect_next_s) for up to this long
+LIVE_FIRST_S = 90      # no heartbeat this long after the api started (a fresh stack still starting) = not running
+_API_STARTED = time.time()
+NOT_RUNNING = "The recorder service isn't running: start the recorder container (docker compose up -d recorder)."
+
+
+def _live_limit(st):
+    """Seconds without a write before a recorder file is stale: LIVE_STALE_S, plus the busy time it announced."""
+    try:
+        busy = min(LIVE_BUSY_MAX_S, max(0.0, float(st.get("expect_next_s") or 0)))
+    except (TypeError, ValueError):
+        busy = 0.0
+    return LIVE_STALE_S + busy
+
+
+def _recorder_beat(now):
+    """The recorder service's heartbeat (DATA/recorder-status.json, written every loop by live/liveingest.py) ->
+    (beat dict | None, fresh: bool).  A clean stop writes stopped: true."""
+    try:
+        hb = json.load(open(os.path.join(cfg.DATA, "recorder-status.json")))
+        at = float(hb.get("at") or 0)
+    except (OSError, ValueError, TypeError, AttributeError):
+        return None, False
+    return hb, at > 0 and not hb.get("stopped") and now - at <= _live_limit(hb)
+
+
+def _ago(s):
+    s = max(0, int(s))
+    return f"{s} s" if s < 90 else f"{round(s / 60)} min" if s < 5400 else f"{s / 3600:.1f} h"
 
 
 @router.get("/events/{ev}/livestream", summary="Livestream recorder status (viewer+)")
 def livestream_status(ev: str = Depends(valid_event), user: User = Depends(require_role("viewer"))):
     """What the recorder service (compose service `recorder`, live/liveingest.py) is doing for this event:
-    state (recording / waiting / stream_over / idle / error / no_source / disabled / stopped), the source and
-    video, recorder + analyser progress (behind_live_s, analyser.behind_chunks x 5 s), the last detected
+    state (starting / recording / waiting / stream_over / idle / error / no_source / disabled / not_running), the
+    source and video, recorder + analyser progress (behind_live_s, analyser.behind_chunks x 5 s), the last detected
     match and recent ones (teams, score, flags, clip URL under /media/), disk use, recent errors, and whether
-    the stream can be tracked (tracking.ok / note).  Written to DATA/events/<ev>/livestream.json."""
+    the stream can be tracked (tracking.ok / note).  Written to DATA/events/<ev>/livestream.json.
+    No file yet: starting while the service's heartbeat (DATA/recorder-status.json) is fresh (it picks the stream
+    up on its next loop), else not_running.  stale: no write for 60 s plus the time the service said it would be
+    busy (expect_next_s: a slow stream-link check)."""
+    now = time.time()
     st = None
     try:
         st = json.load(open(os.path.join(_evd(ev), "livestream.json")))
@@ -777,14 +810,46 @@ def livestream_status(ev: str = Depends(valid_event), user: User = Depends(requi
             configured = SRC.livestream_url(_doc(ev))
         except Exception:
             configured = None
-    if not st:
-        return dict(event=ev, state="not_running" if configured else "no_source", configured_url=configured,
-                    stale=True, message="no status from the recorder service yet" if configured else
-                    "no enabled livestream source (add one on the Video page)")
-    age = time.time() - float(st.get("updated") or 0)
-    st.update(event=ev, configured_url=configured, age_s=round(age, 1), stale=age > LIVE_STALE_S)
-    if st["stale"] and st.get("state") in ("recording", "waiting", "starting"):
-        st["message"] = f"recorder service not reporting for {age:.0f}s (is the `recorder` container running?)"
+    hb, hb_ok = _recorder_beat(now)
+    seen = float(hb.get("at") or 0) or None if hb else None
+    if not isinstance(st, dict) or not st:
+        if not configured:
+            return dict(event=ev, state="no_source", configured_url=None, stale=True,
+                        message="no enabled livestream source (add one on the Video page)")
+        out = dict(event=ev, configured_url=configured, stale=False, recorder_seen=seen)
+        evs = hb.get("events") if hb_ok else None
+        try:
+            conf_at = os.path.getmtime(cfg.WORKER_CONF)
+        except OSError:
+            conf_at = 0.0
+        try:                                           # the service read the current config, which doesn't follow ev
+            unfollowed = hb_ok and isinstance(evs, list) and ev not in evs and float(hb.get("events_at") or 0) > conf_at
+        except (TypeError, ValueError):
+            unfollowed = False
+        if unfollowed:
+            return dict(out, state="idle", message="The recorder records followed competitions only, and this one "
+                                                   "isn't followed.")
+        if hb_ok and hb.get("error"):
+            return dict(out, state="error", updated=seen, age_s=round(now - seen, 1),
+                        message=f"The recorder service is running but failing ({str(hb['error'])[:160]}): see "
+                                "docker compose logs recorder.")
+        if hb_ok:
+            return dict(out, state="starting", updated=seen, age_s=round(now - seen, 1),
+                        message="The recorder picks up this stream within a few seconds.")
+        if hb is None and now - _API_STARTED < LIVE_FIRST_S:
+            return dict(out, state="starting", message="The recorder service is starting.")
+        return dict(out, state="not_running", stale=True, message=NOT_RUNNING)
+    age = now - float(st.get("updated") or 0)
+    st.update(event=ev, configured_url=configured, age_s=round(age, 1), stale=age > _live_limit(st), recorder_seen=seen)
+    if st.get("state") == "stopped" and not hb_ok:
+        # the service stopped cleanly (its last word for this stream): it isn't recording anything now
+        st.update(state="not_running", service_state="stopped", stale=True, message=NOT_RUNNING)
+    elif st["stale"] and st.get("state") in ("recording", "waiting", "starting"):
+        err = f" (its last error: {str(hb['error'])[:120]})" if hb_ok and hb.get("error") else ""
+        st["message"] = (f"the recorder service is running but hasn't reported this stream for {_ago(age)}{err}: see "
+                         "docker compose logs recorder" if hb_ok else
+                         f"recorder service not reporting for {_ago(age)}: start the recorder container "
+                         "(docker compose up -d recorder)")
     return st
 
 

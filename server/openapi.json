@@ -3018,7 +3018,7 @@
      "sources"
     ],
     "summary": "Livestream recorder status (viewer+)",
-    "description": "What the recorder service (compose service `recorder`, live/liveingest.py) is doing for this event:\nstate (recording / waiting / stream_over / idle / error / no_source / disabled / stopped), the source and\nvideo, recorder + analyser progress (behind_live_s, analyser.behind_chunks x 5 s), the last detected\nmatch and recent ones (teams, score, flags, clip URL under /media/), disk use, recent errors, and whether\nthe stream can be tracked (tracking.ok / note).  Written to DATA/events/<ev>/livestream.json.",
+    "description": "What the recorder service (compose service `recorder`, live/liveingest.py) is doing for this event:\nstate (starting / recording / waiting / stream_over / idle / error / no_source / disabled / not_running), the\nsource and video, recorder + analyser progress (behind_live_s, analyser.behind_chunks x 5 s), the last detected\nmatch and recent ones (teams, score, flags, clip URL under /media/), disk use, recent errors, and whether\nthe stream can be tracked (tracking.ok / note).  Written to DATA/events/<ev>/livestream.json.\nNo file yet: starting while the service's heartbeat (DATA/recorder-status.json) is fresh (it picks the stream\nup on its next loop), else not_running.  stale: no write for 60 s plus the time the service said it would be\nbusy (expect_next_s: a slow stream-link check).",
     "operationId": "livestream_status_app_v1_events__ev__livestream_get",
     "parameters": [
      {

@@ -250,3 +250,90 @@ def test_service_status_files(env, monkeypatch):
     st = json.load(open(evd / "livestream.json"))
     assert st["state"] == "stream_over" and st["video_id"] == "vidA"
     assert st["last_match"]["key"] == f"{EV}_qm1" and st["matches"]["n"] == 1
+
+
+def _followed_stream(env, label="Twitch firstwa_red2"):
+    evd = env["data"] / "events" / EV
+    (env["data"] / "config").mkdir(exist_ok=True)
+    (env["data"] / "config" / "worker.json").write_text(json.dumps({"events": [EV]}))
+    (evd / "sources.json").write_text(json.dumps({"sources": [dict(id="url-abc", kind="livestream", origin="admin",
+                                                                   url="https://www.twitch.tv/firstwa_red2", label=label,
+                                                                   enabled=True)]}))
+    return evd
+
+
+def test_service_says_starting_before_the_link_check(env, monkeypatch):
+    """A new stream: the status says "starting: checking the stream link (...)" before the (slow) yt-dlp check, with
+    the time that check may take (the API's stale rule allows for it), and the service heartbeat is written."""
+    evd = _followed_stream(env, label="Event webcast · Twitch firstwa_red2, 2026-10-24")
+    monkeypatch.setenv("LIVE_ANY_DATE", "1")
+    seen = []
+
+    def slow_resolve(url, timeout=90):
+        seen.append((json.load(open(evd / "livestream.json")), json.load(open(env["data"] / "recorder-status.json"))))
+        raise RuntimeError("firstwa_red2 is offline")
+    monkeypatch.setattr(LI, "resolve", slow_resolve)
+    s = LI.Service(str(env["data"]), log=lambda *a: None)
+    s.step()
+    st, hb = seen[0]
+    assert st["state"] == "starting" and st["message"] == "checking the stream link (Twitch firstwa_red2)"
+    assert st["expect_next_s"] == LI.RESOLVE_TIMEOUT_S + 30 and st["checking"]["source"] == "url-abc"
+    assert hb["expect_next_s"] == LI.RESOLVE_TIMEOUT_S + 30 and hb["events"] == [EV] and not hb["stopped"]
+    st = json.load(open(evd / "livestream.json"))                 # after the check: waiting, no busy time
+    assert st["state"] == "waiting" and "offline" in st["message"] and st["expect_next_s"] is None
+    assert "checking" not in st or st["checking"] is None
+    s.ev_state[EV]["next_try"] = 0                               # the re-check of a waiting stream stays "waiting"
+    seen.clear()
+    s.step()
+    assert seen[0][0]["state"] == "waiting" and seen[0][0]["message"] == "checking the stream link again (Twitch firstwa_red2)"
+
+
+class _Proc:
+    pid = 4242
+    def poll(self): return None
+
+
+def test_service_recording_waits_for_the_first_video(env, monkeypatch):
+    """The recorder child is up but no chunk of this run yet: "connected, waiting for the first video"."""
+    import time as _t
+    evd = _followed_stream(env)
+    monkeypatch.setenv("LIVE_ANY_DATE", "1")
+    d = write_dir(env, "vidA", [])
+    s = LI.Service(str(env["data"]), log=lambda *a: None)
+    fh = open(d / "service.out", "ab")
+    s.kids[EV] = dict(proc=_Proc(), out=str(d), vid="vidA", source=dict(id="url-abc", url="https://www.twitch.tv/firstwa_red2"),
+                      url="https://www.twitch.tv/firstwa_red2", started=_t.time(), fh=fh)
+    (d / "recorder.json").write_text(json.dumps(dict(last_sq=10, video_id="vidA", at=_t.time() - 3600)))   # an earlier run
+    s.step()
+    st = json.load(open(evd / "livestream.json"))
+    assert st["state"] == "recording" and st["message"] == "connected, waiting for the first video"
+    assert st["waiting_first_video_s"] >= 0
+    (d / "recorder.json").write_text(json.dumps(dict(last_sq=11, video_id="vidA", at=_t.time())))           # first chunk
+    s.step()
+    st = json.load(open(evd / "livestream.json"))
+    assert st["state"] == "recording" and not st.get("message") and "waiting_first_video_s" not in st
+    fh.close()
+
+
+def test_service_heartbeat_every_loop(env, monkeypatch):
+    """run(): a heartbeat at start, after every step (with the error of a failed step) and stopped=True at the end."""
+    monkeypatch.setattr(LI.signal, "signal", lambda *a: None)
+    monkeypatch.setenv("LIVE_POLL", "0")
+    s = LI.Service(str(env["data"]), log=lambda *a: None)
+    beats = []
+
+    def step():
+        beats.append(json.load(open(env["data"] / "recorder-status.json")))
+        if len(beats) == 2: s.stopping = True
+        raise RuntimeError("boom")
+    s.step = step
+    s.run()
+    assert beats[0]["error"] is None and beats[1]["error"] and "boom" in beats[1]["error"]
+    hb = json.load(open(env["data"] / "recorder-status.json"))
+    assert hb["stopped"] is True and hb["pid"] == os.getpid()
+
+
+def test_stream_name():
+    assert LI.stream_name(dict(label="Event webcast · Twitch firstwa_red1, 2026-10-18")) == "Twitch firstwa_red1"
+    assert LI.stream_name(dict(label="", url="https://youtu.be/x")) == "https://youtu.be/x"
+    assert LI.stream_name(None) == "the stream"

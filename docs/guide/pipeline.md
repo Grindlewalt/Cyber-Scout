@@ -1792,9 +1792,20 @@ cm.
 ### 12.5 `event.json` and `events.json`
 
 `site/api/<ev>/event.json`: `key, name, short_name, year, start, end, city, state_prov, updated, n_done, n_total,
-calibrated, matches[] (rows: key, label, short, level, time, red {teams, score}, blue, winner, state
-(done|pending|processing|no_video|error|failed|live), id_conf, feed_ok, live?, score_source?), teams[] (team rows
-with q, sorted by rank), livestream` (`liveingest.status_summary`).
+calibrated, queue, matches[] (rows: key, label, short, level, time, pred (TBA predicted_time), red {teams, score},
+blue, winner, state (done|pending|processing|no_video|waiting_live|error|failed|live), wait?, state_note?, id_conf,
+feed_ok, live?, score_source?), teams[] (team rows with q, sorted by rank), livestream` (`liveingest.status_summary`).
+* **Why a match isn't tracked yet** (`row_wait`, every row without a result that isn't being tracked): `wait` =
+  `not_played` (no TBA score, no stream record, not started; no note) | `setup` "waiting for video setup (camera
+  calibration on the Video page)" (uploads mode: no `camera.json` and no trackable stream clip; livestream only: no
+  camera at all, or "waiting for video setup (<why the stream can't be tracked>)") | `video` "no match video yet:
+  checked again every 5 min" (or "TBA hasn't posted this match yet: its video is looked up once it does" for a
+  stream-scored match) | `queued` "queued: tracked in match order" | `model` "robot tracking waits for the detector
+  model" | `retry` "tracking failed (try N of 3); retried on the next pass" | `stream` (livestream only: the loop's
+  own note, e.g. "the stream analyser has not found this match") | `failed` (its note, else "tracking failed after N
+  tries; see the worker log"). `state_note` is the note (≤ 200 chars). Tests: `tests/test_worker_queue.py`.
+* `queue` (`queue_summary`): `{tracking: [keys being tracked now], waiting: {wait: count}, next: {key, short, time}
+  (earliest not_played by pred, else time; none older than 3 h) | null, setup: bool}`.
 `site/api/events.json`: `[{key, name, year, start, n_done, n_total}]`, newest first.
 
 ### 12.6 Docs vs code (data contract at the top of `web/app.js`)
@@ -1983,10 +1994,23 @@ every `LIVE_POLL` (10 s):
   30 s .. 10 min), `idle` (outside dates), `no_source`, `disabled`, `stopped`. Plus `dir_status`: recorder/analyser
   sq and lag (`behind_live_s`), recent matches, `last_match`, disk (`seg_gb`, `clips_gb`, `free_gb`,
   `budget_gb`, `min_free_gb`), last error lines, `tracking {ok, note}`.
+* **Start-up is said, not guessed**: before each stream-link check (`choose` → `resolve`, yt-dlp, up to
+  `RESOLVE_TIMEOUT_S` = 90 s per link, up to 5 links) the status is rewritten: `starting` "checking the stream link
+  (Twitch firstwa_red2)" (a re-check of a `waiting` / `stream_over` stream keeps its state: "checking the stream link
+  again (…)"; several links: "…; link 2 of 3"), `checking {source, since}`, and `expect_next_s` = 120 (every followed
+  event's file gets it, so a slow check never makes any of them look stale). `recording` before the first chunk of
+  this run (`recorder.json` `at` older than the child's start): message "connected, waiting for the first video"
+  ("connected: the stream hasn't started yet; …" for an upcoming stream) and `waiting_first_video_s`.
+* **Heartbeat** `DATA/recorder-status.json` `{at, pid, started, poll_s, events (followed, read at events_at),
+  expect_next_s, error (the last step's exception), stopped}`: at start, after every step, before every link check,
+  and `stopped: true` on a clean stop.
 * The API (`server/routers/sources.py`, `GET /app/v1/events/<ev>/livestream`) serves this file with
-  `configured_url`, `age_s` and `stale` added; with no file it answers `not_running` (a livestream source is
-  configured) or `no_source`, and a stale (`age_s > LIVE_STALE_S`) `recording`/`waiting`/`starting` state keeps its state but gets the
-  message "recorder service not reporting for Ns (is the `recorder` container running?)".
+  `configured_url`, `age_s`, `recorder_seen` and `stale` added (stale: `age_s > LIVE_STALE_S` (60) + the file's
+  `expect_next_s`, at most + 300 s). With no file: `starting` while the heartbeat is fresh ("The recorder picks up
+  this stream within a few seconds."), `not_running` without one ("The recorder service isn't running: start the
+  recorder container (docker compose up -d recorder)."), or `no_source`; a stale `recording`/`waiting`/`starting`
+  state keeps its state with "recorder service not reporting for N: start the recorder container …" (or "…running
+  but hasn't reported this stream…" when the heartbeat is fresh). Full rules: `server.md` §7.8.
 * Service retention (every 5 min): segments of finished dirs deleted after `LIVE_KEEP_SEG_DAYS` (2 days), and
   oldest first while the `LIVE_DIR` disk has less than `LIVE_MIN_FREE_GB` (30) free.
 
@@ -2024,7 +2048,9 @@ Tests: `tests/test_liveingest.py`: `test_record_keys`, `test_latest_valid_record
 `test_trackable_needs_field_box_and_calibration`, `test_for_processing_teams_and_lineup_check`,
 `test_fast_results_rows_and_synth`, `test_pick_source`, `test_process_prefers_trusted_livestream_start`,
 `test_worker_sync_processes_live_clips_before_tba`, `test_worker_sync_untrackable_stream_waits_for_uploads`,
-`test_service_status_files`. `server/tests/test_livestream.py` covers the status endpoint.
+`test_service_status_files`, `test_service_says_starting_before_the_link_check`,
+`test_service_recording_waits_for_the_first_video`, `test_service_heartbeat_every_loop`.
+`server/tests/test_livestream.py` covers the status endpoint (starting / not_running / slow check / stopped).
 
 ### 14.4b Livestream-only mode (TBA-time cut)
 

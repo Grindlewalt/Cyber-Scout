@@ -597,12 +597,22 @@ than 1 h with no runner are marked `error: expired`. States: `queued -> running 
 | GET | `/events/{ev}/jobs/{jid}` | admin | job state/result (`params` removed); adds a `hint` when a vision job has waited > 20 s with no inline runner |
 | GET | `/events/{ev}/livestream` | viewer+ | recorder status (below) |
 
-**Livestream status** (`GET /events/{ev}/livestream`): reads `livestream.json`. With no file:
-`{state: "not_running"}` if an enabled livestream source exists, else `{state: "no_source"}`, plus
-`configured_url`, `stale: true`, `message`. With a file: its content plus `event`, `configured_url`,
-`age_s`, `stale` (`age > 60 s`); a stale `recording` / `waiting` / `starting` state gets a "recorder service not
-reporting" message. Recorder states include `recording, waiting, stream_over, idle, error, no_source, disabled,
-stopped`.
+**Livestream status** (`GET /events/{ev}/livestream`): reads `livestream.json` and the recorder service's heartbeat
+`DATA/recorder-status.json` (`{at, pid, events, events_at, expect_next_s, error, stopped}`, written every loop by
+`live/liveingest.py`; fresh = written within 60 s + its `expect_next_s`, not `stopped`). No enabled livestream
+source: `{state: "no_source"}`. A source but no file yet (the service picks it up on its next loop): fresh heartbeat →
+`starting` "The recorder picks up this stream within a few seconds." (`error` with its error when the heartbeat
+carries one; `idle` "…this one isn't followed" when the service has read the current `worker.json` and the event
+isn't in it); no heartbeat while the api is < 90 s old → `starting` "The recorder service is starting."; else
+`not_running` "The recorder service isn't running: start the recorder container (docker compose up -d recorder)."
+(`recorder_seen` = the last heartbeat). With a file: its content plus `event`, `configured_url`, `age_s`,
+`recorder_seen` and `stale` (`age > 60 s + expect_next_s`, at most +300 s: a slow stream-link check announces its busy
+time); a stale `recording` / `waiting` / `starting` state gets "the recorder service is running but hasn't reported
+this stream for N: see docker compose logs recorder" (fresh heartbeat) or "recorder service not reporting for N: start
+the recorder container (docker compose up -d recorder)"; a `stopped` file without a fresh heartbeat becomes
+`not_running` (`service_state: "stopped"`). Recorder states include `starting, recording, waiting, stream_over, idle,
+error, no_source, disabled, stopped`, plus the API's `not_running`. (The video-mode checklist, `_readiness`, still
+uses the plain 60 s rule.)
 
 ### 7.9 Updates (`routers/update.py`, admin only)
 
