@@ -560,7 +560,7 @@ function activeKey(p) {
   const s = p[1];
   if (!s || s === "dash") return "dash";
   if (s === "t" || s === "specs") return "teams";
-  if (s === "m" || s === "a" || s === "matches") return "schedule";
+  if (s === "m" || s === "a" || s === "matches" || s === "match") return "schedule";
   if (s === "compare" || s === "picklist" || s === "defense") return "selection";
   return s;
 }
@@ -922,7 +922,7 @@ function pageLabel(p) {
   if (!p.length) return "Competitions";
   if (CS.globalRoutes[p[0]]) { const it = CS.navItems.find(i => i.global && (i.key || "") === p[0]); return it ? it.label : ""; }
   const s = p[1], a = (p[2] || "").split("?")[0];
-  if (s === "m" || s === "a") return a ? `Match ${shortKey(a)}` : "Match";
+  if (s === "m" || s === "a" || s === "match") return a ? `Match ${shortKey(a)}` : "Match";
   if (s === "t") return a ? `Team ${num(a)}` : "Team";
   const k = activeKey(p), it = CS.navItems.find(i => !i.global && i.key === k);
   return it ? it.label : EV_TABS[k] || "";
@@ -1074,6 +1074,7 @@ function routeOk(p) {
   const [, s, a, b] = p;
   switch (s) {
     case "m": case "a": return MKEY_OK.test((a || "").split("?")[0]);
+    case "match": return MKEY_OK.test(a || "") && !b;
     case "t": return TEAM_OK.test(a || "") && (!b || /^[a-z0-9_]{1,24}$/.test(b));
     case "teams": return !a || (TEAM_OK.test(a) && (!b || /^[a-z0-9_]{1,24}$/.test(b)));
     case "dash": return !a || ((a === "live" || TS_OK.test(a)) && (!b || MKEY_OK.test(b)));

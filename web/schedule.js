@@ -27,6 +27,11 @@
 .sc .spill{display:inline-block;margin-left:6px;padding:0 7px;border-radius:99px;font-size:11px;line-height:17px;border:1px solid var(--line-strong);color:var(--ink-2);white-space:nowrap;vertical-align:1px}
 .sc .spill.idle{border-style:dashed;color:var(--ink-3)}.sc .spill.warn{background:var(--caution-tint);color:var(--caution);border-color:var(--caution-line)}.sc .spill.bad{color:var(--bad);border-color:var(--bad)}.sc .spill.ok{color:var(--ink)}
 .sc .sc-qh{margin:0 0 12px;padding:8px 12px;border-radius:var(--r-p);background:var(--surface-2);font-size:var(--fs-foot);color:var(--ink-2)}.sc .sc-qh b{color:var(--ink)}
+.sc .mlink{display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;margin-left:2px;border-radius:6px;color:var(--ink-2);vertical-align:middle}.sc .mlink:hover{color:var(--ink);background:var(--surface-2)}.sc .mlink svg{width:14px;height:14px}
+.sc .mopen{justify-self:start}
+.sc.mpg .dtop{display:flex;flex-wrap:wrap;gap:12px;align-items:flex-end;justify-content:space-between}.mpg-nav{display:flex;gap:6px;flex-wrap:wrap}.mpg-nav .dbtn{display:inline-flex;align-items:center;gap:4px}.mpg-nav .dbtn svg{width:14px;height:14px}.mpg-nav .off{opacity:.45;pointer-events:none}
+.mpg-teams{display:flex;flex-wrap:wrap;align-items:center;gap:8px 12px;margin:4px 0 14px;font-size:15px}.mpg-teams .tms{display:flex;flex-wrap:wrap;gap:4px}.mpg-teams .t{font-size:15px;padding:2px 8px}.mpg-vs{color:var(--ink-3);font-size:13px}
+.sc.mpg .mx{grid-template-columns:1fr}@media (min-width:1000px){.sc.mpg .mx-r{grid-template-columns:minmax(0,1.1fr) minmax(0,1fr);align-items:start}}
 .sc .mx{padding:14px;display:grid;grid-template-columns:minmax(0,1.15fr) minmax(0,1fr);gap:18px}.sc .mx-r{display:grid;gap:12px;align-content:start;min-width:0}.sc .mx>*{min-width:0}
 .sc .vid{display:grid;gap:8px}.sc .vid video,.sc .vid iframe{width:100%;aspect-ratio:16/9;border:0;border-radius:var(--r-p);background:#000}
 .sc .vplay{display:flex;align-items:center;justify-content:center;gap:8px;aspect-ratio:16/9;border:1px solid var(--line-strong);border-radius:var(--r-p);background:var(--surface-3);color:var(--ink);cursor:pointer;font-weight:600}.sc .vplay svg{width:22px;height:22px}
@@ -92,17 +97,18 @@
     if (yt) return `<div class="vid"><button type="button" class="vplay" data-yt="${yt}" aria-label="Play the match video ${H(m.short)}">${CS.icon("play")}<span>Play match video</span></button>${link}</div>`;
     return `<div class="vid"><div class="muted small">${m.played ? "No video for this match yet." : "Video appears here after the match."}</div>${link}</div>`;
   }
-  async function fill(m, box) {
+  async function fill(m, box, big) {
     let mp = S.mp[m.key];
     if (mp === undefined) mp = S.mp[m.key] = m.mp === false ? null : await api(`${S.ev}/mp/${m.key}.json`).catch(() => null);
     const calib = await CS.mpCalib(S.ev);
     if (!box.isConnected) return;
     if (!mp || !mp.robots) {
       const b = m.breakdown;
-      box.innerHTML = `<div class="mpnote">No field plan for this match yet (older data, or this event has no tracked matches).</div>${b ? `<div class="sum">${H(b.summary || "")}</div>` : ""}${videoHtml(m, null)}`; return; }
-    box.innerHTML = `<div class="mx-f"></div><div class="mx-r"><div class="mx-p"></div>${videoHtml(m, mp)}</div>`;
+      box.innerHTML = `<div class="mpnote">No field plan for this match yet (older data, or this event has no tracked matches).</div>${b ? `<div class="sum">${H(b.summary || "")}</div>` : ""}${videoHtml(m, null)}${big ? "" : `<a class="dbtn mopen" href="#/${S.ev}/match/${m.key}">Open ${H(m.short)} on its own page</a>`}`; return; }
+    const own = big ? "" : `<a class="dbtn mopen" href="#/${S.ev}/match/${m.key}">Open ${H(m.short)} on its own page</a>`;
+    box.innerHTML = `<div class="mx-f"></div><div class="mx-r"><div class="mx-p"></div>${videoHtml(m, mp)}${own}</div>`;
     const pe = box.querySelector(".mx-p");
-    CS.matchField(box.querySelector(".mx-f"), mp, { mini: true, us: S.team, asof: S.asof, calib, onChange: st => { pe.innerHTML = CS.matchPeriods(mp, { asof: S.asof, calib, view: st.view }); } });
+    CS.matchField(box.querySelector(".mx-f"), mp, { mini: !big, us: S.team, asof: S.asof, calib, onChange: st => { pe.innerHTML = CS.matchPeriods(mp, { asof: S.asof, calib, view: st.view }); } });
     const lb = box.querySelector("[data-local]");
     if (lb) lb.onclick = () => { const v = document.createElement("video"); v.controls = true; v.autoplay = true; v.playsInline = true; v.src = lb.dataset.local; v.setAttribute("aria-label", "Match video"); lb.replaceWith(v); };
     const b = box.querySelector("[data-yt]");
@@ -132,7 +138,7 @@
     const wp = ls && m.us ? `<span class="res ${ls.winner === m.us ? "w" : ls.winner === "tie" ? "" : "l"}">${ls.winner === m.us ? "W" : ls.winner === "tie" ? "T" : "L"}</span>` : !m.played && m.breakdown ? `<b class="${m.breakdown.win_prob >= .5 ? "pos" : "neg"}">${P(m.breakdown.win_prob)}</b>` : (m.played && m.us ? `<span class="res ${m.result.winner === m.us ? "w" : m.result.winner === "tie" ? "" : "l"}">${m.result.winner === m.us ? "W" : m.result.winner === "tie" ? "T" : "L"}</span>` : "");
     const open = S.open.has(m.key), id = "d-" + m.key;
     return `<tr class="mrow exp ${open ? "open" : ""} ${S.nextKey === m.key ? "next" : ""}" id="r-${m.key}" data-k="${m.key}">
-      <td><button type="button" class="rowbtn" aria-expanded="${open}" aria-controls="${id}" aria-label="${H(m.label || m.short)}, ${open ? "hide" : "show"} the match plan"><span class="chev">${CS.icon("chevR")}</span><b>${H(m.short)}</b></button>${ours}<span class="mt">${fmtT(m.time)}</span>${pill(m)}</td>
+      <td><button type="button" class="rowbtn" aria-expanded="${open}" aria-controls="${id}" aria-label="${H(m.label || m.short)}, ${open ? "hide" : "show"} the match plan"><span class="chev">${CS.icon("chevR")}</span><b>${H(m.short)}</b></button><a class="mlink" href="#/${S.ev}/match/${m.key}" aria-label="Open ${H(m.label || m.short)} on its own page" title="Open on its own page">${CS.icon("external")}</a>${ours}<span class="mt">${fmtT(m.time)}</span>${pill(m)}</td>
       <td class="tms">${teams(m.red, "r", us)}</td><td class="tms">${teams(m.blue, "b", us)}</td>${mid}<td class="num">${wp}</td></tr>
       <tr class="det" id="${id}" ${open ? "" : "hidden"}><td colspan="6"><div class="mx" data-k="${m.key}"></div></td></tr>`;
   }
@@ -165,15 +171,49 @@
     wire(d);
   }
 
-  CS.route("schedule", async function (ev, key) {
-    css();
-    crumbs([[ev, `#/${ev}`], ["Schedule"]]);             // this page's title even if its data fails to load (MATCH-8)
+  async function loadState(ev) {
     const [d, evj] = await Promise.all([api(`${ev}/schedule.json`), api(`${ev}/event.json`).catch(() => null)]);
     const live = !d.asof && evj ? Object.fromEntries((evj.matches || []).filter(m => CS.isStream(m)).map(m => [m.key, m])) : null;
     const nextOurs = d.matches.find(m => !m.played && m.us && !(live && live[m.key]));
-    S = { ev, team: d.team, asof: d.asof || null, mp: {}, rows: Object.fromEntries(((evj && evj.matches) || []).map(m => [m.key, m])), filter: S && S.ev === ev ? S.filter : (d.matches.some(m => m.us) ? "ours" : "all"), open: new Set(S && S.ev === ev ? S.open : []), nextKey: nextOurs?.key };
+    S = { ev, team: d.team, asof: d.asof || null, mp: S && S.ev === ev ? S.mp : {}, rows: Object.fromEntries(((evj && evj.matches) || []).map(m => [m.key, m])),
+      filter: S && S.ev === ev ? S.filter : (d.matches.some(m => m.us) ? "ours" : "all"), open: new Set(S && S.ev === ev ? S.open : []), nextKey: nextOurs?.key, live };
+    return { d, evj, nextOurs };
+  }
+
+  // #/<ev>/match/<key>: one match on its own page: teams, result or prediction, the big field (Auto / Tele, Predicted / Actual),
+  // the period bars, the video and the tracking replay; previous / next match
+  CS.route("match", async function (ev, key) {
+    css();
+    crumbs([[ev, `#/${ev}`], ["Schedule", `#/${ev}/schedule`], [key.split("_").pop().toUpperCase()]]);
+    const { d, evj } = await loadState(ev);
+    const i = d.matches.findIndex(x => x.key === key), name = evj && evj.name || ev;
+    if (i < 0) {
+      crumbs([[name, `#/${ev}`], ["Schedule", `#/${ev}/schedule`], ["Match"]]);
+      $app.innerHTML = `<div class="empty"><b>No such match</b>${H(key)} isn't in this competition's schedule.<div class="acts"><a class="cmp-btn" href="#/${H(ev)}/schedule">Open the schedule</a></div></div>`;
+      return;
+    }
+    const m = d.matches[i], prev = d.matches[i - 1], next = d.matches[i + 1], us = m.us ? d.team : null;
+    crumbs([[name, `#/${ev}`], ["Schedule", `#/${ev}/schedule`], [m.label || m.short]]); $updated.textContent = d.asof ? "" : ago(d.generated);
+    const r = m.result, p = m.pred, sc = v => v == null || v < 0 ? "–" : v;
+    const res = m.played && r ? `<span class="t r ${r.winner === "red" ? "win" : ""}">${sc(r.red)}</span> – <span class="t b ${r.winner === "blue" ? "win" : ""}">${sc(r.blue)}</span>${r.rp?.red != null ? ` <span class="muted small">${r.rp.red}/${r.rp.blue} RP</span>` : ""}`
+      : p ? `<span class="muted">predicted</span> <span class="t r">${n0(p.score?.red)}</span> – <span class="t b">${n0(p.score?.blue)}</span> <span class="muted small">red wins ${P(p.p_red)}</span>` : "";
+    const nav = (x, lab) => x ? `<a class="dbtn" href="#/${H(ev)}/match/${x.key}">${lab}</a>` : `<span class="dbtn off" aria-disabled="true">${lab}</span>`;
+    $app.innerHTML = `<div class="dash sc mpg"><div class="dtop"><div><h1>${H(m.label || m.short)}</h1>
+        <div class="sub">${fmtT(m.time)} · ${pill(m)} ${res}</div></div>
+        <nav class="mpg-nav" aria-label="Other matches">${nav(prev, `${CS.icon("chevL")} ${prev ? H(prev.short) : "First"}`)}<a class="dbtn" href="#/${H(ev)}/schedule/${m.key}">Schedule</a>${nav(next, `${next ? H(next.short) : "Last"} ${CS.icon("chevR")}`)}</nav></div>
+      <div class="mpg-teams"><div class="tms">${teams(m.red, "r", us)}</div><span class="mpg-vs">vs</span><div class="tms">${teams(m.blue, "b", us)}</div></div>
+      <section class="card"><div class="mx" id="mpg-box"><div class="muted small">Loading the match plan…</div></div></section></div>`;
+    await fill(m, document.getElementById("mpg-box"), true);
+    const iv = setInterval(async () => { try { const n = await api(`${ev}/schedule.json`); if (n.generated !== d.generated) { S.mp = {}; route(false); } } catch (e) { } }, 90000);
+    cleanup.push(() => clearInterval(iv));
+  });
+
+  CS.route("schedule", async function (ev, key) {
+    css();
+    crumbs([[ev, `#/${ev}`], ["Schedule"]]);             // this page's title even if its data fails to load (MATCH-8)
+    const { d, evj, nextOurs } = await loadState(ev);
+    S.mp = {};
     if (nextOurs && !S.open.size) S.open.add(nextOurs.key);
-    S.live = live;
     // asof: built with data up to that time (a finished event), not a replay; "Latest data" until the competition is over (MATCH-12)
     const name = evj && evj.name || ev, asofTxt = d.asof ? (CS.fmtWhen ? CS.fmtWhen(d.asof, { day: true }) : new Date(d.asof * 1000).toLocaleString()) : "";
     const lab = CS.latestLabel ? CS.latestLabel(ev) : "Latest data";

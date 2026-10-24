@@ -650,6 +650,8 @@ the detector / failed; "not tracked (paused)" while paused; `state_note` as the 
 `event.json queue` ("12 of 54 matches tracked · tracking Q13 now · 3 need video setup · … · next: Q15 at 10:45"). `#/<ev>/schedule/<matchkey>` scrolls to
 that row. Polls every 90 s. Its banner uses `CS.latestLabel` ("Latest data" until the competition is over).
 
+**A match's own page** (`#/<ev>/match/<key>`, schedule.js; linked from each Schedule row's ↗ and its expanded plan): the match title, time, status pill, result (or prediction), both alliances, the big `CS.matchField` with the period bars, the video and "Full analysis and replay", and previous / Schedule / next buttons. Schedule stays the active nav item; an unknown key says "No such match".
+
 ### `matchfield.js` — the match field (`CS.matchField`, `CS.matchPeriods`, `CS.matchNote`)
 
 `CS.matchField(el, plan, {mini, us, asof})` draws one match plan (`mp/<match>.json`) top-down on a canvas in theme
