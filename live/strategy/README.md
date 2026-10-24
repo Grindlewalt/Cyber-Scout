@@ -340,3 +340,18 @@ fallback rarely applies. Inactive-hub job per match: defense (defense episode / 
 or >= 25 % opp-zone time) > ferry_neutral (>= 3 neutral-zone passes) > collect. Intake recall is about 45 %, so cycle
 counts are floors. Predictions: robot per-period made FUEL x (TBA / video ratio over earlier matches) + tower from TBA
 levels + mean fouls; shifts weighted by P(win auto) (the auto loser is active in shifts 1 and 3); range is a calibrated 80 % band.
+
+**Stand-ins (a robot with `enough: false`).** Numbers: its Statbotics EPA as of the match start (`epa.sb_asof`: auto points ->
+`auto.pts`, teleop points spread over transition / shifts / endgame with the event's shape, a shift counting half; endgame
+points -> tower; a pre-event EPA with only a total is split 25/60/15 and says so) marked `stand_in: true`,
+`stand_in_src: "statbotics"`, `basis` "Statbotics EPA (no tracked matches here)"; else the event average
+(`stand_in_src: "event_average"`); else nothing. Statbotics is fetched once per build with 6 s timeouts through
+`epa.cached_get` (1 h cache, the stale cache when the API errors; none -> event average, never an exception), no `statbotics`
+pip package. Alliance predictions with stand-ins keep `enough: false` + `missing[]` (yellow) and say in `pred.partial` how
+many robots use which source. Start spot chain: its own history -> the station's usual spot at this event (`start.stand_in`)
+-> a DEFAULT spot by station from the driver's view (`start.stand_in` + `start.default`, `basis` "default spot for station 1
+(left trench): no starts seen yet"): station 1 left trench, 2 middle, 3 right trench, x = 3.5 (blue) / 13.04 (red) (inside the
+alliance zone, ends at 4.028 / 12.513; 2026wasam's tracked starts sit at x 3.4-3.5 / 13.2), y = 0.75 / 4.03 / 7.32 for red
+(driver faces -x, left = low y) and mirrored for blue (`matchplan.default_spot`; trench lanes are y 0..1.19 and 6.88..8.07 in
+`live/field/rebuilt_rules.json`). Every robot also has `station` (1-3) and `ds.xy`, its driver station on its alliance wall
+(x = 0 blue / 16.541 red, y = 4.03 +/- 2.0 m, an assumed layout; station 1 on the driver's left).

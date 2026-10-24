@@ -68,7 +68,7 @@ def _cache_path(cache_dir, ep):
     return os.path.join(cache_dir, safe + ".json")
 
 
-def cached_get(url, cache_dir, ep, headers=None, max_age=600, offline=False, valid=None, log=None):
+def cached_get(url, cache_dir, ep, headers=None, max_age=600, offline=False, valid=None, log=None, timeout=20):
     """GET url with a JSON file cache.  Returns (data, info) where info = {"from": "net"|"cache"|None, "fetched", "error"}.
     A response that fails `valid` (e.g. Statbotics' empty {} during outages) is not cached and counts as an error."""
     p = _cache_path(cache_dir, ep)
@@ -89,7 +89,7 @@ def cached_get(url, cache_dir, ep, headers=None, max_age=600, offline=False, val
             time.sleep(MIN_INTERVAL - dt)
         _last_req[0] = time.time()
         req = urllib.request.Request(url, headers={"User-Agent": UA, "Accept": "application/json", **(headers or {})})
-        with _ipv4(), urllib.request.urlopen(req, timeout=20) as r:
+        with _ipv4(), urllib.request.urlopen(req, timeout=timeout) as r:
             data = json.load(r)
         if valid is not None and not valid(data):
             raise ValueError(f"empty/invalid response from {url}")
@@ -112,13 +112,13 @@ def _nonempty(d):
     return bool(d) and not (isinstance(d, dict) and set(d.keys()) <= {"detail"})
 
 
-def fetch_statbotics(data_dir, event, max_age=600, offline=False, log=None):
+def fetch_statbotics(data_dir, event, max_age=600, offline=False, log=None, timeout=20):
     """team_events + team_matches for the event (2-3 requests).  -> {"team_events": {team: rec}, "team_matches":
     {team: [rec sorted by time]}, "info": {...}} with empty dicts when unavailable."""
     cdir = os.path.join(data_dir, "cache", "statbotics")
     out = {"team_events": {}, "team_matches": {}, "info": {}}
     te, info = cached_get(f"{SB_BASE}/team_events?event={event}&limit=1000", cdir, f"team_events_{event}",
-                          max_age=max_age, offline=offline, valid=_nonempty, log=log)
+                          max_age=max_age, offline=offline, valid=_nonempty, log=log, timeout=timeout)
     out["info"]["team_events"] = info
     for r in te or []:
         t = r.get("team")
@@ -127,7 +127,7 @@ def fetch_statbotics(data_dir, event, max_age=600, offline=False, log=None):
     tms, off = [], 0
     while True:
         tm, info = cached_get(f"{SB_BASE}/team_matches?event={event}&limit=1000&offset={off}", cdir,
-                              f"team_matches_{event}_{off}", max_age=max_age, offline=offline, valid=_nonempty, log=log)
+                              f"team_matches_{event}_{off}", max_age=max_age, offline=offline, valid=_nonempty, log=log, timeout=timeout)
         out["info"][f"team_matches_{off}"] = info
         if not tm:
             break

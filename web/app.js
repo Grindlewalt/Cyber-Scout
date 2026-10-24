@@ -1169,7 +1169,12 @@ async function route(scroll = true) {
       const admin = CS.platform && CS.user && CS.can("admin"), stall = missing ? buildStall(admin) : "";
       const sched = ev ? `<a class="cmp-btn" href="#/${esc(ev)}/schedule">Open the schedule</a>` : "";
       // a page file the worker hasn't written (yet): an empty state for that page, not a network error
-      $app.innerHTML = !missing ? `<div class="empty err" role="alert"><b>Couldn't load this page</b>The server didn't answer as expected (${esc(e.message)}). Check the connection, then try again.
+      // a script that didn't load (a connection hiccup mid-load, e.g. the tunnel while the site restarted): its names are
+      // missing, so trying the page again can't help; reloading fetches the scripts again
+      const partial = e instanceof ReferenceError || /is not defined|is not a function/.test(e.message || "");
+      $app.innerHTML = partial ? `<div class="empty err" role="alert"><b>Part of the app didn't finish loading</b>A connection hiccup cut off one of its files, so this page can't open (${esc(e.message)}). Reload to fetch it again.
+          <div class="acts"><button type="button" class="primary" id="routereload">Reload</button></div></div>`
+        : !missing ? `<div class="empty err" role="alert"><b>Couldn't load this page</b>The server didn't answer as expected (${esc(e.message)}). Check the connection, then try again.
           <div class="acts"><button type="button" id="routeretry">Try again</button></div></div>`
         : p[1] === "m" || p[1] === "a" ? `<div class="empty"><b>${esc(lab)} wasn't tracked</b>There's no robot tracking for this match${stall ? `: ${stall}` : " yet. A match is tracked once its video is in (minutes after it's played when processing runs)."} Its score and teams are on the Schedule.
           <div class="acts">${sched}<button type="button" id="routeretry">Try again</button></div></div>`
@@ -1177,6 +1182,7 @@ async function route(scroll = true) {
           <div class="acts"><button type="button" id="routeretry">Try again</button></div></div>`;
     }
     const rb = document.getElementById("routeretry"); if (rb) rb.onclick = () => route(false);
+    const rl = document.getElementById("routereload"); if (rl) rl.onclick = () => location.reload();
   }
   done();
 }

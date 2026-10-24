@@ -216,7 +216,7 @@ def team_plan(hist, station, partners, smap):
     n_all = len(hist)
     if n_all < MIN_MATCHES:
         return dict(enough=False, n_video=n_all,
-                    why=f"only {n_all} tracked match{'es' if n_all != 1 else ''} (needs {MIN_MATCHES})")
+                    why="no tracked matches yet" if not n_all else f"only {n_all} tracked match{'es' if n_all != 1 else ''} (needs {MIN_MATCHES})")
     sel, w, how, prow = select(hist, station, partners, smap)
     wt = f", {sum(1 for x in w if x > 1)} with a current partner weighted x{PARTNER_W:g}" if prow else ""
     base = _phr(how, station, len(sel), n_all)

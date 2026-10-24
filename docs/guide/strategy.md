@@ -1020,3 +1020,8 @@ Per-match plan files for the Match Day field and the Schedule rows; see `live/st
 `.work/redesign/CONTRACT.md` for the JSON. `behavior.py` is the per-team model from earlier tracked matches (station
 conditioning, partner weighting, enough-info threshold), `matchplan.py` assembles predictions as of the match start and the
 actuals afterwards. Regenerate offline: `python -m live.strategy.matchplan DATA_DIR EVENT`.
+
+Stand-in chain for a robot without enough tracked matches: Statbotics EPA as of the match (cached, short timeouts, stale
+cache when the API is down) -> event average -> nothing; the start spot goes own history -> the station's usual spot here ->
+a default by station (1 left trench, 2 middle, 3 right trench, in the alliance starting area, `matchplan.default_spot`).
+Alliance predictions with stand-ins stay `enough: false` (yellow); every robot carries `station` and `ds` (driver station).

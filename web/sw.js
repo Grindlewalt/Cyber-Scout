@@ -32,7 +32,7 @@ self.addEventListener("install", e => {
     await Promise.all([...urls].map(async u => {
       const have = /\?v=/.test(u) && await caches.match(u);
       const res = have || await fetch(u, { cache: "no-cache", credentials: "same-origin" });
-      if (res.ok) await c.put(u, res);
+      if (res.ok && typeOk(u, res)) await c.put(u, res);
     }));
     await self.skipWaiting();
   })());
@@ -98,17 +98,21 @@ async function anyShell() {      // an older version's index.html beats nothing 
   }
   return null;
 }
+// a script / stylesheet is cached only when it is one: an error page in its place (a tunnel or proxy hiccup) would
+// otherwise be served from the cache under that versioned name until the next release
+const typeOk = (u, r) => { const ct = r.headers.get("content-type") || "", p = new URL(u, SCOPE).pathname;
+  return p.endsWith(".js") ? ct.includes("javascript") : p.endsWith(".css") ? ct.includes("css") : true; };
 async function cacheFirst(req, name) {
   const hit = await caches.match(req);
   if (hit) return hit;
   const r = await fetch(req);
-  if (r.ok && r.type === "basic") { const c = await caches.open(name); await c.put(req, r.clone()); }
+  if (r.ok && r.type === "basic" && typeOk(req.url, r)) { const c = await caches.open(name); await c.put(req, r.clone()); }
   return r;
 }
 async function networkFirst(req, name) {
   try {
     const r = await fetch(req);
-    if (r.ok) { const c = await caches.open(name); await c.put(req, r.clone()); }
+    if (r.ok && typeOk(req.url, r)) { const c = await caches.open(name); await c.put(req, r.clone()); }
     return r;
   } catch (err) {
     const hit = await caches.match(req); if (hit) return hit;

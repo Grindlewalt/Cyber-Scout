@@ -658,8 +658,12 @@ start spots, **Auto** (arrowed auto paths, points per robot, alliance auto total
 dotted transition path, collect point with a capped ring, smooth heat for the selected team only, "scores in transition
 N %", cycles / min, the inactive-shift job chip Defense / Ferry from neutral / Robber / Collect with its `basis` in a
 "?"). Played matches get Predicted | Actual (actual paths with the prediction as a ghost). Tap a team (canvas or chip)
-to isolate it. `enough: false` robots are dashed / grey with their `why`; stand-in numbers (`stand_in`) read "≈N (event
-avg)". `mp/index.json calib` (hit rates measured so far: start side, job, auto FUEL error, score-range cover) goes into
+to isolate it. `enough: false` robots keep their `why`; a robot whose start is a stand-in (`enough: false` or `start.stand_in`:
+Statbotics EPA / the station's usual spot / the default spot by station) is a **yellow dashed outline** (no fill, team number
+inside, `--nei`) instead of a solid alliance-coloured chip, and the legend and a "default / usual spot: estimate" chip on the
+robot's row say so; stand-in numbers (`stand_in`) read "≈N (Statbotics EPA)" or "≈N (event avg)" by `stand_in_src`. The six
+**driver stations** are drawn on the alliance walls (blue left, red right; tab with the station digit and the team number,
+`robot.ds.xy`, else computed from `station`; 1 = driver's left) on the big and the mini field. `mp/index.json calib` (hit rates measured so far: start side, job, auto FUEL error, score-range cover) goes into
 the "?" text and the scoreboard's track-record line. `prefers-reduced-motion` skips the path reveal.
 
 ### `teams2.js` — Teams (`#/<ev>/teams[/<team>[/<field>]]`) and the spec-sheet renderer
@@ -839,6 +843,8 @@ Tabs Teammates / Settings / Competitions / Server / Updates (the tab row scrolls
 #### Admin → Worker (`#/admin/worker`)
 
 One card per role from `GET admin/logs`: a dot (green running; amber quiet = heartbeat fresh but no line for 2 min; red
+
+**Admin → Jobs** (`#/admin/jobs`, `jobs()` in admin.js): polls `GET admin/jobs` every 3 s while visible. "Running now": one card per runner (server worker, each GPU processor, each helping Client, recorder) with a dot, what it is doing and for how long, progress bar, GPU utilisation and memory bars, link to its log (Admin → Worker). "Queued": Video-page jobs oldest first, then matches in processing order with the wait reason pill and who can take them. "Recently finished": failures highlighted with their error. Everything is escaped; theme tokens only.
 stopped = no heartbeat for 90 s), "Doing now: ... for 2 min 10 s", "last line N s ago" (ticks every second; caution after
 2 min, bad after 5), then a monospace log pane that follows the newest line until you scroll up or press Pause, a filter box
 and Copy. Polls every 3 s with `since=` while visible; stops when hidden or left. All log text is escaped; lines wrap, so it

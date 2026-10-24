@@ -15,6 +15,7 @@ import sys
 import time
 
 from . import behavior as B
+from . import epa as EPAMOD
 from .data import LEVEL, TOWER_AUTO_PTS, TOWER_TELEOP_PTS, load_tba
 
 PERIODS = B.PERIODS
@@ -22,6 +23,15 @@ LABEL = {"auto": "Auto", "transition": "Transition", "shift1": "Shift 1", "shift
          "shift4": "Shift 4", "endgame": "Endgame"}
 Z80 = 1.2816
 SD_INFLATE = 1.9      # calibrated on 2026wasam: tuned so ~80 % of 2026wasam finals fall inside lo..hi
+# Default start spots (field metres, blue wall x=0, red wall x=LEN, y 0..WID).  Robots start inside their alliance zone
+# (ends at x=4.028 / 12.513); 2026wasam's 150 tracked starts per alliance sit at x~3.4-3.5 (blue) and ~13.2 (red).  Trench lanes
+# are the y 0..1.19 and 6.88..8.07 bands (live/field/rebuilt_rules.json), so "trench" = y 0.75 / WID-0.75, "middle" = the field's
+# centre line.  Station 1 is the driver's LEFT, 3 the RIGHT; the driver stands at the alliance wall facing the field, so
+# left = low y for red (faces -x) and high y for blue (faces +x), matching scouting.py's side() (canonical low y = left).
+LEN, WID = 16.541, 8.069
+DEF_X, DEF_TRENCH_Y = 3.5, 0.75
+DS_DY = 2.0          # driver stations sit on the alliance wall centred on y=WID/2, 2.0 m apart (assumed layout)
+STATION_NAME = {1: "left trench", 2: "middle", 3: "right trench"}
 _CACHE = {}          # path -> (mtime, size, extracted records)
 
 
@@ -107,6 +117,53 @@ def _tower_hist(tba):
     return h
 
 
+def default_spot(al, station):
+    """Last-resort start spot: station 1 left trench, 2 middle, 3 right trench, in the alliance's starting area."""
+    fy = {1: DEF_TRENCH_Y, 2: WID / 2, 3: WID - DEF_TRENCH_Y}[station]      # left->right as seen by a RED driver (low y = left)
+    y = fy if al == "red" else WID - fy                                      # a blue driver faces the other way
+    return [round(LEN - DEF_X if al == "red" else DEF_X, 2), round(y, 2)]
+
+
+def driver_station(al, station):
+    """Where this station's driver stands: on the alliance wall (x=0 blue / x=LEN red), station 1 on the driver's left."""
+    fy = WID / 2 + {1: -DS_DY, 2: 0.0, 3: DS_DY}[station]
+    return dict(xy=[round(LEN if al == "red" else 0.0, 2), round(fy if al == "red" else WID - fy, 2)])
+
+
+SB_SRC = "Statbotics EPA (no tracked matches here)"
+_DUR = {"transition": 10, "shift1": 25, "shift2": 25, "shift3": 25, "shift4": 25, "endgame": 30}
+
+
+def _sb_stand(bd, stand, scale):
+    """Statbotics {auto, teleop, endgame[, total]} points -> ({period: (mean, sd)}, tower pts, auto pts) in the units
+    _predict_alliance expects (it multiplies by `scale`, which turns video-credited fuel into counted fuel; Statbotics
+    points are already counted, so they are divided by it first).  Teleop is spread over the periods with the event's
+    shape when known (else by time), a shift counting half (only one hub is active)."""
+    if not bd:
+        return None
+    tot, au, te, en = bd.get("total"), bd.get("auto"), bd.get("teleop"), bd.get("endgame")
+    split = None
+    if te is None or au is None:                       # pre-event EPA: a total only, split by generic shares
+        if tot is None:
+            return None
+        au, te, en = tot * 0.25, tot * 0.6, tot * 0.15
+        split = "total only, split 25/60/15"
+    en = en or 0.0
+    scale = {p: (v if v and v > 0.05 else 1.0) for p, v in scale.items()}
+    f = {p: (0.5 if p.startswith("shift") else 1.0) for p in _DUR}
+    c = {}
+    for p in _DUR:
+        m_ = stand.get(p, (None, None))[0]
+        c[p] = (m_ if m_ is not None else 0.0) * f[p]
+    if sum(c.values()) <= 0:
+        c = {p: _DUR[p] * f[p] for p in _DUR}
+    cs = sum(c.values())
+    bp = {"auto": (max(0.0, au) / scale["auto"], None)}
+    for p in _DUR:
+        bp[p] = (max(0.0, te) * c[p] / cs / f[p] / scale[p], None)
+    return dict(by_period=bp, tower=max(0.0, en), auto=max(0.0, au), teleop=max(0.0, te), split=split)
+
+
 def _stand_in(hist_all):
     """Event-average robot per-period (mean, sd) when a team has no model: labelled in the output, never silent."""
     out = {}
@@ -137,19 +194,24 @@ def _scale(before, tbk):
     return {p: (num[p] / den[p] if den[p] >= 20 else 1.0) for p in PERIODS}
 
 
-def _predict_alliance(robots, tower_hist, t0, scale, stand):
+def _predict_alliance(robots, tower_hist, t0, scale, stand, sbm=None):
     """robots: list of (team, plan or None).  Returns pred dict (period means as sums of the robots' means)."""
     mean = {p: 0.0 for p in PERIODS}
     var = {p: 0.0 for p in PERIODS}
     auto_fuel = auto_var = 0.0
     standins = 0
     for team, P in robots:
-        bp = P["by_period"] if P else stand
+        sb = (sbm or {}).get(team) if not P else None
+        bp = P["by_period"] if P else (sb["by_period"] if sb else stand)
         if not P:
             standins += 1
         th = [x for x in tower_hist.get(team, []) if x[0] < t0]
         ta = B._wmean([x[1] for x in th], [1] * len(th)) if th else 0.0
         te = B._wmean([x[2] for x in th], [1] * len(th)) if th else 0.0
+        if sb and not th:
+            te = sb["tower"]                                 # Statbotics' endgame points are tower points
+        if sb and ta:                                        # its auto points already include the tower's
+            bp = dict(bp, auto=(max(0.0, sb["auto"] - ta) / scale["auto"], None))
         for p in PERIODS:
             m_, s_ = bp[p]
             m_ = (m_ or 0.0) * scale[p]
@@ -225,20 +287,33 @@ def _actual_robot(rec, al):
                 inactive=dict(role=(rec.get("inactive") or {}).get("role")), collect=dict(xy=cx))
 
 
-def _robot_out(team, al, station, P, hist_n, rec_actual, stand, scale, spot=None):
-    base = dict(team=team, alliance=al, station=station, n_video=hist_n)
+def _robot_out(team, al, station, P, hist_n, rec_actual, stand, scale, spot=None, sb=None):
+    base = dict(team=team, alliance=al, station=station, ds=driver_station(al, station), n_video=hist_n)
     if not P or not P.get("enough"):
         base.update(enough=False, why=(P or {}).get("why") or "no tracked matches yet", start=None, auto=None,
                     tele=None, partners=[])
         am, asd = stand["auto"]
-        if am is not None:                    # event-average numbers the alliance prediction used: marked, not known
+        if sb:                                # Statbotics' EPA breakdown stands in for the missing model
+            b_ = SB_SRC + (f" [{sb['split']}]" if sb.get("split") else "")
+            ap_ = _r(sb["auto"], 1)
+            base["auto"] = dict(path=None, pts=dict(mean=ap_, sd=None, basis=b_), fuel=dict(mean=ap_, sd=None), routine=None,
+                                n=0, stand_in=True, basis=b_)
+            base["stand_in"] = True
+            base["stand_in_src"] = "statbotics"
+            base["epa"] = dict(auto=_r(sb["auto"], 1), teleop=_r(sb["teleop"], 1), tower=_r(sb["tower"], 1), basis=b_)
+        elif am is not None:                    # event-average numbers the alliance prediction used: marked, not known
             b_ = f"event average (no model: {base['why']})"
             base["auto"] = dict(path=None, pts=dict(mean=_r(am * scale["auto"], 1), sd=None, basis=b_),
                                 fuel=dict(mean=_r(am * scale["auto"], 1), sd=None), routine=None, n=0, stand_in=True, basis=b_)
             base["stand_in"] = True
+            base["stand_in_src"] = "event_average"
         if spot:                              # not observed for this team: the station's usual spot at this event
             base["start"] = dict(xy=_fld(spot[0], al), side=B.side_of(spot[0][1]), n=0, stand_in=True,
                                  basis=f"station {station}'s usual spot at this event ({spot[1]} starts), not observed for this team")
+        else:                                 # nothing seen: a fixed spot by station, from the driver's view
+            xy = default_spot(al, station)
+            base["start"] = dict(xy=xy, side=B.side_of(xy[1] if al == "red" else WID - xy[1]), n=0, stand_in=True, default=True,
+                                 basis=f"default spot for station {station} ({STATION_NAME[station]}): no starts seen yet")
     else:
         a = dict(P["auto"])
         a["path"] = _fpath(B.resample(a["path"], 24).tolist(), al)
@@ -265,6 +340,18 @@ def _robot_out(team, al, station, P, hist_n, rec_actual, stand, scale, spot=None
     return base
 
 
+def _load_sb(data_dir, event, log=None):
+    """Statbotics team data for stand-ins: short timeouts, the cache (even stale) when the API is down, None when there is
+    nothing; never raises, so the build never waits on Statbotics for long."""
+    try:
+        sb = EPAMOD.fetch_statbotics(data_dir, event, max_age=3600, log=log, timeout=6)
+    except Exception as e:                 # network/parse trouble must not stop the site build
+        if log:
+            log(f"[matchplan] statbotics unavailable: {e}")
+        return None
+    return sb if sb and (sb.get("team_events") or sb.get("team_matches")) else None
+
+
 def build(data_dir, event, team="frc4911", out_dir=None, log=None, tba_path=None):
     """Write mp/*.json and patch schedule.json rows (video, mp).  Returns a small stats dict."""
     t_start = time.time()
@@ -283,6 +370,7 @@ def build(data_dir, event, team="frc4911", out_dir=None, log=None, tba_path=None
     for e in (_jload(os.path.join(site, "defense.json"), {}) or {}).get("episodes", []):
         eps.setdefault(e.get("key"), []).append(e)
     info = _load_records(site, eps)
+    sb = _load_sb(data_dir, event, log)
     rows = sorted(sched["matches"], key=lambda r: (r.get("time") or 0, r["key"]))
     # per-team history, built chronologically (a record only ever sees earlier matches)
     allrecs = [(info[r["key"]]["t_start"], r["key"], info[r["key"]]["recs"]) for r in rows if r["key"] in info]
@@ -319,10 +407,16 @@ def build(data_dir, event, team="frc4911", out_dir=None, log=None, tba_path=None
             for i, tm in enumerate(teams):
                 P = B.team_plan(hist.get(tm, []), i + 1, set(teams) - {tm}, smap)
                 robots.append((tm, al, i + 1, P))
+        sbm = {}
+        for tm, al, st, P in robots:
+            if not P.get("enough") and sb:
+                x = _sb_stand(EPAMOD.sb_asof(sb, tm, t0), stand, scale)
+                if x:
+                    sbm[tm] = x
         alls = {}
         for al in ("red", "blue"):
             rr = [(tm, P if P.get("enough") else None) for tm, a, _, P in robots if a == al]
-            alls[al] = _predict_alliance(rr, th, t0, scale, stand)
+            alls[al] = _predict_alliance(rr, th, t0, scale, stand, sbm)
         A, Bp = _finish(alls["red"][0], alls["red"][1], alls["blue"][0], alls["blue"][1],
                         alls["red"][2], alls["blue"][2])
         fl = [tbk[k][a]["fouls"] for k, _ in before for a in ("red", "blue") if k in tbk and tbk[k]["played"]]
@@ -334,7 +428,7 @@ def build(data_dir, event, team="frc4911", out_dir=None, log=None, tba_path=None
         preds = {"red": A, "blue": Bp}
         ro = []
         for tm, al, st, P in robots:
-            o = _robot_out(tm, al, st, P, len(hist.get(tm, [])), cur.get(tm) if played else None, stand, scale, spots.get(st))
+            o = _robot_out(tm, al, st, P, len(hist.get(tm, [])), cur.get(tm) if played else None, stand, scale, spots.get(st), sbm.get(tm))
             ro.append(o)
             n_rob += 1
             n_enough += 1 if o["enough"] else 0
@@ -349,8 +443,19 @@ def build(data_dir, event, team="frc4911", out_dir=None, log=None, tba_path=None
         for al in ("red", "blue"):
             miss = [dict(team=o["team"], why=o["why"]) for o in ro if o["alliance"] == al and not o["enough"]]
             pr = dict(preds[al])
+            known = sum(1 for tm, a, _, P in robots if a == al and (P.get("enough") or sbm.get(tm)))
+            if not known and all(v[0] is None for v in stand.values()):
+                # nothing at all to go on (no tracked matches here, no Statbotics EPA, no event average yet): unknown, not 0
+                pr = dict(score=dict(mean=None, lo=None, hi=None), auto=dict(mean=None, lo=None, hi=None), win_p=None,
+                          periods=[dict(row, mean=None) for row in pr.get("periods") or []], unknown=True,
+                          partial="no data yet: no tracked matches here and no Statbotics EPA")
+                al_out[al] = dict(teams=r[al], enough=False, missing=miss, pred=pr,
+                                  actual=_actual_alliance(tr_rec, al) if played else None)
+                continue
             if alls[al][2]:
-                pr["partial"] = f"{alls[al][2]} robot(s) without a model use the event average"
+                nsb = sum(1 for o in ro if o["alliance"] == al and o.get("stand_in_src") == "statbotics")
+                pr["partial"] = (f"{alls[al][2]} robot(s) without a model use " +
+                                 (f"Statbotics EPA ({nsb}) / the event average ({alls[al][2] - nsb})" if nsb else "the event average"))
             al_out[al] = dict(teams=r[al], enough=not miss, missing=miss, pred=pr,
                               actual=_actual_alliance(tr_rec, al) if played else None)
         if played:
