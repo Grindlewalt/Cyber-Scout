@@ -1190,11 +1190,11 @@ def job_detect(data, ev, p, log=print):
     if not media: raise ValueError("This video has nothing to read yet (no match upload found for it).")
     live_now = _live_url(LY, s, media)
     stream = s.get("kind") == "livestream"                # recorded, live or a finished stream: cut-aways likely
-    fr, ts = _grab_many(LY, s, media, t0, int(p.get("n", 16 if stream and not live_now else 8)), 6.0)   # live: 48 s
+    fr, ts = _grab_many(LY, s, media, t0, int(p.get("n", 24 if stream and not live_now else 8)), 6.0)   # live: 48 s
     if not fr: raise ValueError("Couldn't read any frames from this video.")
     n_read = len(fr)
-    if stream and len(fr) >= 6:          # a program feed cuts away (close-ups, results screen): keep the main view
-        fr, ts = _main_view(np, cv2, fr, ts)
+    if stream and len(fr) >= 6:          # a program feed cuts away (close-ups, results screen): keep the field's view
+        fr, ts = _tag_view(np, cv2, CB, fr, ts)
     FH, FW = fr[0].shape[:2]
     if crop: fr = [f[crop[1]:crop[3], crop[0]:crop[2]] for f in fr]
     H, W = fr[0].shape[:2]
@@ -1224,6 +1224,20 @@ def job_detect(data, ev, p, log=print):
     json.dump(st, open(_wizard_path(data, ev, target), "w"))
     res["points"] = st["points_catalog"]; res["lines"] = st["lines_catalog"]
     return res
+
+
+def _tag_view(np, cv2, CB, fr, ts):
+    """Frames of the view that shows the field's AprilTags.  A program feed cuts between cameras and full-screen
+    graphics, and the most common view isn't always the field (2026wamil: the results screen filled most of a
+    two-minute sample, so the main view had 0 tags).  Tags are counted per frame and the frames that look like the
+    one with the most tags are kept; with no tags in any frame, the most common view (_main_view)."""
+    n = [len(CB.detect_tags_gray(cv2.cvtColor(f, cv2.COLOR_BGR2GRAY))) for f in fr]
+    if max(n) < 2: return _main_view(np, cv2, fr, ts)
+    th = np.stack([cv2.resize(cv2.cvtColor(f, cv2.COLOR_BGR2GRAY), (96, 54), interpolation=cv2.INTER_AREA).astype(np.float32)
+                   for f in fr])
+    d = np.abs(th - th[int(np.argmax(n))]).mean((1, 2))
+    keep = [i for i in range(len(fr)) if n[i] >= 2 or d[i] <= 12.0]
+    return [fr[i] for i in keep], [ts[i] for i in keep]
 
 
 def _main_view(np, cv2, fr, ts):
