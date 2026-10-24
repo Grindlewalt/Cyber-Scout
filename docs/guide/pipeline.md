@@ -294,7 +294,8 @@ These were added in security round 2 (commit 74e84af).
   slim, so in practice they run in the worker's `job_loop` thread (0.7 s poll).
 - `SLOW_JOBS` (`auto_setup`) never run in the API (`submit_auto_setup(inline=False)` from the router) and have their
   own runner thread, `slow_job_loop`, started by `job_loop`, so a Grab frame never waits behind one.
-- A job still queued after 1 h is marked "expired".
+- A job still queued after 1 h is marked failed with `JOB_EXPIRED` ("The worker isn't running video jobs: is it
+  running? …"; it used to say "expired (no job runner picked it up)").
 - CLI: `python live/sources.py jobs DATA [--watch]`.
 
 #### Automatic set-up of a stream (`job_auto_setup`, `accept_auto`, `auto_setup_sweep`)
@@ -311,6 +312,11 @@ These were added in security round 2 (commit 74e84af).
 2. **Media** (`setup_media` / `setup_ready`, which never builds anything — the API's media mount is read-only):
    the recorder's newest match clip of that source (`MEDIA/live/<ev>/<video>/clips/*.mp4`, analyser or TBA-time cut),
    else `recent_sample` (the last ~3 min) once `AUTO_SETUP_MIN_S` (90 s) are recorded. A `file` source: the file.
+   `recent_sample` remuxes the concatenated segments so the clock starts at 0 (`_zero_based`: `ffmpeg -c copy`,
+   video only, ~0.3 s): live segments carry the stream's clock (2026wamil's sample started at 6748 s), so
+   `dynpose.estimate` read nothing ("no locked-off view … 0 frames with tags") and PyAV frame grabs by time returned
+   the first frame every time (the wizard's 16 "frames" were one frame). `dynpose.clock0` also counts from the first
+   frame of any file whose clock starts ≥ 1 s in.
    Other kinds (YouTube VOD, per-match uploads): use Auto-calibrate.
 3. **Run.** `dynpose.auto_setup(media)` (§15.3) → `DATA/events/<ev>/auto_setup/<sid>/`: `camera_<sid>.json`,
    `layout.json`, `view_<sid>.png`, `auto_setup.json` (report), `overlay.jpg` (the card's proof image, `_draw_setup`:
@@ -551,20 +557,59 @@ python live/calibrate.py events/<ev>/calib_input.json events/<ev>/camera.json
 
 **Wizard path (any event): Video page → Calibration**
 
-1. `sources.py:job_detect` grabs about 8 frames of the target camera.
+1. `sources.py:job_detect` grabs about 8 frames of the target camera (16 of a stream, then only the frames of the
+   view most frames show: `_main_view` drops cut-aways).
    - Targets are `overhead`, `station_red` and `station_blue`; station targets use the inset
      crop from the layout.
-   - AprilTags are detected (`calibrate.py:detect_tags_frames`, tiled). A median plate is
-     saved, and a first fit runs if at least 2 tags are found.
+   - Where the frames come from: a recorded stream → the recorder's copy (`recorded_media`); a stream link that is
+     live now → read forward; a stream link that has **ended** (yt-dlp gives the VOD of the whole day: it has a
+     length, `_live_url`) → sampled across 25–85 % of it like a recording. (It used to be read from its start:
+     2026wabon's frames were the first 42 s of the day, a results screen, 0 tags.)
+   - AprilTags are detected (`calibrate.py:detect_tags_frames`, tiled; `per_frame` counts). A median plate is
+     saved, and a first fit runs (robust, below) if at least 2 tags are found. It is returned with its verdict
+     even when doubtful (it used to be dropped silently when it had any warning); a `bad` one is not kept as the
+     warm start.
+   - The result says what was read: `read {kind: live | recording | video, n, cutaways, t0, t1,
+     finished_stream}` and `frame_tags [{t, n}]` (tags per frame), so the page can say "16 frames at 2:00:00–6:48:00
+     of the stream's recording: none had an AprilTag" next to the frame itself.
    - State goes to `DATA/events/<ev>/calib_wizard/<target>.json` and frames to
      `DATA/events/<ev>/frames/calib_<target>*.{jpg,png,npy}`.
 2. `job_fit` takes tags, clicked named field points (`calibrate.py:named_points`) and clicked
    lines.
-   - It runs `wizard_fit`, then `detect_tags_predicted` to find more tags near the fit.
-   - For the overhead camera only, `refine_with_lines` uses the white centre line. That
-     refinement is kept only if the point RMS stays ≤ max(4, 1.5× before).
+   - It runs `wizard_fit(robust=True)`, then `detect_tags_predicted` to find more tags near the fit (refit kept
+     unless its verdict is worse).
+   - For the overhead camera only, `refine_with_lines` uses the white centre line. That refit is kept only when
+     `calibrate.keep_refit` allows it: the tag error stays ≤ max(1.5 px, 1.5× before) (a fit already over 1.5 px may
+     not get worse at all), the point RMS ≤ max(4, 1.5× before), and the verdict is not worse. (It used to check
+     only the point RMS, which is empty in auto mode, so a worse refit was always kept: on 2026wamil it moved the
+     grid 16 px median, 73 px max.) Not kept → `line_check` still reports how far the tape is from the fit.
    - `wizard_camera` builds the camera dict: model "wizard pinhole f,c,k1,k2,k3", a `calib`
-     block with RMS values, `crop` for stations, `field_roi` for the overhead camera.
+     block with RMS values, `verdict`, `dropped_tags`, `crop` for stations, `field_roi` for the overhead camera.
+   - Errors are sentences (`too_few`: "Not enough to fit the camera: 1 AprilTag. It needs at least 2 …"; `no_pose`:
+     "Couldn't find a camera position that fits these AprilTags and points together …").
+
+   **Robust fit and verdict** (`calibrate.py`: `wizard_fit(robust=True)`, `_leave_out`, `report`). Cameras get
+   bumped and tags get moved, so the automatic path must survive one bad tag and say plainly when a fit can't be
+   trusted.
+   - Lens freedom: pose + f, then k1; the principal point and k2 / k3 only with data that pins a lens
+     (`LENS_TAGS` 8 tags, clicked lines, or `LENS_POINTS` 6 clicked points), never the corner count alone nor the
+     automatic centre line. Without it c = the picture centre, k2 = k3 = 0.
+   - Leave-out: tag error (RMS of the tag centres) > 2 px with ≥ 4 tags → refit leaving each tag out (pairs with
+     ≥ 6; the rest must span ≥ 2 faces), fresh focal sweep each, a 300-evaluation screening budget; a tag (pair)
+     whose removal brings the error under 1.5 px and ≥ 3× down is dropped → `dropped_tags [{id, uv, off_px (vs the
+     fit without it), err_with_px, pred}]`, also listed in `items` with `dropped: true`.
+   - `verdict` good | check | bad with `verdict_reasons [{level: ok | note | check | bad, code, text}]`: tag error
+     (bad > 3 px, or > 2 px with under 4 tags; check > 1.5), clicked points (bad > 8, check > 4), clicked lines and
+     the centre line (check > 3 px), all tags on one flat face (bad), under 4 tags (check), principal point more
+     than 15 % of the width / height off the centre (bad), camera height outside `min_z`–25 m (bad; 2 m overhead,
+     0.8 m station cams), a lens that folds back inside the frame (bad) or bends the corners > 40 % (check), focal
+     outside 0.25–5 W (check). A left-out tag is a `note`. `warnings` stay, in plain words.
+   - Measured on today's 2026wamil state (Twitch firstwa_red2, a locked-off wide view): AprilTag 1 sits ≈ 160 px above
+     where the field drawings put it. The accepted fit had tags 6.5 px RMS, f 2766, principal point (1370, 1452) (below
+     the frame), k1 −0.74: now verdict `bad` (tag error, lens centre). The robust fit leaves tag 1 out: 0.48 px,
+     f 954, k1 −0.13, camera (7.0, 10.9, 6.5) m; with the centre line kept, tags 1.2 px, line 0.6 px, verdict `good`.
+     It differs from the accepted camera by 92 px median (208 max) over the carpet. Freeing c / k2 on the 4 tags fits
+     them to 0.06 px but misses the centre line by 3–4 px (vs 2.3 px fixed): over-fit.
 3. `POST /app/v1/events/<ev>/calibration/<target>/accept` (`server/routers/sources.py:calib_accept`):
    - copies the candidate to `DATA/events/<ev>/camera.json` or `station_<w>.json`;
    - backs up the old file as `.bak-<ts>`;
@@ -618,40 +663,65 @@ Accessors fall back to the **hard-coded 2026 FIRST Washington values** when no l
 Production at the time of writing has no `sources.json` or `layout.json` for 2026wasam, so the
 hard-coded defaults apply.
 
-### 2.4 Per-match pose check — `process.py:check_pose`
+### 2.4 Per-match pose check — `process.py:check_pose` → `live/camcheck.py:check_frames`
 
-The broadcast camera gets bumped. A bump mostly re-aims it rather than moving it.
+The broadcast camera gets bumped. A bump mostly re-aims it (pan / tilt of a few degrees), sometimes zooms it a
+little; it rarely moves it. The check re-aims the camera automatically and, when it can't, says so.
 
 1. Start from `camera.json` with the pose replaced by `pose_guess`. The worker passes
-   `DATA/events/<ev>/pose_latest.json`, the last verified pose, because a bump persists
-   across matches.
-2. Decode one grey frame every 6 s from t=8 s to t=170 s (about 28 frames). Skip frames whose
-   field mean is ≤ 20 (feed lost).
-3. For each tag predicted ≥ 40 px inside the frame, take an 80×80 crop, upscale it ×4, and run
-   `pupil_apriltags` (tag36h11). A detection needs hamming 0, decision margin > 15 and the
-   right id. A tag counts if it is seen in at least 3 frames; its position is the median.
-4. With fewer than 3 tags the calibration is kept (`moved_px: null`).
-5. Otherwise `moved_px` is the median reprojection error. If it is > 2.0 px,
-   `resolve_pose` runs:
-   - It fits rotation and camera centre to the tags plus the white centre line. The line is
-     extracted from a robot-free median plate (`centreline_pixels`: brightest column within
-     ±25 px of the prediction, ≥ 50 above the median) and weighted like the tags.
-   - A soft 0.25 m prior holds the position.
-   - It uses the `soft_l1` loss and re-extracts the line twice.
-6. The new pose is **applied only if** the tag error at least halves **and** the centre-line
-   score (`centreline_score`, median px offset) is ≤ max(old score, 3 px). Tags alone may all
-   sit on one side of the field; the line guards against a fit that is good there and wrong
-   elsewhere.
-7. The worker writes the pose used to `pose_latest.json` when ≥ 3 tags were found and
-   (a re-solve was applied or `moved_px` < 2.0). For livestream clips the file is
-   `pose_latest_<source>.json`.
+   `DATA/events/<ev>/pose_latest.json`, the last verified pose (incl. `K` if an earlier match found a zoom),
+   because a bump persists across matches.
+2. `process.py:pose_frames`: one grey frame every 6 s from t=8 s to t=170 s (about 28 frames). Skip frames whose
+   field mean is ≤ 20 (feed lost) and, with `view_ref`, frames of other cameras.
+3. **Windows** (the hot path, unchanged): for each tag predicted ≥ 40 px inside the frame, an 80×80 crop
+   upscaled ×4 through `pupil_apriltags` (tag36h11, hamming 0, decision margin > 15, the right id). A tag counts if
+   seen in ≥ 3 frames; its position is the median. ≥ 3 tags with a median error (`moved_px`) ≤ `OK_PX` 2 px →
+   `ok`, nothing else runs (≈2–3 s per match after the decode).
+4. **Re-aim** (`fit_all`), when the error is > 2 px:
+   - `resolve_pose` fits rotation + camera centre (0.25 m prior) to the tags plus the white centre line from a
+     robot-free median plate (`centreline_pixels`: brightest column within ±25 px of the prediction, ≥ 50 above the
+     median, weighted like the tags), `soft_l1`, line re-extracted twice;
+   - leave-one-out (≥ 4 tags, `loo_outliers`): the tag the all-tag fit explains worst is dropped only if it is
+     > 4 px off both in that fit and when the others (fitting each other ≤ 2 px) predict it — a good tag alone on
+     one side of the field fits with a vote and stays;
+   - zoom: if that fit ends > 1 px, dropped a tag, moved the camera > `SHIFT_M` 0.25 m, or the carried camera was
+     zoomed, the fit again with the focal length free (fx = fy scaled, 5 % prior, principal point and distortion
+     kept). Kept if it explains more tags, fits clearly better (< 0.6×), or needs half the shift (on 3 tags a
+     fixed-lens fit fakes a zoom by moving the camera ~0.5 m).
+   - Applied only if the tag error at least halves (or ends ≤ 1 px) **and** the centre-line score
+     (`centreline_score`) is ≤ max(old score, 3 px).
+   - A first fit on ≥ 4 tags that ends ≤ 2 px without a big shift is final (2026wasam: every re-aim). Otherwise
+     the windows run again around the new prediction to pick up more tags and the fit repeats (≤ 5 rounds).
+5. **Whole frame** (fallback, ~3–10 s): when the windows found < 3 tags, or the fit stays weak and the windows find
+   nothing new, `calibrate.detect_tags_frames` (tiled, ×3) on 8 of the frames, tags matched by id; with only those
+   tags a robust start (`robust_rotation`: closed-form rotation from all tags or the best pair). It locates tags
+   after a big bump; the windows then re-measure them at ×4.
+6. The worker writes the pose used to `pose_latest.json` when ≥ 3 tags were found and (a re-solve was applied or
+   `moved_px` < 2.0). For livestream clips the file is `pose_latest_<source>.json`.
+
+Status (in `pose` and `camera_pose`):
+
+| status | when | example `why` |
+|---|---|---|
+| `ok` | ≥ 3 tags ≤ 2 px at the carried pose | Camera checked against 5 field tags: it hasn't moved (0.8 px). |
+| `re_aimed` | applied, ≤ 2 px, on ≥ 4 tags or a shift ≤ 0.25 m | Camera moved about 20 px (1.3°) since the last match; re-aimed automatically on 5 field tags (0.4 px). (… and zoomed in 5% …, … on 4 of 5 field tags …) |
+| `unverified` | < 3 tags even in the whole frame, < 5 frames, no detector / tag layout | Only 2 field tags were visible, so the camera position couldn't be checked: positions in this match may be off if the camera moved. |
+| `drift_unfixed` | the tags say it moved and no fit brought it within 2 px (or only on 3 tags with a big shift); `applied` says whether a partial re-aim was still used | The camera moved more than it could be re-aimed (about 3.2°): run Auto-calibrate on this match's video. / The camera moved about 3.0° and could only be re-aimed to within 4.2 px: … / The camera moved about 2.5° but only 3 field tags could be used, too few to re-aim it reliably: … |
 
 Output in the match JSON:
-- `camera_pose = {rvec, tvec}` (always use it instead of `camera.json`'s pose);
-- `pose = {checked, tags, moved_px, resolved_px?, line_old_px?, line_new_px?, applied?}`.
+- `camera_pose = {rvec, tvec, K?, status, why}` (always use it instead of `camera.json`'s pose; `K` only when the
+  check found a zoom — use it instead of `camera.json`'s `K`, distortion stays);
+- `pose = {checked, tags, moved_px, resolved_px?, line_old_px?, line_new_px?, applied?, status, why, check_s,
+  outliers?, full_frame? {tags, s}, zoom?, moved_deg?, moved_m?, rounds?, few_tags?, in_match_px?}`.
+  `in_match_px`: median shift of the tags between the first and second half of the frames (a bump during the
+  match); information only.
 
-One AprilTag detector is kept for the life of the process (`_TAGDET`). `pupil_apriltags`'
-destructor segfaulted intermittently (2 in 40 runs).
+2026wasam (74 matches, carried pose rebuilt in processing order, and every match from `camera.json`): the new check
+gives the same pose as the old one on all 74 (47 `ok` untouched, 27 / 73 re-aims identical). Synthetic bumps: see
+the camcheck evaluation numbers in the commit message.
+
+One AprilTag detector is kept for the life of the process (`camcheck.tag_detector`, 4 threads, shared with
+`calibrate` for the whole-frame pass). `pupil_apriltags`' destructor segfaulted intermittently (2 in 40 runs).
 
 ---
 
@@ -2190,9 +2260,16 @@ fixed camera, `report.fixed_why` says why). `write_setup(setup, dir, sid)` write
    - `detect_tags_predicted` and a refit;
    - `refine_with_lines` on the median plate.
 
+   The fits are robust and judged like the wizard's (§2.2: a tag that doesn't line up is left out; the centre-line
+   refit only through `keep_refit`); `report.fixed` carries `verdict`, `verdict_reasons`, `dropped_tags`, `c` and the
+   per-tag `items`, and so does `state.json` → the card shows "can't be trusted" with Calibrate by hand first when the
+   verdict is `bad`. On today's 2026wamil recording (3 min, CPU, 3.5–4.5 min): before, "0 frames with tags"; now the
+   fixed camera (tag 1 left out, ≈ 160 px off), 1.1–1.2 px, centre line 0.4–0.5 px, verdict `good`.
+
    The result is a camera.json (`calib.method = "dynpose auto_setup"`). Its median plate is the view ref.
-   No fixed camera: `fixed_why` = "no locked-off view of the whole field …" (no static field-wide shot) or "the fixed
-   wide camera … shows N AprilTags: too few for a fit" (`wizard_fit` needs ≥ 4 correspondences from ≥ 2 tags).
+   No fixed camera: `fixed_why` = "couldn't read the recording: no video frames could be decoded from it …" (0
+   samples), "no locked-off view of the whole field … (N of M frames with tags)" (no static field-wide shot) or "the
+   fixed wide camera … shows N AprilTags: too few for a fit (it needs at least 2)".
 4. **Field box:** the projected field ROI above the score bar.
 5. **Clock:** the clock box of the 2026 FIRST scoreboard layout on air (`livestream.detect_geometry` over the 16
    frames, ≥ 20 %: top-centre or bottom bar, scaled to W×H); else `suggest_clock` on 10 s of 10 Hz frames from

@@ -669,11 +669,14 @@ until `done` / `error`. Frames are loaded as images from `app/v1/…/frame.jpg?t
    `station_red`, `station_blue`, `clock`, `scoreboard`, `mask`, `inset` (with magnifier lens), "Load 2026 FIRST
    defaults" (wide or program variant), Save (`PUT events/<ev>/layout/<source>` with `{W, H, regions[]}`). Warns on
    leaving with unsaved boxes.
-3. **Calibration tab** (wizard) per target `overhead | station_red | station_blue`: 1 Detect tags (job: grabs a
-   frame, finds AprilTags, may draw a first fit) → 2 click named field points / line samples (magnifier, drag to
-   adjust, right-click removes; catalog from the server, defaults `DEFAULT_POINTS`/`DEFAULT_LINES` mirror
-   `live/calibrate.py`) → 3 Fit (job; residual report + overlay of grid, field lines, hubs, tags) → 4 Accept & save
-   (old file kept as backup). "Show the saved calibration" overlays the current file.
+3. **Calibration tab** (wizard) per target `overhead | station_red | station_blue`: 1 Detect tags (job: grabs
+   frames, finds AprilTags, draws the first fit with its verdict; a line above the frame says what was read and,
+   with fewer than 2 tags, what to do: `readLine` / `noTagsNext`) → 2 click named field points / line samples
+   (magnifier, drag to adjust, right-click removes; catalog from the server, defaults `DEFAULT_POINTS`/`DEFAULT_LINES`
+   mirror `live/calibrate.py`) → 3 Fit (job; the verdict box, per-tag errors, residual report + overlay of grid, field
+   lines, hubs, tags; a tag the fit left out is red, struck in the chips "✕", with a dashed ring where the other tags
+   put it) → 4 Accept & save (old file kept as backup). A `bad` verdict turns step 4 into "Save anyway" (not
+   highlighted, the reason in its tooltip and the confirm). "Show the saved calibration" overlays the current file.
 
 **Per-video cards** (the page today; the tabs above survive as Field setup sub-views and old links): one card per
 source with what it is (main / broadcast / station cam), its link, Replace / Remove, the recorder state and matches
@@ -705,6 +708,19 @@ silent switch to Livestream-only is gone; the suggestion stays a choice at the t
 events/<ev>/sources/webcasts`) not yet added are offered above the paste box in every mode, with Add (or Restore for
 a removed one), named "Event webcast · Twitch firstwa_red2". The second and later links default to "Broadcast"
 (never a station cam); one camera vocabulary everywhere (Main / wide view · Broadcast · Station cam; "Field box").
+**Calibration verdict** (Auto-calibrate, the wizard, the automatic set-up card): the fit's `verdict` (good / check /
+bad) and `verdict_reasons` from `live/calibrate.py report()` render as one box (`verdictHtml`: problems as a list, the
+passed checks in one muted line), the tags as chips with their px error (`tagErrs`; a left-out tag dashed red with how
+far off it is), and the left-out tag on the frame (`paintDropped`). Auto-calibrate's result screen: good / check →
+**Looks right: save** (primary) · Fix it by hand; **bad** → "This fit can't be trusted", **Calibrate by hand**
+(primary) · Save anyway (+ "not recommended: <reason>", confirm). Failures say what was read (`readLine`: "16 frames at
+2:00:00–6:48:00 of the stream's recording (the stream has ended): none had an AprilTag"), show the frame that was read,
+and the next step; a worker that isn't running makes Try again the main button. The automatic set-up card does the
+same with the fixed camera's verdict ("can't be trusted" pill, Calibrate by hand first, Accept anyway + confirm).
+Raw texts that still arrive (older states, job errors, the runner's queue hint) go through `calPlain` (the
+`calib-plain` block, run in node by `tests/test_calib_robust.py`): "need more correspondences", "pose initialisation
+failed", "unknown source …", "expired (no job runner picked it up)" → "The worker isn't running video jobs: is it
+running?", "waiting for the worker's video job runner" → "waiting for the worker to pick it up (is it running?)".
 **Tool errors** (yt-dlp / ffmpeg, from Auto-calibrate, Grab frame, Suggest, Detect / Fit / Accept, Discover, Check
 videos) become one plain sentence (`plainErr`: not live, not found, sign-in / bot check, unreadable link, unreachable,
 no frames) with the raw text behind a **Details** disclosure. The box editor and calibration take touch / pen

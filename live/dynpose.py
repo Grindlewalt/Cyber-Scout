@@ -982,6 +982,14 @@ def _fill(pt, recs, idx, anchors):
 
 
 # ---------------------------------------------------------------------------------------------- entry points
+def clock0(stream):
+    """Where a video's clock starts (s): estimate counts video time from there.  Concatenated live .ts segments keep
+    the stream's clock (a recorder sample started at 6748 s, so every frame was past t1 and nothing was read).
+    Under 1 s (an mp4 edit list a frame or two in) it is 0, so the samples stay those of process.detect_video."""
+    off = float(stream.start_time * stream.time_base) if stream.start_time else 0.0
+    return off if off >= 1.0 else 0.0
+
+
 def estimate(video, ref=None, view_ref=None, masks=(), t0=0.0, t1=190.0, tag_csv=CAL.TAG_CSV, log=print,
              tag_hz=TAG_HZ, keep_frames=0, return_scan=False):
     """Per-sample camera poses of `video` (samples exactly as process.detect_video takes them: 30 Hz, video time
@@ -996,21 +1004,23 @@ def estimate(video, ref=None, view_ref=None, masks=(), t0=0.0, t1=190.0, tag_csv
         log(f"  dynpose: reference camera is {ref['W']}x{ref['H']}, video {W}x{H}: ignored")
         ref = None
     scan = _Scan(W, H, ref, view_ref, masks, tag_csv, tag_hz, log, keep_frames)
+    off = clock0(s)
     n = 0; nxt = 0.0; k = -1
     for f in c.decode(s):
         k += 1
         if f.time is None: continue
-        if f.time > t1: break
-        if f.time + 1e-6 < nxt: continue
+        ft = float(f.time) - off
+        if ft > t1: break
+        if ft + 1e-6 < nxt: continue
         nxt = (n + 1) / FPS
-        if f.time >= t0:
-            scan.push(n, k, float(f.time), f.to_ndarray(format="gray"))
+        if ft >= t0:
+            scan.push(n, k, ft, f.to_ndarray(format="gray"))
         else:
-            scan.recs.append(dict(n=n, k=k, t=float(f.time), shot=-1, state="dark", H=None, tags=None, ncc=None,
+            scan.recs.append(dict(n=n, k=k, t=ft, shot=-1, state="dark", H=None, tags=None, ncc=None,
                                   refncc=None, pose=None, rms=None))
         n += 1
         if n % 1800 == 0:
-            log(f"  dynpose: {n} samples t={f.time:.0f}s shots {scan.shot + 1} ({n / (time.time() - tt):.0f}/s)")
+            log(f"  dynpose: {n} samples t={ft:.0f}s shots {scan.shot + 1} ({n / (time.time() - tt):.0f}/s)")
     c.close()
     pt = _finalize(scan, log)
     pt.info["seconds_wall"] = round(time.time() - tt, 1)
@@ -1196,10 +1206,13 @@ def auto_setup(video, t1=190.0, log=print, overlays=None, source_id=None):
     log(f"  auto_setup: program feed {feed['program_feed']} ({feed['why']})")
     shots = _static_shots(pt)
     camd, plate, field, pfit, fixed_why = None, None, None, None, None
-    if not shots:
+    if not shots and pt.n == 0:
+        fixed_why = ("couldn't read the recording: no video frames could be decoded from it (a damaged or empty file, or "
+                     "its clock doesn't start at 0)")
+    elif not shots:
         n_tagf = int(np.sum(pt.kind == TAGS))
         fixed_why = ("no locked-off view of the whole field in this clip: the cameras pan / zoom, or show too few "
-                     f"AprilTags ({n_tagf} frames with tags)")
+                     f"AprilTags ({n_tagf} of {pt.n} frames with tags)")
     if shots:
         g, fixed_why, report["static_views"] = _fixed_group(shots, pt.n)
         if g is None: shots = []
@@ -1213,38 +1226,52 @@ def auto_setup(video, t1=190.0, log=print, overlays=None, source_id=None):
         tags = CAL.detect_tags_frames(grays)
         tags = {k: v for k, v in tags.items() if not _in_masks(v["center"], overlays)}
         vec = np.r_[p0.f, 1.0, p0.cx, p0.cy, p0.D[0], 0.0, p0.rv, p0.C, 0.0]
-        pfit, rep = CAL.wizard_fit(W, H, tags, None, None, p_init=vec)
+        # robust (a tag that moved / isn't mounted is left out: calibrate.wizard_fit), as the Video page's wizard
+        pfit, rep = CAL.wizard_fit(W, H, tags, None, None, p_init=vec, robust=True)
+        out = lambda r: {d["id"] for d in r.get("dropped_tags") or []}
         if pfit is not None:                    # the wizard's second pass: tags near where the first fit puts them
             more = CAL.detect_tags_predicted(grays, pfit, W, H, have=set(tags))
             more = {k: v for k, v in more.items() if not _in_masks(v["center"], overlays)}
             if more:
-                p2, rep2 = CAL.wizard_fit(W, H, {**tags, **more}, None, None, p_init=pfit)
-                if p2 is not None: pfit, rep, tags = p2, rep2, {**tags, **more}
+                p2, rep2 = CAL.wizard_fit(W, H, {k: v for k, v in {**tags, **more}.items() if k not in out(rep)}, None, None,
+                                          p_init=pfit, robust=True, dropped=rep.get("dropped_tags") or [])
+                if p2 is not None and CAL.VERDICT_RANK[rep2["verdict"]] <= CAL.VERDICT_RANK[rep["verdict"]]:
+                    pfit, rep, tags = p2, rep2, {**tags, **more}
         if pfit is None:
             fixed_why = (f"the fixed wide camera (on air {on_air:.0%} of the clip) shows {len(tags)} AprilTag"
-                         f"{'' if len(tags) == 1 else 's'}: too few for a fit ({rep.get('error') or 'fit failed'})")
+                         f"{'' if len(tags) == 1 else 's'}: " + ("too few for a fit (it needs at least 2)" if rep.get("code") == "too_few"
+                                                               else rep.get("error") or "the fit failed"))
             report["fixed_tags"] = len(tags)
         if pfit is not None:
             plate = np.median(np.stack(ffr), 0).astype(np.uint8)
             try:
-                p2, rep2 = CAL.refine_with_lines(pfit, cv2.cvtColor(plate, cv2.COLOR_BGR2GRAY), W, H, tags)
-                if rep2 is not None and (rep2.get("tag_rms_px") or 99) <= max(1.0, 1.5 * (rep.get("tag_rms_px") or 0)):
+                gplate = cv2.cvtColor(plate, cv2.COLOR_BGR2GRAY)
+                p2, rep2 = CAL.refine_with_lines(pfit, gplate, W, H, {k: v for k, v in tags.items() if k not in out(rep)},
+                                                 dropped=rep.get("dropped_tags") or [])
+                if CAL.keep_refit(rep, rep2):
                     pfit, rep = p2, rep2
+                else:
+                    CAL.line_check(rep, pfit, gplate)
             except Exception as e:
                 log(f"  auto_setup: centre-line refinement failed ({e!r})")
             camd = CAL.wizard_camera(pfit, W, H, event=None, which="overhead", model="wizard pinhole f,c,k1,k2,k3",
                                      source=source_id, calib=dict(method="dynpose auto_setup", tag_rms_px=rep.get("tag_rms_px"),
                                                                   line_med_px=rep.get("line_med_px"), n_tags=rep.get("n_tags"),
                                                                   on_air=round(float(on_air), 3), shots=len(g),
-                                                                  warnings=rep.get("warnings"), at=time.time()))
+                                                                  warnings=rep.get("warnings"), verdict=rep.get("verdict"),
+                                                                  dropped_tags=sorted(out(rep)), at=time.time()))
             camd.pop("event", None)
             (px0, py0, px1, py1) = _picture(W, H, overlays)
             x0, y0, x1, y1 = CAMM.Camera(camd).roi()
             field = [max(x0, px0), max(y0, py0), min(x1, px1), min(y1, py1)]
             camd["field_roi"] = field
-            report["fixed"] = dict(on_air=round(float(on_air), 3), shots=len(g), tags=len(tags),
+            report["fixed"] = dict(on_air=round(float(on_air), 3), shots=len(g), tags=rep.get("n_tags"),
                                    tag_rms_px=rep.get("tag_rms_px"), line_med_px=rep.get("line_med_px"),
-                                   f=rep.get("f"), C=rep.get("C"), k1=rep.get("k1"), warnings=rep.get("warnings"))
+                                   f=rep.get("f"), c=rep.get("c"), C=rep.get("C"), k1=rep.get("k1"), warnings=rep.get("warnings"),
+                                   verdict=rep.get("verdict"), verdict_reasons=rep.get("verdict_reasons"),
+                                   dropped_tags=rep.get("dropped_tags"), centre_line_px=rep.get("centre_line_px"),
+                                   items=[dict(id=i["id"], err_px=i["err_px"], dropped=bool(i.get("dropped")))
+                                          for i in rep.get("items") or [] if i["kind"] == "tag"])
             log(f"  auto_setup: fixed camera on air {on_air:.0%} ({len(g)} shots), {len(tags)} tags, "
                 f"RMS {rep.get('tag_rms_px')} px, line {rep.get('line_med_px')} px")
     if camd is None:

@@ -360,10 +360,12 @@ used at runtime: the output is `DATA/models/robot.onnx`.
   firstwa_red1"), `display_label` (renames an old automatic name), `webcast_list` (TBA webcasts with
   added / dismissed flags, for `GET sources/webcasts`), `oembed`, `family` / `family_pattern`, `match_key_from_title`.
 - `video_config` (→ `videos.candidates` config), `station_pattern`, `livestream_url`, `media_for`, `covers`.
-- Job queue in `DATA/jobs/sources/`: `new_job`, `get_job`, `_claim`, `run_job`, `run_pending`, `job_loop`
-  (worker thread), `submit`.
-- Job kinds: `job_frame`, `job_suggest`, `job_detect`, `job_fit`, `job_overlay`, `job_discover`,
-  `job_index_playlist`.
+- Job queue in `DATA/jobs/sources/`: `new_job`, `get_job`, `_claim`, `run_job`, `run_pending` (`JOB_EXPIRED`: a
+  sentence, not "expired (no job runner …)"), `job_loop` (worker thread), `submit`.
+- Job kinds: `job_frame`, `job_suggest`, `job_detect` (`read` + `frame_tags`; the first fit with its verdict),
+  `job_fit` (robust; `keep_refit` gates the centre line), `job_overlay`, `job_discover`, `job_index_playlist`.
+- `_live_url` (a stream link that is live now; a finished stream's VOD is sampled like a recording, `_remote_duration`
+  cached a minute), `recent_sample` + `_zero_based` (the recorder sample remuxed to start at 0).
 
 **`live/layout.py`** (712 lines)
 - `Layout`, `SourceLayout`, `load`, `find` (`$LAYOUT`, then `<event dir>/layout.json`, then default),
@@ -378,9 +380,11 @@ used at runtime: the output is `DATA/models/robot.onnx`.
 **`live/calibrate.py`** (635 lines)
 - CLI fit: `init`, `residuals` (tags + straight lines), `report`.
 - Pinhole/fisheye-ish model: `fit_points`, `pack_pinhole` / `unpack_pinhole`, `proj_pinhole`, `camera_dict`.
-- Wizard back end: `detect_tags_gray`, `detect_tags_frames`, `detect_tags_predicted`, `named_points`,
-  `named_lines`, `clicked_lines`, `_init_pose` (focal sweep + SQPnP), `wizard_fit`, `refine_with_lines`,
-  `find_line_pixels`, `overlay_lines`, `wizard_camera`.
+- Wizard back end: `detect_tags_gray`, `detect_tags_frames` (`per_frame` counts), `detect_tags_predicted`,
+  `named_points`, `named_lines`, `clicked_lines`, `_init_pose` (focal sweep + SQPnP), `wizard_fit` (lens stages only
+  with lens data; `robust=True` → `_leave_out` drops a tag that doesn't line up), `report` (`verdict`,
+  `verdict_reasons`, `dropped_tags`), `keep_refit`, `line_check`, `too_few`, `refine_with_lines`, `find_line_pixels`,
+  `overlay_lines`, `wizard_camera`.
 - `load_tag_poses`, `tag_corners`.
 
 **`live/stationcam.py`** (848 lines)
@@ -458,7 +462,7 @@ Pure numpy/scipy. It reads the data root and writes site JSON. Run as `python -m
 | `sim.py` | Monte Carlo match simulator (`simulate`, `simulate_schedule`): auto → hub schedule → teleop → towers → fouls; Gamma noise + Gaussian copula. |
 | `baselines.py` | TBA-only baselines: ridge OPR (`opr_predict`), EPA-style rating (`EPA`), `Prequential` normal win probability, `S_PRIOR`. |
 | `backtest.py` | Honest backtest: every qual predicted from earlier matches only. Brier, log loss, accuracy, MAE, subsets and bootstrap CIs. |
-| `preview.py` | Match preview JSON (`build_preview`, `key_factors`, `_robot_entry`). |
+| `behavior.py` / `matchplan.py` | Match plans: per-team behaviour model (station-conditioned, partner-weighted) and the per-match `mp/<match>.json` predictions + actuals. || `preview.py` | Match preview JSON (`build_preview`, `key_factors`, `_robot_entry`). |
 | `epa.py` | EPA: `pre_event_prior` (from the teams' earlier events, TBA cached, or Statbotics), `local_epa` / `ComponentEPA` (running as-of EPA), `fetch_statbotics`, `sb_asof`, `cached_get` (IPv4, JSON cache). |
 | `rank.py` | 2026 RP rules + TBA tiebreakers; Monte Carlo rank projection. |
 | `matchday.py` | Dashboard helpers: as-of coverage, cached prequential backtest rows + footer, defense-library effect, queue card, defender pick. |
@@ -724,6 +728,7 @@ Run with `python -m pytest tests` from the repo root. They need no GPU, video or
 | `tests/test_source_urls.py` | Audit findings 2 and 4: URL normalisation, `--` before URLs, SSRF guard in `live/sources.py`; (UX fix wave) pasted links refused with a sentence / accepted, webcast names carry the channel, `probe_http` (404 / html refused, `CS_PROBE_LINKS=0`). |
 | `tests/test_auto_setup.py` | Stream auto-setup in `live/sources.py` and the per-source `program_feed` / `dynamic` flags. |
 | `tests/test_dynpose.py` | `live/dynpose.py` (a camera pose per frame from AprilTags) and its `process.py` hooks; synthetic geometry only. |
+| `tests/test_calib_robust.py` | Calibration on today's real 2026wamil tags: the moved AprilTag 1 left out (verdict good, < 0.55 px, principal point at the centre), kept in → bad with the reason, the accepted camera judged bad, a stray + moved tag (pairs), lens freedom, `keep_refit`, `line_check`; `job_detect` (`read`, `frame_tags`, a doubtful first fit kept), `job_fit`, a finished stream sampled across its length, plain job errors, the zero-based recorder sample (`ffmpeg`), and `web/sources.js` `calPlain` (`node`). |
 | `tests/test_overlay_layouts.py` | Scoreboard layouts in `live/livestream.py` (top-centre scoreboard, bottom score bar). Uses `tests/fixtures/scorebar_*.jpg`. |
 | `tests/test_process_only.py` | `live/worker.py --process-only`: claim + track only, per-match state files, delegation, dynamic per source. |
 | `tests/test_cstrain.py` | Local training (`live/train/cstrain.py`, `cstrain_core.py`): ids, hash + near-duplicate filter, split by match, WBF, uncertainty, label priority (review > import > auto, doubtful auto frames train-only), YOLO text, mAP / P / R, `build` end to end on a synthetic project (no torch / video), a reviewer's `view` correction winning over the index. |

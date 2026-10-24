@@ -10,7 +10,7 @@ Output: camera JSON {W,H,K,dist,rvec,tvec,...} consumed by live/camera.py.
 Model: OpenCV pinhole + radial k1..k3 (+ tangential).  Lines carry most of the
 lens information; the tags pin pose and scale.
 """
-import json, sys, csv, numpy as np, cv2
+import json, sys, csv, itertools, numpy as np, cv2
 from scipy.optimize import least_squares
 
 IN = 0.0254
@@ -196,8 +196,9 @@ def camera_dict(p, W, H, **extra):
 # Calibration wizard (server/routers/sources.py + web/sources.js).  Additive: nothing above uses it.
 #   1. detect_tags_frames(grays)          AprilTags anywhere in a region (tiled, upscaled), median over frames
 #   2. NAMED_POINTS                       field landmarks the user can click when tags are not enough
-#   3. wizard_fit(W, H, tags, points)     focal sweep + PnP init -> staged least squares (pose, f, k1, c, k2)
-#      refine_with_lines(...)             + the white centre line found near its predicted position
+#   3. wizard_fit(W, H, tags, points)     focal sweep + PnP init -> staged least squares (pose, f, k1, c, k2);
+#                                         robust=True leaves out a tag that doesn't line up; report() verdict
+#      refine_with_lines(...)             + the white centre line found near its predicted position (keep_refit)
 #   4. overlay_lines(p, W, H)             projected field outline / lines / 1 m grid / hubs / tags
 #   5. wizard_camera(p, W, H, crop, ...)  camera JSON (full-frame pixels for the overhead camera; inset
 #                                         pixels + "crop" for station cameras, as stationcam expects)
@@ -260,14 +261,17 @@ def detect_tags_gray(gray, scale=None, tile=480, overlap=96, min_margin=15, vali
     return out
 
 
-def detect_tags_frames(grays, tag_csv=TAG_CSV, min_frac=0.34, **kw):
+def detect_tags_frames(grays, tag_csv=TAG_CSV, min_frac=0.34, per_frame=None, **kw):
     """Per-frame detection over several frames (a median plate blurs tiny tags) -> {id: {"corners": 4x2,
     "center": [u, v], "n": frames seen, "margin": median margin, "spread_px": corner scatter}} for tags
-    seen in >= min_frac of the frames (and >= 2)."""
+    seen in >= min_frac of the frames (and >= 2).  per_frame: a list that gets each frame's tag count (so the
+    Video page can say which frames had none)."""
     valid = set(load_tag_poses(tag_csv))
     hits = {}
     for g in grays:
-        for tid, (c, m) in detect_tags_gray(g, valid=valid, **kw).items():
+        got = detect_tags_gray(g, valid=valid, **kw)
+        if per_frame is not None: per_frame.append(len(got))
+        for tid, (c, m) in got.items():
             hits.setdefault(tid, []).append((c, m))
     need = max(2, int(np.ceil(min_frac * len(grays)))) if len(grays) > 1 else 1
     out = {}
@@ -447,7 +451,7 @@ def _init_pose(W, H, groups, lines=()):
     return best[1]
 
 
-def _fit_lines(p0, free, groups, lines, W, H, sig_c, sig_k):
+def _fit_lines(p0, free, groups, lines, W, H, sig_c, sig_k, nfev=4000):
     """fit_points + straight world lines: lines = [(world polyline Nx3, image points Mx2, sigma)]."""
     from scipy.optimize import least_squares
 
@@ -460,43 +464,169 @@ def _fit_lines(p0, free, groups, lines, W, H, sig_c, sig_k):
         for ln in lines:
             Pw, pts, s = ln[:3]
             poly = wproj(p, Pw); poly = poly[np.isfinite(poly).all(1)]
-            if len(poly) < 2 or not len(pts): continue
-            r.append(seg_dist(pts, poly) / s)
+            if not len(pts): continue
+            # (a constant residual count: a line that left the view costs 100 px a point instead of vanishing)
+            r.append(seg_dist(pts, poly) / s if len(poly) >= 2 else np.full(len(pts), 100.0 / s))
         r.append([(p[2] - W / 2) / sig_c, (p[3] - H / 2) / sig_c, (p[1] - 1) / 0.02, p[4] / sig_k, p[5] / sig_k,
                   p[12] / sig_k])
         return np.concatenate(r)
-    s = least_squares(res, p0[free], loss="soft_l1", f_scale=2.0, max_nfev=4000)
+    s = least_squares(res, p0[free], loss="soft_l1", f_scale=2.0, max_nfev=nfev)
     p = p0.copy(); p[free] = s.x
     return p
 
 
-def wizard_fit(W, H, tags=None, points=None, lines=None, tag_csv=TAG_CSV, p_init=None):
-    """Fit [f, aspect, cx, cy, k1, k2, rvec, C] to tag corners + clicked points (+ line samples).
-    tags {id: {"corners": 4x2} | [u, v]}; points {name: [u, v]}; lines [(world Nx3, image Mx2, sigma)].
-    Stages: pose + f -> + k1 (>= 12 points) -> + principal point, k2 (>= 40 points).
-    Returns (p, report) or (None, {"error": ...})."""
+# ---- robust tag fit + verdict.  One tag that moved, isn't mounted yet or was read wrong bends the whole fit
+# (2026wamil: AprilTag 1 sat ~160 px above where the field drawings put it -> tags 6.5 px RMS, the principal point
+# below the frame, k1 -0.74, saved as "fitted"; without it 0.5 px and a plausible camera).  Cameras get bumped, so
+# the automatic path has to survive one bad tag, and say plainly when a fit can't be trusted.
+DROP_ABOVE_PX = 2.0      # tag error (RMS of the tag centres) that starts the leave-out search (>= 4 tags; pairs >= 6)
+DROP_TO_PX = 1.5         # a drop must bring the tag error under this ...
+DROP_GAIN = 3.0          # ... and cut it at least this many times
+LENS_TAGS = 8            # tags (or clicked lines, or LENS_POINTS clicked points) that let the fit move the principal
+LENS_POINTS = 6          # point and k2 / k3: a few tags on two hub faces don't pin them, the automatic centre line neither
+CAM_Z = (2.0, 25.0)      # plausible height of a wide / overhead camera, m (station cams: min_z 0.8)
+PP_FRAC = 0.15           # the principal point within this share of the picture's width / height of its centre
+TAG_GOOD_PX, TAG_BAD_PX = 1.5, 3.0
+VERDICT_RANK = {"good": 0, "check": 1, "bad": 2}
+
+
+def _is_auto(li):
+    """A line refine_with_lines found in the picture (not clicked by hand)."""
+    return len(li) > 3 and "(auto)" in str(li[3])
+
+
+def _faces(ids, poses):
+    """Distinct flat faces (facing direction, plane offset) the tags sit on: tags on one face don't fix the distance."""
+    return {(round(float(np.degrees(poses[i][1]))) % 360, round(float(poses[i][0] @ [np.cos(poses[i][1]), np.sin(poses[i][1]), 0]), 1))
+            for i in ids if i in poses}
+
+
+def _centre(t):
+    """Tag centre in px of a detection ({"corners"} | {"center"} | [u, v])."""
+    c = np.asarray(t["corners"] if isinstance(t, dict) and t.get("corners") is not None else
+                   (t["center"] if isinstance(t, dict) else t), float)
+    return c.mean(0) if c.shape == (4, 2) else c.reshape(-1)[:2]
+
+
+def _n(n, word):
+    return f"{n} {word}{'' if n == 1 else 's'}"
+
+
+def too_few(n_tag, n_pt=0):
+    """The plain sentence for a fit with too little to go on."""
+    if not n_tag and not n_pt:
+        return ("No AprilTags were found and no field points are marked: a fit needs at least 2 AprilTags, or a few field "
+                "lines or points clicked by hand.")
+    have = _n(n_tag, "AprilTag") + (" and " + _n(n_pt, "clicked point") if n_pt else "")
+    return (f"Not enough to fit the camera: {have}. It needs at least 2 AprilTags, or field lines or points clicked by "
+            "hand, spread over the field.")
+
+
+def wizard_fit(W, H, tags=None, points=None, lines=None, tag_csv=TAG_CSV, p_init=None, robust=False, dropped=(),
+               min_z=CAM_Z[0], _nfev=4000):
+    """Fit [f, aspect, cx, cy, k1, k2, rvec, C, k3] to tag corners + clicked points (+ line samples).
+    tags {id: {"corners": 4x2} | [u, v]}; points {name: [u, v]}; lines [(world Nx3, image Mx2, sigma(, name))].
+    Stages: pose + f -> + k1 (>= 8 points or lines) -> + principal point, k2 (>= 14 points or clicked lines) -> + k3
+    (>= 30 points and clicked lines).  The lens stages need data that pins a lens (LENS_TAGS tags, clicked lines or
+    LENS_POINTS clicked points), never the corner count alone nor the automatic centre line: without it the
+    principal point stays at the picture centre and k2 = k3 = 0.
+    robust: a tag error > DROP_ABOVE_PX with >= 4 tags -> refit leaving each tag out (pairs with >= 6) and drop the
+    one that brings it under DROP_TO_PX and at least DROP_GAIN times down (report "dropped_tags").
+    dropped: tags an earlier robust fit left out (reported again against this fit).  min_z: the lowest plausible
+    camera height (verdict, see report()).
+    Returns (p, report) or (None, {"error": plain sentence, "code": too_few | no_pose})."""
     groups, rep = _corr(tags, points, tag_csv)
     n = sum(len(g[0]) for g in groups)
     lines = lines or []
     nl = sum(len(l[1]) for l in lines if len(l) > 3)            # clicked line points (each ~ half a point)
+    n_tag = sum(1 for r in rep if r[0] == "tag"); n_pt = len(rep) - n_tag
     if n + nl // 2 < 4 or (len(groups) < 2 and n + nl // 2 < 6):
-        return None, {"error": f"need more correspondences ({n} points): mark more tags or click field points"}
-    p = np.asarray(p_init, float) if p_init is not None else _init_pose(W, H, groups, lines)
+        return None, dict(error=too_few(n_tag, n_pt), code="too_few", n_tags=n_tag, n_points=n_pt)
+    p = np.array(p_init, float) if p_init is not None else _init_pose(W, H, groups, lines)
     if p is None:
-        return None, {"error": "pose initialisation failed"}
+        return None, dict(error="Couldn't find a camera position that fits these AprilTags and points together: one of them "
+                                "is probably on the wrong spot or has the wrong name. Leave one out, or click field lines.",
+                          code="no_pose", n_tags=n_tag, n_points=n_pt)
     if len(p) == 12: p = np.r_[p, 0.0]
     n += nl // 2
+    clicked = [l for l in lines if not _is_auto(l)]
+    lens = n_tag >= LENS_TAGS or bool(clicked) or n_pt >= LENS_POINTS
+    if not lens: p[2], p[3], p[5], p[12] = W / 2, H / 2, 0.0, 0.0
     sig_c, sig_k = 0.03 * W, 0.3
     stages = [np.r_[0, 6:12]]
     if n >= 8 or lines: stages.append(np.r_[0, 4, 6:12])
-    if n >= 14 or lines: stages.append(np.r_[0, 2, 3, 4, 5, 6:12])
-    if n >= 30 and lines: stages.append(np.r_[0, 2, 3, 4, 5, 6:12, 12])
+    if lens and (n >= 14 or clicked): stages.append(np.r_[0, 2, 3, 4, 5, 6:12])
+    if lens and n >= 30 and clicked: stages.append(np.r_[0, 2, 3, 4, 5, 6:12, 12])
     for free in stages:
-        p = _fit_lines(p, free, groups, lines, W, H, sig_c, sig_k)
-    return p, report(p, W, H, rep, lines)
+        p = _fit_lines(p, free, groups, lines, W, H, sig_c, sig_k, _nfev)
+    r = report(p, W, H, rep, lines, dropped=dropped, min_z=min_z, tag_csv=tag_csv)
+    r["lens_free"] = bool(lens)
+    if robust:
+        return _leave_out(W, H, tags, points, lines, tag_csv, p_init, p, r, dropped, min_z)
+    return p, r
 
 
-def report(p, W, H, rep=(), lines=()):
+def _leave_out(W, H, tags, points, lines, tag_csv, p_init, p, rep, dropped, min_z):
+    """wizard_fit(robust=True): the fit without the tag (or pair) that doesn't line up with the others, if one
+    explains the error (fresh start each: the all-tags pose is bent by the bad tag) -> (p, report)."""
+    e0 = rep.get("tag_rms_px")
+    poses = load_tag_poses(tag_csv)
+    tags = {int(k): v for k, v in (tags or {}).items()}
+    ids = sorted(i for i in tags if i in poses)
+    if e0 is None or e0 <= DROP_ABOVE_PX or len(ids) < 4:
+        return p, rep
+    err = {i["id"]: i["err_px"] or 0.0 for i in rep["items"] if i["kind"] == "tag" and not i.get("dropped")}
+    clicked = bool(points) or any(not _is_auto(l) for l in lines or [])
+
+    def without(drop):
+        if len(_faces([i for i in ids if i not in drop], poses)) < 2 and not clicked:
+            return None                                   # the rest on one flat face: any fit of them looks perfect
+        sub = {k: v for k, v in tags.items() if k not in drop}
+        info = [dict(id=i, uv=np.round(_centre(tags[i]), 2).tolist(), err_with_px=err.get(i), rms_with_px=e0) for i in drop]
+        best = None
+        for init in [None] + ([p_init] if p_init is not None else []):
+            q, r = wizard_fit(W, H, sub, points, lines, tag_csv, p_init=init, dropped=list(dropped) + info, min_z=min_z,
+                              _nfev=nfev)
+            if q is not None and r.get("tag_rms_px") is not None and (best is None or r["tag_rms_px"] < best[1]["tag_rms_px"]):
+                best = (q, r, init)
+        return best
+
+    def fixes(b):
+        return b is not None and b[1]["tag_rms_px"] < DROP_TO_PX and b[1]["tag_rms_px"] * DROP_GAIN <= e0
+
+    nfev = 300                                            # screening: a bad subset can take seconds to settle
+    found = [(d, b) for d, b in (((i,), without((i,))) for i in ids) if fixes(b)]
+    if not found and len(ids) >= 6:
+        pool = ids if len(ids) <= 8 else sorted(ids, key=lambda i: -err.get(i, 0.0))[:6]
+        found = [(d, b) for d, b in ((d, without(d)) for d in itertools.combinations(pool, 2)) if fixes(b)]
+    if found:
+        d, (q, r, init) = min(found, key=lambda x: x[1][1]["tag_rms_px"])
+        nfev = 4000                                       # the winner once more with the full budget
+        b = without(d)
+        return (b[0], b[1]) if fixes(b) else (q, r)
+    rep["leave_out"] = dict(tried=len(ids), found=False)
+    for x in rep.get("verdict_reasons") or []:
+        if x["code"] == "tag_error" and x["level"] == "bad":
+            x["text"] += " Leaving out any one tag doesn't fix it, so more than one is off: click field lines by hand."
+    return p, rep
+
+
+def keep_refit(r0, r1):
+    """Keep a refit (the automatic centre line) only when the tags stay good (<= TAG_GOOD_PX, or 1.5x) -- a doubtful
+    tag fit must not get worse at all --, the clicked points too, and the verdict is not worse.  (The wizard used
+    to check only the point error, empty in auto mode, so a refit that moved the grid 16 px was always kept.)"""
+    if r1 is None or r1.get("error"): return False
+    for k, good in (("tag_rms_px", TAG_GOOD_PX), ("point_rms_px", 4.0)):
+        e0, e1 = r0.get(k), r1.get(k)
+        if e0 is None: continue
+        if e1 is None or e1 > (max(good, 1.5 * e0) if e0 <= good else 1.05 * e0): return False
+    return VERDICT_RANK.get(r1.get("verdict"), 2) <= VERDICT_RANK.get(r0.get("verdict"), 2)
+
+
+def report(p, W, H, rep=(), lines=(), dropped=(), min_z=CAM_Z[0], tag_csv=TAG_CSV):
+    """Residuals of a fit + "verdict" (good | check | bad) and "verdict_reasons" [{level: ok | note | check | bad,
+    code, text}] in plain words: tag / point / line error, tags on >= 2 faces, principal point near the picture
+    centre, plausible camera height, a sane lens; "dropped_tags" [{id, uv, off_px (vs this fit), err_with_px}]."""
     K, D, rv, tv, R, C = _unpack_w(p)
     items = []
     for kind, ident, X, uv in rep:
@@ -514,25 +644,129 @@ def report(p, W, H, rep=(), lines=()):
         if len(poly) >= 2 and len(pts):
             d = seg_dist(pts, poly); ln.append(float(np.median(d)))
             if len(li) > 3: by_line[li[3]] = round(float(np.median(d)), 2)
+    poses = load_tag_poses(tag_csv)
     warn = []
-    if C[2] < 0.5: warn.append("camera below 0.5 m: check the clicked points")
-    if errs and np.sqrt(np.mean(np.square(errs))) > 4: warn.append("large residuals: some point is probably mislabelled")
-    n_line = sum(len(li[1]) for li in lines if len(li) > 3 and "(auto)" not in str(li[3]))
+    if C[2] < 0.5: warn.append("The camera comes out below 0.5 m: a clicked point is probably on the wrong spot.")
+    if errs and np.sqrt(np.mean(np.square(errs))) > 4:
+        warn.append("Some AprilTags or points don't line up with the fit (over 4 px): one is probably on the wrong spot, "
+                    "has moved, or has the wrong name.")
+    n_line = sum(len(li[1]) for li in lines if len(li) > 3 and not _is_auto(li))
     tids = [ident for kind, ident, X, uv in rep if kind == "tag"]
-    if tids and len(tids) == len(rep) and not n_line:
-        poses = load_tag_poses(TAG_CSV)
-        faces = {(round(float(np.degrees(poses[i][1]))) % 360, round(float(poses[i][0] @ [np.cos(poses[i][1]), np.sin(poses[i][1]), 0]), 1))
-                 for i in tids if i in poses}
-        if len(faces) <= 1:
-            warn.append("all tags are on one flat face: focal length and distance are not determined -- click field points or lines")
-    if len(rep) + n_line / 2 < 6: warn.append("few correspondences: check the grid carefully on the whole field")
-    return dict(f=round(float(K[0, 0]), 1), c=[round(float(K[0, 2]), 1), round(float(K[1, 2]), 1)],
-                k1=round(float(D[0]), 4), k2=round(float(D[1]), 5), k3=round(float(D[4]), 5), C=np.round(C, 3).tolist(),
-                n_tags=len(tag_e), n_points=len(pt_e),
-                tag_rms_px=round(float(np.sqrt(np.mean(np.square(tag_e)))), 2) if tag_e else None,
-                point_rms_px=round(float(np.sqrt(np.mean(np.square(pt_e)))), 2) if pt_e else None,
+    nf = len(_faces(tids, poses))
+    one_face = bool(tids) and len(tids) == len(rep) and not n_line and nf <= 1
+    if one_face:
+        warn.append("All the AprilTags found are on one flat face, so the camera's distance and lens can't be worked out: "
+                    "click field lines or points elsewhere on the field.")
+    if len(rep) + n_line / 2 < 6: warn.append("Few AprilTags or points to fit: check the grid over the whole field.")
+    tag_rms = round(float(np.sqrt(np.mean(np.square(tag_e)))), 2) if tag_e else None
+    pt_rms = round(float(np.sqrt(np.mean(np.square(pt_e)))), 2) if pt_e else None
+    # ---- verdict
+    why = []
+    add = lambda level, code, text: why.append(dict(level=level, code=code, text=text))
+    nt = len(tag_e)
+    if tag_rms is not None:
+        # with under 4 tags the fit has little left over to show an error: 2 px there is as bad as 3 px with more
+        if tag_rms > (TAG_BAD_PX if nt >= 4 else TAG_GOOD_PX + 0.5):
+            add("bad", "tag_error", f"The AprilTags don't line up with one camera: {tag_rms} px off on average (a good fit is "
+                f"under {TAG_GOOD_PX:g} px). " + ("One has probably moved, isn't mounted yet, or was read wrong." if nt >= 4 else
+                f"With only {_n(nt, 'tag')} Cyber-Scout can't tell which one is off: click field lines by hand."))
+        elif tag_rms > TAG_GOOD_PX:
+            add("check", "tag_error", f"The AprilTags line up within {tag_rms} px: usable, but check the grid on the far side "
+                "of the field.")
+        else:
+            add("ok", "tag_error", f"The AprilTags line up within {tag_rms} px.")
+    if pt_rms is not None:
+        if pt_rms > 8:
+            add("bad", "point_error", f"Your clicked points are {pt_rms} px from the fit on average: one is probably on the "
+                "wrong spot or has the wrong name (the yellow strokes show where each one should be).")
+        elif pt_rms > 4:
+            add("check", "point_error", f"Your clicked points are {pt_rms} px from the fit on average: check the ones with the "
+                "longest yellow strokes.")
+    NL = named_lines()
+    for k, v in by_line.items():
+        if v <= 3:
+            if "(auto)" in str(k): add("ok", "centre_line", f"The white centre line in the picture sits within {v} px of the fit.")
+            continue
+        if "(auto)" in str(k):
+            add("check", "centre_line", f"The white centre line in the picture is {v} px from where the fit puts it: "
+                "check the grid in the middle of the field.")
+        else:
+            add("check", "line_error", f"Your clicks along “{(NL.get(k) or {}).get('label', k)}” are {v} px from the fitted line.")
+    if one_face:
+        add("bad", "one_face", "All the AprilTags found are on one flat face, so the camera's distance and lens can't be "
+            "worked out: click field lines or points elsewhere on the field.")
+    elif nf >= 2:
+        add("ok", "faces", f"Tags on {nf} different faces of the field.")
+    if nt and nt < 4 and not pt_e and not n_line:
+        add("check", "few_tags", f"Only {_n(nt, 'AprilTag')}: the grid is pinned only near them; check it over the whole field.")
+    cx, cy = float(K[0, 2]), float(K[1, 2])
+    if abs(cx - W / 2) > PP_FRAC * W or abs(cy - H / 2) > PP_FRAC * H:
+        add("bad", "lens_centre", f"The fitted lens centre ({cx:.0f}, {cy:.0f}) is far from the picture centre ({W / 2:.0f}, "
+            f"{H / 2:.0f}): no real camera is built like that, so the fit is bending to match a wrong tag or point.")
+    z, z_hi = float(C[2]), CAM_Z[1]
+    if not (min_z <= z <= z_hi):
+        add("bad", "height", f"The camera comes out {z:.1f} m above the floor, but this camera sits {min_z:g}–{z_hi:g} m up: "
+            "the fit is wrong.")
+    else:
+        add("ok", "height", f"Camera {z:.1f} m up, {float(np.hypot(C[0] - LEN / 2, C[1] - WID / 2)):.1f} m from the field centre.")
+    f = float(K[0, 0]); k1, k2, k3 = float(D[0]), float(D[1]), float(D[4])
+    rmax = max(np.hypot(x - cx, y - cy) for x in (0, W) for y in (0, H)) / max(f, 1e-6)
+    r2 = np.linspace(0, rmax, 64) ** 2
+    if (1 + 3 * k1 * r2 + 5 * k2 * r2 ** 2 + 7 * k3 * r2 ** 3 <= 0).any():
+        add("bad", "lens", "The fitted lens folds the picture back on itself near the edges: no real lens does that, so the "
+            "fit is wrong.")
+    else:
+        bend = abs(k1 * r2[-1] + k2 * r2[-1] ** 2 + k3 * r2[-1] ** 3)
+        if bend > 0.4:
+            add("check", "lens", f"The fitted lens bends the picture corners by {bend:.0%}: more than a broadcast camera "
+                "usually does; check the grid near the edges.")
+    if not (0.25 * W <= f <= 5 * W):
+        add("check", "focal", f"The fitted zoom (focal length {f:.0f} px) is unusual for a {W} px wide picture: check the grid.")
+    drop_out = []
+    for d in dropped or ():
+        i = int(d["id"])
+        if i not in poses or i in tids: continue
+        q = wproj(p, poses[i][0][None])[0]
+        ok = bool(np.isfinite(q).all())
+        off = round(float(np.linalg.norm(q - np.asarray(d["uv"], float))), 1) if ok else None
+        drop_out.append(dict(d, off_px=off, pred=np.round(q, 2).tolist() if ok else None))
+        items.append(dict(kind="tag", id=i, uv=d["uv"], pred=drop_out[-1]["pred"], err_px=off, dropped=True))
+        add("note", "dropped", f"AprilTag {i} doesn't line up with the other tags ({off if off is not None else '?'} px from "
+            "where they put it), so it may have moved or not be mounted yet. It was left out; check that part of the grid.")
+    return dict(f=round(f, 1), c=[round(cx, 1), round(cy, 1)],
+                k1=round(k1, 4), k2=round(k2, 5), k3=round(k3, 5), C=np.round(C, 3).tolist(),
+                n_tags=len(tag_e), n_points=len(pt_e), tag_rms_px=tag_rms, point_rms_px=pt_rms,
                 line_med_px=round(float(np.median(ln)), 2) if ln else None, lines=by_line,
-                items=items, warnings=warn)
+                items=items, warnings=warn, verdict=_level(why), verdict_reasons=_ordered(why), dropped_tags=drop_out)
+
+
+def _level(reasons):
+    """good | check | bad: the worst reason."""
+    lv = {x["level"] for x in reasons}
+    return "bad" if "bad" in lv else "check" if "check" in lv else "good"
+
+
+def _ordered(reasons):
+    return sorted(reasons, key=lambda x: -{"bad": 3, "check": 2, "note": 1, "ok": 0}[x["level"]])
+
+
+def line_check(rep, p, gray, name="centerline"):
+    """How far the white centre line in the picture is from where fit p puts it (median px of the tape pixels found
+    near it), for a fit the line was not used in -> rep["centre_line_px"] + a verdict reason ("check" over 3 px)."""
+    pts = find_line_pixels(gray, p, name)
+    poly = wproj(p, line_world(name, 400)); poly = poly[np.isfinite(poly).all(1)]
+    if len(pts) < 10 or len(poly) < 2: return rep
+    med = round(float(np.median(seg_dist(pts, poly))), 2)
+    rep["centre_line_px"] = med
+    why = [x for x in rep.get("verdict_reasons") or [] if x["code"] != "centre_line"]
+    if med > 3:
+        why.append(dict(level="check", code="centre_line", text=f"The white centre line in the picture is {med} px from "
+                        "where the fit puts it: check the grid in the middle of the field."))
+    else:
+        why.append(dict(level="ok", code="centre_line", text=f"The white centre line in the picture sits within {med} px "
+                        "of the fit."))
+    rep["verdict_reasons"], rep["verdict"] = _ordered(why), _level(why)
+    return rep
 
 
 def line_world(name, n=120):
@@ -565,8 +799,11 @@ def find_line_pixels(gray, p, name="centerline", search=20, min_contrast=40):
     return np.array(pts).reshape(-1, 2)
 
 
-def refine_with_lines(p, gray, W, H, tags=None, points=None, tag_csv=TAG_CSV, names=("centerline",), sigma=1.0, extra=None):
-    """Re-fit with the white lines found near their predicted positions (two rounds); `extra` = clicked lines."""
+def refine_with_lines(p, gray, W, H, tags=None, points=None, tag_csv=TAG_CSV, names=("centerline",), sigma=1.0, extra=None,
+                      **kw):
+    """Re-fit with the white lines found near their predicted positions (two rounds); `extra` = clicked lines;
+    kw (dropped, min_z) go to wizard_fit.  The automatic line never frees the lens (wizard_fit); keep the result
+    only when keep_refit() says so."""
     rep = None
     for _ in range(2):
         lines = list(extra or [])
@@ -574,7 +811,7 @@ def refine_with_lines(p, gray, W, H, tags=None, points=None, tag_csv=TAG_CSV, na
             pts = find_line_pixels(gray, p, nm)
             if len(pts) >= 10: lines.append((line_world(nm, 400), pts, sigma, nm + " (auto)"))
         if len(lines) == len(extra or []): break
-        p2, rep2 = wizard_fit(W, H, tags, points, lines, tag_csv, p_init=p)
+        p2, rep2 = wizard_fit(W, H, tags, points, lines, tag_csv, p_init=p, **kw)
         if p2 is None: break
         p, rep = p2, rep2
     return p, rep

@@ -835,8 +835,8 @@ def recorded_media(ev, s, root=None):
 
 def recent_sample(d, seconds=180.0, max_age=120.0):
     """<d>/sample.ts: the last ~`seconds` of real recorded chunks, concatenated (a Twitch segment file is only
-    24 s; frame grabs, layout suggestions and the calibration wizard want a few minutes to pick from).
-    Rebuilt when older than max_age.  -> path or None."""
+    24 s; frame grabs, layout suggestions and the calibration wizard want a few minutes to pick from) and remuxed
+    to start at 0 (_zero_based).  Rebuilt when older than max_age.  -> path or None."""
     out = os.path.join(d, "sample.ts")
     try:
         if time.time() - os.path.getmtime(out) < max_age and os.path.getsize(out) > 100_000: return out
@@ -865,8 +865,28 @@ def recent_sample(d, seconds=180.0, max_age=120.0):
         for r in reversed(keep):
             with open(os.path.join(d, r["file"]), "rb") as f:
                 f.seek(r["off"]); o.write(f.read(r["size"]))
+    _zero_based(tmp)
     os.replace(tmp, out)
     return out
+
+
+def _zero_based(p):
+    """Remux a concatenated .ts in place so its clock starts at 0.  Live segments carry the stream's clock (2026wamil:
+    the sample started at 6748 s), so dynpose.estimate (video time 0..t1) read nothing and the auto set-up reported
+    "0 frames with tags", and PyAV frame grabs by time got the first frame every time.  Video only, no re-encode
+    (~0.3 s for 3 minutes of 1080p); left as it is when ffmpeg can't read it.  -> True when remuxed."""
+    z = p + ".z.ts"
+    try:
+        r = subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-i", os.path.abspath(p), "-map", "0:v:0", "-c", "copy",
+                            "-muxdelay", "0", "-muxpreload", "0", "-avoid_negative_ts", "make_zero", "-f", "mpegts", z],
+                           capture_output=True, timeout=180)
+        if r.returncode == 0 and os.path.getsize(z) > 100_000:
+            os.replace(z, p); return True
+    except (OSError, subprocess.SubprocessError):
+        pass
+    try: os.remove(z)
+    except OSError: pass
+    return False
 
 
 def _ls(d):
@@ -937,6 +957,10 @@ def run_job(data, j, log=print):
     return j
 
 
+JOB_EXPIRED = ("The worker isn't running video jobs: is it running? (This job waited over an hour without being picked up, "
+               "so it was dropped.)")
+
+
 def run_pending(data, kinds=None, log=print, max_age=3600, exclude=()):
     """Run every queued job once (oldest first; kinds: only these, exclude: not these).  Returns the number run."""
     d = jobs_dir(data)
@@ -950,7 +974,7 @@ def run_pending(data, kinds=None, log=print, max_age=3600, exclude=()):
             continue
         if j.get("state") != "queued" or (kinds and j["kind"] not in kinds) or j.get("kind") in exclude: continue
         if time.time() - j.get("created", 0) > max_age:
-            j.update(state="error", error="expired (no job runner picked it up)"); _jsave(os.path.join(d, f), j); continue
+            j.update(state="error", error=JOB_EXPIRED); _jsave(os.path.join(d, f), j); continue
         if not _claim(data, j["id"]): continue
         run_job(data, j, log); n += 1
     return n
@@ -1025,8 +1049,11 @@ def find_source(ev_dir, sid, doc=None):
 
 
 def _source(data, ev, sid):
+    if not sid:
+        raise ValueError("No video is set as the main (wide) view of this event yet: add the event's stream or video on "
+                         "the Video page first.")
     s = find_source(_ev_dir(data, ev), sid)
-    if s is None: raise ValueError(f"unknown source {sid}")
+    if s is None: raise ValueError(f"This video ({sid}) isn't one of the event's videos any more: reload the Video page.")
     s = dict(s, _ev=ev)
     if s.get("kind") == "file" and not file_allowed(s["url"]):
         raise ValueError("file source outside the allowed directories")
@@ -1043,8 +1070,25 @@ def _times(LY, media, t, n, span=(0.25, 0.85)):
     return [float(t or 0.0)], dur
 
 
+_DUR = {}
+
+
+def _remote_duration(LY, media, max_age=60.0):
+    """Length of a remote video (cached a minute: one probe per job); None for a stream that is live now (no end yet)."""
+    hit = _DUR.get(media)
+    if hit and time.time() - hit[0] < max_age: return hit[1]
+    d = LY.duration(media)
+    _DUR[media] = (time.time(), d)
+    return d
+
+
 def _live_url(LY, s, media):
-    return s.get("kind") == "livestream" and LY.is_remote(media)
+    """A livestream source's remote link that is live right now: it cannot be seeked, so it is read forward.  A
+    finished stream (yt-dlp gives the VOD of the whole day) has a length: it is sampled like a recording -- read
+    forward it gave the first minute of the day (2026wabon: a results screen, 0 AprilTags)."""
+    if not (s.get("kind") == "livestream" and LY.is_remote(media)): return False
+    d = _remote_duration(LY, media)
+    return not (d and d > 120)
 
 
 def _grab_many(LY, s, media, t0, n, step):
@@ -1127,38 +1171,56 @@ def _wizard_path(data, ev, target):
     return os.path.join(d, f"{target}.json")
 
 
+def _min_z(CB, target):
+    """Lowest plausible camera height for the fit's verdict: the overhead / wide camera sits >= 2 m up, a
+    driver-station camera ~1.8 m."""
+    return CB.CAM_Z[0] if target == "overhead" else 0.8
+
+
 def job_detect(data, ev, p, log=print):
-    """Calibration step 1: frames of the target camera -> AprilTags (+ a first fit when they suffice)."""
+    """Calibration step 1: frames of the target camera -> AprilTags (+ a first fit when they suffice, robust: a tag
+    that doesn't line up is left out; the fit is shown with its verdict even when doubtful).  The result says what
+    was read (`read`: live / recording / video, the time span, cut-aways dropped) and how many tags each frame
+    had (`frame_tags`), so the Video page can say "frames at 0:00-0:42 had 0 tags" next to the frame itself."""
     np, cv2, LY, CB = _live_imports()
     target = p["target"]
     sid, crop, out, full = _target(data, ev, target)
     s = _source(data, ev, p.get("source") or sid)
     media, t0 = media_for(s, p.get("match"))
-    if not media: raise ValueError("no video for this source yet")
-    live = s.get("kind") == "livestream" and not LY.is_remote(media)
-    fr, ts = _grab_many(LY, s, media, t0, int(p.get("n", 16 if live else 8)), 6.0)
-    if not fr: raise ValueError("could not read frames")
-    if live and len(fr) >= 6:          # a program feed cuts away (close-ups, results screen): keep the main view
+    if not media: raise ValueError("This video has nothing to read yet (no match upload found for it).")
+    live_now = _live_url(LY, s, media)
+    stream = s.get("kind") == "livestream"                # recorded, live or a finished stream: cut-aways likely
+    fr, ts = _grab_many(LY, s, media, t0, int(p.get("n", 16 if stream and not live_now else 8)), 6.0)   # live: 48 s
+    if not fr: raise ValueError("Couldn't read any frames from this video.")
+    n_read = len(fr)
+    if stream and len(fr) >= 6:          # a program feed cuts away (close-ups, results screen): keep the main view
         fr, ts = _main_view(np, cv2, fr, ts)
     FH, FW = fr[0].shape[:2]
     if crop: fr = [f[crop[1]:crop[3], crop[0]:crop[2]] for f in fr]
     H, W = fr[0].shape[:2]
     grays = [cv2.cvtColor(f, cv2.COLOR_BGR2GRAY) for f in fr]
-    tags = CB.detect_tags_frames(grays)
+    counts = []
+    tags = CB.detect_tags_frames(grays, per_frame=counts)
     plate = np.median(np.stack(fr), 0).astype(np.uint8)
     fn = os.path.join(_frames_dir(data, ev), f"calib_{target}.jpg")
     cv2.imwrite(fn, fr[len(fr) // 2], [cv2.IMWRITE_JPEG_QUALITY, 92])
     cv2.imwrite(os.path.join(_frames_dir(data, ev), f"calib_{target}_plate.png"), plate)
     np.save(os.path.join(_frames_dir(data, ev), f"calib_{target}_grays.npy"), np.stack(grays[:8]))
+    kind = "live" if live_now else "recording" if stream and not LY.is_remote(media) else "video"
+    read = dict(kind=kind, n=len(fr), cutaways=n_read - len(fr), t0=round(min(ts), 1), t1=round(max(ts), 1),
+                finished_stream=bool(stream and LY.is_remote(media) and not live_now))
     st = dict(target=target, source=s["id"], crop=list(crop) if crop else None, W=W, H=H, frame_W=FW, frame_H=FH,
               full_frame=full, out=out, times=ts, tags=tags, frame=os.path.basename(fn), at=time.time(),
+              read=read, frame_tags=[dict(t=round(float(t), 1), n=int(c)) for t, c in zip(ts, counts)],
               points_catalog=CB.named_points(), lines_catalog=CB.named_lines())
     res = dict(st)
     if len(tags) >= 2:
-        pp, rep = CB.wizard_fit(W, H, tags)
-        if pp is not None and not rep.get("warnings"):
-            st["p"] = pp.tolist()
+        pp, rep = CB.wizard_fit(W, H, tags, robust=True, min_z=_min_z(CB, target))
+        if pp is not None:
             res.update(report=rep, overlay=CB.overlay_lines(pp, W, H))
+            if rep.get("verdict") != "bad": st["p"] = pp.tolist()      # a warm start for Fit, never a wrong one
+        else:
+            res["fit_error"] = rep.get("error")
     json.dump(st, open(_wizard_path(data, ev, target), "w"))
     res["points"] = st["points_catalog"]; res["lines"] = st["lines_catalog"]
     return res
@@ -1174,39 +1236,50 @@ def _main_view(np, cv2, fr, ts):
 
 
 def job_fit(data, ev, p, log=print):
-    """Calibration step 2: tags (accepted ids, or edited) + clicked named points -> fit, more tags from the
-    fit, the centre line, report + overlay.  The candidate stays in calib_wizard/<target>.json until accepted."""
+    """Calibration step 2: tags (accepted ids, or edited) + clicked named points -> robust fit (a tag that doesn't
+    line up with the others is left out, report "dropped_tags"), more tags where the fit predicts them, the centre
+    line (kept only when it doesn't make the tag / point error or the verdict worse: calibrate.keep_refit), report
+    with its verdict + overlay.  The candidate stays in calib_wizard/<target>.json until accepted."""
     np, cv2, LY, CB = _live_imports()
     target = p["target"]
     st = json.load(open(_wizard_path(data, ev, target)))
     W, H = st["W"], st["H"]
+    mz = _min_z(CB, target)
     tags = {int(k): v for k, v in (p.get("tags") if p.get("tags") is not None else st["tags"]).items()}
     skip = set(int(x) for x in p.get("drop_tags") or [])
     tags = {k: v for k, v in tags.items() if k not in skip}
     pts = {k: v for k, v in (p.get("points") or {}).items() if v}
     lclicks = {k: v for k, v in (p.get("line_clicks") or {}).items() if v and len(v) >= 2}
     clk = CB.clicked_lines(lclicks)
-    pp, rep = CB.wizard_fit(W, H, tags, pts, clk, p_init=st.get("p") if p.get("warm") else None)
-    if pp is None: return dict(error=rep.get("error"), report=rep)
+    pp, rep = CB.wizard_fit(W, H, tags, pts, clk, p_init=st.get("p") if p.get("warm") else None, robust=True, min_z=mz)
+    if pp is None: return dict(error=rep.get("error"), code=rep.get("code"), report=rep)
+    use = lambda r: {k: v for k, v in tags.items() if k not in {d["id"] for d in r.get("dropped_tags") or []}}
     gp = os.path.join(_frames_dir(data, ev), f"calib_{target}_grays.npy")
     if p.get("more_tags", True) and os.path.exists(gp):
         grays = list(np.load(gp))
         more = CB.detect_tags_predicted(grays, pp, W, H, have=set(tags) | skip)
         if more:
             tags.update(more)
-            pp, rep = CB.wizard_fit(W, H, tags, pts, clk, p_init=pp)
+            p2, r2 = CB.wizard_fit(W, H, use(rep), pts, clk, p_init=pp, robust=True, dropped=rep.get("dropped_tags") or [],
+                                   min_z=mz)
+            if p2 is not None and CB.VERDICT_RANK[r2["verdict"]] <= CB.VERDICT_RANK[rep["verdict"]]:
+                pp, rep = p2, r2
     if p.get("auto_lines", True) and target == "overhead":
         plate = cv2.imread(os.path.join(_frames_dir(data, ev), f"calib_{target}_plate.png"), cv2.IMREAD_GRAYSCALE)
         if plate is not None:
-            p3, r3 = CB.refine_with_lines(pp, plate, W, H, tags, pts, extra=clk)
-            if r3 and (r3.get("point_rms_px") or 0) <= max(4.0, 1.5 * (rep.get("point_rms_px") or 0)):
+            p3, r3 = CB.refine_with_lines(pp, plate, W, H, use(rep), pts, extra=clk, dropped=rep.get("dropped_tags") or [],
+                                          min_z=mz)
+            if CB.keep_refit(rep, r3):
                 pp, rep = p3, r3
+            else:                         # the line not used: still say how well the fit meets it (no lens moved by it)
+                CB.line_check(rep, pp, plate)
     which = target.replace("station_", "") if target != "overhead" else "overhead"
     cam = CB.wizard_camera(pp, W, H, crop=st.get("crop"), full_frame=st.get("full_frame"),
                            frame_wh=(st.get("frame_W"), st.get("frame_H")), event=ev, which=which,
                            model="wizard pinhole f,c,k1,k2,k3", source=st.get("source"),
                            calib=dict(method="wizard", tag_rms_px=rep.get("tag_rms_px"), point_rms_px=rep.get("point_rms_px"),
                                       line_med_px=rep.get("line_med_px"), n_tags=rep.get("n_tags"), n_points=rep.get("n_points"),
+                                      verdict=rep.get("verdict"), dropped_tags=[d["id"] for d in rep.get("dropped_tags") or []],
                                       at=time.time()))
     if target == "overhead":
         import camera as CAMM
@@ -1646,7 +1719,9 @@ def job_auto_setup(data, ev, p, log=print):
                   message=None if su["camera"] is not None else rep.get("fixed_why"),
                   program_feed=(rep.get("feed") or {}).get("program_feed"), feed=rep.get("feed"),
                   fixed=dict(on_air=fx.get("on_air"), shots=fx.get("shots"), tags=fx.get("tags"), tag_rms_px=fx.get("tag_rms_px"),
-                             line_med_px=fx.get("line_med_px"), warnings=fx.get("warnings")) if fx else None,
+                             line_med_px=fx.get("line_med_px"), warnings=fx.get("warnings"), verdict=fx.get("verdict"),
+                             verdict_reasons=fx.get("verdict_reasons"), dropped_tags=fx.get("dropped_tags"),
+                             centre_line_px=fx.get("centre_line_px"), items=fx.get("items")) if fx else None,
                   scoreboard=rep.get("scoreboard"), clock=rep.get("clock"),
                   field=next((r["box"] for r in regs if r["kind"] == "field"), None), graphics=len(rep.get("overlays") or []),
                   pose=dict((k, (rep.get("pose") or {}).get(k)) for k in ("pose_ok", "shots", "n_cameras", "anchor_rms_px")),

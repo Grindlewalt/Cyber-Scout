@@ -58,6 +58,33 @@
   }
   const errHtml = e => { const p = plainErr(e);
     return `<span class="vw-et">${h(p.text)}</span>${p.raw ? ` <details class="vw-det"><summary>Details</summary><code>${h(p.raw)}</code></details>` : ""}`; };
+  // ---- calibration in plain words.  New fits carry their own verdict + reasons (live/calibrate.py report()); these
+  // translate the raw texts that still arrive: older wizard states and job errors, the job runner's hints.
+  // calib-plain:start (tests/test_calib_robust.py runs this block in node)
+  const CAL_PLAIN = [
+    [/need more correspondences \((\d+) points?\)/i, m => `Not enough to fit the camera (${m[1]} tag corners and points): it needs at least 2 AprilTags, or field lines or points clicked by hand.`],
+    [/pose initiali[sz]ation failed/i, "Couldn't find a camera position that fits these AprilTags and points together: one of them is probably on the wrong spot or has the wrong name. Leave one out, or click field lines."],
+    [/unknown source (None|null|undefined)?\s*$/i, "No video is set as the main (wide) view of this event yet: add the event's stream or video on the Video page first."],
+    [/unknown source (\S+)/i, m => `This video (${m[1]}) isn't one of the event's videos any more: reload the Video page.`],
+    [/expired \(no job runner picked it up\)/i, "The worker isn't running video jobs: is it running?"],
+    [/waiting for the worker's video job runner|sources\.job_loop/i, "waiting for the worker to pick it up (is it running?)"],
+    [/^run detect \+ fit first|no fitted camera yet/i, "Fit the camera first, then save it."],
+    [/^run detect first/i, "Read the video first (Detect tags)."],
+    [/large residuals: some point is probably mislabelled/i, "Some AprilTags or points don't line up with the fit (over 4 px): one is probably on the wrong spot, has moved, or has the wrong name."],
+    [/few correspondences/i, "Few AprilTags or points to fit: check the grid over the whole field."],
+    [/all tags are on one flat face/i, "All the AprilTags found are on one flat face, so the camera's distance and lens can't be worked out: click field lines or points elsewhere on the field."],
+    [/camera below 0\.5 m/i, "The camera comes out below 0.5 m: a clicked point is probably on the wrong spot."],
+    [/^could not read (enough )?frames/i, "Couldn't read any frames from this video."],
+    [/^no video for this source yet/i, "This video has nothing to read yet (no match upload found for it)."],
+  ];
+  function calPlain(t) {
+    const s = String(t == null ? "" : t);
+    for (const [re, out] of CAL_PLAIN) { const m = s.match(re); if (m) return typeof out === "function" ? out(m) : out; }
+    return s;
+  }
+  // calib-plain:end
+  const calErrHtml = e => { const raw = typeof e === "string" ? e : errMsg(e), t = calPlain(raw);
+    return t !== raw ? `<span class="vw-et">${h(t)}</span>` : errHtml(raw); };
   // the first check of a pasted link, before any request (mirrors live/sources.py _checked / link_problem; the
   // server stays the judge): YouTube / Twitch links, a direct .mp4 / .m3u8 address, or a file on the server
   const LINK_EG = "e.g. youtube.com/@FIRSTWashington/live or twitch.tv/firstwa_red1";
@@ -314,33 +341,114 @@
       ctx.stroke();
     }
   }
-  /** Auto-calibrate the overhead camera of a video: detect tags -> fit (auto lines) -> the admin checks the overlay -> accept,
-   * then the layout's field box from the fitted camera's field_roi (only when the video has none). done(saved, message). */
+  // ---- a fit's verdict, per-tag errors and what Detect read (Auto-calibrate, the auto set-up card, the wizard)
+  const VLABEL = { good: "The fit looks right", check: "Check this fit", bad: "This fit can't be trusted" };
+  const BAD_SHORT = { tag_error: "the AprilTags don't line up", lens_centre: "the lens centre is far off the picture",
+                      height: "the camera height is impossible", lens: "the lens shape is impossible", one_face: "all the tags are on one flat face",
+                      point_error: "your clicked points don't line up" };
+  // a report without a verdict (saved before the verdict existed): warnings make it "check"
+  const verdictOf = r => !r ? null : r.verdict || ((r.warnings || []).length ? "check" : "good");
+  const shortBad = r => { const x = (r.verdict_reasons || []).find(y => y.level === "bad"); return x ? BAD_SHORT[x.code] || x.text : "the checks failed"; };
+  /** verdict box: the bad / check / note reasons as a list, the passed checks in one muted line */
+  function verdictHtml(r) {
+    const v = verdictOf(r);
+    if (!v) return "";
+    const R = r.verdict_reasons || (r.warnings || []).map(w => ({ level: "check", text: calPlain(w) }));
+    const top = R.filter(x => x.level !== "ok"), ok = R.filter(x => x.level === "ok");
+    return `<div class="vc-v ${v}"><b class="vc-vt">${CS.icon(v === "good" ? "check" : "warn", "ico")} ${VLABEL[v]}</b>
+      ${top.length ? `<ul class="vc-why">${top.map(x => `<li class="${h(x.level)}">${h(x.text)}</li>`).join("")}</ul>` : ""}
+      ${ok.length ? `<p class="vc-ok">${ok.map(x => h(x.text)).join(" ")}</p>` : ""}</div>`;
+  }
+  /** each AprilTag's distance from where the fit puts it; a tag the fit left out says so */
+  function tagErrs(items) {
+    const T = (items || []).filter(i => i.kind === "tag" || i.kind == null).sort((a, b) => (!!a.dropped - !!b.dropped) || a.id - b.id);
+    if (!T.length) return "";
+    const c = e => e == null ? "" : e > 3 ? "bad" : e > 1.5 ? "warn" : "good";
+    return `<div class="vc-tags small" role="list" aria-label="How far each AprilTag is from the fit">${T.map(i => i.dropped
+      ? `<span role="listitem" class="vc-t out" title="Left out of the fit: it is ${h(i.err_px)} px from where the other tags put it">AprilTag ${h(i.id)} · left out, ${h(i.err_px)} px off</span>`
+      : `<span role="listitem" class="vc-t ${c(i.err_px)}">AprilTag ${h(i.id)} · ${h(i.err_px)} px</span>`).join("")}</div>`;
+  }
+  /** a left-out tag on the frame: where it was seen (red ring) and where the other tags put it (dashed) */
+  function paintDropped(ctx, items, s) {
+    for (const i of (items || []).filter(x => x.dropped && x.uv)) {
+      const [u, v] = i.uv;
+      ctx.strokeStyle = "#ff5a5f"; ctx.lineWidth = 2.2 / s; ctx.beginPath(); ctx.arc(u, v, 13 / s, 0, 7); ctx.stroke();
+      if (i.pred) { ctx.setLineDash([6 / s, 4 / s]); ctx.beginPath(); ctx.moveTo(u, v); ctx.lineTo(i.pred[0], i.pred[1]); ctx.moveTo(i.pred[0] + 13 / s, i.pred[1]); ctx.arc(i.pred[0], i.pred[1], 13 / s, 0, 7); ctx.stroke(); ctx.setLineDash([]); }
+      ctx.fillStyle = "#ff5a5f"; ctx.font = `bold ${13 / s}px system-ui, sans-serif`; ctx.fillText(`AprilTag ${i.id}: left out`, u + 16 / s, v - 8 / s);
+    }
+  }
+  /** detected tags (no fit yet) on the frame */
+  function paintTags(ctx, tags, s) {
+    for (const [id, t] of Object.entries(tags || {})) {
+      const c = t.corners; if (!c) continue;
+      ctx.strokeStyle = "#51cf66"; ctx.lineWidth = 2 / s; ctx.beginPath(); c.forEach((p, k) => k ? ctx.lineTo(p[0], p[1]) : ctx.moveTo(p[0], p[1])); ctx.closePath(); ctx.stroke();
+      ctx.fillStyle = "#51cf66"; ctx.font = `bold ${12 / s}px system-ui, sans-serif`; ctx.fillText(id, c[2][0] + 6 / s, c[2][1] - 6 / s);
+    }
+  }
+  const clock = t => { t = Math.max(0, Math.round(t || 0)); const hh = Math.floor(t / 3600), m = Math.floor(t / 60) % 60, s = String(t % 60).padStart(2, "0");
+    return hh ? `${hh}:${String(m).padStart(2, "0")}:${s}` : `${m}:${s}`; };
+  /** what Detect read: "10 frames at 0:12–1:53 of the recorded stream (6 cut-away frames skipped): none had an AprilTag." */
+  function readLine(r) {
+    const R = r && r.read, F = (r && r.frame_tags) || [];
+    if (!R) return "";
+    const n = R.n || F.length, span = R.t1 > R.t0 ? `${clock(R.t0)}–${clock(R.t1)}` : clock(R.t0);
+    const from = R.kind === "live" ? `read live over ${dur(R.t1 - R.t0)}` : `at ${span} of ${R.kind === "recording" ? "the recorded stream"
+      : R.finished_stream ? "the stream's recording (the stream has ended)" : "the video"}`;
+    const withT = F.filter(x => x.n > 0).length, mx = F.reduce((a, x) => Math.max(a, x.n), 0);
+    const got = !F.length ? "" : !withT ? "none had an AprilTag" : withT === F.length ? `each had AprilTags (up to ${mx})`
+      : `${withT} had AprilTags (up to ${mx}), ${F.length - withT} had none`;
+    return `${n} frame${n === 1 ? "" : "s"} ${from}${R.cutaways ? ` (${R.cutaways} cut-away frame${R.cutaways === 1 ? "" : "s"} skipped)` : ""}${got ? `: ${got}` : ""}.`;
+  }
+  /** what to do when the frames had too few AprilTags, by where they came from */
+  const noTagsNext = R => `If the frame below isn't the whole field (a break, a results screen, a close-up), ${R && R.kind === "live" ? "try again while a match is on"
+    : R && R.kind === "recording" ? "try again once a match has been recorded" : "this video may not show the field from a fixed camera"}. If it is the field, the AprilTags are too small or blurry to read: calibrate by hand by clicking 2 or more points along a few field lines.`;
+
+  /** Auto-calibrate the overhead camera of a video: detect tags -> fit (robust, with a verdict) -> the admin checks the
+   * overlay -> accept, then the layout's field box from the fitted camera's field_roi (only when the video has none).
+   * A fit that can't be trusted makes "Calibrate by hand" the main button.  done(saved, message). */
   async function autoCal(ev, box, sid, done) {
-    const fail = t => {
-      box.innerHTML = `<div class="vw-ac"><p class="small">${CS.icon("warn", "ico")} <b>Couldn't calibrate automatically.</b> ${errHtml(t)}</p>
-        <div class="vs-row"><button type="button" data-sub="calib">Calibrate by hand</button><button type="button" id="acno">Close</button></div></div>`;
-      box.querySelector("#acno").onclick = () => done(false); };
-    box.innerHTML = `<div class="vw-ac"><p class="small" role="status"><b>Auto-calibrate</b> <span id="acst">reading frames and AprilTags from the video (about a minute)…</span></p></div>`;
+    const shell = inner => { box.innerHTML = `<div class="vw-ac">${inner}</div>`; };
+    const showFrame = async (sel, W, H, draw) => {
+      const FV = FrameView(box.querySelector(sel), { bin: box._bin });
+      FV.draw = ctx => draw && draw(ctx, FV.s); FV.empty = "frame not available";
+      try { FV.setImage(await loadImg(imgUrl(`events/${ev}/calibration/overhead/frame.jpg`)), W, H); } catch (e) { FV.W = W || 1920; FV.H = H || 1080; FV.size(); }
+    };
+    const wire = () => {
+      const no = box.querySelector("#acno"), re = box.querySelector("#acre");
+      if (no) no.onclick = () => done(false);
+      if (re) re.onclick = () => autoCal(ev, box, sid, done);
+    };
+    // a failure: what happened, what was read and the frame itself (when there is one), and the next step
+    const fail = (t, r, next) => {
+      const down = /worker isn't running/.test(calPlain(t));          // by hand needs the worker too: Try again first
+      shell(`<p class="small">${CS.icon("warn", "ico")} <b>Couldn't calibrate automatically.</b> ${calErrHtml(t)}</p>
+        ${r && r.read ? `<p class="small muted">${h(readLine(r))}</p>` : ""}${next ? `<p class="small">${h(next)}</p>` : ""}
+        ${r && r.frame ? `<figure class="vc-fig"><div class="vs-wrap" id="acfv"></div><figcaption class="muted small">A frame that was read${Object.keys(r.tags || {}).length ? " (green: the AprilTags found)" : ""}.</figcaption></figure>` : ""}
+        <div class="vs-row">${down ? `<button type="button" class="primary" id="acre">Try again</button><button type="button" data-sub="calib">Calibrate by hand</button>`
+          : `<button type="button" class="primary" data-sub="calib">Calibrate by hand</button><button type="button" id="acre">Try again</button>`}<button type="button" id="acno">Close</button></div>`);
+      wire();
+      if (r && r.frame) showFrame("#acfv", r.W, r.H, (ctx, s) => paintTags(ctx, r.tags, s));
+    };
+    shell(`<p class="small" role="status"><b>Auto-calibrate</b> <span id="acst">reading frames and AprilTags from the video (about a minute)…</span></p>`);
     const say = t => { const s = box.querySelector("#acst"); if (s) s.textContent = t; };
+    let r = null;
     try {
-      const r = await job(ev, A("POST", `events/${ev}/calibration/overhead/detect`, { source: sid }), t => t && say("reading frames and AprilTags: " + t));
-      const n = Object.keys(r.tags || {}).length;
-      if (n < 2) return fail(`Found ${n} AprilTag${n === 1 ? "" : "s"} in view: an automatic fit needs at least 2.`);
+      r = await job(ev, A("POST", `events/${ev}/calibration/overhead/detect`, { source: sid }), t => t && say("reading frames and AprilTags: " + calPlain(t)));
+      const ids = Object.keys(r.tags || {}), n = ids.length;
+      if (n < 2) return fail(n ? `Only AprilTag ${ids[0]} was seen in enough frames: an automatic fit needs at least 2.` : "No AprilTags were found in the frames read.", r, noTagsNext(r.read));
       say(`${n} AprilTags found; fitting the camera…`);
-      const f = await job(ev, A("POST", `events/${ev}/calibration/overhead/fit`, { points: {}, line_clicks: {}, drop_tags: [], auto_lines: true, more_tags: true }), t => t && say("fitting: " + t));
-      if (f.error) return fail(f.error);
-      const rp = f.report || {};
-      box.innerHTML = `<div class="vw-ac"><p class="small"><b>Check the fit.</b> Does the yellow outline sit on the carpet edges, the grid on the field and the hub boxes on the hubs? <span class="muted">${h(fitQ(rp))}${rp.n_tags ? ` · ${rp.n_tags} tags` : ""}</span></p>
-        ${(rp.warnings || []).map(w => `<div class="vs-warn small">${CS.icon("warn", "ico")} ${h(w)}</div>`).join("")}
+      const f = await job(ev, A("POST", `events/${ev}/calibration/overhead/fit`, { points: {}, line_clicks: {}, drop_tags: [], auto_lines: true, more_tags: true }), t => t && say("fitting: " + calPlain(t)));
+      if (f.error) return fail(f.error, r);
+      const rp = f.report || {}, bad = verdictOf(rp) === "bad";
+      shell(`<p class="small"><b>${bad ? "This fit can't be trusted." : "Check the fit."}</b> ${bad ? "Robots and shots would land in the wrong places. The reasons are below; the grid on the frame shows the problem." : "Does the yellow outline sit on the carpet edges, the grid on the field and the hub boxes on the hubs?"} <span class="muted">${h(fitQ(rp))}${rp.n_tags ? ` · ${rp.n_tags} tags` : ""}</span></p>
+        ${verdictHtml(rp)}${tagErrs(rp.items)}${r.read ? `<p class="muted small">${h(readLine(r))}</p>` : ""}
         <div class="vs-wrap" id="accv"></div>
-        <div class="vs-row vw-acb"><button type="button" class="primary" id="acok">Looks right: save</button><button type="button" data-sub="calib">Fix it by hand</button><button type="button" id="acno">Cancel</button><span id="acst" class="muted small" role="status"></span></div></div>`;
-      const FV = FrameView(box.querySelector("#accv"), { bin: box._bin });
-      FV.draw = ctx => paintOverlay(ctx, f.overlay, FV.s, { grid: true, lines: true, tags: true });
-      FV.empty = "frame not available";
-      try { FV.setImage(await loadImg(imgUrl(`events/${ev}/calibration/overhead/frame.jpg`)), f.W, f.H); } catch (e) { FV.W = f.W || 1920; FV.H = f.H || 1080; FV.size(); }
-      box.querySelector("#acno").onclick = () => done(false);
+        <div class="vs-row vw-acb">${bad ? `<button type="button" class="primary" data-sub="calib">Calibrate by hand</button><button type="button" id="acok" aria-describedby="acwhy">Save anyway</button><span id="acwhy" class="vc-whyshort small">not recommended: ${h(shortBad(rp))}</span>`
+          : `<button type="button" class="primary" id="acok">Looks right: save</button><button type="button" data-sub="calib">Fix it by hand</button>`}<button type="button" id="acno">Cancel</button><span id="acst" class="muted small" role="status"></span></div>`);
+      wire();
+      showFrame("#accv", f.W, f.H, (ctx, s) => { paintOverlay(ctx, f.overlay, s, { grid: true, lines: true, tags: true }); paintDropped(ctx, rp.items, s); });
       box.querySelector("#acok").onclick = async e => {
+        if (bad && !confirm(`This fit can't be trusted: ${shortBad(rp)}. Robots and shots would be placed wrongly on the field. Save it anyway?`)) return;
         e.target.disabled = true; say("saving…");
         try {
           await A("POST", `events/${ev}/calibration/overhead/accept`);
@@ -354,9 +462,9 @@
             } else note = " Your field box is kept.";
           }
           done(true, "Calibration saved." + note);
-        } catch (x) { say(errMsg(x)); e.target.disabled = false; }
+        } catch (x) { say(calPlain(errMsg(x))); e.target.disabled = false; }
       };
-    } catch (x) { fail(errMsg(x)); }
+    } catch (x) { fail(errMsg(x), r); }
   }
 
   async function sourcesTab(ev, el, focus) {
@@ -487,7 +595,7 @@
       const head = t => `<div class="vw-ash"><span class="vw-asi" aria-hidden="true">${CS.icon("starOn")}</span><b>Automatic set-up</b> ${t || ""}${CS.help(AS_HELP, "About the automatic set-up")}</div>`;
       if (a && a.running) {
         const q = a.job && a.job.state === "queued", t0 = (a.job && (q ? a.job.created : a.job.started || a.job.created)) || a.at;
-        return head(`<span class="muted small" role="status">· ${q ? "queued" : "working"}${t0 ? ` ${dur(Date.now() / 1000 - t0)} ago` : ""}${q ? ", waiting for the worker's video job runner" : ""}</span>`) +
+        return head(`<span class="muted small" role="status">· ${q ? "queued" : "working"}${t0 ? ` ${dur(Date.now() / 1000 - t0)} ago` : ""}${q ? ", waiting for the worker to pick it up (is it running?)" : ""}</span>`) +
           `<p class="small vw-asn"><span class="vw-spin" aria-hidden="true"></span>Looking at the recording: graphics, clock, the cameras and their AprilTags. This takes a few minutes.</p>`;
       }
       if (!a || !a.status) {
@@ -498,8 +606,10 @@
       const img = a.has_overlay ? `<figure class="vw-asf"><a href="${isrc}" target="_blank" rel="noopener" title="Open full size"><img src="${isrc}" alt="${h(`The ${a.status === "ok" ? "found camera's view with the projected field" : "recorded frame with the graphics found"} (${s.label || s.id})`)}" width="${h(a.W || 1920)}" height="${h(a.H || 1080)}" loading="lazy" decoding="async"></a>
         <figcaption class="muted small">${a.status === "ok" ? `<span class="vw-k y">carpet edge</span> <span class="vw-k w">grid · lines</span> <span class="vw-k r">hubs</span> ` : ""}<span class="vw-k o">graphics (ignored)</span>${a.clock ? ` <span class="vw-k g">clock</span>` : ""}${a.field ? ` <span class="vw-k c">field box</span>` : ""}</figcaption></figure>` : "";
       const fx = a.fixed || {}, vs = a.vs_saved, sb = a.scoreboard || {};
+      // the fixed camera's fit judged like the wizard's (verdict + reasons, per-tag errors; older states: warnings)
+      const fv = a.status === "ok" ? verdictOf(fx) : null, fbad = fv === "bad";
       const facts = `<dl class="vw-askv small">
-          ${a.status === "ok" ? `<div><dt>Fixed camera</dt><dd>on air ${pct(fx.on_air)} of the clip · ${h(fx.tags)} AprilTags · fit ${h(fx.tag_rms_px)} px${fx.line_med_px != null ? ` · centre line ${h(fx.line_med_px)} px` : ""}${(fx.warnings || []).length ? ` <span class="ls-warn">${h(fx.warnings.join("; "))}</span>` : ""}</dd></div>` : ""}
+          ${a.status === "ok" ? `<div><dt>Fixed camera</dt><dd>on air ${pct(fx.on_air)} of the clip · ${h(fx.tags)} AprilTags · fit ${h(fx.tag_rms_px)} px${fx.line_med_px != null ? ` · centre line ${h(fx.line_med_px)} px` : ""}${tagErrs(fx.items)}</dd></div>` : ""}
           <div><dt>Feed</dt><dd>${feedLine(a, s) || "–"}</dd></div>
           <div><dt>Scoreboard</dt><dd>${sb.layout ? h(LAYOUT_W[sb.layout] || sb.layout) + (a.clock ? " · clock found" : "") : a.clock ? "clock found (layout not recognised)" : "<span class=\"muted\">not recognised: the stream analyser still tries both 2026 FIRST layouts</span>"}</dd></div>
           ${vs && vs.median_px != null ? `<div><dt>vs saved</dt><dd>${h(vs.median_px)} px median, ${h(vs.max_px)} px max from ${h(vs.file)}${vs.reaimed_median_px != null ? ` <span class="muted">(${h(vs.reaimed_median_px)} px once re-aimed: the lens fits differ)</span>` : ""}</dd></div>` : ""}
@@ -507,17 +617,22 @@
       if (a.status === "ok" && a.accepted_at) {
         return head(`<span class="pill vw-ok">${CS.icon("check", "ico")} accepted</span>`) +
           `<p class="small vw-asn muted">Accepted by ${h(a.accepted_by || "an admin")} ${h(when(a.accepted_at))}${a.accepted_file ? ` → ${h(a.accepted_file)}` : ""}.</p>
-          <details class="vw-asd"><summary class="small">What was found</summary>${img}${facts}</details>
+          ${fbad ? verdictHtml(fx) : ""}<details class="vw-asd"><summary class="small">What was found</summary>${fbad ? "" : verdictHtml(fx)}${img}${facts}</details>
           <div class="vs-row vw-asb">${btn("run", "Run again")}${hand}</div>`;
+      }
+      if (a.status === "ok" && fbad) {         // found the camera, but its fit can't be trusted: by hand comes first
+        return head(`<span class="pill vw-need">can't be trusted</span>`) +
+          `<p class="small vw-asn">Found the fixed wide camera, but its fit can't be trusted: robots and shots would land in the wrong places.</p>${verdictHtml(fx)}${img}${facts}
+          <div class="vs-row vw-asb">${btn("hand", "Calibrate by hand", "primary")}${btn("accept", "Accept anyway")}<span class="vc-whyshort small">not recommended: ${h(shortBad(fx))}</span>${btn("run", "Run again")}<span class="muted small" data-as-st role="status"></span></div>`;
       }
       if (a.status === "ok") {
         return head(`<span class="pill vw-ready">ready to accept</span>`) +
-          `<p class="small vw-asn">Found the fixed wide camera. Does the yellow outline sit on the carpet edges and the hub squares on the hubs?</p>${img}${facts}
+          `<p class="small vw-asn">Found the fixed wide camera. Does the yellow outline sit on the carpet edges and the hub squares on the hubs?</p>${verdictHtml(fx)}${img}${facts}
           <div class="vs-row vw-asb">${btn("accept", "Looks right: accept", "primary")}${btn("run", "Run again")}${hand}<span class="muted small" data-as-st role="status"></span></div>`;
       }
-      const bad = a.status === "error";
+      const bad = a.status === "error", msg = calPlain(a.message || "");
       return head(`<span class="pill vw-need">${bad ? "failed" : "no fixed camera"}</span>`) +
-        `<p class="small vw-asn">${CS.icon("warn", "ico")} ${bad ? `The automatic set-up failed: ${errHtml(a.message || "")}` : `Couldn't find the fixed wide camera: <span class="muted">${h(a.message || "")}</span>`}</p>
+        `<p class="small vw-asn">${CS.icon("warn", "ico")} ${bad ? `The automatic set-up failed: ${calErrHtml(a.message || "")}` : `Couldn't find the fixed wide camera: <span class="muted">${h(msg)}</span>`}</p>
         <p class="small vw-asn muted">${bad ? "" : "Robots can still be located from every camera, but fuel and shots need the fixed camera: "}Calibrate the camera by hand (pick frames where it is on air), or run it again on a later match.</p>
         ${a.has_overlay ? `<details class="vw-asd"><summary class="small">What was found</summary>${img}${facts}</details>` : ""}
         <div class="vs-row vw-asb">${hand}${btn("run", "Run again")}<span class="muted small" data-as-st role="status"></span></div>`;
@@ -675,6 +790,8 @@
             s.auto_setup = Object.assign({}, s.auto_setup || {}, { running: true, job: { id: j.id, state: j.state, created: j.created } });
             drawAuto(c, s); pollAuto();
           } else if (act === "accept") {
+            const fx = (s.auto_setup && s.auto_setup.fixed) || {};
+            if (verdictOf(fx) === "bad" && !confirm(`This fit can't be trusted: ${shortBad(fx)}. Robots and shots would be placed wrongly on the field. Accept it anyway?`)) { b.disabled = false; return; }
             st("saving…");
             const r = await A("POST", `events/${ev}/sources/${sid}/auto-setup/accept`);
             flash(`Automatic set-up of ${s.label || s.id} accepted: camera saved to ${r.camera}${r.layout ? ", field box, graphics and clock boxes set" : ""}.`);
@@ -1184,7 +1301,8 @@
         Steps: <b>1</b> detect AprilTags → <b>2</b> click a few field points the tags don't cover → <b>3</b> fit and check the grid sits on the field → <b>4</b> accept.</div>
       <div class="vs-row"><button id="det">1. Detect tags</button><button id="fit" disabled>3. Fit</button><button id="acc" disabled class="on">4. Accept &amp; save</button>
         <span class="small">show: <label><input type="checkbox" id="sg" checked> grid</label> <label><input type="checkbox" id="sh" checked> lines + hubs</label> <label><input type="checkbox" id="st" checked> tags</label></span>
-        <span id="cst" class="muted small"></span></div>
+        <span id="cst" class="muted small" role="status"></span></div>
+      <p id="cread" class="small muted vc-read" hidden></p>
       <div class="vs-edit">
         <div class="vs-wrap" id="ccv"></div>
         <div class="vs-side">
@@ -1193,7 +1311,14 @@
           <div id="plist"></div>
         </div>
       </div>`;
-    const st = t => el.querySelector("#cst").textContent = t, stE = e => { el.querySelector("#cst").innerHTML = errHtml(e); };
+    const st = t => el.querySelector("#cst").textContent = t, stE = e => { el.querySelector("#cst").innerHTML = calErrHtml(e); };
+    // what Detect read + what to do when it found too few tags (in plain words, above the frame)
+    const readNote = (r, n) => { const p = el.querySelector("#cread"), t = r && r.read ? readLine(r) + (n < 2 ? " " + noTagsNext(r.read) : "") : "";
+      p.textContent = t; p.hidden = !t; };
+    // a fit that can't be trusted: Accept becomes "Save anyway", no longer the highlighted step
+    const accState = () => { const b = el.querySelector("#acc"), bad = verdictOf(report) === "bad";
+      b.classList.toggle("on", !bad); b.textContent = bad ? "4. Save anyway" : "4. Accept & save";
+      b.title = bad ? `Not recommended: ${shortBad(report)}` : ""; };
     const V = FrameView(el.querySelector("#ccv"), { lens: true, zoom: 4, bin: el._bin,
       edit: "Video frame for the calibration. Pick a line or point in the list, then click or tap here; with the keyboard Enter places it, arrow keys move it, Delete removes it." });
     V.empty = "No frame yet: 1. Detect tags grabs one";
@@ -1211,17 +1336,19 @@
         const w = await A("GET", `events/${ev}/calibration/${target}/wizard`);
         W = w.W; H = w.H; tags = w.fit_tags || w.tags || {}; points = w.points || {}; NP = w.points_catalog || NP;
         NL = w.lines_catalog || NL; lineClicks = w.line_clicks || {};
-        report = w.report || null; await loadFrame();
-        el.querySelector("#fit").disabled = false; el.querySelector("#acc").disabled = !w.camera;
+        report = w.report || null; await loadFrame(); readNote(w, Object.keys(tags).length);
+        el.querySelector("#fit").disabled = false; el.querySelector("#acc").disabled = !w.camera; accState();
         if (w.camera) st(w.accepted_at && w.accepted_at > (w.fitted_at || 0) ? "this fit is saved" : "last fit not accepted yet: Fit again to see its overlay");
       } catch (e) { st("start with step 1"); await loadFrame(); V.size(); }
     }
     V.draw = ctx => {
       const lw = 1.6 / V.s;
       paintOverlay(ctx, overlay, V.s, show);
+      if (show.tags) paintDropped(ctx, report && report.items, V.s);
+      const out = new Set(((report && report.dropped_tags) || []).map(d => +d.id));     // left out by the fit itself
       if (show.tags) for (const [id, t] of Object.entries(tags)) {
         const c = t.corners, off = drop.has(+id);
-        ctx.strokeStyle = off ? "#888" : t.predicted ? "#22b8cf" : "#51cf66"; ctx.lineWidth = 2 / V.s;
+        ctx.strokeStyle = off ? "#888" : out.has(+id) ? "#ff5a5f" : t.predicted ? "#22b8cf" : "#51cf66"; ctx.lineWidth = 2 / V.s;
         if (c) { ctx.beginPath(); c.forEach((p, k) => k ? ctx.lineTo(p[0], p[1]) : ctx.moveTo(p[0], p[1])); ctx.closePath(); ctx.stroke(); }
         const ce = t.center || (c && [c.reduce((a, p) => a + p[0], 0) / 4, c.reduce((a, p) => a + p[1], 0) / 4]);
         ctx.fillStyle = ctx.strokeStyle; ctx.font = `bold ${12 / V.s}px system-ui`; ctx.fillText(id, ce[0] + 6 / V.s, ce[1] - 6 / V.s);
@@ -1260,14 +1387,14 @@
         plist(); V.render(); const n = el.querySelector(`#plist [data-p="${window.CSS.escape(k)}"]`); if (n) n.focus(); });
     }
     function rep() {
-      const r = report;
-      const tl = Object.entries(tags).map(([id, t]) => `<label class="chip ${drop.has(+id) ? "" : "on"}" title="${t.predicted ? "found from the fit" : "detected"}${t.n ? `, ${t.n} frames` : ""}"><input type="checkbox" class="vh" data-t="${id}" ${drop.has(+id) ? "" : "checked"} aria-label="Use AprilTag ${id}">${id}${t.predicted ? "*" : ""}</label>`).join("");
-      el.querySelector("#rep").innerHTML = `<div class="small"><b>Tags</b> (click to ignore one): <div class="chips">${tl || `<span class="muted">none found — click field points</span>`}</div></div>` +
-        (r ? `<div class="vs-kv small"><b>Fit</b>: ${h(fmt(r)) || "–"}<br>focal ${r.f} px · k1 ${r.k1} · camera at (${r.C.map(v => v.toFixed(1)).join(", ")}) m
-          ${(r.warnings || []).map(w => `<div class="vs-warn">${CS.icon("warn", "ico")} ${h(w)}</div>`).join("")}
+      const r = report, out = new Map(((r && r.dropped_tags) || []).map(d => [+d.id, d]));
+      const tl = Object.entries(tags).map(([id, t]) => { const o = out.get(+id);
+        return `<label class="chip ${drop.has(+id) ? "" : "on"} ${o ? "vc-out" : ""}" title="${o ? `left out by the fit: ${h(o.off_px)} px from where the other tags put it` : t.predicted ? "found from the fit" : "detected"}${t.n ? `, ${t.n} frames` : ""}"><input type="checkbox" class="vh" data-t="${id}" ${drop.has(+id) ? "" : "checked"} aria-label="Use AprilTag ${id}${o ? " (left out by the fit: it doesn't line up)" : ""}">${id}${t.predicted ? "*" : ""}${o ? " ✕" : ""}</label>`; }).join("");
+      el.querySelector("#rep").innerHTML = `<div class="small"><b>Tags</b> (click to ignore one): <div class="chips">${tl || `<span class="muted">none found — click field lines or points</span>`}</div></div>` +
+        (r ? `<div class="vs-kv small">${verdictHtml(r)}${tagErrs(r.items)}<b>Fit</b>: ${h(fmt(r)) || "–"}<br>focal ${h(r.f)} px · k1 ${h(r.k1)} · camera at (${(r.C || []).map(v => (+v).toFixed(1)).join(", ")}) m
           ${Object.entries(r.lines || {}).map(([k, v]) => `<div>${h((NL[k.replace(" (auto)", "")] || {}).label || k)}${/auto/.test(k) ? " (found automatically)" : ""}: <b style="color:${v > 3 ? "var(--warn)" : "var(--good)"}">${v} px</b></div>`).join("")}
           ${(r.items || []).filter(i => i.kind === "point").map(i => `<div>${h((NP[i.id] || {}).label || i.id)}: <b style="color:${i.err_px > 6 ? "var(--bad)" : i.err_px > 3 ? "var(--warn)" : "var(--good)"}">${i.err_px} px</b></div>`).join("")}
-          <div class="muted">Does the yellow outline / grid sit on the carpet everywhere, and the hub boxes on the hubs? Then accept.</div></div>` : "");
+          <div class="muted">${verdictOf(r) === "bad" ? "Fix it before saving: click 2 or more points along a few field lines (or field points), untick a tag that doesn't line up, and Fit again." : "Does the yellow outline / grid sit on the carpet everywhere, and the hub boxes on the hubs? Then accept."}</div></div>` : "");
       el.querySelectorAll("[data-t]").forEach(c => c.onchange = () => { c.checked ? drop.delete(+c.dataset.t) : drop.add(+c.dataset.t); rep(); V.render(); });
     }
     // pointer (mouse, finger, pen): place / drag named points; right-click or the list's × removes one
@@ -1326,23 +1453,31 @@
 
     el.querySelector("#det").onclick = async () => {
       try {
-        const r = await job(ev, A("POST", `events/${ev}/calibration/${target}/detect`, srcId ? { source: srcId } : {}), st);
+        const r = await job(ev, A("POST", `events/${ev}/calibration/${target}/detect`, srcId ? { source: srcId } : {}), t => st(calPlain(t)));
         W = r.W; H = r.H; tags = r.tags; NP = r.points || NP; NL = r.lines || NL; report = r.report || null; overlay = r.overlay || null; drop = new Set();
         hasFrame = true; await loadFrame(); el.querySelector("#fit").disabled = false;
-        st(`${Object.keys(tags).length} tags found${r.report ? " — a first fit is drawn; check it or add points" : " — click field points (≥ 4–6 spread over the field), then Fit"}`);
+        const n = Object.keys(tags).length, v = verdictOf(report);
+        readNote(r, n);
+        st(!n ? "No AprilTags found: click 2 or more points along a few field lines (or field points), then Fit"
+          : `${n} AprilTag${n === 1 ? "" : "s"} found${r.report ? ` — a first fit is drawn: ${v === "bad" ? "it can't be trusted (see why on the right)" : v === "check" ? "check it" : "it looks right; check the grid"}`
+          : r.fit_error ? `: ${calPlain(r.fit_error)}` : " — click field lines or points (4–6 spread over the field), then Fit"}`);
         plist(); rep(); V.render();
       } catch (e) { stE(e); }
     };
     el.querySelector("#fit").onclick = async () => {
       try {
-        const r = await job(ev, A("POST", `events/${ev}/calibration/${target}/fit`, { points, line_clicks: lineClicks, drop_tags: [...drop] }), st);
-        if (r.error) { st(r.error); return; }
+        const r = await job(ev, A("POST", `events/${ev}/calibration/${target}/fit`, { points, line_clicks: lineClicks, drop_tags: [...drop] }), t => st(calPlain(t)));
+        if (r.error) { stE(r.error); return; }
         report = r.report; overlay = r.overlay; tags = r.tags || tags; lineClicks = r.line_clicks || lineClicks;
-        el.querySelector("#acc").disabled = false; st("fitted — check the overlay"); rep(); plist(); V.render();
+        const v = verdictOf(report);
+        el.querySelector("#acc").disabled = false; accState();
+        st(v === "bad" ? `fitted, but it can't be trusted: ${shortBad(report)}` : v === "check" ? "fitted — check the overlay carefully (see the notes)" : "fitted — check the overlay");
+        rep(); plist(); V.render();
       } catch (e) { stE(e); }
     };
     el.querySelector("#acc").onclick = async () => {
-      if (!confirm("Save this calibration? The pipeline uses it for the next matches (the old file is kept as a backup).")) return;
+      if (!confirm(verdictOf(report) === "bad" ? `This fit can't be trusted: ${shortBad(report)}. Robots and shots would be placed wrongly on the field. Save it anyway? (the old file is kept as a backup)`
+        : "Save this calibration? The pipeline uses it for the next matches (the old file is kept as a backup).")) return;
       try { await A("POST", `events/${ev}/calibration/${target}/accept`); st("saved"); route(false); } catch (e) { stE(e); }
     };
     const sc = el.querySelector("#showcur");
@@ -1401,6 +1536,22 @@
     .vs-pt:hover { background:var(--panel2); } .vs-pt.on { background:var(--panel2); outline:1px solid var(--accent); } .vs-pt.set { color:var(--caution); }
     .chip.set { color:var(--caution); }
     .vs-kv { margin-top:8px; line-height:1.55; } .vs-warn { color:var(--warn); }
+    .vc-v { display:grid; gap:4px; margin:6px 0; padding:8px 10px; border-radius:var(--r-s); border:1px solid var(--line); font-size:var(--fs-foot); line-height:1.45; }
+    .vc-v.good { border-color:color-mix(in srgb, var(--good) 45%, transparent); background:color-mix(in srgb, var(--good) 8%, transparent); }
+    .vc-v.check { border-color:var(--caution-line); background:var(--caution-tint); }
+    .vc-v.bad { border-color:color-mix(in srgb, var(--bad) 55%, transparent); background:color-mix(in srgb, var(--bad) 9%, transparent); }
+    .vc-vt { display:flex; gap:6px; align-items:center; } .vc-vt .ico { width:15px; height:15px; flex:none; }
+    .vc-v.good .vc-vt { color:var(--good); } .vc-v.check .vc-vt { color:var(--caution); } .vc-v.bad .vc-vt { color:var(--bad); }
+    .vc-why { margin:0; padding-left:18px; display:grid; gap:3px; color:var(--ink); }
+    .vc-why li.bad::marker { color:var(--bad); } .vc-why li.check::marker { color:var(--caution); } .vc-why li.note::marker { color:var(--ink-2); }
+    .vc-ok { margin:0; color:var(--ink-2); }
+    .vc-tags { display:flex; flex-wrap:wrap; gap:4px; margin:4px 0; }
+    .vc-t { padding:1px 8px; border-radius:999px; border:1px solid var(--line); font-variant-numeric:tabular-nums; white-space:nowrap; }
+    .vc-t.good { border-color:color-mix(in srgb, var(--good) 45%, transparent); } .vc-t.warn { border-color:var(--caution-line); color:var(--caution); }
+    .vc-t.bad { border-color:color-mix(in srgb, var(--bad) 55%, transparent); color:var(--bad); }
+    .vc-t.out { border-style:dashed; border-color:color-mix(in srgb, var(--bad) 55%, transparent); color:var(--bad); }
+    .vc-whyshort { color:var(--bad); } .vc-read { margin:6px 0 0; } .vc-fig { margin:0; display:grid; gap:4px; min-width:0; }
+    .chip.vc-out { border-style:dashed; color:var(--bad); }
     button.small { padding:2px 8px; font-size:12px; }
     .vs-src td:first-child { white-space:normal; overflow-wrap:anywhere; min-width:200px; } .vs-src td.vs-c { text-align:center; }
     .vs-form input:not([type=checkbox]), .vs-num { background:var(--surface); color:var(--ink); border:1px solid var(--line-strong); border-radius:var(--r-s);
