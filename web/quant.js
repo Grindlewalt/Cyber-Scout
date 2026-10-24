@@ -196,8 +196,10 @@ function section(id, title, body, note = "") {
 // start spot in words (team frame: own wall at x = 16.54 m, driver's left = low y), not raw metres
 const spotTxt = xy => { if (!xy) return "–"; const x = xy[0] / 100, y = xy[1] / 100, d = 16.541 - x; return `${y < 2.7 ? "driver's left" : y > 5.4 ? "driver's right" : "centre"}, ${d < 0 ? 0 : d.toFixed(1)} m off own wall`; };
 const label_ = c => `n=${c.n}${c.of ? "/" + c.of : ""} (${(c.keys || []).map(shortKey).join(", ")})`;
-async function teamPage(ev, tk) {
-  crumbs([[ev, `#/${ev}`], [num(tk)]]);                // this page's title even if its data fails to load (MATCH-8)
+// opt: {host: element to draw in (default the page), only: section ids to show (the team's field pages, teams2.js), quiet: no title}
+async function teamPage(ev, tk, opt = {}) {
+  const root = opt.host || $app, only = opt.only ? new Set(opt.only) : null;
+  if (!opt.quiet) crumbs([[ev, `#/${ev}`], [num(tk)]]);                // this page's title even if its data fails to load (MATCH-8)
   const [d, e, scd] = await Promise.all([getTeam(ev, tk), api(`${ev}/event.json`).catch(() => null), scoutData(ev)]);
   const SR = (scd && scd.by[tk]) || {}, SV = SR.video || {}, RT = SR.rating || {}, CV = SR.coverage || { n: 0, keys: [] };
   const vkeys = new Set(CV.keys || []), vshort = new Set((CV.keys || []).map(shortKey));
@@ -206,7 +208,7 @@ async function teamPage(ev, tk) {
   d.shots_map = (d.shots_map || []).filter(p => vshort.has(p.m));
   d.autos = (d.autos || []).filter(a => vshort.has(a.short));
   if (tainted) { d.routines = []; d.heat = null; d.intakes_map = []; }
-  crumbs([[e ? e.name : ev, `#/${ev}`], [`${d.number}${d.nickname ? " · " + d.nickname : ""}`]]); $updated.textContent = "";
+  if (!opt.quiet) { crumbs([[e ? e.name : ev, `#/${ev}`], [`${d.number}${d.nickname ? " · " + d.nickname : ""}`]]); $updated.textContent = ""; }
   const ag = d.analytics, S = ag && ag.scoring || {}, MV = ag && ag.movement || {}, DF = ag && ag.defense || {}, EG = ag && ag.endgame || {}, RL = ag && ag.reliability || {};
   const ms = d.matches || [], an = ms.map(m => m.analytics || null);
   const hasRoutine = an.some((a, i) => a && ms[i].verified && a.auto && a.auto.routine), RC = hasRoutine ? 0 : 1;     // the Auto routine column only when some match has one
@@ -223,7 +225,7 @@ async function teamPage(ev, tk) {
   const levels = EG.levels || {}, nL = Object.values(levels).reduce((a, b) => a + b, 0) || 1;
   const trend = (label, vals, f, color) => `<div class="trend"><span>${label}</span>${spark(vals, { color })}<em>${fmtV(vals.filter(has).slice(-1)[0], f)}</em></div>`;
 
-  $app.innerHTML = `<div class="titlebar"><div><h1>${d.number} <span class="muted" style="font-weight:500">${esc(d.nickname || "")}</span></h1>
+  root.innerHTML = `<div class="titlebar"><div><h1>${d.number} <span class="muted" style="font-weight:500">${esc(d.nickname || "")}</span></h1>
     <div class="sub">${d.rank ? `Rank ${d.rank} · ` : ""}${d.opr != null ? `OPR ${fx(d.opr)} · ` : ""}${CV.n} verified match${CV.n === 1 ? "" : "es"}${CV.of ? ` of ${CV.of} played` : ""}${d.tracked > CV.n ? ` <span class="muted small">(${d.tracked - CV.n} replay-only)</span>` : ""}
       ${HP ? ` · <span class="hp-pills"><span class="pill hp on${HP.on.thin ? " thin" : ""}"${tipX(`Teleop, while our hub is active (n=${HP.on.n} matches).`, true)}>Hub active: ${esc(HP.on.label)}</span> <span class="pill hp off${HP.off.thin ? " thin" : ""}"${tipX(`Teleop, while our hub is inactive (n=${HP.off.n} matches).`, true)}>Inactive: ${esc(HP.off.label)}</span></span>` : ""}
       · ${covPill(CV)} ${flagChips(SR)} · <a href="https://www.thebluealliance.com/team/${d.number}/${(e && e.year) || ""}" target="_blank" rel="noopener">TBA</a></div></div>
@@ -297,14 +299,17 @@ async function teamPage(ev, tk) {
         || `<tr><td colspan="16" class="empty">No tracked matches yet</td></tr>`}</tbody></table></div>`)}
     </div>`;
 
-  if (CS.notes) CS.notes.mount(document.getElementById("tpNotes"), ev, { team: tk });      // notes.js
+  if (only) {       // a field's page: just its sections; the rest stay in the DOM (hidden) so the drawing code below finds its canvases
+    root.querySelectorAll(".titlebar,.jump,.trends,.sc-banner,#tpNotes").forEach(x => { x.style.display = "none"; });
+    root.querySelectorAll(".sect").forEach(x => { if (!only.has((x.id || "").replace(/^s-/, ""))) x.style.display = "none"; });
+  } else if (CS.notes) CS.notes.mount(document.getElementById("tpNotes"), ev, { team: tk });      // notes.js
   document.querySelectorAll(".jump a").forEach(a => a.onclick = ev_ => { ev_.preventDefault(); const s = document.getElementById("s-" + a.dataset.j); s && s.scrollIntoView({ behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "start" }); });
   const starB = document.querySelector("button#star");
   if (starB) starB.onclick = async e_ => {     // shared picklist (event.js) when signed in; read-only users get a plain mark instead
     const p = typeof plLoad === "function" ? await plLoad(ev) : lsGet("cyberscout:picks:" + ev, {}); p.stars = p.stars || [];
     const i = p.stars.indexOf(tk); i >= 0 ? p.stars.splice(i, 1) : p.stars.push(tk);
     // a star that doesn't reach the server says so (the Picklist shows the details and keeps the change until then)
-    const told = {}, open = () => { location.hash = `#/${ev}/picklist`; };
+    const told = {}, open = () => { location.hash = `#/${ev}/selection/picklist`; };
     const status = s => { if (told[s.k] || !CS.toast || !document.body.contains(starB)) return; told[s.k] = 1;
       if (s.k === "error") CS.toast(`Star not saved: ${s.why}`, { kind: "bad", action: "Open picklist", fn: open });
       else if (s.k === "conflict") CS.toast(`Star not saved: ${s.cur && s.cur.by && s.cur.by.display_name || "someone"} changed the picklist after this page loaded. Pick which list to keep on the Picklist.`, { kind: "warn", action: "Open picklist", fn: open }); };

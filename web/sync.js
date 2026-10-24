@@ -454,7 +454,7 @@
       if (ev && CS.picklist) CS.picklist.adopt(ev, it.current);
       await delIt(it); obChanged();
       toast(`Using the picklist ${who(it.current.updated_by)} saved.`);
-      if (ev && new RegExp(`^#/${ev}/picklist`).test(location.hash)) route(false);
+      if (ev && new RegExp(`^#/${ev}/(selection/)?picklist`).test(location.hash)) route(false);
       return;
     }
     // save mine over theirs (replaces their list: the card said what that removes) / retry: a new key, so the server
@@ -1031,7 +1031,7 @@
         } else if (ev && CS.picklist) CS.picklist.adopt(ev, it.current);
         await drop();
         toast(act === "mine" ? "Your picklist is saved. It replaced theirs; theirs stays in the picklist's history." : `Using the picklist ${who(it.current.updated_by)} saved.`);
-        if (ev && new RegExp(`^#/${ev}/picklist`).test(location.hash)) route(false);
+        if (ev && new RegExp(`^#/${ev}/(selection/)?picklist`).test(location.hash)) route(false);
       } else if (act === "retry") { await CS.app(it.method, it.path, it.body); await drop(); }
     } catch (x) {
       toast(x.status === 409 ? "The picklist changed on the server again meanwhile. Look at the newest version, then choose again." : x.message, { kind: "bad" });

@@ -1,5 +1,5 @@
 "use strict";
-// Event page panes: quantitative team table, Compare, Picklist. Uses globals from app.js / quant.js.
+// Event page panes: Compare and Picklist (Selection tabs, rankings.js), scout row helpers. Uses globals from app.js / quant.js.
 
 /** derive the compact per-team summary (event.json teams[].q) from a team file's aggregate analytics */
 function summarize(t) {
@@ -22,74 +22,16 @@ function loadRows(d, ev, onProgress) {
   eventRows[ev] = { n: d.updated, p }; return p;
 }
 
-// Canonical team metrics come from scout.json (one value per metric, same on every page). key, label, getter(row)
-// -> metric {v, raw, n, tier, lower_bound} | number, format, higher-is-better (1 / -1 / 0), default visible, tooltip.
+// Canonical team metrics come from scout.json (one value per metric, same on every page): {v, raw, n, tier, lower_bound}.
+// (The Teams table that used to be here is the Teams page in teams2.js; the Picklist below still uses these helpers.)
 const VID = (r, k) => r.s && r.s.video ? r.s.video[k] : null;
-const QCOLS = [
-  ["blend", "Blend", r => r.s?.rating?.blend, "1", 1, 1, "model rating: expected points/match (TBA results + earlier events + verified video), schedule-neutral"],
-  ["epa", "EPA", r => r.s?.rating?.epa, "1", 1, 1, "EPA, local as-of (TBA results only)"],
-  ["video", "Video", r => r.s?.coverage?.n ?? 0, "cov", 1, 1, "verified robot-video matches / matches played (v2 tracker, identity ≥ 60%)"],
-  ["made", "Made/m", r => VID(r, "made_pm"), "1", 1, 1, "FUEL made per match on verified video (shrunk; ≥ = alliance FUEL under-credited, a floor)"],
-  ["acc", "Acc", r => VID(r, "acc"), "p", 1, 1, "accuracy made / (made+missed), shrunk toward the event (20 pseudo-shots)"],
-  ["automade", "Auto", r => VID(r, "auto_made"), "1", 1, 1, "auto FUEL per match on verified video (hidden when it contradicts TBA)"],
-  ["cycle", "Cycle s", r => VID(r, "cycle_s"), "1", -1, 1, "median time between volley starts (lower is better)"],
-  ["hopper", "Volley p90", r => VID(r, "hopper"), "0", 1, 0, "90th percentile volley size ≈ hopper"],
-  ["fire", "Fire /s", r => VID(r, "fire"), "1", 1, 0, "balls per second within a volley"],
-  ["climb", "Climb", r => r.s?.climb?.rate, "p", 1, 1, "endgame climb rate from TBA per robot (every played qual)"],
-  ["dead", "Dead", r => VID(r, "dead"), "pd", -1, 0, "share of verified matches disabled (shown only with ≥ 3 verified matches)"],
-  ["speed", "p95 m/s", r => VID(r, "speed_p95"), "2", 1, 0, "95th percentile moving speed"],
-  ["defs", "Def. played", r => VID(r, "def_played"), "0", 1, 0, "defense episodes played (verified matches)"]];
 const qv = x => x && typeof x === "object" ? (x.n ? x.v : null) : x;
-function qcell(c, r) {
-  const x = c[2](r);
-  if (c[3] === "cov") return covPill(r.s?.coverage, { short: true });
-  if (c[3] === "pd") return x && x.n >= 3 ? fmtV(x.v, "p") + `<span class="sc-sd">n=${x.n}</span>` : `<span class="muted">–</span>`;
-  if (x && typeof x === "object") return svHtml(x, c[3] === "p" ? "p" : c[3]);
-  if (c[0] === "blend" && has(x)) return `${fmtV(x, "1")}<span class="sc-sd">±${fmtV(r.s.rating.sd, "0")}</span>`;
-  return fmtV(x, c[3]);
-}
 async function scoutRows(d, ev, ts) {
   let sd;
   if (ts) { try { sd = await api(`${ev}/scout/${ts}.json`); sd.by = Object.fromEntries(sd.teams.map(t => [t.team, t])); } catch (e) { sd = null; } }
   else sd = await scoutData(ev);
   // replay: rank / OPR as of then (scout snapshot), never the end-of-event values from event.json
   return { sd, rows: d.teams.map(t => { const s = sd && sd.by[t.key] || null; return { t: ts ? { ...t, rank: s?.rank ?? null, opr: s?.rating?.opr ?? null } : t, s }; }) };
-}
-
-// fold order when the table is narrower than its columns: higher = kept longer (app.js fitTable)
-const TPRI = { rank: 1000, number: 990, blend: 800, made: 700, acc: 600, video: 450, flags: 400, climb: 300, automade: 260, cycle: 220, epa: 200, opr: 150, nickname: 60 };
-const TEAMS_HELP = `<span class="hl">Tap a header to sort. <b>Blend</b> ± sd and <b>EPA</b> are points per match.</span>
-  <span class="hl">Video columns use verified matches only (v2 tracker, identity ≥ 60%); v1 tracks feed nothing but the replay. Values are shrunk toward the event; hover a value (or open its team page) for the raw number and n. <i>Grey italic</i> = fewer than 3 verified matches.</span>
-  <span class="hl"><b>≥</b> marks a floor: more than 20% of that alliance's FUEL was not credited to any robot, so low video numbers are not evidence of a weak robot.</span>
-  <span class="hl">Climb is from TBA for every played qual.</span>`;
-function teamsTable(el, d, ev) {
-  const vis = lsGet("cyberscout:cols2", null) || Object.fromEntries(QCOLS.map(c => [c[0], !!c[5]]));
-  const picks = lsGet("cyberscout:picks:" + ev, {}), stars = new Set(picks.stars || []);
-  let sk = "blend", dir = -1, data = null, showCfg = false;
-  const base = [["rank", "Rank", r => r.t.rank ?? "–", true, r => r.t.rank], ["number", "Team", r => `<a class="team" href="#/${ev}/t/${r.t.key}">${r.t.number}</a>${stars.has(r.t.key) ? ` <span class="starm" title="starred">${CS.icon("starOn")}<span class="vh">starred</span></span>` : ""}`, false, r => r.t.number],
-    ["nickname", "Name", r => esc(r.t.nickname), false, r => r.t.nickname || ""], ["opr", "OPR", r => fx(r.t.opr), true, r => r.t.opr, "TBA OPR (end of event)"]];
-  const cols = () => [...base, ...QCOLS.filter(c => vis[c[0]]).map(c => [c[0], c[1], r => qcell(c, r), true, r => qv(c[2](r)), c[6]]),
-    ["flags", "", r => flagChips(r.s, ["auto_not_tracked", "video_higher", "video_lower"]), false, () => null]];
-  const render = () => {
-    const cs = cols(), arr = [...(data ? data.rows : d.teams.map(t => ({ t, s: null })))];
-    const sc = cs.find(c => c[0] === sk) || cs[0];
-    arr.sort((a, b) => { const x = sc[4](a), y = sc[4](b); if (x == null && y == null) return a.t.number - b.t.number; if (x == null) return 1; if (y == null) return -1; return (typeof x === "string" ? x.localeCompare(y) : x - y) * dir; });
-    el.innerHTML = `${dataBanner(data && data.sd)}<div class="controls"><button id="cfg" class="${showCfg ? "on" : ""}" aria-expanded="${showCfg}">Columns</button>${data ? "" : '<span class="muted small">loading…</span>'}${CS.help(TEAMS_HELP, "How to read this table")}</div>
-      ${showCfg ? `<div class="cfg">${QCOLS.map(c => `<label title="${esc(c[6])}"><input type="checkbox" data-c="${c[0]}" ${vis[c[0]] ? "checked" : ""}> ${c[1]}</label>`).join("")}</div>` : ""}
-      <h2 class="vh">Teams</h2><div class="tablewrap"><table><thead><tr>${cs.map(([k, t, , n, , tip]) => `<th data-k="${k}" data-pri="${TPRI[k] ?? 100}" title="${esc(tip || "")}" class="${n ? "num" : ""}"${k === "flags" ? "" : ` tabindex="0" aria-sort="${sk === k ? (dir > 0 ? "ascending" : "descending") : "none"}"`}>${t}${sk === k ? (dir > 0 ? " ▲" : " ▼") : ""}</th>`).join("")}</tr></thead>
-      <tbody>${arr.map(r => `<tr${r.t.key === (d.team || "frc4911") ? ' class="usrow"' : ""}>${cs.map(([, , f, n]) => `<td class="${n ? "num" : ""}">${f(r)}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`;
-    el.querySelector("#cfg").onclick = () => { showCfg = !showCfg; render(); };
-    el.querySelectorAll(".cfg input").forEach(i => i.onchange = () => { vis[i.dataset.c] = i.checked; lsSet("cyberscout:cols2", vis); render(); });
-    el.querySelectorAll("th").forEach(th => {
-      th.onclick = () => {
-        const k = th.dataset.k; if (!k || k === "flags") return; if (sk === k) dir = -dir; else { sk = k; const q = QCOLS.find(c => c[0] === k); dir = ["rank", "number", "nickname"].includes(k) ? 1 : -1; if (q && q[4] === -1) dir = 1; }
-        render(); const f = el.querySelector(`th[data-k="${k}"]`); if (f) f.focus();
-      };
-      th.onkeydown = e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); th.onclick(); } };
-    });
-  };
-  render();
-  scoutRows(d, ev).then(r => { data = r; if (el.isConnected) render(); });
 }
 
 // ------------------------------------------------------------------ compare
@@ -103,9 +45,9 @@ async function comparePane(el, d, ev, arg) {
     <div id="cmpshow"></div><div id="cmpbody" class="cmp"></div>`;
   const body = el.querySelector("#cmpbody"), showEl = el.querySelector("#cmpshow");
   const selects = [...el.querySelectorAll("select")];
-  // the picked teams are also in the address (#/<ev>/compare/4911,2046,948), so a comparison can be shared; replaceState
+  // the picked teams are also in the address (#/<ev>/selection/compare/4911,2046,948), so a comparison can be shared; replaceState
   // keeps the page as it is (no re-route)
-  const toUrl = () => { try { history.replaceState(history.state, "", `#/${ev}/compare${sel.length ? "/" + sel.map(num).join(",") : ""}`); } catch (e) { } };
+  const toUrl = () => { try { history.replaceState(history.state, "", `#/${ev}/selection/compare${sel.length ? "/" + sel.map(num).join(",") : ""}`); } catch (e) { } };
   selects.forEach((s, i) => { s.value = sel[i] || ""; s.onchange = () => { sel = selects.map(x => x.value).filter(Boolean); lsSet("cyberscout:cmp:" + ev, sel); toUrl(); build(); }; });
   if (sel.length && !arg) toUrl();
   // one {v,n,conf} leaf -> value + n (grey italic under 3 matches), "–" when missing
@@ -158,7 +100,7 @@ async function comparePane(el, d, ev, arg) {
 
 // ------------------------------------------------------------------ picklist
 // Storage: one shared picklist per event on the server (app/v1/events/<ev>/picklists/main; strategists and admins
-// edit, everyone signed in reads), cached in localStorage under the old key (teamsTable / quant.js read the stars
+// edit, everyone signed in reads), cached in localStorage under the old key (the Teams page / quant.js read the stars
 // from there). No server (legacy static site) -> localStorage only, as before.
 // A change is never dropped silently: until the server has it, it is kept on this device as a draft
 // (localStorage cyberscout:picks:unsaved:<ev>:<user>) and the page says why it isn't saved (an error, someone else
@@ -313,7 +255,7 @@ const PL_KEYS = [["blend", "Blend", r => r.s?.rating?.blend, 1], ["made", "Video
   ["defs", "Defense", r => VID(r, "def_matches"), 1]];
 async function picklistPane(el, d, ev) {
   el.innerHTML = `<div class="loading">Loading team stats…</div>`;
-  const hm = location.hash.match(/\/picklist\/(\d{9,})/);          // deep link #/<ev>/picklist/<ts>
+  const hm = location.hash.match(/\/picklist\/(\d{9,})/);          // deep link #/<ev>/selection/picklist/<ts>
   const ts = hm ? hm[1] : "";                                      // as-of time lives in the toolbar (URL)
   const { sd, rows } = await scoutRows(d, ev, ts);
   const fmtTs = t => { const x = new Date(t * 1000); return ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][x.getDay()] + " " + x.toTimeString().slice(0, 5); };

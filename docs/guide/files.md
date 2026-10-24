@@ -462,7 +462,8 @@ Pure numpy/scipy. It reads the data root and writes site JSON. Run as `python -m
 | `sim.py` | Monte Carlo match simulator (`simulate`, `simulate_schedule`): auto → hub schedule → teleop → towers → fouls; Gamma noise + Gaussian copula. |
 | `baselines.py` | TBA-only baselines: ridge OPR (`opr_predict`), EPA-style rating (`EPA`), `Prequential` normal win probability, `S_PRIOR`. |
 | `backtest.py` | Honest backtest: every qual predicted from earlier matches only. Brier, log loss, accuracy, MAE, subsets and bootstrap CIs. |
-| `behavior.py` / `matchplan.py` | Match plans: per-team behaviour model (station-conditioned, partner-weighted) and the per-match `mp/<match>.json` predictions + actuals. || `preview.py` | Match preview JSON (`build_preview`, `key_factors`, `_robot_entry`). |
+| `behavior.py` / `matchplan.py` | Match plans: per-team behaviour model (station-conditioned, partner-weighted) and the per-match `mp/<match>.json` predictions + actuals. |
+| `preview.py` | Match preview JSON (`build_preview`, `key_factors`, `_robot_entry`). |
 | `epa.py` | EPA: `pre_event_prior` (from the teams' earlier events, TBA cached, or Statbotics), `local_epa` / `ComponentEPA` (running as-of EPA), `fetch_statbotics`, `sb_asof`, `cached_get` (IPv4, JSON cache). |
 | `rank.py` | 2026 RP rules + TBA tiebreakers; Monte Carlo rank projection. |
 | `matchday.py` | Dashboard helpers: as-of coverage, cached prequential backtest rows + footer, defense-library effect, queue card, defender pick. |
@@ -598,14 +599,15 @@ Static, no build step, served by nginx. Script order is fixed in `index.html`: `
 | `web/themes.css` | **Generated**: every theme (18) scoped to `html[data-style]` + mode, plus the layout CSS. |
 | `web/style.css` | Base tokens (type, spacing, shape) and all component styles. Colours come from `themes.css`. |
 | `web/fonts.css` | Archivo variable font inlined as base64 `@font-face` (works offline on venue Wi-Fi). |
-| `web/dash.js` | `#/<ev>/dash[/<ts\|live>[/<q51>]]` dashboard: match rail, queue card, our event, schedule, levers, ratings, honest footer. Entry `dashPage(ev, ts)`, called by `app.js`. |
+| `web/dash.js` | `#/<ev>/dash[/<ts\|live>[/<q51>]]` Match Day: countdown, our-colour bar, red \| blue line, the match field + predicted scoreboard (`mp/<match>.json`), match rail, queue card, our event, schedule, levers, ratings, honest footer. Entry `dashPage(ev, ts)`, called by `app.js`. |
+| `web/matchfield.js` | `CS.matchField` / `CS.matchPeriods` / `CS.matchNote`: one match plan drawn top-down (Auto / Tele, Predicted / Actual, not-enough-info in yellow) and its period bars; used by the Dashboard and the Schedule. |
 | `web/player.js` | Match viewer `#/<ev>/m/<match>` and `#/<ev>/a/<match>[?t=]`: video + canvas layers (robots, labels, trails, arcs, fuel, field, HUD), View menu (Video / Field / Overlay), station-camera sync, identity corrections timeline, livestream clip playback (`liveMatchPage`), the played-but-untracked card (`untrackedMatchPage`). |
 | `web/quant.js` | Shared quant helpers and charts (`tile`, `spark`, `bars`, `periodBars`, `drawShotChart`, `drawIntakeMap`, `drawPath`, `densityLayer`, `drawHubMark`, `chipRow`, `section`) and the team page `teamPage` (`#/<ev>/t/<team>`). |
 | `web/event.js` | Event panes: team table (`teamsTable`, columns from `scout.json` + `event.json`), Compare (`comparePane`, shareable URL), Picklist (`picklistPane`: shared server picklist `main`, replay-aware, stars / DNP / order / weights; `plLoad` / `plSave` / `plSend` with per-user drafts, conflict banner, read-only roles, 20 s polling, History + Restore, `CS.picklist.adopt`). |
-| `web/rankings.js` | `#/<ev>/rankings` (rankings, RP, projected range, district points, goal panel) and `#/<ev>/selection[/<ts>]` (Selection: seeds, captains, need grid, pitch cards). |
-| `web/schedule.js` | `#/<ev>/schedule`: all matches, predicted win %, per-period "where you'll be beaten" for our matches. |
-| `web/teams2.js` | `#/<ev>/specs[/<team>]` spec sheets: `listPage`, `specPage`, `laneDiagram`, `shotMap`, `pathsAnim`. |
-| `web/defense.js` | `#/<ev>/defense[/<target>]` defense library: episodes, effect glyphs, top-down clip player (`clipPlayer`, `getClip`). |
+| `web/rankings.js` | `#/<ev>/rankings` (rankings, RP, projected range, district points, goal panel) and `#/<ev>/selection[/<ts>|<tab>]`: Selection's four tabs Odds (seeds, captains, need grid, pitch cards), Picklist, Compare and Defense. |
+| `web/schedule.js` | `#/<ev>/schedule` (replaces Matches): every match; a row expands to the match field, period bars and video; queue status pills + header. |
+| `web/teams2.js` | `#/<ev>/teams[/<team>[/<field>]]`: the Teams quick look (expand a team into every tracked field), a field's own page (`CS.fieldPage`), and the spec-sheet renderer `CS.specPage` (`laneDiagram`, `shotMap`, `pathsAnim`); `specs[/<team>]` redirects here. |
+| `web/defense.js` | Selection → Defense (`CS.defensePane`, `#/<ev>/selection/defense[/<team>|defenders|team]`): best defenders ranking (labelled assumption), the defense library, top-down clip player (`clipPlayer`, `getClip`); `defense[/x]` redirects here. |
 | `web/sources.js` | `#/<ev>/sources[/sources\|layout\|calib][/<id>]` (admin): sources list, layout box editor (`layoutTab`, `FrameView`), calibration wizard (`calibTab`). Polls jobs. |
 | `web/field.jpg` | (binary) Top-down field image for canvases. |
 | `web/fonts/*.woff2` | (binary, 16 files) Theme fonts (see Binary assets). |

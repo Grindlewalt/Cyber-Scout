@@ -61,7 +61,7 @@ Files (sizes at `c64b813`):
 | `fonts/*.woff2` | 16 files | self-hosted theme fonts (copied from `lab/fonts/` by `site-themes.mjs`) |
 | `field.jpg` | 118 KB | top-down field image used by every canvas (`FIELD`) |
 | `quant.js` | 357 | chart helpers (shot chart, density, paths, bars, sparklines) + the team page |
-| `event.js` | 553 | Teams table, Compare, Picklist (shared list, drafts, conflicts, History) |
+| `event.js` | ~470 | Compare, Picklist (shared list, drafts, conflicts, History): panes of Selection; `scoutRows` |
 | `player.js` | 950 | match page / Analyze viewer, livestream-only match page, untracked-match card |
 | `dash.js` | 601 | strategy Dashboard |
 | `app.js` | 1125 | data contract, plugin registry, shared helpers, shell/nav, global notice, processing state, time control, router |
@@ -72,10 +72,10 @@ Files (sizes at `c64b813`):
 | `audit.js` | 242 | Activity (audit log in sentences, lockdown, sign-in policy) and Identity-fixes queue (+ nav badge) |
 | `notes.js` | 356 | `CS.notes` (Notes card on the team and match pages) and `CS.idFix` ("Wrong team?" identity-fix form on the match page) |
 | `sources.js` | 1444 | Video setup: per-video cards, link checks, TBA webcasts, layout box editor, calibration wizard; livestream recorder status |
-| `rankings.js` | 275 | Rankings & season goal; Selection tab (+ empty state) |
+| `rankings.js` | ~315 | Rankings & season goal; Selection (tabs Odds / Picklist / Compare / Defense) |
 | `schedule.js` | 156 | Schedule with per-period breakdown |
-| `teams2.js` | 308 | Spec sheets (list + per team) |
-| `defense.js` | 427 | Defense library with top-down clips |
+| `teams2.js` | ~700 | Teams (list, expanded fields, a field's own page) + the spec-sheet renderer |
+| `defense.js` | ~470 | Defense tab of Selection: Best defenders + library with top-down clips |
 | `settings.js` | 112 | per-browser look: theme / appearance / layout; Offline / Connection section first (sync.js) |
 | `nginx.conf` | 265 | the web container's nginx (see `deploy.md` for the non-SPA parts) |
 | `Dockerfile` | 14 | `nginx:1.29-alpine` image, cache-bust stamp |
@@ -198,18 +198,22 @@ Registered items (committed):
 | 10 | Dashboard | `#/<ev>/dash[/<ts>]` | day | tab, replay | app.js |
 | 20 | Schedule | `#/<ev>/schedule` | day | tab | schedule.js |
 | 30 | Rankings | `#/<ev>/rankings` | day | tab | rankings.js |
-| 40 | Selection | `#/<ev>/selection[/<ts>]` | picks | replay | rankings.js |
-| 42 | Picklist | `#/<ev>/picklist[/<ts>]` | picks | replay | app.js (pane in event.js) |
-| 50 | Teams | `#/<ev>/teams` | scout | tab | app.js (pane in event.js) |
-| 55 | Compare | `#/<ev>/compare` | scout | | app.js (pane in event.js) |
-| 60 | Matches | `#/<ev>/matches` | scout | | app.js |
-| 65 | Specs | `#/<ev>/specs` | scout | | teams2.js |
-| 70 | Defense | `#/<ev>/defense` | scout | | defense.js |
+| 35 | Teams | `#/<ev>/teams[/<team>[/<field>]]` | day | tab | app.js (page in teams2.js) |
+| 40 | Selection | `#/<ev>/selection[/<ts>]`, tabs `/picklist[/<ts>]`, `/compare[/<teams>]`, `/defense[/<team>]` | picks | replay | rankings.js |
 | 80 | Video | `#/<ev>/sources` | manage | roles admin | sources.js |
 | 94 | Identity fixes | `#/<ev>/fixes` (old `#/fixes` redirects to the current competition's) | manage | minRole strategist, `badge` | audit.js |
 | 95 | Admin | `#/admin` | manage | global, roles admin | admin.js |
 | 96 | Activity | `#/activity` (icon `activity`) | manage | global, roles admin | audit.js |
 | 99 | Settings | `#/settings` | manage | global | settings.js |
+
+The **Scouting** group is gone (NAV_GROUPS keeps it, empty groups aren't drawn). Matches, Specs, Defense, Compare and
+Picklist are no longer nav items. The phone tab bar is Dashboard · Schedule · Rankings · Teams + More (Selection is in
+More). `CS.markActive("matches")` (player.js) is treated as Schedule.
+
+**Old links redirect** (`oldLink(p)` in app.js, before the route runs; `location.replace`, so Back is not trapped):
+`#/<ev>/matches` → `schedule`; `specs[/<team>]` → `teams[/<team>]`; `defense[/<x>]` → `selection/defense[/<x>]`;
+`compare[/<x>]` → `selection/compare[/<x>]`; `picklist[/<ts>]` → `selection/picklist[/<ts>]`. An unknown
+`#/<ev>/<word>` lands on Teams. `activeKey(p)` maps compare / picklist / defense to Selection, specs / `t` to Teams, `m` / `a` to Schedule.
 
 "My account" (`#/account`) is not a nav item; it is the user box link and an extra group in the phone More sheet
 (account name + **Sign out**, `CS.signOut`).
@@ -223,13 +227,16 @@ Registered items (committed):
 |---|---|
 | `#/<name>/…` where `<name>` is a global route | `CS.globalRoutes[name](...rest)` — `login`, `setup`, `account`, `admin`, `activity`, `fixes`, `settings` |
 | `#/` (empty) | `home()`: `api/events.json`; one event → redirect to it, else event cards |
-| `#/<ev>/<name>/…` where `<name>` is a plugin route | `CS.routes[name](ev, ...rest)` — `rankings`, `selection`, `schedule`, `specs`, `defense`, `sources` |
+| `#/<ev>/<name>/…` where `<name>` is a plugin route | `CS.routes[name](ev, ...rest)` — `rankings`, `selection`, `schedule`, `teams`, `sources` |
 | `#/<ev>/dash[/<ts\|live>[/<plan>]]` | `dashPage(ev, ts)` (dash.js) |
 | `#/<ev>` | `dashboard.json` exists → `dashPage`, 404 → `eventPage(ev)` (Teams) |
 | `#/<ev>/m/<match>` and `#/<ev>/a/<match>[?t=<video s>]` | `analyzePage` (player.js); `m` is an alias kept for old links |
 | `#/<ev>/t/<team>` | `teamPage` (quant.js) |
-| `#/<ev>/teams\|compare[/<a,b,c>]\|picklist[/<ts>]\|matches` | `eventPage(ev, tab, arg)` |
-| anything else under an event | `eventPage` → falls back to Teams |
+| `#/<ev>/t/<team>/<field>` | `CS.fieldPage` (teams2.js), same as `#/<ev>/teams/<team>/<field>` |
+| `#/<ev>/teams[/<team>[/<field>]]` | `CS.routes.teams` (teams2.js): list, a team expanded, a field's page |
+| `#/<ev>/selection[/<ts>\|<tab>[/<arg>]]` | `CS.routes.selection` (rankings.js); tab = odds, picklist, compare, defense |
+| old `matches`, `specs`, `defense`, `compare`, `picklist` | redirected by `oldLink` (see 4.2) |
+| anything else under an event | `eventPage` → redirects to Teams |
 
 Errors in a handler (UX fix wave) never keep the previous page's title: the toolbar title is the page that was
 asked for (`pageLabel(p)`: "Selection", "Match Q12", "Team 4911"), and pages set their own title before awaiting
@@ -300,12 +307,13 @@ team list every 20 s and on focus / visibility; setup.js re-reads `/session` eve
 
 `renderTimebar(p, ev)` puts at most one control in the toolbar, per page:
 
-- **Replayable pages** (nav item `replay:true`): Dashboard (`#/<ev>/dash/<ts>`), Selection (`#/<ev>/selection/<ts>`),
-  Picklist (`#/<ev>/picklist/<ts>`, ts ≥ 9 digits). `urlTs(p)` reads the ts. They get the full control (earlier /
+- **Replayable pages** (nav item `replay:true`): Dashboard (`#/<ev>/dash/<ts>`), Selection Odds (`#/<ev>/selection/<ts>`)
+  and its Picklist tab (`#/<ev>/selection/picklist/<ts>`, ts ≥ 9 digits; Compare and Defense get the static tag).
+  `urlTs(p)` / `selTs(p)` read the ts. They get the full control (earlier /
   later, a select of snapshot times, "Go live" / "Latest") with **that page's** times: Selection reads
   `selection/index.json` (`{times}`), the others `dash/index.json` (`[{ts,label,quals_played}]`, falling back to the
   selection index). Lists are cached 2 min. With no snapshots and no ts the page gets the static tag instead.
-- **Other data pages** (Teams, Compare, Matches, Specs, Defense, Schedule, Rankings): a static tag
+- **Other data pages** (Teams, Selection's Compare / Defense, Schedule, Rankings): a static tag
   `CS.latestLabel(ev)` — "Latest data" while the competition is on or upcoming, "End-of-event data" once it's over
   ("Latest" / "Final" on phones) — with a "?" (everything posted so far, not replay time; paused processing noted).
 - **Nothing** on Video, Identity fixes, match pages, global pages, or a competition whose `event.json` isn't built.
@@ -460,21 +468,20 @@ themselves on tap (`tipA`); the Matches table shows "–" instead of null/null a
 a verified match has a routine; routine chips are keyboard buttons in ink with a colour swatch; a star that doesn't
 reach the server says so in a toast (the Picklist keeps the change); read-only users see a plain star mark.
 
-### `event.js` — Teams, Compare, Picklist (panes of `eventPage`)
+### `event.js` — Compare, Picklist (panes of Selection)
 
-- **Teams** (`teamsTable`): one row per team from `event.json teams[]` joined with `scout.json` (`scoutRows`).
-  Columns `QCOLS`: Blend ± sd, EPA, Video coverage, Made/m, Acc, Auto, Cycle s, Volley p90, Fire /s, Climb (TBA),
-  Dead (only n ≥ 3), p95 m/s, Def. played, plus Rank / Team / Name / OPR. Sortable headers; a column picker
-  (visibility in `localStorage cyberscout:cols2`); fold priorities `TPRI`. Our row is tinted (also in the sticky
-  team cell of rate tables); headers are keyboard-sortable.
-- **Compare** (`#/<ev>/compare[/<t1,t2,t3>]`): up to 3 teams (selection remembered in
+(The Teams table that used to open here is the Teams page in `teams2.js`; `eventPage` in app.js only redirects to it.)
+`comparePane(el, d, ev, arg)` and `picklistPane(el, d, ev)` are called by the Selection tabs (rankings.js); `scoutRows`,
+`VID`, `qv` are the helpers they share.
+
+- **Compare** (`#/<ev>/selection/compare[/<t1,t2,t3>]`): up to 3 teams (selection remembered in
   `localStorage cyberscout:cmp:<ev>` and written to the URL with `replaceState`, so a comparison can be shared);
   labelled selects "Team 1/2/3"; a Blend ± sd row first; rows nobody has data for are left out; canonical rows + shot
   chart + auto paths, **verified matches only**.
-- **Picklist** (`#/<ev>/picklist[/<ts>]`): shared server picklist `main`
+- **Picklist** (`#/<ev>/selection/picklist[/<ts>]`): shared server picklist `main`
   (`GET/PUT app/v1/events/<ev>/picklists/main`, data `{stars:[teamkey], dnp:[teamkey], order:[teamkey],
-  weights:{metric:w}}`). Everyone keeps a copy in `localStorage cyberscout:picks:<ev>` (the team page and Teams
-  table read stars from there). Rules (UX fix wave):
+  weights:{metric:w}}`). Everyone keeps a copy in `localStorage cyberscout:picks:<ev>` (the team page and the Teams
+  page read stars from there). Rules (UX fix wave):
   - **Who edits:** strategist+ (`plCanEdit`); during lockdown only admins. Viewers, scouts and lockdown get no grips,
     star / do-not-pick buttons, Reset or sliders, just plain marks and a line saying why ("Read-only: only strategists
     and admins…" / "Lockdown is on…"). The team page's star is a plain mark for them.
@@ -567,8 +574,16 @@ Everything is drawn client-side on canvases over the real video; nothing is bake
 ### `dash.js` — Dashboard (`#/<ev>/dash[/<ts|live>[/<plan>]]`)
 
 Contract: `live/strategy/DASHBOARD.md`. Loads `dashboard.json` (live) or `dash/<ts>.json` (replay); live view also
-loads `event.json` for livestream results and `CS.liveRecorder` status. Order on screen:
+loads `event.json` for livestream results and `CS.liveRecorder` status, and per plan its match plan `mp/<match>.json`
+(`live/strategy/matchplan.py`, contract in `live/strategy/README.md`). Order on screen (Match Day redesign, Oct 2026):
 
+0. **Match Day head** (top of the queue card): label + countdown, a full-width **bar in our alliance colour**, one line
+   **red teams | blue teams** (us marked), then `CS.matchField` (below) for that match and the **predicted scoreboard**
+   (`CS.matchPeriods`: alliance totals + period bars). An alliance with `enough: false` turns yellow on the bar, the
+   team line and the scoreboard, with "not enough info (team 1234: why)" (`CS.matchNote`). Yellow is for predictions
+   only: actual results are always solid alliance colours. A match after the replay / as-of time is predicted-only
+   (no Actual switch, no actual numbers or paths). No mp file (older data, no tracking): a short note and the plan
+   content below as before.
 1. **Match rail** (`rail`): our matches as one wrapping strip — played results as W/L pills (phone: last three, "+N
    earlier"), a "now/replay" marker, upcoming plans as buttons with win %, a "RP" badge in goal mode. Stream-scored
    matches TBA hasn't posted show as "LIVE · stream" pills.
@@ -595,13 +610,18 @@ qual is played, rank and top 8 are stated as decided ("Final rank", top 8 yes / 
 are hidden. Δ signs come from the rounded shown value. Section "?" buttons sit inside the open section, not in its
 `<summary>`. On phones the rail is one swipeable row scrolled to the open plan.
 
-### `rankings.js` — Rankings (`#/<ev>/rankings`) and Selection (`#/<ev>/selection[/<ts>]`)
+### `rankings.js` — Rankings (`#/<ev>/rankings`) and Selection (`#/<ev>/selection[/<ts>|<tab>[/<arg>]]`)
 
 - Rankings: `rankings.json` (contract `live/strategy/README.md`). Table of rank, RP, record, projected rank range
   (p10–p90), P(top 8), district points now / projected / P(DCMP); season-goal panel (odds with interval, points
   needed at p50/p80/p95, cutoff projection, DCMP capacity, value of each remaining match as Δ P(goal) for win vs
   loss, per-event outcomes, awards variants). Polls every 90 s.
-- Selection: `selection.json` or `selection/<ts>.json` + `selection/index.json`. Shows our P(captain / R1 / R2 /
+- **Selection is four tabs** (real links in a `role=tablist`, `aria-selected`; the page shell renders even when a tab's data
+  is missing): **Odds** (`selection`, `selection/<ts>`, `selection/odds[/<ts>]`; the replay keeps working), **Picklist**
+  (`selection/picklist[/<ts>]`, `picklistPane`), **Compare** (`selection/compare[/<teams>]`, `comparePane`; the picked teams
+  stay in the address) and **Defense** (`selection/defense[/<team>|defenders|team]`, `CS.defensePane`). The replay time
+  carries between Odds and Picklist. Phones: four equal icon tabs.
+- Odds: `selection.json` or `selection/<ts>.json` + `selection/index.json`. Shows our P(captain / R1 / R2 /
   unpicked) and P(DCMP), the "need" grid (alliance × role → least playoff result reaching the DCMP need), who
   is likely to pick us, **pitch cards** (per likely captain: what they lack, what we bring, re-sim Δwin / ΔP(DCMP),
   fit facts), the per-captain re-simulation table ("if this captain takes us vs their next best"), projected seeds,
@@ -618,26 +638,64 @@ are hidden. Δ signs come from the rounded shown value. Section "?" buttons sit 
 
 ### `schedule.js` — Schedule (`#/<ev>/schedule[/<match>]`)
 
-`schedule.json` + `event.json` (livestream results). Filter Ours / All; our next match's row opens automatically.
-Upcoming matches show predicted win %; our upcoming ones expand into a per-period table (auto, transition, shift
-1–4, endgame: ours vs theirs, Δ, P(ahead), P(our hub active), if-won/lost-auto variants) plus the plain-English
-"where you will be beaten" summary. Played rows link to the Analyze view. `#/<ev>/schedule/<matchkey>` scrolls to
+Replaces the old Matches tab (`#/<ev>/matches` redirects here). `schedule.json` (rows carry `mp` and `video`) +
+`event.json` (livestream results, `queue`, row `wait` / `state_note`). Filters Ours / All / Upcoming / Played; our next
+match's row opens automatically. Every row is a button (Enter / Space, `aria-expanded`) that expands into the mini
+`CS.matchField` (Auto / Tele, Predicted / Actual), the period bars (red and blue back to back from a centre line, the
+points inside; Actual shows the prediction as ticks; the table follows the field's Predicted / Actual switch) and the
+match video behind a "Play match video" button (local mp4 first, a real 11-character YouTube id embedded, a livestream
+clip; nothing loads until tapped), plus "Full analysis and replay" (`#/<ev>/a/<key>`). Status pills from the queue backend
+(`wait`: not played yet / needs video setup / queued / no video yet / waiting for stream clip / retrying / waiting for
+the detector / failed; "not tracked (paused)" while paused; `state_note` as the tooltip) and a header line from
+`event.json queue` ("12 of 54 matches tracked · tracking Q13 now · 3 need video setup · … · next: Q15 at 10:45"). `#/<ev>/schedule/<matchkey>` scrolls to
 that row. Polls every 90 s. Its banner uses `CS.latestLabel` ("Latest data" until the competition is over).
 
-### `teams2.js` — Spec sheets (`#/<ev>/specs[/<team>]`)
+### `matchfield.js` — the match field (`CS.matchField`, `CS.matchPeriods`, `CS.matchNote`)
 
-`spec/index.json` (list) and `spec/<team>.json` (sheet), plus `event.json` and `scout.json`. List: sortable table of
-made/match, accuracy, pts per active minute, cycle, fire rate, hopper, speed, trench share, left share, on-the-move
-rate, climb (TBA), defense received/played, flags. Sheet sections: Drive, Scoring, Auto & climb, Lanes (trench /
-bump bands, left/right from the driver's view), Shooting locations, Shooting paths (the drive into each volley),
-Defense. Team frame: own alliance wall on the left (blue matches point-reflected), driver's left = top. (UX fix wave)
-Auto made uses the canonical value (same as the team page; raw mean in the tooltip); the Scoring header says "N
-reconciled matches" with a "?", the shot map "all N verified matches"; empty intake tiles are hidden; the list's
-headers and selects are labelled and keyboard-sortable.
+`CS.matchField(el, plan, {mini, us, asof})` draws one match plan (`mp/<match>.json`) top-down on a canvas in theme
+colours (red end on the right, redrawn on theme / mode change, crisp on retina): the six robots at their predicted
+start spots, **Auto** (arrowed auto paths, points per robot, alliance auto totals) and **Tele** (typical cycle,
+dotted transition path, collect point with a capped ring, smooth heat for the selected team only, "scores in transition
+N %", cycles / min, the inactive-shift job chip Defense / Ferry from neutral / Robber / Collect with its `basis` in a
+"?"). Played matches get Predicted | Actual (actual paths with the prediction as a ghost). Tap a team (canvas or chip)
+to isolate it. `enough: false` robots are dashed / grey with their `why`; stand-in numbers (`stand_in`) read "≈N (event
+avg)". `mp/index.json calib` (hit rates measured so far: start side, job, auto FUEL error, score-range cover) goes into
+the "?" text and the scoreboard's track-record line. `prefers-reduced-motion` skips the path reveal.
 
-### `defense.js` — Defense library (`#/<ev>/defense[/<target team>]`)
+### `teams2.js` — Teams (`#/<ev>/teams[/<team>[/<field>]]`) and the spec-sheet renderer
 
-`defense.json` (from `live/scouting.py`), `event.json`, `scout.json`. Built around "how do I defend team X?":
+**Teams list.** `teamsData(ev)` joins `event.json teams[]` (all teams, `q`), `scout.json` (video metrics `{v,raw,n,tier}`, rating,
+climb, coverage), `dashboard.json ratings[]` (EPA total / auto / teleop / endgame, blend ± sd, projection) and
+`rankings.json` (rank / record fallback). One row per team: rank, team + name (our team tinted with a "us" tag, starred
+teams marked), record, EPA with a stacked auto / teleop / endgame bar (length compares teams), our model rating ± sd with its
+coverage pill, made / match, accuracy, cycle, climb (verified-video values show `n=`; grey = under 3 matches). Sort by
+clicking a column head (`aria-sort`; a select on phones), search by number or name. At 390 px each row is a card (rating top
+right, EPA, four stat chips). Click a row (the team button is a stretched link, `aria-expanded`) and it expands into **every
+field** (`FIELDS`, grouped Rating / Scoring / Auto / Collection / Movement / Defense / Endgame / Reliability): value, the
+honesty line (`n=9 verified matches`, `n=2 verified, anecdote (under 3)`, `TBA, 12 quals`, the coverage label for the model
+rating) and a thin bar for where the team stands among the event's teams (faded + striped under 3 matches). The expanded team
+is in the address (`#/<ev>/teams/<team>`, replaceState).
+
+**A field's page** (`#/<ev>/teams/<team>/<field>`, also `t/<team>/<field>`; `CS.fieldPage`): header (value, coverage pill,
+flags, how it is computed, "All of 4911 →", Compare), a strip chart of every team on that field, the per-match values (verified
+matches only, from `t/<team>.json`), then **the existing renderers, not copies**: `teamPage(ev, team, {host, only, quiet})`
+(quant.js) draws only the listed sections and `specPage(ev, team, {host, only, quiet})` only the listed spec cards (`data-sx`:
+drive, scoring, autoclimb, lanes, shots, paths, defense). Rating / EPA / OPR / Rank have their own bodies (parts, source
+weights, trend, simulated rank). Defense fields carry "effect on opponents is an assumption, not measured". The old
+Specs list is gone (its columns are fields); `specs[/<team>]` redirects here.
+
+Spec sheet data: `spec/<team>.json`. Cards: Drive, Scoring, Auto & climb, Lanes (trench / bump bands, left/right from the
+driver's view), Shooting locations, Shooting paths (the drive into each volley), Defense. Team frame: own alliance wall on
+the left (blue matches point-reflected), driver's left = top.
+
+### `defense.js` — Defense tab of Selection (`#/<ev>/selection/defense[/<target team>|defenders|team]`)
+
+`defense.json` (from `live/scouting.py`), `event.json`, `scout.json`. `CS.defensePane(ev, target, host)` draws into the Selection
+tab. **Best defenders** (default): a ranked list, points denied per match (Σ denied / its verified matches), episodes
+(+ testable), contact seconds, the share of output the defended teams kept (with its 90% range when ≥ 3 testable), each
+tagged **assumption** (no per-team effect survives the multiple-testing correction; a row says "N episodes significant" only
+when some of its episodes are individually significant). A row expands to its episodes as clips (best by points denied, "show
+more"). "Defend a team" is the older per-target answer. Built around "how do I defend team X?":
 pick a target → its retention while defended (placebo-controlled, with interval and verdict), the best clips, and who
 has defended it. Filters: target, defender, zone, shift, method, verdict; sort. Each episode is a **top-down clip**
 drawn on a canvas (`clipPlayer`): defender and target circled, the episode window highlighted, shots drawn. Clip data
@@ -929,8 +987,8 @@ Site JSON (`api/…`, i.e. `data/site/api/…`, written by the worker):
 | `<ev>/rankings.json` | Rankings |
 | `<ev>/schedule.json` | Schedule |
 | `<ev>/selection.json`, `<ev>/selection/<ts>.json`, `<ev>/selection/index.json` | Selection (its own time control), Dashboard / Picklist time-control fallback |
-| `<ev>/spec/index.json`, `<ev>/spec/<team>.json` | Specs |
-| `<ev>/defense.json` | Defense |
+| `<ev>/spec/<team>.json` | Teams field pages (spec-sheet cards) |
+| `<ev>/defense.json` | Selection, Defense tab |
 
 Written but **not read by the UI**: `dashboard.<team>.json` (dash.js always loads `dashboard.json`),
 `preview/<match>.json` (the "Full preview" button only links to the match page, which shows the untracked-match card
@@ -971,7 +1029,7 @@ All access is wrapped in try/catch (private windows / blocked storage just lose 
 | `cs:dlsite` | local | Admin → Teammates → Connection key: the downloads page address typed for the one-line Client install (never the key) |
 | `cyberscout:picks:<ev>` | local | picklist copy `{stars, dnp, order, weights}` (server is the source of truth when signed in) |
 | `cyberscout:picks:unsaved:<ev>:<user id>` | local | a picklist change the server doesn't have yet `{data, base, at, why}` (failed save, conflict, page closed mid-save) |
-| `cyberscout:plmode`, `cyberscout:cmp:<ev>`, `cyberscout:cols2` | local | picklist sort mode; Compare selection; Teams column visibility |
+| `cyberscout:plmode`, `cyberscout:cmp:<ev>` | local | picklist sort mode; Compare selection (`cyberscout:cols2`, the old Teams column picker, is unused) |
 | `pl.cfg`, `pl.trailS`, `pl.offset` | local | match viewer mode/panes/layers, trail length, data sync offset |
 | `lab:theme`, `lab:layout`, `lab:mode` | local | design lab only |
 | `cs:sync:user` + IndexedDB `cyberscout` (`outbox`, `reads`, `kv`) | local / IDB | sync.js: last signed-in user, offline outbox, saved reads (`docs/SYNC.md`) |

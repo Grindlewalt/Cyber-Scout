@@ -248,28 +248,63 @@
   function selEmpty(ev, name, times, ts) {
     const near = ts ? [...times].sort((a, b) => Math.abs(a - ts) - Math.abs(b - ts)).slice(0, 3).sort((a, b) => a - b) : [];
     const stall = CS.buildStall ? CS.buildStall(CS.platform && CS.user && CS.can("admin")) : "";      // paused / no TBA key / worker quiet (app.js)
-    return `<div class="dtop"><div><h1>Alliance selection</h1><div class="sub">${H(name)}</div></div></div>
+    return `<div class="dtop"><div><h2 class="sel-h2">Alliance selection odds</h2><div class="sub">${H(name)}</div></div></div>
       <section class="card"><div class="empty sel-empty">${ts
         ? `<b>No selection projection at ${H(fmtDT(+ts))}.</b>${near.length ? ` Snapshots near that time: ${near.map(t => `<a href="#/${ev}/selection/${t}">${H(fmtDT(t))}</a>`).join(" · ")}.` : " This competition has no selection snapshots."}
           <span class="muted">The latest projection (if there is one) is on <a href="#/${ev}/selection">Selection without a replay time</a>.</span>`
         : `<b>No alliance-selection projection for this competition.</b> It's built with the strategy data for district events and needs the
           simulation to have run. This competition may not be a district event, or the worker hasn't built it yet.${stall ? " " + stall : ""}
-          <span class="muted">Rankings and the Picklist still work: <a href="#/${ev}/rankings">Rankings</a> · <a href="#/${ev}/picklist">Picklist</a>.</span>`}</div></section>`;
+          <span class="muted">Rankings, the Picklist, Compare and Defense still work: <a href="#/${ev}/rankings">Rankings</a> · <a href="#/${ev}/selection/picklist">Picklist</a>.</span>`}</div></section>`;
   }
 
-  CS.route("selection", async function (ev, ts) {
+  // ---- Selection is four tabs: Odds (the projection above), Picklist, Compare, Defense.
+  // #/<ev>/selection[/<ts>] = Odds (kept: old replay links), /odds[/<ts>], /picklist[/<ts>], /compare[/<teams>], /defense[/<team|defenders|team>]
+  const SELTABS = [["odds", "Odds", "rankings", "Chance of being a captain or picked, what DCMP needs, pitches"], ["picklist", "Picklist", "picklist", "Our ranked list: stars, do-not-pick, weights"],
+    ["compare", "Compare", "compare", "Two or three teams side by side"], ["defense", "Defense", "defense", "The most effective defenders, with clips"]];
+  const SELCSS = `
+.selx .sel-tabs{display:flex;gap:6px;flex-wrap:wrap;margin:2px 0 var(--sp-4);padding:5px;border-radius:var(--r-m);background:var(--surface-2);border:1px solid var(--line);width:fit-content;max-width:100%}
+.selx .sel-tabs a{display:inline-flex;align-items:center;gap:7px;min-height:38px;padding:6px 16px;border-radius:var(--r-p);color:var(--ink-2);text-decoration:none;font-weight:600;font-size:var(--fs-body);transition:background-color .15s var(--ease),color .15s var(--ease)}
+.selx .sel-tabs a svg{width:17px;height:17px;flex:none}.selx .sel-tabs a:hover{color:var(--ink);background:var(--surface)}
+.selx .sel-tabs a[aria-selected=true]{background:var(--accent-fill);color:var(--on-accent);box-shadow:0 2px 8px color-mix(in srgb,var(--accent) 30%,transparent)}
+.selx .sel-tabs a:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.selx .sel-h{margin:0 0 var(--sp-3);font-size:var(--fs-foot);color:var(--ink-2)}
+.selx .sel-h2{margin:0;font-size:var(--fs-t2)}
+@media (max-width:640px){.selx .sel-tabs{width:100%;display:grid;grid-template-columns:repeat(4,1fr);gap:3px;padding:4px}.selx .sel-tabs a{flex-direction:column;gap:2px;padding:6px 2px;min-height:48px;font-size:11.5px;justify-content:center;text-align:center}}
+@media (prefers-reduced-motion:reduce){.selx .sel-tabs a{transition:none}}`;
+  CS.route("selection", async function (ev, a, b) {
     css();
+    if (!document.getElementById("sel-css")) { const st = document.createElement("style"); st.id = "sel-css"; st.textContent = SELCSS; document.head.appendChild(st); }
     S = { ev, sort: S && S.ev === ev ? S.sort : { k: "rank", dir: 1 } };
-    crumbs([[ev, `#/${ev}`], ["Selection"]]);             // this page's title even if its data fails to load (MATCH-8)
-    const evP = api(`${ev}/event.json`).catch(() => null), idxP = api(`${ev}/selection/index.json`).catch(() => ({ times: [] }));
+    const tab = SELTABS.some(t => t[0] === a) ? a : "odds", arg = SELTABS.some(t => t[0] === a) ? b : a;         // arg: replay time / teams / team
+    const ts = (tab === "odds" || tab === "picklist") && /^\d{9,12}$/.test(arg || "") ? arg : "";
+    const label = SELTABS.find(t => t[0] === tab)[1];
+    crumbs([[ev, `#/${ev}`], tab === "odds" ? ["Selection"] : ["Selection", `#/${ev}/selection`], ...(tab === "odds" ? [] : [[label]])]);             // this page's title even if its data fails to load (MATCH-8)
+    const evj = await api(`${ev}/event.json`), name = evj && evj.name || ev;
+    crumbs([[name, `#/${ev}`], tab === "odds" ? ["Selection"] : ["Selection", `#/${ev}/selection`], ...(tab === "odds" ? [] : [[label]])]);
+    const href = t => `#/${ev}/selection` + (t === "odds" ? "" : "/" + t) + (ts && (t === "odds" || t === "picklist") ? "/" + ts : "");
+    $updated.textContent = "";
+    $app.innerHTML = `<div class="selx"><div class="dtop"><div><h1>Selection</h1><div class="sub">${H(name)} · alliance odds, our picklist, side-by-side comparison and the best defenders</div></div></div>
+      <div class="sel-tabs" role="tablist" aria-label="Selection views">${SELTABS.map(([t, l, ic, tip]) => `<a role="tab" id="seltab-${t}" aria-selected="${t === tab}" aria-controls="selbody" href="${href(t)}" title="${H(tip)}"${t === tab ? ' tabindex="0"' : ""}>${CS.icon(ic)}<span>${l}</span></a>`).join("")}</div>
+      <div id="selbody" role="tabpanel" aria-labelledby="seltab-${tab}"></div></div>`;
+    const host = document.getElementById("selbody");
+    if (tab === "picklist") { host.innerHTML = `<div class="card" id="plhost"></div>`; return picklistPane(document.getElementById("plhost"), evj, ev); }
+    if (tab === "compare") { host.innerHTML = `<div class="card" id="cmphost"></div>`; return comparePane(document.getElementById("cmphost"), evj, ev, arg || ""); }
+    if (tab === "defense") {
+      host.innerHTML = `<div id="dxhost"><div class="loading">Loading defense…</div></div>`;
+      if (!CS.defensePane) { host.innerHTML = `<div class="empty">The defense view isn't loaded.</div>`; return; }
+      try { await CS.defensePane(ev, arg || "", document.getElementById("dxhost")); }
+      catch (e) { if (!/404/.test(e.message)) throw e; host.innerHTML = `<div class="empty"><b>No defense data for ${H(name)} yet</b>Defense episodes are found in tracked matches; the worker writes them with the scouting data once matches are tracked.${CS.buildStall ? " " + CS.buildStall(CS.platform && CS.user && CS.can("admin")) : ""}</div>`; }
+      return;
+    }
+    // Odds
+    const idxP = api(`${ev}/selection/index.json`).catch(() => ({ times: [] }));
     let d = null;
     try { d = await api(ts ? `${ev}/selection/${ts}.json` : `${ev}/selection.json`); }
     catch (e) { if (!/404/.test(e.message)) throw e; }
-    const [evj, idx] = await Promise.all([evP, idxP]), name = evj && evj.name || ev;
-    crumbs([[name, `#/${ev}`], ["Selection"]]);
-    if (!d) { $updated.textContent = ""; $app.innerHTML = `<div class="dash rk">${selEmpty(ev, name, idx.times || [], ts ? +ts : 0)}</div>`; return; }
+    const idx = await idxP;
+    if (!d) { host.innerHTML = `<div class="dash rk">${selEmpty(ev, name, idx.times || [], ts ? +ts : 0)}</div>`; return; }
     $updated.textContent = d.asof ? "replay " + fmtDT(d.asof) : ago(d.generated);
-    $app.innerHTML = `<div class="dash rk">${selPage(ev, d, idx.times || [], ts, name)}</div>`;
+    host.innerHTML = `<div class="dash rk">${selPage(ev, d, idx.times || [], ts, name).replace(/<h1>Alliance selection<\/h1>/, '<h2 class="sel-h2">Alliance selection odds</h2>')}</div>`;
   });
   CS.nav({ label: "Selection", key: "selection", href: (ev, ts) => `#/${ev}/selection` + (ts ? "/" + ts : ""), order: 40, group: "picks", icon: "selection", replay: true });
 })();

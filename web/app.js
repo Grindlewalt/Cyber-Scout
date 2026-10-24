@@ -361,24 +361,10 @@ async function home() {
   const b = document.getElementById("addcomp"); if (b) b.onclick = () => openComps(null, true);
 }
 
-// Teams / Compare / Picklist / Matches: each is its own sidebar section (#/<ev>/<tab>); no second tab row.
-const EV_TABS = { teams: "Teams", compare: "Compare", picklist: "Picklist", matches: "Matches" };
+// The old tab links (#/<ev>/compare, picklist, matches, specs, defense) are redirects (see OLD_LINKS below); an unknown
+// #/<ev>/<word> lands on Teams. eventPage is only the fallback for those.
 async function eventPage(ev, tab, arg) {
-  const d = await api(`${ev}/event.json`);
-  if (!EV_TABS[tab]) tab = "teams";
-  CS.markActive(tab);
-  crumbs([[d.name, `#/${ev}`], [EV_TABS[tab]]]); $updated.textContent = ago(d.updated);
-  const place = [d.city, d.state_prov].map(x => String(x || "").replace(/[\s,]+$/, "")).filter(Boolean).join(", ");
-  const when = compDates({ start_date: d.start, end_date: d.end });
-  $app.innerHTML = `<h1 class="evh">${EV_TABS[tab]}</h1><div class="sub evsub">${esc([d.short_name || d.name, place, when].filter(Boolean).join(" · "))}
-      · ${d.n_done} of ${d.n_total} match${d.n_total === 1 ? "" : "es"} tracked${d.calibrated ? "" : ' · <span class="pill failed">camera not calibrated</span>'}</div>
-    <div id="tabbody" class="card"></div>`;
-  const body = document.getElementById("tabbody");
-  if (tab === "teams") teamsTable(body, d, ev); else if (tab === "compare") comparePane(body, d, ev, arg); else if (tab === "picklist") picklistPane(body, d, ev); else matchesTable(body, d, ev);
-  const iv = setInterval(async () => {
-    try { const n = await api(`${ev}/event.json`); if (n.updated !== d.updated) route(false); } catch (e) { }
-  }, 60000);
-  cleanup.push(() => clearInterval(iv));
+  location.replace(`#/${ev}/teams`);
 }
 function sessionStorageGet(k) { try { return sessionStorage.getItem(k); } catch (e) { return null; } }
 function sessionStorageSet(k, v) { try { sessionStorage.setItem(k, v); } catch (e) { } }
@@ -455,6 +441,7 @@ const ICON = {
   teams: '<circle cx="9" cy="8.5" r="3"/><path d="M3.5 19.5c.7-3.5 2.8-5.5 5.5-5.5s4.8 2 5.5 5.5M15.5 5.8a3 3 0 0 1 0 5.4M17.5 14c1.6.6 2.6 2.4 3 5.2"/>',
   compare: '<rect x="3.5" y="4.5" width="7" height="15" rx="1.5"/><rect x="13.5" y="4.5" width="7" height="15" rx="1.5"/>',
   matches: '<rect x="3" y="5" width="18" height="14" rx="2.5"/><path d="M10 9.2v5.6l4.6-2.8z"/>',
+  play: '<path d="M7.5 4.8v14.4a.8.8 0 0 0 1.2.7l11.3-7.2a.8.8 0 0 0 0-1.4L8.7 4.1a.8.8 0 0 0-1.2.7z"/>',
   specs: '<path d="M7 3.5h7l4 4v13H7z"/><path d="M14 3.5v4h4M9.5 12h6M9.5 15.5h6"/>',
   defense: '<path d="M12 3.5l7 2.5v5.5c0 4.3-2.9 7.7-7 9-4.1-1.3-7-4.7-7-9V6z"/>',
   video: '<rect x="3" y="6.5" width="13" height="11" rx="2"/><path d="M16 10.5l5-3v9l-5-3z"/>',
@@ -485,10 +472,9 @@ const ICON = {
 CS.icon = (k, cls) => `<svg${cls ? ` class="${cls}"` : ""} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICON[k] || ICON.more}</svg>`;
 const withTs = (base, ts) => base + (ts ? "/" + ts : "");
 CS.nav({ label: "Dashboard", key: "dash", href: (ev, ts) => withTs(`#/${ev}/dash`, ts), order: 10, group: "day", icon: "dash", tab: true, replay: true });
-CS.nav({ label: "Teams", key: "teams", href: ev => `#/${ev}/teams`, order: 50, group: "scout", icon: "teams", tab: true });
-CS.nav({ label: "Compare", key: "compare", href: ev => `#/${ev}/compare`, order: 55, group: "scout", icon: "compare" });
-CS.nav({ label: "Picklist", key: "picklist", href: (ev, ts) => withTs(`#/${ev}/picklist`, ts), order: 42, group: "picks", icon: "picklist", replay: true });
-CS.nav({ label: "Matches", key: "matches", href: ev => `#/${ev}/matches`, order: 60, group: "scout", icon: "matches" });
+CS.nav({ label: "Teams", key: "teams", href: ev => `#/${ev}/teams`, order: 35, group: "day", icon: "teams", tab: true });
+// Matches, Specs, Defense, Compare and Picklist are not nav items any more: Matches became the Schedule, Specs became each
+// team's fields (Teams), and Compare / Picklist / Defense are tabs of Selection (rankings.js). Their old links redirect.
 
 const lsGet2 = (s, k) => { try { return s.getItem(k); } catch (e) { return null; } };
 const lsSet2 = (s, k, v) => { try { v == null ? s.removeItem(k) : s.setItem(k, v); } catch (e) { } };
@@ -560,32 +546,46 @@ function compHref(ev2) {
   const p = location.hash.replace(/^#\/?/, "").split("/").filter(Boolean);
   if (!p.length || CS.globalRoutes[p[0]] || !EVK.test(p[0])) return `#/${ev2}`;
   const s = p[1];
-  if (s === "t") return `#/${ev2}/teams`;
+  if (s === "t" || s === "teams") return `#/${ev2}/teams`;
+  if (s === "selection") return `#/${ev2}/selection` + (p[2] && SEL_TABS.has(p[2]) ? "/" + p[2] : "");
   if (!s || s === "dash" || s === "m" || s === "a") return `#/${ev2}`;
   const it = CS.navItems.find(i => !i.global && i.key === s);
   return it ? it.href(ev2, null) : `#/${ev2}`;
 }
 CS.compHref = compHref;
-/** which nav key a hash belongs to (team page -> Teams, match/analyze -> Matches, ...) */
+/** which nav key a hash belongs to (team page -> Teams, match/analyze -> Schedule, Compare / Picklist / Defense -> Selection) */
 function activeKey(p) {
   if (!p.length) return null;
   if (CS.globalRoutes[p[0]]) return p[0];
   const s = p[1];
   if (!s || s === "dash") return "dash";
-  if (s === "t") return "teams";
-  if (s === "m" || s === "a") return "matches";
+  if (s === "t" || s === "specs") return "teams";
+  if (s === "m" || s === "a" || s === "matches") return "schedule";
+  if (s === "compare" || s === "picklist" || s === "defense") return "selection";
   return s;
+}
+// Selection's tabs: #/<ev>/selection[/<ts>] (Odds), /picklist[/<ts>], /compare[/<teams>], /defense[/<team|defenders>]
+const SEL_TABS = new Set(["odds", "picklist", "compare", "defense"]);
+/** the replay time in a Selection url: odds = selection/<ts> or selection/odds/<ts>, picklist = selection/picklist/<ts>; else null */
+const selTs = p => /^\d{9,}$/.test(p[2] || "") ? p[2] : (p[2] === "odds" || p[2] === "picklist") && /^\d{9,}$/.test(p[3] || "") ? p[3] : null;
+/** an old link (#/<ev>/matches, specs[/team], defense[/x], compare[/x], picklist[/ts]) -> where it lives now, else null */
+function oldLink(p) {
+  if (p.length < 2 || CS.globalRoutes[p[0]] || !EVK.test(p[0])) return null;
+  const [ev, s, a] = p, tail = a ? "/" + a : "";
+  if (s === "matches") return `#/${ev}/schedule`;
+  if (s === "specs") return `#/${ev}/teams${tail}`;
+  if (s === "defense" || s === "compare" || s === "picklist") return `#/${ev}/selection/${s}${tail}`;
+  return null;
 }
 /** the as-of time in the current URL for pages that can replay, else undefined (page can't replay) */
 function urlTs(p) {
   const k = activeKey(p);
   if (k === "dash") return p[2] && p[2] !== "live" ? p[2] : null;
-  if (k === "selection") return p[2] || null;
-  if (k === "picklist") return /^\d{9,}$/.test(p[2] || "") ? p[2] : null;
+  if (k === "selection") return !p[2] || p[2] === "odds" || p[2] === "picklist" || /^\d{9,}$/.test(p[2]) ? selTs(p) : undefined;     // Compare / Defense: latest data only
   return undefined;
 }
 let shellEv = null, shellKey = null;
-CS.markActive = k => { shellKey = k; document.querySelectorAll("[data-navkey]").forEach(a => { if (a.dataset.navkey === k) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current"); }); };
+CS.markActive = k => { if (k === "matches") k = "schedule"; shellKey = k; document.querySelectorAll("[data-navkey]").forEach(a => { if (a.dataset.navkey === k) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current"); }); };
 
 // ---- shell styles that belong to app.js (the global notice, honesty-label tips, nav badges, Matches filter)
 (function shellCss() {
@@ -963,7 +963,7 @@ function eventTimes(ev, kind = "dash") {
     .then(l => { setTimeout(() => { delete TIMES[k]; }, 120000); return l; }));
 }
 const fmtDay = ts => { const d = new Date(ts * 1000); return ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][d.getDay()] + " " + d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }); };
-const DATA_PAGES = new Set(["teams", "compare", "matches", "specs", "defense", "schedule", "rankings"]);
+const DATA_PAGES = new Set(["teams", "selection", "schedule", "rankings"]);
 let tbSeq = 0;
 async function renderTimebar(p, ev) {
   const el = document.getElementById("timebar"); if (!el) return;
@@ -978,10 +978,11 @@ async function renderTimebar(p, ev) {
   const latestTag = () => `<div class="timectl static"><span class="tc-tag"><span class="tc-long">${lab}</span><span class="tc-short">${lab === "Latest data" ? "Latest" : "Final"}</span></span>${CS.help(`<span class="hl">This page uses everything posted so far${lab === "Latest data" ? "" : " (the competition is over)"}, not a replay time.</span><span class="hl">To see the event as it was at a moment, use the time control on the Dashboard, Selection or Picklist.</span>${CS.processing && CS.processing.paused ? `<span class="hl">Processing is paused on the server: nothing new is added until it's turned back on.</span>` : ""}`, "About the data on this page")}</div>`;
   if (ts === undefined) { el.innerHTML = latestTag(); return; }
   CS.asofSet(ev, ts);
-  const times = await eventTimes(ev, k === "selection" ? "selection" : "dash"); if (seq !== tbSeq) return;
+  const onPl = k === "selection" && p[2] === "picklist";
+  const times = await eventTimes(ev, k === "selection" && !onPl ? "selection" : "dash"); if (seq !== tbSeq) return;
   if (!times.length && !ts) { el.innerHTML = latestTag(); return; }                // nothing to replay here
   const item = CS.navItems.find(i => (i.key || "") === k) || CS.navItems.find(i => i.key === "dash");
-  const go = t => { CS.asofSet(ev, t); location.hash = item.href(ev, t || null); };
+  const go = t => { CS.asofSet(ev, t); location.hash = onPl ? `#/${ev}/selection/picklist${t ? "/" + t : ""}` : item.href(ev, t || null); };
   const i = ts ? times.findIndex(t => t.ts === ts) : times.length;
   const narrow = matchMedia("(max-width: 760px)").matches;
   // "Live" only while the competition is on, processing runs and the data is fresh; otherwise "Latest"
@@ -1073,9 +1074,12 @@ function routeOk(p) {
   const [, s, a, b] = p;
   switch (s) {
     case "m": case "a": return MKEY_OK.test((a || "").split("?")[0]);
-    case "t": return TEAM_OK.test(a || "");
+    case "t": return TEAM_OK.test(a || "") && (!b || /^[a-z0-9_]{1,24}$/.test(b));
+    case "teams": return !a || (TEAM_OK.test(a) && (!b || /^[a-z0-9_]{1,24}$/.test(b)));
     case "dash": return !a || ((a === "live" || TS_OK.test(a)) && (!b || MKEY_OK.test(b)));
-    case "selection": case "picklist": return !a || TS_OK.test(a);
+    case "selection": return !a || TS_OK.test(a) || (SEL_TABS.has(a) && (!b || (a === "compare" ? /^(frc)?\d{1,5}(,(frc)?\d{1,5}){0,2}$/.test(b)
+      : a === "defense" ? b === "defenders" || b === "team" || TEAM_OK.test(b) : TS_OK.test(b))));
+    case "picklist": return !a || TS_OK.test(a);
     case "specs": return !a || TEAM_OK.test(a);
     case "defense": return !a || a === "defenders" || TEAM_OK.test(a);
     case "schedule": return !a || MKEY_OK.test(a);
@@ -1129,6 +1133,8 @@ async function route(scroll = true) {
     done();
     return;
   }
+  const moved = oldLink(p);
+  if (moved) { location.replace(moved); return; }                 // replace, not push: Back doesn't land on the old link again
   try {
     renderTopNav(p);
     if (p.length && CS.globalRoutes[p[0]]) await CS.globalRoutes[p[0]](...p.slice(1));
@@ -1138,6 +1144,7 @@ async function route(scroll = true) {
     else if (p.length === 1) { try { await api(`${p[0]}/dashboard.json`); await dashPage(p[0]); } catch (e) { if (!/404/.test(e.message)) throw e; await eventPage(p[0]); } }
     else if (p[1] === "m") await matchPage(p[0], p[2]);
     else if (p[1] === "a") await analyzePage(p[0], p[2]);
+    else if (p[1] === "t" && p[3] && CS.fieldPage) await CS.fieldPage(p[0], p[2], p[3]);
     else if (p[1] === "t") await teamPage(p[0], p[2]);
     else await eventPage(p[0], p[1], p[2]);
     if (p.length && EVK.test(p[0]) && !CS.globalRoutes[p[0]] && (!p[1] || p[1] === "dash")) compSetupBanner(p[0]);
@@ -1165,7 +1172,7 @@ async function route(scroll = true) {
       $app.innerHTML = !missing ? `<div class="empty err" role="alert"><b>Couldn't load this page</b>The server didn't answer as expected (${esc(e.message)}). Check the connection, then try again.
           <div class="acts"><button type="button" id="routeretry">Try again</button></div></div>`
         : p[1] === "m" || p[1] === "a" ? `<div class="empty"><b>${esc(lab)} wasn't tracked</b>There's no robot tracking for this match${stall ? `: ${stall}` : " yet. A match is tracked once its video is in (minutes after it's played when processing runs)."} Its score and teams are on the Schedule.
-          <div class="acts">${sched}<a class="cmp-btn" href="#/${esc(ev)}/matches">All matches</a><button type="button" id="routeretry">Try again</button></div></div>`
+          <div class="acts">${sched}<button type="button" id="routeretry">Try again</button></div></div>`
         : `<div class="empty"><b>${esc(lab || "This page")} isn't built for ${esc(compName(ev))} yet</b>${stall || (p[1] === "selection" ? "Alliance-selection odds appear once the worker has enough of the schedule and results to project the rankings." : "The worker writes this page on its next pass once there's data for it.")}
           <div class="acts"><button type="button" id="routeretry">Try again</button></div></div>`;
     }
@@ -1184,7 +1191,8 @@ function bootPrefetch() {
   if (!p[1] || p[1] === "dash") want.push(ok(k) && k !== "live" ? `${ev}/dash/${k}.json` : `${ev}/dashboard.json`);
   else if ((p[1] === "m" || p[1] === "a") && ok(k)) want.push(`${ev}/m/${k}.json`);
   else if (p[1] === "t" && ok(k)) want.push(`${ev}/t/${k}.json`, `${ev}/scout.json`);
-  else if (p[1] === "selection") want.push(ok(k) ? `${ev}/selection/${k}.json` : `${ev}/selection.json`, `${ev}/selection/index.json`);
+  else if (p[1] === "teams") want.push(`${ev}/scout.json`, `${ev}/dashboard.json`);
+  else if (p[1] === "selection") { const st = selTs(p); if (!SEL_TABS.has(p[2]) || p[2] === "odds") want.push(st ? `${ev}/selection/${st}.json` : `${ev}/selection.json`, `${ev}/selection/index.json`); }
   else if (p[1] === "rankings" || p[1] === "schedule") want.push(`${ev}/${p[1]}.json`);
   want.forEach(x => api(x).catch(() => { }));
 }

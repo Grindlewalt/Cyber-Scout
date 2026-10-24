@@ -66,18 +66,18 @@ async function analyzePage(ev, key) {
     if (qi >= 0) { const q = new URLSearchParams(key.slice(qi + 1)); key = key.slice(0, qi); const v = parseFloat(q.get("t")); if (Number.isFinite(v)) seekT = v; } }
   const evP = api(`${ev}/event.json`).catch(() => null);
   CS.markActive && CS.markActive("matches");
-  crumbs([[ev, `#/${ev}`], ["Matches", `#/${ev}/matches`], [shortKey(key)]]);     // this page's title even if its data fails (MATCH-8)
+  crumbs([[ev, `#/${ev}`], ["Schedule", `#/${ev}/schedule`], [shortKey(key)]]);     // this page's title even if its data fails (MATCH-8)
   let d;
   try { d = await api(`${ev}/m/${key}.json`); }
   catch (e) {                                   // not tracked (yet): the event.json row still gives the match a page
     const ej = await evP, row = ej && (ej.matches || []).find(m => m.key === key);
-    if (ej) crumbs([[ej.name, `#/${ev}`], ["Matches", `#/${ev}/matches`], [row && row.label || shortKey(key)]]);
+    if (ej) crumbs([[ej.name, `#/${ev}`], ["Schedule", `#/${ev}/schedule`], [row && row.label || shortKey(key)]]);
     if (row && /404/.test(e.message)) return row.live ? liveMatchPage(ev, key, row, ej) : untrackedMatchPage(ev, key, row, ej);
     throw e;
   }
   const evj = await evP;
   CS.markActive && CS.markActive("matches");
-  crumbs([[evj ? evj.name : ev, `#/${ev}`], ["Matches", `#/${ev}/matches`], [d.label]]); $updated.textContent = "";
+  crumbs([[evj ? evj.name : ev, `#/${ev}`], ["Schedule", `#/${ev}/schedule`], [d.label]]); $updated.textContent = "";
   const hz = d.hz || 10, v0 = d.t_start - 0.5, ts0 = d.t_teleop_start;
   // livestream clip (live/liveingest.py): offered as a link; played here when there is no kept upload video and the match was
   // tracked from that clip (same timeline as the tracking data)
@@ -887,7 +887,7 @@ async function analyzePage(ev, key) {
 function liveMatchPage(ev, key, row, evj) {
   const L = row.live || {}, clip = CS.mediaUrl(L.clip), W = row.winner;
   CS.markActive && CS.markActive("matches");
-  crumbs([[evj ? evj.name : ev, `#/${ev}`], ["Matches", `#/${ev}/matches`], [row.label || key]]); $updated.textContent = "";
+  crumbs([[evj ? evj.name : ev, `#/${ev}`], ["Schedule", `#/${ev}/schedule`], [row.label || key]]); $updated.textContent = "";
   const teams = al => ((row[al] && row[al].teams) || []).map(t => `<a class="team ${al[0]}" href="#/${ev}/t/${esc(t)}">${esc(num(t))}</a>`).join(" ");
   const st = CS.liveTracking(L, row.state === "done");
   $app.innerHTML = `<div class="mv">
@@ -920,14 +920,15 @@ function liveMatchPage(ev, key, row, evj) {
 function untrackedMatchPage(ev, key, row, evj) {
   const W = row.winner, sc = al => row[al] && row[al].score != null ? esc(row[al].score) : "–";
   CS.markActive && CS.markActive("matches");
-  crumbs([[evj ? evj.name : ev, `#/${ev}`], ["Matches", `#/${ev}/matches`], [row.label || shortKey(key)]]); $updated.textContent = "";
+  crumbs([[evj ? evj.name : ev, `#/${ev}`], ["Schedule", `#/${ev}/schedule`], [row.label || shortKey(key)]]); $updated.textContent = "";
   const al = a => (row[a] && row[a].teams) || [];
   const teams = a => al(a).map(t => `<a class="team ${a[0]}" href="#/${ev}/t/${esc(t)}">${esc(num(t))}</a>`).join(" ");
   const played = row.red && row.red.score != null;
   const paused = CS.processing && CS.processing.paused;
   const why = paused ? "Processing is paused on the server, so no new matches are tracked until an admin turns it back on."
     : row.state === "failed" ? "Tracking this match failed." : row.state === "processing" ? "It's being tracked right now: the replay appears here when it's done."
-    : "It's tracked once its video is available.";
+    : row.wait === "setup" ? "It waits for video setup: an admin calibrates the camera on the Video page."
+    : row.wait === "not_played" ? "It hasn't been played yet." : "It's tracked once its video is available.";
   $app.innerHTML = `<div class="mv mv-untracked">
     <h1 class="vh">${esc(row.label || key)}</h1>
     <div class="mv-head">
@@ -937,8 +938,8 @@ function untrackedMatchPage(ev, key, row, evj) {
     </div>
     <div class="mv-grid">
       <div class="mv-main"><div class="empty mv-none"><b>Not tracked</b>${played ? "The score is from The Blue Alliance; there's no robot tracking, shots or field replay for this match." : "This match hasn't been played or posted yet."}
-        ${esc(why)}${row.state_note ? `<span class="small muted">Worker: ${esc(row.state_note)}.</span>` : ""}
-        <span class="small"><a href="#/${ev}/matches">All matches</a> · <a href="#/${ev}/schedule">Schedule</a></span></div></div>
+        ${esc(why)}${row.wait === "setup" && !paused && CS.can && CS.can("admin") ? ` <a href="#/${ev}/sources">Video setup</a>` : ""}${row.state_note ? `<span class="small muted">Worker: ${esc(row.state_note)}.</span>` : ""}
+        <span class="small"><a href="#/${ev}/schedule/${key}">This match on the Schedule</a></span></div></div>
       <aside class="mv-side card" aria-label="Alliances"><div class="mv-sh"><h2>Teams</h2></div>
         <div class="mv-al red"><div class="mv-alh"><b>Red</b></div><div class="mv-lt">${teams("red") || '<span class="muted">–</span>'}</div></div>
         <div class="mv-al blue"><div class="mv-alh"><b>Blue</b></div><div class="mv-lt">${teams("blue") || '<span class="muted">–</span>'}</div></div>
