@@ -310,3 +310,23 @@ def test_calibration_messages_are_translated():
     assert t[8] == "Something else entirely."
     for x in t[:8]:
         assert not any(w in x for w in ("correspondences", "initialisation", "job runner", "job_loop", "mislabelled"))
+
+
+# ---------------------------------------------------------------- a tag on a part that moves (2026wamil: the bar went up)
+def test_steady_keeps_where_a_tag_sat_most_of_the_time():
+    import numpy as np
+    sq = np.array([[0, 0], [10, 0], [10, 10], [0, 10]], float)
+    C = np.array([sq + [500, 300]] * 6 + [sq + [500, 180]] * 2)            # raised for 2 of 8 frames
+    keep, moving = CB.steady(C, need=3)
+    assert not moving and keep.tolist() == [True] * 6 + [False] * 2
+    C = np.array([sq + [500, 300 - 25 * i] for i in range(8)])            # moving the whole time
+    assert CB.steady(C, need=3)[1] is True
+
+
+def test_a_moving_tag_is_left_out_with_a_reason():
+    tags = {1: {"corners": [[0, 0]] * 4, "moving": True}}
+    r = CB.moving_note({"verdict_reasons": []}, tags)
+    assert r["moving_tags"] == [1] and "moved while the frames were read" in r["verdict_reasons"][0]["text"]
+    assert len(CB.moving_note(r, tags)["verdict_reasons"]) == 1               # said once
+    groups, rep = CB._corr(tags, None)
+    assert not groups and not rep

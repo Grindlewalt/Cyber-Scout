@@ -261,11 +261,26 @@ def detect_tags_gray(gray, scale=None, tile=480, overlap=96, min_margin=15, vali
     return out
 
 
+MOVE_PX = 5.0      # a tag whose centre is this far from where it sat in most frames moved while the frames were read
+
+
+def steady(C, need):
+    """Per-frame corners C (n x 4 x 2) of one tag -> (frames to keep, moving).  Keeps the biggest group of frames
+    that agree (centres within MOVE_PX of one frame's), so a tag on a part that moves (a raised bar, a door) counts
+    only where it sat most of the time; moving=True when no position held at least half the frames (and need)."""
+    ctr = C.mean(1)
+    near = np.linalg.norm(ctr[:, None] - ctr[None], axis=2) <= MOVE_PX
+    keep = near[int(near.sum(1).argmax())]
+    return keep, bool(keep.sum() < need or keep.sum() < 0.5 * len(C))
+
+
 def detect_tags_frames(grays, tag_csv=TAG_CSV, min_frac=0.34, per_frame=None, **kw):
     """Per-frame detection over several frames (a median plate blurs tiny tags) -> {id: {"corners": 4x2,
     "center": [u, v], "n": frames seen, "margin": median margin, "spread_px": corner scatter}} for tags
     seen in >= min_frac of the frames (and >= 2).  per_frame: a list that gets each frame's tag count (so the
-    Video page can say which frames had none)."""
+    Video page can say which frames had none).  A tag that moved during the frames (steady()) keeps only the
+    position it held most of the time ("moved_frames": how many it was elsewhere); with none, "moving": True and
+    the fit leaves it out (_corr)."""
     valid = set(load_tag_poses(tag_csv))
     hits = {}
     for g in grays:
@@ -277,10 +292,14 @@ def detect_tags_frames(grays, tag_csv=TAG_CSV, min_frac=0.34, per_frame=None, **
     out = {}
     for tid, v in hits.items():
         if len(v) < need: continue
-        C = np.array([c for c, _ in v]); med = np.median(C, 0)
+        C = np.array([c for c, _ in v])
+        keep, moving = steady(C, need)
+        med = np.median(C[keep], 0)
         out[tid] = dict(corners=med.tolist(), center=med.mean(0).tolist(), n=len(v),
                         margin=round(float(np.median([m for _, m in v])), 1),
-                        spread_px=round(float(np.median(np.linalg.norm(C - med, axis=2))), 2))
+                        spread_px=round(float(np.median(np.linalg.norm(C[keep] - med, axis=2))), 2))
+        if moving: out[tid]["moving"] = True
+        elif not keep.all(): out[tid]["moved_frames"] = int((~keep).sum())
     return out
 
 
@@ -390,7 +409,7 @@ def _corr(tags, points, tag_csv=TAG_CSV, sig_corner=0.6, sig_centre=1.5, sig_cli
     groups, rep = [], []
     for tid, t in (tags or {}).items():
         tid = int(tid)
-        if tid not in poses: continue
+        if tid not in poses or (isinstance(t, dict) and t.get("moving")): continue    # moved while we watched
         c = np.asarray(t["corners"] if isinstance(t, dict) and t.get("corners") is not None else
                        (t["center"] if isinstance(t, dict) else t), float)
         if c.shape == (4, 2):
@@ -562,8 +581,19 @@ def wizard_fit(W, H, tags=None, points=None, lines=None, tag_csv=TAG_CSV, p_init
     r = report(p, W, H, rep, lines, dropped=dropped, min_z=min_z, tag_csv=tag_csv)
     r["lens_free"] = bool(lens)
     if robust:
-        return _leave_out(W, H, tags, points, lines, tag_csv, p_init, p, r, dropped, min_z)
-    return p, r
+        p, r = _leave_out(W, H, tags, points, lines, tag_csv, p_init, p, r, dropped, min_z)
+    return p, moving_note(r, tags)
+
+
+def moving_note(r, tags):
+    """Says which tags were left out because they moved while the frames were read (detect_tags_frames)."""
+    mv = sorted(int(k) for k, t in (tags or {}).items() if isinstance(t, dict) and t.get("moving"))
+    if mv and r is not None and not any(x.get("code") == "moving_tag" for x in r.get("verdict_reasons") or []):
+        r["moving_tags"] = mv
+        r.setdefault("verdict_reasons", []).append(dict(level="note", code="moving_tag", text=(
+            f"AprilTag{'s' if len(mv) > 1 else ''} {', '.join(map(str, mv))} moved while the frames were read (on a "
+            "part of the field that moves, e.g. a raised bar), so it was left out of the fit.")))
+    return r
 
 
 def _leave_out(W, H, tags, points, lines, tag_csv, p_init, p, rep, dropped, min_z):
