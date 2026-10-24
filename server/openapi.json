@@ -4973,6 +4973,50 @@
      }
     }
    }
+  },
+  "/app/v1/admin/logs": {
+   "get": {
+    "tags": [
+     "admin"
+    ],
+    "summary": "Live log + current activity of the worker, recorder and processors (admin)",
+    "operationId": "get_logs_app_v1_admin_logs_get",
+    "parameters": [
+     {
+      "name": "since",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string",
+       "maxLength": 600,
+       "description": "role:seq pairs, comma separated: only newer lines",
+       "default": "",
+       "title": "Since"
+      },
+      "description": "role:seq pairs, comma separated: only newer lines"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful Response",
+      "content": {
+       "application/json": {
+        "schema": {}
+       }
+      }
+     },
+     "422": {
+      "description": "Validation Error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      }
+     }
+    }
+   }
   }
  },
  "components": {
@@ -7226,7 +7270,7 @@
        }
       ],
       "title": "Tba Key Hint",
-      "description": "admin only: '••••abcd'"
+      "description": "admin only: '\u2022\u2022\u2022\u2022abcd'"
      },
      "setup_complete": {
       "type": "boolean",

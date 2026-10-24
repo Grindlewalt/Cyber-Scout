@@ -836,6 +836,14 @@ Tabs Teammates / Settings / Competitions / Server / Updates (the tab row scrolls
   yt-dlp", progress log, result, and "Reload the page" once the version changed. Notes a paused worker
   (`CS.processing`). An Admin → Server run shows as "Changing server settings".
 
+#### Admin → Worker (`#/admin/worker`)
+
+One card per role from `GET admin/logs`: a dot (green running; amber quiet = heartbeat fresh but no line for 2 min; red
+stopped = no heartbeat for 90 s), "Doing now: ... for 2 min 10 s", "last line N s ago" (ticks every second; caution after
+2 min, bad after 5), then a monospace log pane that follows the newest line until you scroll up or press Pause, a filter box
+and Copy. Polls every 3 s with `since=` while visible; stops when hidden or left. All log text is escaped; lines wrap, so it
+fits at 390 px. Linked from the worker-down notice, `buildStall` and the Settings worker line ("See what it's doing").
+
 ### `audit.js` — Activity (`#/activity`, admin) and Identity fixes (`#/fixes`, strategist+)
 
 - Activity: **Lockdown** toggle (`PATCH admin/security {lockdown}`), **Sign everyone out** (`POST

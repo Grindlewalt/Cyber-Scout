@@ -726,6 +726,12 @@ bash site/tools/publish_downloads.sh --listing-only [SITE_URL]     # only rewrit
 
 ## 9. Troubleshooting
 
+### 9.0 What is the worker doing?
+
+Admin → Worker (`#/admin/worker`) shows the live log and current activity of the worker, recorder and processors, the same
+lines as `docker compose logs`, with secrets removed. Amber "quiet" = still alive, no new line for 2 min (a long step);
+red "stopped" = no heartbeat for 90 s: start it with `docker compose up -d worker`.
+
 ### 9.1 YouTube: "Sign in to confirm you're not a bot", 403s, no formats
 
 * atomosserver's **IPv6** egress is bot-flagged. `YT_FORCE_IPV4=1` (the default) makes `videos.meta` and

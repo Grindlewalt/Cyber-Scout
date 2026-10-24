@@ -190,6 +190,17 @@ The browser polls it through the API (`GET /app/v1/events/<ev>/jobs/<id>`). Jobs
 `PUT /app/v1/events/<ev>/overrides/<match>` (or an approved request) replaces that match's entry. The worker's next
 `build_site()` passes the file to `identity.assign_event()`.
 
+### Worker → API: live logs (`data/logs/<role>.json`)
+
+`live/runlog.py` tees each worker-side process's stdout/stderr (so `log()`, other modules' prints, tracebacks and the
+captured output of the site-build subprocesses) into a ring of the last 400 lines (each at most 400 characters, with a
+`seq` and unix time) plus the current activity, and writes `{role, pid, started, at, doing, doing_since, also, seq, lines}`
+atomically at most once a second (at once when the activity changes; `at` is refreshed every 15 s even when idle).
+`role` = `worker`, `recorder` or `processor-<WORKER_ID>`. Secrets are redacted before a line enters the ring (the TBA key,
+`key=`/`token=`/`sig=`/`auth=`/`password=` values, `Bearer` tokens, Discord webhook URLs, opaque tokens of 32+ characters;
+match keys, video ids and paths stay). The API reads the files (`GET /admin/logs`, untrusted: no symlinks, size cap, typed
+fields) for Admin → Worker.
+
 ### Worker → API: processing state (`data/worker-status.json`)
 
 `live/worker.py:status_beat(reason)` writes `{at, paused, reason}` (`reason` = `paused` | `no_key` | `no_events` |

@@ -44,6 +44,7 @@ REPO = os.path.dirname(HERE)
 sys.path.insert(0, HERE)
 from tba import TBA, match_label, short_label, sort_key
 import videos, identity, sitev2, integrity
+import runlog
 import analytics as AN
 
 DATA = os.environ.get("DATA", "/data")
@@ -74,7 +75,21 @@ def gpu_oom(errors):
 
 
 def log(*a):
-    print(time.strftime("%H:%M:%S"), *a, flush=True)
+    print(time.strftime("%H:%M:%S"), *a, flush=True)       # (live/runlog.py tees stdout: Admin → Worker shows it too)
+
+
+def _run_logged(cmd, timeout):
+    """subprocess.run(cmd, cwd=REPO, timeout=timeout, check=False), its output line by line through stdout (so docker logs
+    and the Admin → Worker log both have it).  A timeout kills it, as subprocess.run does."""
+    import subprocess
+    p = subprocess.Popen(cmd, cwd=REPO, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace", bufsize=1)
+    t = threading.Timer(timeout, p.kill); t.start()
+    try:
+        for line in p.stdout:
+            print(line.rstrip("\n"), flush=True)
+    finally:
+        t.cancel(); p.stdout.close(); p.wait()
+    return p.returncode
 
 
 def jload(p, default=None):
@@ -199,12 +214,16 @@ def _void_dead_claim(ev, key):
     return False
 
 
+def _what(m, live):
+    return f"tracking {short_label(m)} ({'livestream clip' if live is not None else 'uploaded video'})"
+
+
 class _Beat:
     """While a match is tracked: refresh its claim (live/claims.py heartbeat) and, for a processor, its heartbeat
     file every BEAT_S, so a slow match never outlives its claim and the main worker sees the processor alive."""
 
-    def __init__(self, ev, key):
-        self.ev, self.key, self.stop = ev, key, threading.Event()
+    def __init__(self, ev, key, what=None):
+        self.ev, self.key, self.what, self.stop = ev, key, what, threading.Event()
 
     def _run(self):
         while not self.stop.wait(BEAT_S):
@@ -218,6 +237,7 @@ class _Beat:
 
     def __enter__(self):
         self.t0 = time.time()
+        runlog.doing(self.what or f"tracking {self.key}")
         if PROCESS_ONLY:
             proc_beat(state="tracking", current=dict(ev=self.ev, key=self.key, since=self.t0))
         self.thr = threading.Thread(target=self._run, name="claim-beat", daemon=True)
@@ -227,6 +247,7 @@ class _Beat:
     def __exit__(self, *a):
         self.stop.set()
         self.thr.join(timeout=5)
+        runlog.doing("")
 
 
 _STARTED = time.time()
@@ -634,6 +655,7 @@ def team_num(k): return int(k[3:])
 
 
 def build_site(ev, tba):
+    runlog.doing(f"building the site for {ev}")
     info = tba.event(ev); ms = sorted(tba.matches(ev), key=sort_key)
     lv = live_view(ev)                                 # livestream records: fast results + not-yet-listed matches
     if lv:
@@ -873,30 +895,31 @@ def build_site(ev, tba):
     jsave(os.path.join(API, "events.json"), sorted(evs, key=lambda e: e.get("start") or "", reverse=True))
     if os.environ.get("DASHBOARD", "1") == "1":       # strategy dashboard (EPA prior + video), replay snapshots
         try:
-            import subprocess
-            subprocess.run([sys.executable, "-m", "live.strategy.dashboard", DATA, ev, "--site",
-                            "--snapshots", "--only-missing"], cwd=REPO, timeout=900, check=False)
+            runlog.doing(f"building the site for {ev}: strategy dashboard")
+            _run_logged([sys.executable, "-m", "live.strategy.dashboard", DATA, ev, "--site",
+                         "--snapshots", "--only-missing"], timeout=900)
         except Exception:
             traceback.print_exc()
     try:                                               # team spec sheets, defense library, scout.json (before goals:
         import scouting                                # the Selection pitch cards read scout.json)
+        runlog.doing(f"building the site for {ev}: spec sheets and defense")
         scouting.site_build_extra(DATA, ev, log=log)
-        import subprocess                              # scout.json replay snapshots (as-of picklist), ~3 s each
-        subprocess.run([sys.executable, "-m", "live.scouting", DATA, ev, "--snapshots"], cwd=REPO, timeout=900, check=False)
+        _run_logged([sys.executable, "-m", "live.scouting", DATA, ev, "--snapshots"], timeout=900)   # replay snapshots, ~3 s each
     except Exception:
         traceback.print_exc()
     try:                                               # rankings, district points, season goal, schedule, selection
         sys.path.insert(0, REPO)
         from live.strategy import goals
+        runlog.doing(f"building the site for {ev}: rankings, schedule, selection")
         goals.site_build(DATA, ev, team=os.environ.get("DASH_TEAM", "frc4911"))
         try:                                           # per-match plans (mp/), predictions as of each match's start
             from live.strategy import matchplan
             matchplan.build(DATA, ev, team=os.environ.get("DASH_TEAM", "frc4911"), log=log)
         except Exception:
             traceback.print_exc()
-        import subprocess                              # selection replay snapshots (only the missing ones, ~4 s each)
-        subprocess.run([sys.executable, "-m", "live.strategy.goals", DATA, ev, "--selection-snapshots"],
-                       cwd=REPO, timeout=900, check=False)
+        runlog.doing(f"building the site for {ev}: selection snapshots")
+        _run_logged([sys.executable, "-m", "live.strategy.goals", DATA, ev, "--selection-snapshots"],   # only the missing ones, ~4 s each
+                    timeout=900)
     except Exception:
         traceback.print_exc()
     log(f"{ev}: site rebuilt ({n_done}/{len(match_rows)} matches tracked)")
@@ -1118,6 +1141,7 @@ def delegating():
 def sync(ev, tba, max_new=None, track=True):
     """track=False (no detector model yet): TBA results, livestream fast results and the site only.  While
     process-only processors are alive (delegating()), this worker does everything but the tracking itself."""
+    runlog.doing(f"polling TBA for {ev}")
     tba_ms = tba.matches(ev)
     lv = live_view(ev)                                 # livestream records (live/liveingest.py)
     ms = match_order(ev, tba_ms, lv)
@@ -1162,7 +1186,7 @@ def sync(ev, tba, max_new=None, track=True):
             if not claim(ev, k): continue
             t_try = time.time()
             try:
-                with _Beat(ev, k):
+                with _Beat(ev, k, _what(m, live)):
                     ok = process_match(ev, m, cfg, status, meta_cache, live=live)
             finally:
                 release(ev, k)
@@ -1184,7 +1208,7 @@ def sync(ev, tba, max_new=None, track=True):
         if claimed_elsewhere(ev, m["key"]) or not claim(ev, m["key"]): continue     # a processor has it
         t_try = time.time()
         try:
-            with _Beat(ev, m["key"]):
+            with _Beat(ev, m["key"], _what(m, live)):
                 ok = process_match(ev, m, cfg, status, meta_cache, live=live)
         finally:
             release(ev, m["key"])
@@ -1339,6 +1363,7 @@ def process_only():
         raise SystemExit(0)
     signal.signal(signal.SIGTERM, _term)
     gpu = _ENV0["GPU_DEVICE"]
+    runlog.start(DATA, "processor-" + WORKER_ID)
     log(f"processor {WORKER_ID}: tracking only ({'CPU' if os.environ.get('FORCE_CPU') == '1' else f'GPU_DEVICE={gpu or 0}'}"
         f"); TBA sync, site, discovery, cuts, reconcile and proxies stay with the main worker")
     fails, pause_until, waiting, tidy = 0, 0.0, None, True
@@ -1359,7 +1384,7 @@ def process_only():
                 waiting = why
                 proc_beat(state="unhealthy" if time.time() < pause_until else "waiting", note=why)
                 if os.environ.get("ONCE") == "1": return
-                _sleep(30, events); continue
+                _sleep(30, events, why=f"waiting: {why}"); continue
             if waiting:
                 log("processing matches of", ", ".join(events)); waiting = None
             proc_beat(state="idle")
@@ -1372,14 +1397,14 @@ def process_only():
                 if job: break
             if job is None:
                 if os.environ.get("ONCE") == "1": return
-                _sleep(PROC_POLL, events, matches=False); continue
+                _sleep(PROC_POLL, events, matches=False, why=f"waiting for a match to track (next look in {int(PROC_POLL)} s)"); continue
             m, cfg, live = job
             k, t0, status = m["key"], time.time(), {}
             try:
                 status = load_status(ev)
                 lf0 = (status.get(k) or {}).get("live_failed", 0)
                 meta_cache = jload(os.path.join(DATA, "cache", "ytmeta.json"), {}) or {}   # read only
-                with _Beat(ev, k):
+                with _Beat(ev, k, _what(m, live)):
                     ok = process_match(ev, m, cfg, status, meta_cache, live=live)
             except (SystemExit, KeyboardInterrupt):
                 st = status.get(k) or {}                # stopped mid-match: not this match's fault
@@ -1439,6 +1464,7 @@ def load_config():
     PAUSED[:] = [bool(o["paused"]), "app"] if o.get("paused") is not None else \
         [os.environ.get("PAUSE_PROCESSING") == "1", "env"]
     key = c.get("tba_key") or _ENV0["TBA_KEY"] or ""
+    runlog.add_secret(key)                   # never in Admin → Worker's log
     events = c.get("events")
     if events is None:
         events = [e.strip() for e in os.environ.get("EVENTS", "").split(",") if e.strip()]
@@ -1481,10 +1507,11 @@ def _matches_sig(events):
     return tuple(out)
 
 
-def _sleep(seconds, events=None, matches=True):
+def _sleep(seconds, events=None, matches=True, why=None):
     """Sleep, but wake early when the app settings change (e.g. an event was just added), the livestream
     recorder wrote a new match record (process it now, not at the next poll) or -- matches=True, the main worker --
     a processor wrote a match file (rebuild the site now)."""
+    runlog.doing(why or f"waiting: next pass in {int(seconds)} s")
     m0, l0, t_end = _conf_mtime(), _live_sig(events), time.time() + seconds
     s0 = _matches_sig(events) if matches and events else None
     while time.time() < t_end:
@@ -1532,11 +1559,25 @@ def _status_write():
 def main():
     if "--recorder" in sys.argv[1:]:                  # compose service `recorder` (same image): live streams
         import liveingest
+        runlog.start(DATA, "recorder")
+        runlog.doing("recorder starting")
         return liveingest.Service(DATA, log=lambda *a: log("recorder:", *a)).run()
     if PROCESS_ONLY or "--process-only" in sys.argv[1:]:   # compose processor-gpu*, deploy/macos CS_PROCESSORS
         return process_only()
+    runlog.start(DATA, "worker")                       # DATA/logs/worker.json: Admin → Worker
     try:                                               # Video page jobs: frame grabs, layout suggestions, calibration fits
         import threading, sources
+        _run_job = sources.run_job
+
+        def run_job(data, j, log=print):               # (run_pending looks run_job up here) -> "also doing" in Admin → Worker
+            kind = j.get("kind")
+            runlog.doing(f"auto set-up of {(j.get('params') or {}).get('source') or 'a source'} ({j.get('ev')})" if kind == "auto_setup"
+                         else f"Video-page job {kind} ({j.get('ev')})", key="job")
+            try:
+                return _run_job(data, j, log)
+            finally:
+                runlog.doing("", key="job")
+        sources.run_job = run_job
         threading.Thread(target=sources.job_loop, args=(DATA,), kwargs={"log": log}, daemon=True).start()
     except Exception:
         traceback.print_exc()
@@ -1552,7 +1593,7 @@ def main():
         if why:
             if os.environ.get("ONCE") == "1": sys.exit(why)
             if why != waiting: log("waiting:", why)
-            waiting = why; _sleep(30); continue
+            waiting = why; _sleep(30, why=f"waiting: {why}"); continue
         if waiting: log("configured: following", ", ".join(events)); waiting = None
         track = os.path.exists(MODEL)                  # without the detector: results, schedule, livestream still publish
         if track != _TRACK_LOGGED[0]:

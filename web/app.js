@@ -681,7 +681,7 @@ CS.renderNotice = renderNotice;
 function downNotice(d, admin) {
   if (!admin) return `<b>The server isn't taking in new data right now:</b> its worker ${d.never ? "hasn't started" : `stopped ${esc(sinceTxt(d.since))}`}, so schedules, results and video stay as they are. Ask an admin to check the server.`;
   const dk = d.docker, pb = dk && dk.problem;
-  const lead = `<b>The worker isn't running</b> (it ${downWhen(d)}). Nothing new comes in until it does: no schedules or results from TBA, no video, no tracking.`;
+  const lead = `<b>The worker isn't running</b> (it ${downWhen(d)}). Nothing new comes in until it does: no schedules or results from TBA, no video, no tracking. <a href="#/admin/worker">See its log</a>.`;
   if (pb) return `${lead}<div class="gn-why"><b>Why:</b> ${esc(pb.why)}</div><div class="gn-why"><b>Fix:</b> ${esc(pb.fix)}</div>${dk.error || dk.log ? `<details class="gn-raw"><summary>What Docker said</summary><span class="code">${esc(dk.error || dk.log)}</span></details>` : ""}`;
   if (dk && dk.state === "running") return `${lead} Docker says its container is running, so it's stuck or can't write to the data folder. ${CS.help(`<span class="hl">${IN_FOLDER}: <span class="code">docker compose logs --tail 80 worker</span> shows what it's doing; <span class="code">docker compose restart worker</span> restarts it.</span>`, "What to check")}`;
   return `${lead} Start it ${IN_FOLDER}: <span class="code">docker compose up -d worker</span>. If it can't start, Docker prints why. ${CS.help(DOWN_HOW, "What to check")}`;
@@ -913,7 +913,7 @@ function buildStall(admin) {
   if (pr && pr.paused) return `Processing is paused on the server, so the worker isn't building pages right now. ${admin ? `Turn it back on to build them. ${CS.help(PAUSE_HOW, "How to turn processing back on")}` : "Ask an admin to turn processing back on."}`;
   if (pr && pr.reason === "no_key") return admin ? `The server has no TBA key yet: <a href="#/admin/settings">set it in Admin → Settings</a>.` : "The server isn't set up yet (no TBA key): ask an admin.";
   const down = workerDown(pr);
-  if (down) return `The worker isn't running (it ${downWhen(down)}), so nothing new is built. ${admin ? (down.docker && down.docker.problem ? esc(down.docker.problem.why) + " " + esc(down.docker.problem.fix) : `Start it ${IN_FOLDER}: <span class="code">docker compose up -d worker</span>. ${CS.help(DOWN_HOW, "What to check")}`) : "Ask an admin to check the server."}`;
+  if (down) return `The worker isn't running (it ${downWhen(down)}), so nothing new is built. ${admin ? `<a href="#/admin/worker">See its log</a>. ` : ""}${admin ? (down.docker && down.docker.problem ? esc(down.docker.problem.why) + " " + esc(down.docker.problem.fix) : `Start it ${IN_FOLDER}: <span class="code">docker compose up -d worker</span>. ${CS.help(DOWN_HOW, "What to check")}`) : "Ask an admin to check the server."}`;
   return "";
 }
 CS.buildStall = buildStall;

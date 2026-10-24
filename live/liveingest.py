@@ -989,8 +989,14 @@ class Service:
         self.log(f"service up: DATA={self.data} LIVE_DIR={live_dir()}")
         poll = _env_f("LIVE_POLL", "10")
         self.beat()
+        try:
+            import runlog                                 # Admin → Worker: what the recorder is doing (live/runlog.py)
+            doing = runlog.doing
+        except Exception:
+            doing = lambda *a, **k: None
         while not self.stopping:
             err = None
+            doing("checking the followed streams")
             try:
                 self.step()
             except Exception as e:
@@ -999,6 +1005,8 @@ class Service:
                 err = repr(e)[:200]
             self.beat(error=err)
             t = time.time() + poll
+            n = len(self.kids)
+            doing(f"recording {n} stream{'s' if n != 1 else ''}" if n else "watching for a stream to go live")
             while time.time() < t and not self.stopping:
                 time.sleep(0.5)
         for ev in list(self.kids):

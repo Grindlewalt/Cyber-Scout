@@ -1,11 +1,11 @@
 "use strict";
 // admin.js: platform plugin -- accounts + roles, team settings, TBA key, worker options, followed events.
-// Route #/admin[/users|settings|events|server|updates] (admin only). Uses CS.app / CS.form / CS.eventPicker from setup.js.
+// Route #/admin[/users|settings|events|server|updates|worker] (admin only). Uses CS.app / CS.form / CS.eventPicker from setup.js.
 (function () {
   CS.nav({ label: "Admin", key: "admin", href: () => "#/admin", order: 95, global: true, group: "manage", icon: "admin", roles: ["admin"] });
 
   const when = ts => ts ? CS.fmtWhen(ts) : "never";
-  const TABS = [["users", "Teammates"], ["settings", "Settings"], ["events", "Competitions"], ["server", "Server"], ["updates", "Updates"]];
+  const TABS = [["users", "Teammates"], ["settings", "Settings"], ["events", "Competitions"], ["server", "Server"], ["updates", "Updates"], ["worker", "Worker"]];
   const css = document.createElement("style");
   css.textContent = `
   .uacts { display: flex; flex-wrap: wrap; gap: 6px; } .uacts button { white-space: nowrap; }
@@ -85,7 +85,7 @@
     const el = document.getElementById("adm");
     const on = $app.querySelector(".admtabs .tab.on"), row = on && on.parentElement;      // phones: the tab row scrolls; show the current one
     if (row && row.scrollWidth > row.clientWidth) row.scrollLeft = on.offsetLeft - row.offsetLeft - 16;
-    await ({ users, settings, events, server, updates })[tab](el);
+    await ({ users, settings, events, server, updates, worker })[tab](el);
   });
 
   // ---------------------------------------------------------------- users
@@ -301,13 +301,13 @@
   function workerLine() {
     const pr = CS.processing, down = CS.workerDown ? CS.workerDown(pr) : null;
     if (down) { const pb = down.docker && down.docker.problem;
-      return `<div class="wk paused"><span class="dot"></span><span><b>Worker: not running</b> · ${down.never ? "hasn't checked in since the server started" : `last check ${esc(CS.fmtWhen(down.since))}`}. Nothing new comes in (TBA schedules and results, video, tracking).${pb ? ` ${esc(pb.why)} <b>Fix:</b> ${esc(pb.fix)}` : " The notice at the top of the page says what to check."}</span></div>`; }
+      return `<div class="wk paused"><span class="dot"></span><span><b>Worker: not running</b> · ${down.never ? "hasn't checked in since the server started" : `last check ${esc(CS.fmtWhen(down.since))}`}. Nothing new comes in (TBA schedules and results, video, tracking). <a href="#/admin/worker">See what it's doing</a>.${pb ? ` ${esc(pb.why)} <b>Fix:</b> ${esc(pb.fix)}` : " The notice at the top of the page says what to check."}</span></div>`; }
     if (!pr || (pr.paused == null && !pr.worker_seen)) return `<div class="wk"><span class="dot"></span><span><b>Worker status unknown.</b> It reports here after its next pass (a worker older than this version doesn't).</span></div>`;
     const seen = pr.worker_seen ? `last check ${esc(CS.fmtWhen(pr.worker_seen))}` : "";
-    if (pr.paused) return `<div class="wk paused"><span class="dot"></span><span><b>Worker: paused</b> (${pr.paused_by === "app" ? "by the switch below" : "PAUSE_PROCESSING=1 in the server's .env"}) · ${seen}. Nothing new is built or tracked; Video page jobs still run.
+    if (pr.paused) return `<div class="wk paused"><span class="dot"></span><span><b>Worker: paused</b> (${pr.paused_by === "app" ? "by the switch below" : "PAUSE_PROCESSING=1 in the server's .env"}) · ${seen}. Nothing new is built or tracked; Video page jobs still run. <a href="#/admin/worker">See what it's doing</a>
       <div style="margin-top:6px"><button type="button" class="primary" data-resume>Resume processing</button></div></span></div>`;
     if (pr.paused == null) return `<div class="wk"><span class="dot"></span><span><b>Worker: not heard from</b> · ${seen}. Check that it's running on the server.</span></div>`;
-    return `<div class="wk ok"><span class="dot"></span><span><b>Worker: ${pr.reason === "no_key" ? "waiting for a TBA key" : pr.reason === "no_events" ? "idle (no competition followed)" : "running"}</b> · ${seen}.</span></div>`;
+    return `<div class="wk ok"><span class="dot"></span><span><b>Worker: ${pr.reason === "no_key" ? "waiting for a TBA key" : pr.reason === "no_events" ? "idle (no competition followed)" : "running"}</b> · ${seen}. <a href="#/admin/worker">See what it's doing</a></span></div>`;
   }
   async function settings(el) {
     const s = await CS.app("GET", "settings"), o = s.options || {}, goalKnown = CS.GOALS.some(g => g[0] === s.season_goal);
@@ -623,6 +623,130 @@
       } catch (e) { err(e.message); }
       await poll();
     };
+    await poll();
+  }
+
+  // ---------------------------------------------------------------- worker (live log)
+  // One card per process that writes DATA/logs/<role>.json (live/runlog.py): the worker, the recorder and each processor. The
+  // log pane follows the newest line unless the reader scrolls up (or presses Pause); only lines newer than the last seq are
+  // fetched (GET admin/logs?since=role:seq) every 3 s while the page is visible. Every log line is escaped.
+  const QUIET_S = 120, STALL_S = 300, KEEP_LINES = 600;
+  const RLABEL = r => r === "worker" ? "Worker" : r === "recorder" ? "Recorder" : r.startsWith("processor-") ? "Processor " + r.slice(10) : r;
+  const clock = t => new Date(t * 1000).toLocaleTimeString([], { hour12: false });
+  const spanTxt = s => {
+    s = Math.max(0, Math.round(s));
+    if (s < 60) return s + " s";
+    if (s < 3600) return Math.floor(s / 60) + " min" + (s % 60 ? " " + (s % 60) + " s" : "");
+    return Math.floor(s / 3600) + " h " + Math.floor(s % 3600 / 60) + " min";
+  };
+  const lineCls = t => /\b(Traceback|Error|Exception|failed|FAILED|crash)/.test(t) ? " bad" : /\b(WARNING|warn|retry|stuck|timed out)/i.test(t) ? " warn" : "";
+  const bare = t => t.replace(/^\d\d:\d\d:\d\d /, "");           // worker.log() already starts a line with its own clock
+  const lineHTML = l => `<div class="wl${lineCls(l.text)}"><span class="lt">${esc(clock(l.t))}</span> ${esc(bare(l.text))}</div>`;
+
+  async function worker(el) {
+    const st = {}, cards = {};
+    el.innerHTML = `<style>
+      .wcard { margin-bottom: var(--sp-4); min-width: 0; }
+      .wcard h2 { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+      .wdot { width: 11px; height: 11px; border-radius: 50%; background: var(--ink-3); flex: none; }
+      .wdot.live { background: var(--good); } .wdot.quiet { background: var(--caution); } .wdot.stopped { background: var(--bad); }
+      .wstate { font-size: var(--fs-foot); font-weight: 600; color: var(--ink-2); }
+      .wdo { margin: 2px 0; overflow-wrap: anywhere; } .wdo b { color: var(--ink); }
+      .wmeta { font-size: var(--fs-foot); color: var(--ink-3); overflow-wrap: anywhere; } .wmeta .caution { color: var(--caution); font-weight: 600; } .wmeta .bad { color: var(--bad); font-weight: 600; }
+      .wtools { display: flex; flex-wrap: wrap; gap: var(--sp-2); align-items: center; margin: var(--sp-3) 0 var(--sp-2); }
+      .wtools input { flex: 1 1 140px; min-width: 0; } .wtools button { white-space: nowrap; }
+      .wpane { font-family: var(--mono); font-size: 12.5px; line-height: 1.45; background: var(--surface-2); border: 1px solid var(--line); border-radius: var(--r-s); padding: var(--sp-2); height: min(60vh, 440px); min-height: 160px; overflow: auto; overscroll-behavior: contain; color: var(--ink); }
+      .wl { white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; } .wl .lt { color: var(--ink-3); }
+      .wl.warn { color: var(--caution); } .wl.bad { color: var(--bad); }
+      .wempty { color: var(--ink-3); font-family: var(--font); font-size: var(--fs-foot); }
+    </style>
+    <div class="sub" style="margin-bottom:var(--sp-3)">What the server's worker, recorder and processors are doing right now, and their latest log lines. ${CS.help(`<b>Green</b>: running and logging. <b>Amber</b> (quiet): the process still reports in, but has written no log line for over 2 minutes: usually one long step (tracking a match, building pages); if "last line" passes 5 minutes in red, it may be stuck. <b>Red</b> (stopped): it hasn't reported for 90 s, so it is down; start it with <span class="code">docker compose up -d worker</span> in the server's folder. The lines are the same as <span class="code">docker compose logs</span>, with keys and tokens removed.`, "What the dots mean")}</div>
+    <div id="wcards"></div><div class="cserr" role="alert" id="werr"></div>`;
+    const host = el.querySelector("#wcards"), err = el.querySelector("#werr");
+    const since = () => Object.entries(st).map(([r, s]) => `${r}:${s.seq}`).join(",");
+
+    function card(r) {
+      const div = document.createElement("div"); div.className = "card wcard";
+      div.innerHTML = `<h2><span class="wdot" data-p="dot"></span><span>${esc(RLABEL(r))}</span><span class="wstate" data-p="state"></span></h2>
+        <div class="wdo" data-p="doing"></div><div class="wmeta" data-p="meta"></div>
+        <div class="wtools"><input class="csin" type="search" placeholder="Filter lines" aria-label="Filter ${esc(RLABEL(r))} log lines" autocomplete="off" spellcheck="false" data-p="filter">
+          <button type="button" data-p="pause" aria-pressed="false">Pause</button><button type="button" data-p="copy">Copy</button></div>
+        <div class="wpane" data-p="pane" tabindex="0" role="log" aria-label="${esc(RLABEL(r))} log"></div>`;
+      const q = {}; div.querySelectorAll("[data-p]").forEach(n => q[n.dataset.p] = n);
+      const s = st[r] = { seq: 0, lines: [], paused: false, filter: "", info: null, q };
+      const match = l => !s.filter || l.text.toLowerCase().includes(s.filter);
+      s.fill = () => { q.pane.innerHTML = s.lines.filter(match).map(lineHTML).join("") || `<div class="wempty">${s.lines.length ? "No line matches the filter." : "No log lines yet."}</div>`; follow(); };
+      const follow = () => { if (!s.paused) q.pane.scrollTop = q.pane.scrollHeight; };
+      const setPause = p => { s.paused = p; q.pause.textContent = p ? "Follow" : "Pause"; q.pause.setAttribute("aria-pressed", String(p)); if (!p) follow(); };
+      q.pause.onclick = () => setPause(!s.paused);
+      q.pane.addEventListener("scroll", () => { if (!s.paused && q.pane.scrollHeight - q.pane.scrollTop - q.pane.clientHeight > 40) setPause(true); else if (s.paused && q.pane.scrollHeight - q.pane.scrollTop - q.pane.clientHeight < 4) setPause(false); });
+      q.filter.oninput = () => { s.filter = q.filter.value.trim().toLowerCase(); s.fill(); };
+      q.copy.onclick = async () => {
+        const txt = s.lines.filter(match).map(l => `${clock(l.t)} ${bare(l.text)}`).join("\n");
+        let ok = false;
+        try { await navigator.clipboard.writeText(txt); ok = true; } catch (e) {
+          const ta = document.createElement("textarea"); ta.value = txt; ta.style.cssText = "position:fixed;opacity:0"; document.body.appendChild(ta); ta.select();
+          try { ok = document.execCommand("copy"); } catch (e2) { } ta.remove();
+        }
+        q.copy.textContent = ok ? "Copied" : "Copy failed"; setTimeout(() => { q.copy.textContent = "Copy"; }, 1500);
+      };
+      host.appendChild(div); cards[r] = div; s.fill();
+      return s;
+    }
+
+    /** the parts that change every second: state, "for 2 min 10 s", "last line 3 s ago" */
+    function tick() {
+      const now = Date.now() / 1000;
+      for (const [r, s] of Object.entries(st)) {
+        const i = s.info; if (!i) continue;
+        const lastT = s.lines.length ? s.lines[s.lines.length - 1].t : null;
+        const sn = now - s.skew;                                      // the server's clock (lines and "doing" carry its times)
+        const age = i.age_s + (now - s.got), alive = age < 90;
+        const since = lastT == null ? null : sn - lastT;
+        const kind = !alive ? "stopped" : since != null && since > QUIET_S ? "quiet" : "live";
+        s.q.dot.className = "wdot " + kind;
+        s.q.state.textContent = kind === "stopped" ? "stopped" : kind === "quiet" ? "quiet" : "running";
+        const dsince = i.doing_since != null ? sn - i.doing_since : null;
+        s.q.doing.innerHTML = (i.doing ? `<b>Doing now:</b> ${esc(i.doing)}${dsince != null ? ` <span class="muted">· for ${esc(spanTxt(dsince))}</span>` : ""}` : `<span class="muted">${alive ? "Doing now: nothing reported" : "Not doing anything (stopped)"}</span>`)
+          + (i.also || []).map(a => `<div class="muted small">Also: ${esc(a.text)} · for ${esc(spanTxt(sn - a.since))}</div>`).join("");
+        const cls = since == null ? "" : since > STALL_S ? "bad" : since > QUIET_S ? "caution" : "";
+        s.q.meta.innerHTML = (since == null ? "no log lines yet" : `<span class="${cls}">last line ${esc(spanTxt(since))} ago</span>`)
+          + (alive ? "" : ` · <span class="bad">no heartbeat for ${esc(spanTxt(age))}</span>`)
+          + (i.started ? ` · up ${esc(spanTxt(sn - i.started))}` : "") + (i.pid ? ` · pid ${i.pid}` : "");
+      }
+    }
+
+    let busy = false;
+    async function poll() {
+      if (busy || document.hidden) return; busy = true;
+      let again = false;
+      try {
+        const d = await CS.app("GET", "admin/logs" + (Object.keys(st).length ? "?since=" + encodeURIComponent(since()) : ""));
+        if (!el.isConnected) return;
+        err.textContent = "";
+        const got = Date.now() / 1000;
+        if (!d.roles.length && !Object.keys(st).length) host.innerHTML = `<div class="card"><div class="empty"><b>No worker log yet</b>The worker, recorder and processors write their log here once they run this version of Cyber-Scout. If the worker is up, wait a few seconds; otherwise start it in the server's folder: <span class="code">docker compose up -d worker</span>.</div></div>`;
+        for (const r of d.roles) {
+          if (!host.querySelector(".wcard") && host.firstChild) host.innerHTML = "";
+          const s = st[r.role] || card(r.role); if (!s.got) { s.got = got; s.skew = 0; }
+          if (r.seq < s.seq || (r.pid && s.info && s.info.pid && r.pid !== s.info.pid)) {    // restarted: its numbering began again
+            s.lines = []; s.seq = 0; s.info = r; again = true; continue;                      // ask again for all of its lines
+          }
+          s.info = r; s.got = got; s.skew = got - (r.at + r.age_s);
+          if (r.lines.length) {
+            s.seq = r.seq; s.lines = s.lines.concat(r.lines).slice(-KEEP_LINES);
+            const keep = s.q.pane.scrollTop; s.fill(); if (s.paused) s.q.pane.scrollTop = keep;
+          }
+        }
+        tick();
+      } catch (e) { if (el.isConnected) err.textContent = CS.sentence(e.message); }
+      finally { busy = false; }
+      if (again) poll();
+    }
+    const iv = setInterval(() => { if (!el.isConnected || !/^#\/admin\/worker/.test(location.hash)) { clearInterval(iv); clearInterval(tk); document.removeEventListener("visibilitychange", onVis); return; } poll(); }, 3000);
+    const tk = setInterval(() => { if (el.isConnected && !document.hidden) tick(); }, 1000);
+    const onVis = () => { if (!document.hidden) poll(); };
+    document.addEventListener("visibilitychange", onVis);
     await poll();
   }
 })();

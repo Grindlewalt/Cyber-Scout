@@ -654,6 +654,14 @@ All three POSTs return 409 when the updater isn't installed / heartbeat stale (w
 They work during lockdown (admins). On atomosserver the updater is **not installed** at the time of writing
 (no `cyber-scout*` systemd units, no `updater/` folder), so the Updates tab reports "not installed".
 
+### 7.9a Worker logs (`routers/logs.py`, admin only)
+
+`GET /app/v1/admin/logs?since=worker:120,recorder:40` -> `{roles: [{role, alive, at, age_s, doing, doing_since, also,
+started, pid, seq, lines}]}`: one entry per `DATA/logs/<role>.json` (see architecture.md), `lines` only those newer than the
+role's `since` seq, `alive` while the file's `at` is under 90 s old; a processor silent for over a day is left out. Files are
+opened with `O_NOFOLLOW`, capped at 2 MB, parsed and type-checked field by field (the containers can write `data/`); anything
+malformed is skipped. 403 for non-admins, 401 signed out.
+
 ### 7.10 Distributed processing (`routers/processing.py`, admin only)
 
 Cyber-Scout Clients with a GPU track matches next to the worker ("Help process matches", `client/README.md`), and
