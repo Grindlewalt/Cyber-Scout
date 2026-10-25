@@ -654,21 +654,31 @@ that row. Polls every 90 s. Its banner uses `CS.latestLabel` ("Latest data" unti
 
 ### `matchfield.js` — the match field (`CS.matchField`, `CS.matchPeriods`, `CS.matchNote`)
 
-`CS.matchField(el, plan, {mini, us, asof})` draws one match plan (`mp/<match>.json`) top-down on a canvas in theme
-colours (red end on the right, redrawn on theme / mode change, crisp on retina): the six robots at their predicted
-start spots, **Auto** (arrowed auto paths, points per robot, alliance auto totals) and **Tele** (typical cycle,
-dotted transition path, collect point with a capped ring, smooth heat for the selected team only, "scores in transition
-N %", cycles / min, the inactive-shift job chip Defense / Ferry from neutral / Robber / Collect with its `basis` in a
-"?"). Played matches get Predicted | Actual (actual paths with the prediction as a ghost). Tap a team (canvas or chip)
-to isolate it. `enough: false` robots keep their `why`; a robot whose start is a stand-in (`enough: false` or `start.stand_in`:
-Statbotics EPA / the station's usual spot / the default spot by station) is a **yellow dashed outline** (no fill, team number
-inside, `--nei`) instead of a solid alliance-coloured chip, and the legend and a "default / usual spot: estimate" chip on the
-robot's row say so; stand-in numbers (`stand_in`) read "≈N (Statbotics EPA)" or "≈N (event avg)" by `stand_in_src`. The six
-**driver stations** are drawn on the alliance walls (blue left, red right; tab with the station digit and the team number,
-`robot.ds.xy`, else computed from `station`; 1 = driver's left) on the big and the mini field. `mp/index.json calib` (hit rates measured so far: start side, job, auto FUEL error, score-range cover) goes into
-the "?" text and the scoreboard's track-record line. `prefers-reduced-motion` skips the path reveal.
+`CS.matchField(el, plan, {mini, us, asof, calib})` draws one match plan (`mp/<match>.json`) on the **real field picture**
+(`field.jpg`, the match player's mapping: red end on the left, y down) on a canvas, redrawn on theme / mode change. Driver
+stations (station digit + team number, `robot.ds.xy`) and the **yellow dashed outline** for estimated robots
+(`enough: false` or `start.stand_in`) are kept; a robot with `timeline: null` just sits at its (estimated) start spot.
+- **Calm by default:** the six robots at their start spots and a big **Play the match** button.
+- **Play-through:** robots move along `robots[].timeline.xy` (1 s samples, Catmull-Rom between them at 60 fps) with a short
+  fading trail, a dashed **halo** from `spread` (the honest part: the robot may be anywhere in it; drawn at least 0.8 m,
+  at most 3.2 m wide), and `timeline.events` popping up as stacked, non-overlapping labels ("4911 first score 80 %").
+  Clock + phase chip, a scrubber over the phase bands Auto / Transition / Shift 1-4 / Endgame with event ticks, speed
+  1x / 2x / 4x. Keys: space = play / pause, left / right = step 1 s. `prefers-reduced-motion`: no animation, Play steps 5 s.
+- **Predicted | Actual | Both** (after a played match, not ahead of the replay as-of time): Actual plays
+  `actual.timeline`, Both draws actual solid and the prediction faint. The "?" next to Play states the model's measured
+  accuracy from `mp/index.json calib.timeline` (median position error, matches checked, first-score time error) and
+  says plainly that the route is the reliable part, the position at a given second is not. Never present it as exact.
+- **Most-travelled routes** toggle: `tele.path_heat` (sparse 0.25 m cells) rendered as a smooth density in the alliance
+  colour (all teams faint, or only the selected one).
+- **Cycles per shift** in each robot row (`tele.cycles_per_shift`: transition, shift 1-4, endgame, mean +- sd); the
+  current phase's cell lights up while playing. The inactive-shift job chip keeps its `basis` "?".
+- **Click a team** (on the field or its row): an at-a-glance panel opens below the rows via `CS.teamGlance` (the same view
+  as expanding that team on the Teams tab, with the link to its pages).
+`CS.matchPeriods` (period bars) and `CS.matchNote` are unchanged. `onChange` gets `{view: "pred"|"actual", sel}`.
 
 ### `teams2.js` — Teams (`#/<ev>/teams[/<team>[/<field>]]`) and the spec-sheet renderer
+
+`CS.teamGlance(el, ev, team)` renders a team's expanded at-a-glance panel (all tracked fields with honesty labels, link to its pages) into any element; the Teams tab's rows and the match field share its renderer (`panelFor`).
 
 **Teams list.** `teamsData(ev)` joins `event.json teams[]` (all teams, `q`), `scout.json` (video metrics `{v,raw,n,tier}`, rating,
 climb, coverage), `dashboard.json ratings[]` (EPA total / auto / teleop / endgame, blend ± sd, projection) and

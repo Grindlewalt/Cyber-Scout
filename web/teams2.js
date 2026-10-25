@@ -547,6 +547,13 @@
       ${tilesFor(D, R, ev)}
       <div class="tm-note">Each field opens as its own page. The thin bar under a value is where the team stands among this event's teams (faded and striped = under 3 verified matches).</div></div>`;
   }
+  /** the at-a-glance view of one team (every tracked field, honesty labels, link to its pages): the Teams tab's expanded row, reused
+   *  by the match field. CS.teamGlance(el, ev, "frc4911") -> Promise<boolean> (false when the event has no such team) */
+  CS.teamGlance = async (el, ev, team) => {
+    css(); const D = await teamsData(ev), R = D.by[team];
+    el.innerHTML = R ? `<div class="tm">${panelFor(D, R, ev, null)}</div>` : `<div class="muted">No team page data for ${H(tn(team))} at this event yet.</div>`;
+    return !!R;
+  };
   const TEAMS_HELP = `<span class="hl">Click a team to see every field we track for it; click a field to open it as its own page. Tap a column head to sort.</span>
     <span class="hl"><b>Our rating</b> and <b>EPA</b> are points per match. The rating blends TBA results, earlier events and verified robot video; &plusmn; is one standard deviation, and the pill shows how many verified video matches stand behind it.</span>
     <span class="hl">The EPA bar is split into <b>auto</b>, <b>teleop</b> and <b>endgame</b>. Made / match, accuracy and cycle time use verified video only (v2 tracker, identity at least 60%), shrunk toward the event; <i>grey</i> = fewer than 3 matches. Climb is from TBA for every played qual.</span>`;

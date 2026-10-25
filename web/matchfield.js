@@ -145,202 +145,285 @@
       <div class="mpp-key">${act ? `<span><u></u>predicted</span><span>actual FUEL points counted from video; tower and fouls are in the final</span>` : `<span>points per period, FUEL plus tower</span>`}${wp}${cs ? `<span>${cs.replace("<br>", "")}</span>` : ""}</div></div>`;
   };
 
-  // ---------------------------------------------------------------- the field
+  // ---------------------------------------------------------------- the field: the real field picture, a calm start-spot view, and a play-through
+  const PHN = { auto: "Auto", transition: "Transition", shift1: "Shift 1", shift2: "Shift 2", shift3: "Shift 3", shift4: "Shift 4", endgame: "Endgame" };
+  const PHC = { auto: "#ff922b", transition: "#fcc419", shift1: "#51cf66", shift2: "#22b8cf", shift3: "#5c7cfa", shift4: "#cc5de8", endgame: "#ff6b6b" };
+  const PH0 = [["auto", 0, 20], ["transition", 20, 30], ["shift1", 30, 55], ["shift2", 55, 80], ["shift3", 80, 105], ["shift4", 105, 130], ["endgame", 130, 160]];
+  const CYS = ["transition", "shift1", "shift2", "shift3", "shift4", "endgame"], CYL = { transition: "Trans", shift1: "S1", shift2: "S2", shift3: "S3", shift4: "S4", endgame: "End" };
+  const clock = t => { t = Math.max(0, Math.floor(t)); return Math.floor(t / 60) + ":" + String(t % 60).padStart(2, "0"); };
+  const FIELD_IMG = typeof FIELD !== "undefined" ? FIELD : Object.assign(new Image(), { src: "field.jpg" });
+  const EVT = { first_score: "first score", first_defense: "defends", first_pickup: "first pickup", cross_neutral: "crosses neutral", climb: "climbs" };
+
+  function css2() {
+    if (document.getElementById("mf2-css")) return;
+    const st = document.createElement("style"); st.id = "mf2-css";
+    st.textContent = `
+.mf-cv { background: #1b2430; }
+.mf-hud { position: absolute; left: 10px; top: 8px; display: flex; gap: 8px; align-items: center; pointer-events: none; z-index: 2; }
+.mf-clk { font-family: var(--font-num); font-stretch: var(--num-stretch); font-variant-numeric: tabular-nums; font-weight: 750; font-size: clamp(18px, 3.4vw, 30px); color: #fff; background: rgba(12,16,24,.72); border-radius: 10px; padding: 1px 12px; backdrop-filter: blur(3px); }
+.mf-ph { font-size: var(--fs-foot); font-weight: 700; color: #1b1b1b; border-radius: 99px; padding: 2px 12px; background: var(--phc, #ddd); box-shadow: 0 1px 4px rgba(0,0,0,.35); }
+.mf-big { position: absolute; inset: 0; margin: auto; width: fit-content; height: fit-content; z-index: 3; display: inline-flex; align-items: center; gap: 12px; border: 0; border-radius: 99px; cursor: pointer;
+  padding: clamp(10px, 2vw, 18px) clamp(22px, 4vw, 40px); font: 750 clamp(17px, 3vw, 26px)/1 var(--font-ui, system-ui); color: var(--on-accent, #fff); background: var(--accent-fill, var(--accent)); box-shadow: 0 6px 28px rgba(0,0,0,.45), 0 0 0 6px rgba(255,255,255,.18); }
+.mf-big:hover { filter: brightness(1.08); } .mf-big:focus-visible { outline: 3px solid #fff; outline-offset: 3px; }
+.mf-big svg { width: 1.1em; height: 1.1em; }
+.mf-ctl { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 8px 12px; align-items: center; }
+.mf-ppw { display: inline-flex; align-items: center; gap: 4px; } .mf-pp { width: 44px; height: 44px; border-radius: 50%; border: 0; cursor: pointer; background: var(--accent-fill, var(--accent)); color: var(--on-accent, #fff); display: grid; place-items: center; }
+.mf-pp svg { width: 20px; height: 20px; } .mf-pp:focus-visible, .mf-seg button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.mf-pp:disabled { opacity: .4; cursor: default; }
+.mf-scr { position: relative; height: 44px; min-width: 0; }
+.mf-bands { position: absolute; left: 0; right: 0; top: 12px; height: 22px; display: flex; border-radius: 6px; overflow: hidden; }
+.mf-bands i { display: grid; place-items: center; font-style: normal; font-size: 10px; font-weight: 700; color: #1b1b1b; background: var(--c); overflow: hidden; white-space: nowrap; border-right: 1px solid rgba(0,0,0,.25); opacity: .85; }
+.mf-bands i.on { opacity: 1; box-shadow: inset 0 -3px 0 rgba(0,0,0,.45); }
+.mf-ticks { position: absolute; left: 0; right: 0; top: 34px; height: 8px; pointer-events: none; }
+.mf-ticks b { position: absolute; width: 6px; height: 6px; margin-left: -3px; border-radius: 50%; background: var(--c); border: 1px solid var(--surface); }
+.mf-scr input { position: absolute; inset: 0; width: 100%; margin: 0; background: transparent; -webkit-appearance: none; appearance: none; cursor: pointer; }
+.mf-scr input::-webkit-slider-runnable-track { height: 44px; background: transparent; } .mf-scr input::-moz-range-track { height: 44px; background: transparent; }
+.mf-scr input::-webkit-slider-thumb { -webkit-appearance: none; width: 6px; height: 40px; margin-top: 2px; border-radius: 3px; background: var(--ink); box-shadow: 0 0 0 2px var(--surface); }
+.mf-scr input::-moz-range-thumb { width: 6px; height: 40px; border: 0; border-radius: 3px; background: var(--ink); box-shadow: 0 0 0 2px var(--surface); }
+.mf-scr input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 6px; }
+.mf-cyc { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 2px; margin-top: 2px; }
+.mf-cyc span { text-align: center; padding: 1px 0; border-radius: 4px; background: var(--surface-2); line-height: 1.15; font-size: var(--fs-cap); color: var(--ink-2); }
+.mf-cyc span b { display: block; font-size: 12px; color: var(--ink); font-variant-numeric: tabular-nums; } .mf-cyc span small { font-size: 9.5px; }
+.mf-cyc span.on { background: var(--c); outline: 2px solid var(--ink); } .mf-cyc span.on, .mf-cyc span.on b { color: #1b1b1b; }
+.mf-cyc-h { font-size: var(--fs-cap); color: var(--ink-2); margin-top: 3px; display: flex; gap: 4px; align-items: center; }
+.mf-gl { border: 1px solid var(--accent); border-radius: var(--r-m); padding: 8px 10px 4px; background: var(--surface); }
+.mf-gl-h { display: flex; align-items: center; gap: 8px; font-weight: 700; } .mf-gl-h .mf-sp { flex: 1; }
+.mf-gl-h button { border: 1px solid var(--line-strong); background: var(--surface); color: var(--ink); border-radius: 99px; min-height: 32px; padding: 2px 12px; cursor: pointer; }
+.mf-leg i.g { width: 14px; height: 14px; border: 2px solid var(--ink-2); border-radius: 50%; opacity: .5; } .mf-leg i.a { width: 14px; height: 14px; border: 0; border-radius: 50%; background: radial-gradient(circle, var(--ink-2), transparent 70%); opacity: .6; }
+@media (max-width: 560px) { .mf-rob { grid-template-columns: 1fr; } .mf-ctl { grid-template-columns: auto minmax(0, 1fr); } .mf-ctl .mf-seg { grid-column: 1 / -1; justify-self: start; } .mf-cyc span b { font-size: 11px; } }
+`;
+    document.head.appendChild(st);
+  }
+
   CS.matchField = (el, plan, opts = {}) => {
-    css();
-    const mini = !!opts.mini, US = opts.us || "frc4911";
-    const robots = (plan.robots || []);
-    const hasAct = !!(plan.played && !(opts.asof && plan.time > opts.asof) && robots.some(r => r.actual));
+    css(); css2();
+    const mini = !!opts.mini, US = opts.us || "frc4911", ev = String(plan.key || "").split("_")[0];
+    const robots = plan.robots || [];
+    const hasAct = !!(plan.played && !(opts.asof && plan.time > opts.asof) && robots.some(r => r.actual && r.actual.timeline));
     const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
-    const S = { mode: opts.mode || "auto", view: hasAct ? "actual" : "pred", sel: null, heat: true, prog: 1 };
-    let raf = 0, dead = false;
+    const tlOf = (r, v) => v === "actual" ? r.actual && r.actual.timeline : r.timeline;
+    const anyPred = robots.some(r => r.timeline && r.timeline.xy), phases = ((robots.find(r => r.timeline && r.timeline.phases) || {}).timeline || {}).phases || PH0.map(([phase, t0, t1]) => ({ phase, t0, t1 }));
+    const END = Math.max(...phases.map(p => p.t1), ...robots.flatMap(r => ["pred", "actual"].map(v => { const t = tlOf(r, v); return t && t.xy ? t.xy.length * (t.dt || 1) : 0; })), 1);
+    const S = { view: hasAct ? "actual" : "pred", t: 0, playing: false, speed: 1, sel: null, routes: false };
+    let raf = 0, dead = false, last = 0;
     el.innerHTML = "";
     const root = document.createElement("div"); root.className = "mf" + (mini ? " mini" : ""); el.appendChild(root);
+    const phaseAt = t => phases.find(p => t >= p.t0 && t < p.t1) || phases[phases.length - 1];
 
-    const rOf = tm => robots.find(r => r.team === tm);
-    const view = r => S.view === "actual" && r.actual ? "actual" : "pred";
-    // robot path/point accessors per view
-    const startXY = r => S.view === "actual" ? (r.actual && r.actual.start && r.actual.start.xy) : (r.start && r.start.xy);
-    const autoPath = r => S.view === "actual" ? (r.actual && r.actual.auto && r.actual.auto.path) : (r.auto && r.auto.path);
-    const autoPts = r => S.view === "actual" ? (r.actual && r.actual.auto && r.actual.auto.fuel) : (r.auto && r.auto.pts && r.auto.pts.mean);
-    const trPath = r => S.view === "actual" ? (r.actual && r.actual.transition && r.actual.transition.path) : (r.tele && r.tele.transition && r.tele.transition.path);
-    const cyPath = r => S.view === "actual" ? null : (r.tele && r.tele.cycle && r.tele.cycle.path);
-    const colXY = r => S.view === "actual" ? (r.actual && r.actual.collect && r.actual.collect.xy) : (r.tele && r.tele.cycle && r.tele.cycle.collect && r.tele.cycle.collect.xy);
-    const roleOf = r => S.view === "actual" ? (r.actual && r.actual.inactive && r.actual.inactive.role) : (r.tele && r.tele.inactive && r.tele.inactive.role);
+    // ---- positions: 1 s samples, Catmull-Rom between them (smooth at 60 fps); null samples are skipped (hold the last known)
+    function posAt(tl, t) {
+      const xy = tl && tl.xy; if (!xy || !xy.length) return null;
+      const dt = tl.dt || 1, f = Math.max(0, Math.min(xy.length - 1, t / dt)), i = Math.floor(f), u = f - i;
+      const g = k => { for (let j = Math.max(0, Math.min(xy.length - 1, k)); j >= 0; j--) if (xy[j]) return xy[j]; for (let j = k; j < xy.length; j++) if (xy[j]) return xy[j]; return null; };
+      if (!xy[i] && !xy[Math.min(xy.length - 1, i + 1)]) return null;     // no track here (not tracked at that moment)
+      const p0 = g(i - 1), p1 = g(i), p2 = g(i + 1), p3 = g(i + 2); if (!p1 || !p2) return null;
+      const c = k => .5 * ((2 * p1[k]) + (-p0[k] + p2[k]) * u + (2 * p0[k] - 5 * p1[k] + 4 * p2[k] - p3[k]) * u * u + (-p0[k] + 3 * p1[k] - 3 * p2[k] + p3[k]) * u * u * u);
+      return [c(0), c(1)];
+    }
+    const spreadAt = (tl, t) => { const s = tl && tl.spread; if (!s || !s.length) return 0; return s[Math.max(0, Math.min(s.length - 1, Math.round(t / (tl.dt || 1))))] || 0; };
+    const calmXY = r => (r.start && r.start.xy) || (r.actual && r.actual.start && r.actual.start.xy) || dsXY(r);
+    const cl = p => p && [Math.max(.35, Math.min(LEN - .35, p[0])), Math.max(.3, Math.min(WID - .3, p[1]))];   // tracking noise can sit outside the field: keep the bumper on the picture
+    const nowXY = (r, v) => { const tl = tlOf(r, v); return cl((tl && posAt(tl, S.t)) || (S.t === 0 && v === "pred" ? calmXY(r) : null)); };
+
+    function evLabel(r, e) {
+      const t = tn(r.team);
+      const base = e.kind === "first_defense" ? `${t} defends ${tn(e.target || "")}`.trim() : `${t} ${EVT[e.kind] || String(e.kind || "").replace(/_/g, " ")}`;
+      return base + (e.p != null && e.p < .95 ? ` ${Math.round(e.p * 100)}%` : "");
+    }
 
     function ui() {
-      const A = plan.alliances, nei = al => S.view !== "actual" && A[al].enough === false;
-      const sumA = al => S.view === "actual" ? (A[al].actual && A[al].actual.auto) : A[al].pred.auto && A[al].pred.auto.mean;
-      const tot = ["red", "blue"].map(al => {
-        const v = sumA(al), p = A[al].pred.auto;
-        return `<div class="mf-at ${al}${nei(al) ? " nei" : ""}" title="${H(nei(al) ? CS.matchNote(plan, al) : "")}"><span>${al === "red" ? "Red" : "Blue"} auto</span>
-          <b>${v == null ? "–" : n0(v, S.view === "actual" ? 0 : 1)}</b>${S.view !== "actual" && p && p.lo != null ? `<small>${n0(p.lo)}–${n0(p.hi)}</small>` : ""}${nei(al) ? `<small>not enough info</small>` : ""}</div>`;
-      }).join("");
-      const seg = `<div class="mf-seg" role="group" aria-label="Period shown">${[["auto", "Auto"], ["tele", "Tele"]].map(([k, l]) => `<button type="button" data-mode="${k}" aria-pressed="${S.mode === k}">${l}</button>`).join("")}</div>`;
-      const pa = hasAct ? `<div class="mf-seg" role="group" aria-label="Predicted or actual">${[["pred", "Predicted"], ["actual", "Actual"]].map(([k, l]) => `<button type="button" data-view="${k}" aria-pressed="${S.view === k}">${l}</button>`).join("")}</div>` : "";
-      const heatBtn = S.mode === "tele" ? `<button type="button" class="mf-tg" data-heat aria-pressed="${S.heat}">Heat</button>` : "";
+      const A = plan.alliances || {}, nei = al => S.view === "pred" && A[al] && A[al].enough === false;
+      const tot = ["red", "blue"].filter(al => A[al] && A[al].pred && A[al].pred.score).map(al => { const v = S.view === "actual" && A[al].actual ? A[al].actual.score : A[al].pred.score.mean;
+        return `<div class="mf-at ${al}${nei(al) ? " nei" : ""}" title="${H(nei(al) ? CS.matchNote(plan, al) : "")}"><span>${al === "red" ? "Red" : "Blue"} ${S.view === "actual" ? "final" : "predicted"}</span><b>${v == null ? "–" : n0(v, S.view === "actual" ? 0 : 0)}</b>${nei(al) ? `<small>not enough info</small>` : ""}</div>`; }).join("");
+      const seg = (lab, key, arr) => `<div class="mf-seg" role="group" aria-label="${lab}">${arr.map(([k, l]) => `<button type="button" data-${key}="${k}" aria-pressed="${S[key === "sp" ? "speed" : key] == k}">${l}</button>`).join("")}</div>`;
+      const pa = hasAct ? seg("Predicted or actual", "view", [["pred", "Predicted"], ["actual", "Actual"], ["both", "Both"]]) : "";
+      const rt = anyPred ? `<button type="button" class="mf-tg" data-routes aria-pressed="${S.routes}" title="Where the robots usually drive while cycling (path density)">Most-travelled routes</button>` : "";
       const col = al => `<div class="mf-col">${robots.filter(r => r.alliance === al).map(rowHtml).join("")}</div>`;
-      root.innerHTML = `<div class="mf-bar">${seg}${pa}${heatBtn}<span class="mf-sp"></span>${CS.help(
-        `Each path is that robot's own past route (the data behind it is named in each robot's note), not a simulation. <b>Auto</b>: where it starts and drives; <b>Tele</b>: a typical scoring cycle, where it collects (heat = where it spends its time), its transition path, and its likely job while its hub is inactive. A robot with too little video is dashed and grey with the reason. After the match, <b>Actual</b> shows what really happened with the prediction as ghost lines.${CS.matchCalib(opts.calib, "start_side_hit")}${CS.matchCalib(opts.calib, "auto_fuel_mae")}`, "How to read the field")}</div>
-        ${S.mode === "auto" ? `<div class="mf-tot">${tot}</div>` : ""}
-        <div class="mf-cv"><canvas role="img" aria-label="Top-down field with the six robots' ${S.mode === "auto" ? "start spots and auto paths" : "typical cycles and transition paths"}"></canvas></div>
-        <div class="mf-leg">${S.mode === "auto" ? `<span><i></i>auto path (arrow = end)</span><span><i class="x"></i>start spot</span>` : `<span><i></i>typical cycle</span><span><i class="d"></i>transition path</span><span><i class="x"></i>collect point</span><span><i class="h"></i>${S.sel ? "heat: where it goes" : "tap a team to see its heat"}</span>`}<span><i class="ds"></i>driver station (team, 1 = driver's left)</span>${S.view !== "actual" && robots.some(estSpot) ? `<span><i class="e"></i>yellow outline = estimated spot: Statbotics / default by station</span>` : ""}<span>tap a team to isolate it</span></div>
-        <div class="mf-rob">${col("red")}${col("blue")}</div>`;
-      canvas = root.querySelector("canvas"); size(); draw();
-      root.querySelectorAll("[data-mode]").forEach(b => b.onclick = () => { S.mode = b.dataset.mode; anim(); ui(); });
-      root.querySelectorAll("[data-view]").forEach(b => b.onclick = () => { S.view = b.dataset.view; anim(); ui(); });
-      root.querySelectorAll("[data-heat]").forEach(b => b.onclick = () => { S.heat = !S.heat; ui(); });
+      const help = CS.help(`<b>Play</b> moves the six robots along where the model expects each of them to be over the match: auto, transition, shifts 1 to 4, endgame. The soft halo is how unsure it is at that moment (tap a team for its dashed ring), never an exact position; a yellow dashed outline is an estimate for a team we have little video of. Small labels pop up when the model expects a first score, a first defense or a climb (with its chance).<br><b>Most-travelled routes</b> shades the paths a team uses most while cycling. After the match, <b>Actual</b> replays where the video tracking saw each robot; <b>Both</b> draws actual solid and the prediction faint.${calib ? CS.matchCalib(calib, "start_side_hit") : ""}${calib && calib.timeline ? `<br><b>How far to trust it:</b> ${calib.timeline.route_err_m != null ? `the predicted route is usually right (within ~${n0(calib.timeline.route_err_m, 1)} m of where the team drives)` : "the route a robot drives is the better part of the prediction"}; <b>where</b> it is in its cycle at a given second is not: half the time it is over ~${n0(calib.timeline.pos_err_m && calib.timeline.pos_err_m.median, 1)} m off at this event (${calib.timeline.n_matches} matches checked). Read the halo: the robot may be anywhere inside it.${calib.timeline.first_score_t_err_s != null ? ` First-score times are off by about ${n0(calib.timeline.first_score_t_err_s, 0)} s.` : ""}` : ""}`, "How to read the field");
+      const can = anyPred || (hasAct && S.view !== "pred");
+      root.innerHTML = `<div class="mf-bar">${pa}${rt}<span class="mf-sp"></span>${help}</div>
+        ${tot ? `<div class="mf-tot">${tot}</div>` : ""}
+        <div class="mf-cv" tabindex="0" aria-label="Field with the six robots. Space plays or pauses, left and right arrows step one second."><canvas role="img" aria-label="Top-down field with the six robots at their start spots${can ? " and their expected play-through" : ""}"></canvas>
+          <div class="mf-hud"><span class="mf-clk">0:00</span><span class="mf-ph">Auto</span></div>
+          ${can ? `<button type="button" class="mf-big" data-play>${ICO.play}<span>${reduce ? "Step" : "Play"} the match</span></button>` : ""}</div>
+        ${can ? `<div class="mf-ctl"><span class="mf-ppw"><button type="button" class="mf-pp" data-pp aria-label="Play">${ICO.play}</button>${help}</span>
+          <div class="mf-scr"><div class="mf-bands">${phases.map(p => `<i data-ph="${p.phase}" style="flex:${p.t1 - p.t0};--c:${PHC[p.phase] || "#bbb"}">${(p.t1 - p.t0) / END > .09 ? PHN[p.phase] || p.phase : ""}</i>`).join("")}</div><div class="mf-ticks"></div>
+            <input type="range" min="0" max="${END}" step="1" value="0" aria-label="Match time, seconds"></div>
+          ${seg("Speed", "sp", [[1, "1×"], [2, "2×"], [4, "4×"]])}</div>` : `<div class="mf-note">No tracked play-through for these robots yet: the field shows each robot's start spot.</div>`}
+        <div class="mf-leg"><span><i class="ds"></i>driver station</span><span><i class="e"></i>estimate (little video)</span><span><i class="a"></i>unsure (halo)</span>${S.view === "both" ? `<span><i class="g"></i>prediction (faint)</span>` : ""}${S.routes ? `<span><i class="h"></i>most-travelled route</span>` : ""}</div>
+        <div class="mf-rob">${col("red")}${col("blue")}</div><div class="mf-gl" hidden></div>`;
+      canvas = root.querySelector("canvas"); size(); ticks(); hud(); draw();
+      root.querySelectorAll("[data-view]").forEach(b => b.onclick = () => { S.view = b.dataset.view; ui(); });
+      root.querySelectorAll("[data-sp]").forEach(b => b.onclick = () => { S.speed = +b.dataset.sp; root.querySelectorAll("[data-sp]").forEach(x => x.setAttribute("aria-pressed", String(x === b))); });
+      root.querySelectorAll("[data-routes]").forEach(b => b.onclick = () => { S.routes = !S.routes; b.setAttribute("aria-pressed", String(S.routes)); draw(); });
       root.querySelectorAll("[data-team]").forEach(b => b.onclick = () => pick(b.dataset.team));
-      canvas.onclick = e => { const r = canvas.getBoundingClientRect(), best = hit((e.clientX - r.left) / r.width * canvas.width / dpr, (e.clientY - r.top) / r.height * canvas.height / dpr); if (best) pick(best); };
-      if (opts.onChange) opts.onChange(S);
+      root.querySelectorAll("[data-play],[data-pp]").forEach(b => b.onclick = () => toggle());
+      const rg = root.querySelector(".mf-scr input"); if (rg) rg.oninput = () => { S.t = +rg.value; hud(); draw(); };
+      canvas.onclick = e => { const r = canvas.getBoundingClientRect(), best = hit((e.clientX - r.left) / r.width * W, (e.clientY - r.top) / r.height * Hh); if (best) pick(best); };
+      glance();
+      if (opts.onChange) opts.onChange({ view: S.view === "actual" ? "actual" : "pred", sel: S.sel });
     }
-    function pick(tm) { S.sel = S.sel === tm ? null : tm; ui(); const b = root.querySelector(`[data-team="${tm}"]`); if (b) b.focus({ preventScroll: true }); }
+    const ICO = { play: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4.5v15l13-7.5z" fill="currentColor"/></svg>', pause: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 4h4v16H6zM14 4h4v16h-4z" fill="currentColor"/></svg>' };
+    function ticks() {   // event dots under the scrubber: when the model expects something to happen
+      colors(); const box = root.querySelector(".mf-ticks"); if (!box) return;
+      box.innerHTML = robots.filter(r => !S.sel || r.team === S.sel).flatMap(r => ((r.timeline && r.timeline.events) || []).map(e => `<b style="left:${(e.t / END * 100).toFixed(2)}%;--c:${r.alliance === "red" ? C.red : C.blue}" title="${H(evLabel(r, e))} at ${clock(e.t)}"></b>`)).join("");
+    }
+    function hud() {
+      const p = phaseAt(S.t), c = root.querySelector(".mf-clk"); if (!c) return;
+      c.textContent = clock(S.t); const ph = root.querySelector(".mf-ph"); ph.textContent = PHN[p.phase] || p.phase; ph.style.setProperty("--phc", PHC[p.phase] || "#ddd");
+      const rg = root.querySelector(".mf-scr input"); if (rg && document.activeElement !== rg) rg.value = Math.round(S.t); else if (rg) rg.value = Math.round(S.t);
+      root.querySelectorAll(".mf-bands i").forEach(i => i.classList.toggle("on", i.dataset.ph === p.phase));
+      root.querySelectorAll(".mf-cyc span").forEach(s => s.classList.toggle("on", s.dataset.cy === p.phase));
+      const pp = root.querySelector("[data-pp]"); if (pp) { pp.innerHTML = S.playing ? ICO.pause : ICO.play; pp.setAttribute("aria-label", S.playing ? "Pause" : reduce ? "Step forward" : "Play"); }
+      const big = root.querySelector(".mf-big"); if (big) big.hidden = S.playing || S.t > 0;
+    }
+    function toggle() {
+      if (reduce) { S.t = S.t >= END ? 0 : Math.min(END, S.t + 5); hud(); draw(); return; }
+      S.playing = !S.playing; if (S.playing && S.t >= END) S.t = 0;
+      last = 0; cancelAnimationFrame(raf); if (S.playing) raf = requestAnimationFrame(tick); hud();
+    }
+    function tick(now) {
+      if (dead || !S.playing) return;
+      if (!root.isConnected) { S.playing = false; return; }
+      if (last) S.t = Math.min(END, S.t + (now - last) / 1000 * S.speed); last = now;
+      if (S.t >= END) S.playing = false;
+      hud(); draw(); if (S.playing) raf = requestAnimationFrame(tick);
+    }
+    function step(d) { S.playing = false; cancelAnimationFrame(raf); S.t = Math.max(0, Math.min(END, Math.round(S.t) + d)); hud(); draw(); }
+    function pick(tm) { S.sel = S.sel === tm ? null : tm; root.querySelectorAll(".mf-r").forEach(r => { const b = r.querySelector("[data-team]"), on = b.dataset.team === S.sel; r.classList.toggle("on", on); r.classList.toggle("dim", !!S.sel && !on); b.setAttribute("aria-pressed", String(on)); });
+      ticks(); glance(); draw(); if (opts.onChange) opts.onChange({ view: S.view === "actual" ? "actual" : "pred", sel: S.sel }); }
+    function glance() {
+      const box = root.querySelector(".mf-gl"); if (!box) return;
+      if (!S.sel) { box.hidden = true; box.innerHTML = ""; return; }
+      box.hidden = false; const tm = S.sel; box.innerHTML = `<div class="mf-gl-h"><b>${tn(tm)}</b> at a glance<span class="mf-sp"></span><button type="button" data-x>Close</button></div><div class="mf-gl-b"><span class="muted">Loading…</span></div>`;
+      box.querySelector("[data-x]").onclick = () => pick(tm);
+      if (CS.teamGlance) CS.teamGlance(box.querySelector(".mf-gl-b"), ev, tm).catch(() => { const b = box.querySelector(".mf-gl-b"); if (b) b.textContent = "Could not load this team."; });
+    }
 
     function rowHtml(r) {
-      const us = r.team === US, on = S.sel === r.team, dim = S.sel && !on;
-      const ok = r.enough !== false || S.view === "actual", si = standIn(r) && S.view !== "actual";
-      let sub = "";
-      if (S.mode === "auto") {
-        const pts = autoPts(r), b = r.auto && r.auto.basis;
-        sub = ok || S.view === "actual" || pts != null ? `<span class="mf-sub${si ? " si" : ""}"><b>${pts == null ? "–" : (si ? "≈" : "") + n0(pts, S.view === "actual" ? 0 : 1)}</b> ${S.view === "actual" ? "FUEL in auto" : si ? `auto pts (${SRC[r.stand_in_src] || "event avg"})` : "auto pts"}${r.auto && r.auto.routine && S.view !== "actual" ? ` · ${H(r.auto.routine)}` : ""}</span>${on && S.view !== "actual" ? `<span class="mf-sub">${b ? "Path: " + H(b) + ". " : ""}${r.start ? "Start: " + H(r.start.basis || "") : ""}</span>` : ""}` : "";
-      } else {
-        const inact = r.tele && r.tele.inactive, pr = r.tele && r.tele.transition, ar = r.actual && r.actual.inactive && r.actual.inactive.role;
-        const role = S.view === "actual" ? ar : inact && inact.role;
-        const help = inact ? CS.help(`<b>Predicted job while its hub is inactive</b>: ${H(ROLE_WHAT[inact.role] || inact.role)}. ${H(inact.basis || "")}<br>${Object.entries(inact.p || {}).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${H(ROLE[k] || k)} ${n0(v * 100)}%`).join(" · ")}<br>This is a pattern from past matches, an assumption about this match.${CS.matchCalib(opts.calib, "role_hit")}`, `Why ${tn(r.team)} is predicted to ${ROLE[inact.role] || "play"}`) : "";
-        const mid = [];
-        if (role) mid.push(`<span class="mf-role${S.view === "actual" && inact && ar === inact.role ? " ok" : ""}">${H(ROLE[role] || role)}</span>${S.view === "actual" ? "" : help}`);
-        else if (ok || S.view === "actual") mid.push(`<span class="mf-sub">job: no data</span>`);
-        if (S.view === "actual" && inact && ar && ar !== inact.role) mid.push(`<span class="mf-sub">predicted ${H(ROLE[inact.role] || inact.role)}</span>`);
-        const tr = S.view === "actual" ? (r.actual && r.actual.transition && r.actual.transition.scored != null ? (r.actual.transition.scored ? "scored in transition" : "did not score in transition") : "")
-          : pr && pr.scores_p != null ? `scores in transition ${n0(pr.scores_p * 100)}%` : "";
-        sub = `<span style="display:flex;gap:4px;align-items:center;flex-wrap:wrap">${mid.join("")}</span>${tr ? `<span class="mf-sub">${H(tr)}${S.view !== "actual" && r.tele && r.tele.cycle && r.tele.cycle.per_min != null && r.tele.cycle.per_min <= 15 ? ` · ${n0(r.tele.cycle.per_min, 1)} cycles/min` : ""}</span>` : ""}`;
-        if (on && S.view !== "actual" && r.tele && r.tele.cycle) sub += `<span class="mf-sub">${H(r.tele.cycle.basis || "")}</span>`;
-      }
+      const us = r.team === US, on = S.sel === r.team, dim = S.sel && !on, ok = r.enough !== false || S.view !== "pred";
+      const cy = r.tele && r.tele.cycles_per_shift, inact = r.tele && r.tele.inactive, ar = r.actual && r.actual.inactive && r.actual.inactive.role, role = S.view === "pred" ? inact && inact.role : ar || (inact && inact.role);
+      const help = inact ? CS.help(`<b>Predicted job while its hub is inactive</b>: ${H(ROLE_WHAT[inact.role] || inact.role)}. ${H(inact.basis || "")}<br>${Object.entries(inact.p || {}).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${H(ROLE[k] || k)} ${n0(v * 100)}%`).join(" · ")}<br>A pattern from past matches, not a certainty.`, "Predicted job") : "";
+      const cyc = cy ? `<div class="mf-cyc-h">Cycles per shift ${CS.help("How many scoring cycles (collect, then shoot) this team does in each period: the average over its tracked matches, plus or minus one standard deviation. Intake recall is about 45 %, so counts are a floor.", "Cycles per shift")}</div>
+        <div class="mf-cyc">${CYS.map(k => { const c = cy[k]; return `<span data-cy="${k}" style="--c:${PHC[k]}"${c ? ` title="${H(PHN[k])}: ${n0(c.mean, 1)} cycles, give or take ${n0(c.sd, 1)}"` : ""}>${CYL[k]}<b>${c ? n0(c.mean, 1) : "–"}</b><small>${c && c.sd != null ? "±" + n0(c.sd, 1) : ""}</small></span>`; }).join("")}</div>` : "";
       const sn = S.view !== "actual" && r.start && r.start.stand_in ? `<span class="mf-st" title="${H(r.start.basis || "")}">${r.start.default ? "default spot" : "usual spot"}: estimate</span>` : "";
+      const tl = r.timeline;
       return `<div class="mf-r ${r.alliance}${on ? " on" : ""}${dim ? " dim" : ""}${ok ? "" : " no"}">
-        <button type="button" class="mf-sel" data-team="${r.team}" aria-pressed="${on}" title="${on ? "show all teams" : "show only this team"}"><b>${tn(r.team)}</b><small>${us ? "us · " : ""}station ${r.station}${r.n_video != null ? ` · ${r.n_video} tracked` : ""}</small></button>
-        ${ok ? "" : `<span class="mf-why">not enough info: ${H(r.why || "")}</span>`}${sn}${sub}${on && sn ? `<span class="mf-sub">${H(r.start.basis || "")}</span>` : ""}</div>`;
+        <button type="button" class="mf-sel" data-team="${r.team}" aria-pressed="${on}" title="${on ? "close the team view" : "open this team's at-a-glance view"}"><b>${tn(r.team)}</b><small>${us ? "us · " : ""}station ${r.station}${r.n_video != null ? ` · ${r.n_video} tracked` : ""}</small></button>
+        ${ok ? "" : `<span class="mf-why">not enough info: ${H(r.why || "")}</span>`}${sn}
+        ${role ? `<span style="display:flex;gap:4px;align-items:center;flex-wrap:wrap"><span class="mf-role">${H(ROLE[role] || role)}</span>${S.view === "pred" ? help : ""}</span>` : ""}${cyc}
+        ${on && tl && tl.basis ? `<span class="mf-sub">${H(tl.basis)}</span>` : ""}</div>`;
     }
 
     // ---- canvas
-    let canvas, dpr = 1, W = 0, Hh = 0, C = {};
+    let canvas, dpr = 1, W = 0, Hh = 0, C = {}, calib = opts.calib || null;
     const colors = () => {
       const cs = getComputedStyle(root), g = (n, d) => (cs.getPropertyValue(n) || "").trim() || d;
-      C = { bg: g("--surface-2", "#eee"), line: g("--line-strong", "#999"), red: g("--red-fill", "#c33"), blue: g("--blue-fill", "#33c"), ink: g("--ink", "#111"), ink2: g("--ink-2", "#555"),
-        ink3: g("--ink-3", "#888"), surf: g("--surface", "#fff"), acc: g("--accent", "#06c"), nei: g("--nei", "#f5c518") };
+      C = { red: g("--red-fill", "#c33"), blue: g("--blue-fill", "#33c"), ink: g("--ink", "#111"), acc: g("--accent", "#06c"), nei: g("--nei", "#f5c518") };
     };
     function size() {
       if (!canvas) return;
       const w = Math.max(220, canvas.parentElement.clientWidth || root.clientWidth || 360);
-      dpr = Math.min(3, window.devicePixelRatio || 1);
-      W = w; Hh = Math.round(w * WID / LEN);
-      canvas.width = Math.round(W * dpr); canvas.height = Math.round(Hh * dpr);
+      dpr = Math.min(3, window.devicePixelRatio || 1); W = w; Hh = Math.round(w * WID / LEN);
+      canvas.width = Math.round(W * dpr); canvas.height = Math.round(Hh * dpr); heatC = {};
     }
-    const sc = () => W / LEN;
-    const X = x => x * sc(), Y = y => (WID - y) * sc();
+    const sc = () => W / LEN, X = x => (LEN - x) * sc(), Y = y => y * sc();   // the match player's mapping: red end on the left, y down
     const alc = a => a === "red" ? C.red : C.blue;
-    const alpha = (c, a) => { const t = document.createElement("canvas").getContext("2d"); t.fillStyle = c; const v = t.fillStyle; // normalise any css colour to #rrggbb
-      if (v[0] === "#") return `rgba(${parseInt(v.slice(1, 3), 16)},${parseInt(v.slice(3, 5), 16)},${parseInt(v.slice(5, 7), 16)},${a})`; return v; };
-    const alCache = {}; const al = (c, a) => alCache[c + a] || (alCache[c + a] = alpha(c, a));
-
-    function field(ctx) {
-      ctx.fillStyle = C.bg; ctx.fillRect(0, 0, W, Hh);
-      const zone = (x0, x1, c) => { ctx.fillStyle = al(c, .13); ctx.fillRect(X(x0), 0, X(x1) - X(x0), Hh); };
-      zone(0, 5.2, C.blue); zone(LEN - 5.2, LEN, C.red);
-      ctx.fillStyle = al(C.nei, .22); ctx.fillRect(X(LEN / 2 - .9), Y(6.3), X(1.8), Y(1.7) - Y(6.3));      // the FUEL pile in the middle
-      ctx.strokeStyle = C.line; ctx.lineWidth = 1; ctx.setLineDash([4, 4]); ctx.beginPath(); ctx.moveTo(X(LEN / 2), 0); ctx.lineTo(X(LEN / 2), Hh); ctx.stroke(); ctx.setLineDash([]);
-      [[HUB_X, C.blue], [LEN - HUB_X, C.red]].forEach(([x, c]) => {   // hubs
-        ctx.beginPath(); for (let i = 0; i < 6; i++) { const a = Math.PI / 3 * i + Math.PI / 6; ctx.lineTo(X(x) + Math.cos(a) * .75 * sc(), Y(HUB_Y) + Math.sin(a) * .75 * sc()); }
-        ctx.closePath(); ctx.fillStyle = al(c, .35); ctx.fill(); ctx.strokeStyle = c; ctx.lineWidth = 1.5; ctx.stroke(); });
-      ctx.lineWidth = 3; ctx.strokeStyle = C.blue; ctx.beginPath(); ctx.moveTo(1, 0); ctx.lineTo(1, Hh); ctx.stroke();
-      ctx.strokeStyle = C.red; ctx.beginPath(); ctx.moveTo(W - 1, 0); ctx.lineTo(W - 1, Hh); ctx.stroke();
-      ctx.font = `700 ${Math.max(9, W / 60)}px system-ui,sans-serif`; ctx.fillStyle = al(C.ink2, .8); ctx.textAlign = "left"; ctx.fillText("BLUE", 8, Hh - 8);
-      ctx.textAlign = "right"; ctx.fillText("RED", W - 8, Hh - 8);
-      stations(ctx);
+    const nrm = document.createElement("canvas").getContext("2d");
+    const al = (c, a) => { nrm.fillStyle = c; const v = nrm.fillStyle; return v[0] === "#" ? `rgba(${parseInt(v.slice(1, 3), 16)},${parseInt(v.slice(3, 5), 16)},${parseInt(v.slice(5, 7), 16)},${a})` : v; };
+    let heatC = {};
+    function heatImg(r) {   // sparse 0.25 m cells -> a smooth density in the alliance colour (soft blobs summed offscreen, then coloured)
+      const h = r.tele && r.tele.path_heat; if (!h || !h.cells || !h.cells.length) return null;
+      const k = r.team + ":" + W; if (heatC[k]) return heatC[k];
+      const off = document.createElement("canvas"); off.width = Math.round(W); off.height = Math.round(Hh); const o = off.getContext("2d"), rad = Math.max(8, h.cell * sc() * 2.6);
+      h.cells.forEach(([ix, iy, w]) => { const x = X((ix + .5) * h.cell), y = Y((iy + .5) * h.cell), g = o.createRadialGradient(x, y, 0, x, y, rad);
+        g.addColorStop(0, `rgba(0,0,0,${Math.min(.45, .08 + w * .35)})`); g.addColorStop(1, "rgba(0,0,0,0)"); o.fillStyle = g; o.fillRect(x - rad, y - rad, rad * 2, rad * 2); });
+      o.globalCompositeOperation = "source-in"; o.fillStyle = alc(r.alliance); o.fillRect(0, 0, off.width, off.height);
+      return (heatC[k] = off);
     }
-    // the six driver stations on the alliance walls (red right, blue left): tab with the station number and the team number
     function stations(ctx) {
       const fs = Math.max(8, Math.min(12, W / 40)), w = Math.max(26, Math.min(40, W * .085)), h = Math.max(24, Math.min(46, 1.55 * sc()));
-      robots.forEach(r => { const xy = dsXY(r), x = X(xy[0]), y = Y(xy[1]), left = r.alliance !== "red", x0 = left ? x : x - w, t = tn(r.team);
-        ctx.globalAlpha = S.sel && S.sel !== r.team ? .25 : 1;
+      robots.forEach(r => { const xy = dsXY(r), x = X(xy[0]), y = Y(xy[1]), left = r.alliance === "red", x0 = left ? x : x - w, t = tn(r.team);
+        ctx.globalAlpha = S.sel && S.sel !== r.team ? .35 : .95;
         ctx.beginPath(); ctx.roundRect(x0, y - h / 2, w, h, left ? [0, 5, 5, 0] : [5, 0, 0, 5]); ctx.fillStyle = alc(r.alliance); ctx.fill();
         ctx.fillStyle = "#fff"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
         ctx.font = `600 ${Math.max(7, fs - 3)}px system-ui,sans-serif`; ctx.fillText(r.station != null ? String(r.station) : "", x0 + w / 2, y - h / 2 + Math.max(5, fs - 3) * .9 + 1);
         ctx.font = `700 ${fs * (t.length > 4 ? .85 : 1)}px system-ui,sans-serif`; ctx.fillText(t, x0 + w / 2, y + h * .14); });
       ctx.globalAlpha = 1; ctx.textBaseline = "alphabetic";
     }
-    const visible = r => !S.sel || S.sel === r.team;
-    const colorOf = r => r.enough === false && S.view !== "actual" ? C.ink3 : alc(r.alliance);
-    function line(ctx, pts, c, w, dash, p, arrow) {
-      if (!pts || pts.length < 2) return;
-      const n = Math.max(2, Math.ceil(pts.length * p)), q = pts.slice(0, n);
-      ctx.strokeStyle = c; ctx.lineWidth = w; ctx.setLineDash(dash || []); ctx.lineJoin = "round"; ctx.lineCap = "round";
-      ctx.beginPath(); q.forEach((pt, i) => i ? ctx.lineTo(X(pt[0]), Y(pt[1])) : ctx.moveTo(X(pt[0]), Y(pt[1]))); ctx.stroke(); ctx.setLineDash([]);
-      if (arrow && p >= 1) { const a = q[q.length - 1], b = q[Math.max(0, q.length - 4)]; let ang = Math.atan2(Y(a[1]) - Y(b[1]), X(a[0]) - X(b[0]));
-        if (!isFinite(ang)) ang = 0; const s = 5 + w; ctx.fillStyle = c; ctx.beginPath(); ctx.moveTo(X(a[0]), Y(a[1]));
-        ctx.lineTo(X(a[0]) - Math.cos(ang - .45) * s, Y(a[1]) - Math.sin(ang - .45) * s); ctx.lineTo(X(a[0]) - Math.cos(ang + .45) * s, Y(a[1]) - Math.sin(ang + .45) * s); ctx.closePath(); ctx.fill(); }
+    function bot(ctx, r, xy, o) {   // a robot: team-number bumper tab; estimate = yellow dashed outline, no fill; ghost = faint
+      const x = X(xy[0]), y = Y(xy[1]), fs = Math.max(8, Math.min(12, W / 38)), t = tn(r.team), w = Math.max(24, t.length * fs * .66 + 8), h = fs + 7, est = estSpot(r) && o.view !== "actual";
+      ctx.globalAlpha = (o.ghost ? .38 : 1) * (S.sel && S.sel !== r.team ? .3 : 1);
+      ctx.save(); ctx.shadowColor = "rgba(0,0,0,.55)"; ctx.shadowBlur = o.ghost ? 0 : 6; ctx.beginPath(); ctx.roundRect(x - w / 2, y - h / 2, w, h, 4);
+      if (est) { ctx.fillStyle = "rgba(20,24,32,.72)"; ctx.fill(); ctx.restore(); ctx.beginPath(); ctx.roundRect(x - w / 2, y - h / 2, w, h, 4); ctx.setLineDash([4, 3]); ctx.strokeStyle = C.nei; ctx.lineWidth = 2.5; ctx.stroke(); ctx.setLineDash([]); ctx.fillStyle = "#fff"; }
+      else { ctx.fillStyle = alc(r.alliance); ctx.fill(); ctx.restore(); if (!o.ghost) { ctx.strokeStyle = "rgba(255,255,255,.85)"; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.roundRect(x - w / 2, y - h / 2, w, h, 4); ctx.stroke(); } ctx.fillStyle = "#fff"; }
+      if (r.team === US && !o.ghost) { ctx.strokeStyle = C.acc; ctx.lineWidth = 2.5; ctx.beginPath(); ctx.roundRect(x - w / 2 - 3, y - h / 2 - 3, w + 6, h + 6, 7); ctx.stroke(); }
+      ctx.font = `700 ${fs}px system-ui,sans-serif`; ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.fillText(t, x, y + .5); ctx.textBaseline = "alphabetic"; ctx.globalAlpha = 1;
     }
-    function marker(ctx, r, xy, label) {
-      const x = X(xy[0]), y = Y(xy[1]), fs = Math.max(8, Math.min(12, W / 38)), t = tn(r.team), w = Math.max(24, t.length * fs * .66 + 8), h = fs + 7;
-      ctx.beginPath(); ctx.roundRect(x - w / 2, y - h / 2, w, h, 4);
-      if (estSpot(r) && S.view !== "actual") { ctx.setLineDash([4, 3]); ctx.strokeStyle = C.nei; ctx.lineWidth = 2.5; ctx.stroke(); ctx.setLineDash([]); ctx.fillStyle = C.ink; }   // estimate: yellow dashed outline, no fill
-      else { ctx.fillStyle = alc(r.alliance); ctx.fill(); ctx.fillStyle = "#fff"; }
-      if (r.team === US) { ctx.strokeStyle = C.acc; ctx.lineWidth = 2.5; ctx.beginPath(); ctx.roundRect(x - w / 2 - 2, y - h / 2 - 2, w + 4, h + 4, 6); ctx.stroke(); }
-      ctx.font = `700 ${fs}px system-ui,sans-serif`; ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.fillText(t, x, y + .5);
-      if (label) { ctx.font = `600 ${Math.max(8, fs - 1)}px system-ui,sans-serif`; ctx.fillStyle = C.ink; ctx.textBaseline = "top"; ctx.fillText(label, x, y + h / 2 + 2); }
-      ctx.textBaseline = "alphabetic";
+    function trail(ctx, tl, r, solid) {   // a short fading tail: the last ~5 s
+      const a = alc(r.alliance); let prev = null;
+      for (let k = 20; k >= 0; k--) { const t = S.t - k * .25; if (t < 0) continue; const p = posAt(tl, t); if (!p) { prev = null; continue; }
+        if (prev) { ctx.strokeStyle = al(a, (1 - k / 21) * (solid ? .85 : .4) * (S.sel && S.sel !== r.team ? .3 : 1)); ctx.lineWidth = 1 + (1 - k / 21) * (solid ? 3.5 : 2); ctx.lineCap = "round"; ctx.beginPath(); ctx.moveTo(X(prev[0]), Y(prev[1])); ctx.lineTo(X(p[0]), Y(p[1])); ctx.stroke(); }
+        prev = p; }
+    }
+    function pops(ctx) {   // timeline events pop up as small labelled markers for ~5 s after they happen (predicted view only: they are the model's expectation); labels are stacked so none overlap
+      if (S.view === "actual") return;
+      const fs = Math.max(9, Math.min(12, W / 44)), h = fs + 9, placed = [], list = [];
+      robots.forEach(r => ((r.timeline && r.timeline.events) || []).forEach(e => {
+        const age = S.t - e.t; if (age < 0 || age > 6 || (S.sel && S.sel !== r.team)) return;
+        const xy = cl(e.xy || posAt(r.timeline, e.t)); if (xy) list.push({ r, e, age, xy }); }));
+      list.sort((a, b) => b.age - a.age);   // oldest first: the newest label gets the free spot
+      list.forEach(({ r, e, age, xy }) => {
+        const k = age < .3 ? age / .3 : age > 4.5 ? 1 - (age - 4.5) / 1.5 : 1, lab = evLabel(r, e);
+        ctx.font = `700 ${fs}px system-ui,sans-serif`; const w = ctx.measureText(lab).width + 14, x = Math.max(w / 2 + 2, Math.min(W - w / 2 - 2, X(xy[0])));
+        let y = Math.max(h, Y(xy[1]) - 22), tries = 0; const hits = yy => placed.some(q => Math.abs(q.x - x) < (q.w + w) / 2 + 2 && Math.abs(q.y - yy) < h + 2);
+        while (hits(y) && tries++ < 8) y += (tries % 2 ? -1 : 1) * tries * (h + 2);   // alternately above and below
+        y = Math.max(h / 2 + 1, Math.min(Hh - h / 2 - 1, y)); placed.push({ x, y, w });
+        ctx.globalAlpha = Math.max(0, k); ctx.beginPath(); ctx.arc(X(xy[0]), Y(xy[1]), 3 + 6 * (1 - Math.min(1, age / 1.2)), 0, 7); ctx.strokeStyle = alc(r.alliance); ctx.lineWidth = 2; ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(X(xy[0]), Y(xy[1])); ctx.lineTo(x, y); ctx.strokeStyle = al(alc(r.alliance), .7); ctx.lineWidth = 1; ctx.stroke();   // leader to the spot
+        ctx.beginPath(); ctx.roundRect(x - w / 2, y - h / 2, w, h, h / 2); ctx.fillStyle = "rgba(255,248,214,.97)"; ctx.fill(); ctx.strokeStyle = alc(r.alliance); ctx.lineWidth = 2; ctx.stroke();
+        ctx.fillStyle = "#1b1b1b"; ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.fillText(lab, x, y + .5); ctx.textBaseline = "alphabetic"; ctx.globalAlpha = 1; });
     }
     function draw() {
       if (!canvas || dead) return;
       colors(); const ctx = canvas.getContext("2d"); ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.clearRect(0, 0, W, Hh);
-      field(ctx); const p = S.prog, act = S.view === "actual";
-      const rs = robots, ghost = act, dimA = r => ctx.globalAlpha = S.sel && S.sel !== r.team ? .2 : 1;
-      if (S.mode === "tele" && S.heat && S.sel) rs.forEach(r => { const h = r.team === S.sel && !act && r.tele && r.tele.cycle && r.tele.cycle.heat; if (!h) return;
-        // sparse 0.5 m cells -> a smooth density: soft radial blobs summed on an offscreen canvas, then the alliance colour through its alpha
-        const off = document.createElement("canvas"); off.width = Math.round(W); off.height = Math.round(Hh); const o = off.getContext("2d"), rad = h.cell * sc() * 1.6;
-        h.cells.forEach(([ix, iy, w]) => { const x = X((ix + .5) * h.cell), y = Y((iy + .5) * h.cell), g = o.createRadialGradient(x, y, 0, x, y, rad);
-          g.addColorStop(0, `rgba(0,0,0,${Math.min(.5, .12 + w * .38)})`); g.addColorStop(1, "rgba(0,0,0,0)"); o.fillStyle = g; o.fillRect(x - rad, y - rad, rad * 2, rad * 2); });
-        o.globalCompositeOperation = "source-in"; o.fillStyle = colorOf(r); o.fillRect(0, 0, off.width, off.height);
-        ctx.drawImage(off, 0, 0, W, Hh); });
-      rs.forEach(r => {
-        dimA(r); const c = colorOf(r), dash = r.enough === false && S.view !== "actual" ? [5, 4] : null;
-        if (S.mode === "auto") {
-          if (ghost) line(ctx, r.auto && r.auto.path, al(c, .3), 2, [4, 4], 1, false);
-          line(ctx, autoPath(r), c, S.sel ? 3.5 : 2.6, dash, p, true);
-        } else {
-          if (ghost) { line(ctx, cyPath(r) || (r.tele && r.tele.cycle && r.tele.cycle.path), al(c, .3), 2, [4, 4], 1, false); }
-          line(ctx, cyPath(r), c, S.sel ? 3.5 : 2.6, dash, p, true);
-          line(ctx, trPath(r), c, 2.4, [1.5, 4], p, true);
-          const cx = colXY(r); if (cx) { const x = X(cx[0]), y = Y(cx[1]), sp = r.tele && r.tele.cycle && r.tele.cycle.collect && r.tele.cycle.collect.spread_m;
-            if (sp && !act) { ctx.beginPath(); ctx.arc(x, y, Math.min(sp, 1.2) * sc(), 0, 7); ctx.lineWidth = 1; ctx.setLineDash([3, 3]); ctx.strokeStyle = al(c, .6); ctx.stroke(); ctx.setLineDash([]); }
-            ctx.beginPath(); ctx.arc(x, y, 4.5, 0, 7); ctx.lineWidth = 2; ctx.strokeStyle = c; ctx.fillStyle = C.surf; ctx.fill(); ctx.stroke(); }
-        }
-      });
-      rs.forEach(r => { dimA(r); const xy = startXY(r) || (r.start && r.start.xy); if (!xy) return;
-        const pts = autoPts(r); marker(ctx, r, xy, S.mode === "auto" && pts != null && (r.enough !== false || act || standIn(r)) ? `${standIn(r) && !act ? "≈" : ""}${n0(pts, act ? 0 : 1)}${act ? " FUEL" : " pts"}` : ""); });
-      ctx.globalAlpha = 1;
-      if (!rs.some(r => startXY(r) || (r.start && r.start.xy))) { ctx.fillStyle = C.ink2; ctx.font = "600 13px system-ui"; ctx.textAlign = "center"; ctx.fillText("no tracked starts for these robots yet", W / 2, Hh / 2); }
+      if (FIELD_IMG.complete && FIELD_IMG.naturalWidth) ctx.drawImage(FIELD_IMG, 0, 0, W, Hh); else { ctx.fillStyle = "#3a3f46"; ctx.fillRect(0, 0, W, Hh); }
+      ctx.fillStyle = "rgba(10,14,22,.22)"; ctx.fillRect(0, 0, W, Hh);   // calm the picture so the robots read
+      if (S.routes) robots.forEach(r => { const im = heatImg(r); if (!im) return; ctx.globalAlpha = S.sel ? (S.sel === r.team ? 1 : 0) : .55; if (ctx.globalAlpha) ctx.drawImage(im, 0, 0, W, Hh); ctx.globalAlpha = 1; });
+      stations(ctx);
+      const views = S.view === "both" ? ["pred", "actual"] : [S.view];
+      views.forEach(v => robots.forEach(r => {
+        const tl = tlOf(r, v), ghost = S.view === "both" && v === "pred", xy = nowXY(r, v); if (!xy) return;
+        if (v === "pred" && tl && tl.spread && !ghost) { const sp = Math.max(.8, Math.min(3.2, spreadAt(tl, S.t))) * sc(), cx = X(xy[0]), cy = Y(xy[1]); const c = estSpot(r) ? C.nei : alc(r.alliance);   // the honest part: where it may really be
+          // six ~3 m halos at full strength wash the field over: faint for everyone, the dashed ring for the selected team only
+          const on = S.sel === r.team, k = S.sel && !on ? .35 : 1;
+          const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, sp); g.addColorStop(0, al(c, (on ? .34 : .16) * k)); g.addColorStop(.6, al(c, (on ? .16 : .07) * k)); g.addColorStop(1, al(c, 0)); ctx.fillStyle = g; ctx.beginPath(); ctx.arc(cx, cy, sp, 0, 7); ctx.fill();
+          if (on) { ctx.setLineDash([5, 4]); ctx.lineWidth = 1.5; ctx.strokeStyle = al(c, .85); ctx.stroke(); ctx.setLineDash([]); } }
+        if (tl && S.t > 0) trail(ctx, tl, r, !ghost);
+      }));
+      views.forEach(v => robots.forEach(r => { const xy = nowXY(r, v); if (xy) bot(ctx, r, xy, { view: v, ghost: S.view === "both" && v === "pred" }); }));
+      pops(ctx);
+      if (S.t === 0 && !robots.some(r => r.timeline && r.timeline.xy)) { ctx.fillStyle = "rgba(255,255,255,.9)"; ctx.font = "600 13px system-ui"; ctx.textAlign = "center"; ctx.fillText("start spots (no tracked play-through yet)", W / 2, Hh - 10); }
     }
-    function hit(px, py) {
-      let best = null, bd = 28;
-      robots.forEach(r => { const xy = startXY(r) || (r.start && r.start.xy); if (!xy) return; const d = Math.hypot(X(xy[0]) - px, Y(xy[1]) - py); if (d < bd) { bd = d; best = r.team; } });
+    function hit(px, py) {   // nearest robot (by its drawn position) within 30 px
+      let best = null, bd = 30;
+      robots.forEach(r => { const xy = nowXY(r, S.view === "both" ? "actual" : S.view) || nowXY(r, "pred"); if (!xy) return; const d = Math.hypot(X(xy[0]) - px, Y(xy[1]) - py); if (d < bd) { bd = d; best = r.team; } });
       return best;
     }
-    function anim() {
-      cancelAnimationFrame(raf);
-      if (reduce) { S.prog = 1; return; }
-      S.prog = 0; const t0 = performance.now();
-      const step = t => { S.prog = Math.min(1, (t - t0) / 450); draw(); if (S.prog < 1 && !dead) raf = requestAnimationFrame(step); };
-      raf = requestAnimationFrame(step);
-    }
 
+    root.addEventListener("keydown", e => {
+      const t = e.target, tag = t && t.tagName;
+      if (e.key === " " && tag !== "BUTTON" && tag !== "SELECT" && tag !== "A") { e.preventDefault(); toggle(); }
+      else if ((e.key === "ArrowLeft" || e.key === "ArrowRight") && tag !== "INPUT" && tag !== "SELECT") { e.preventDefault(); step(e.key === "ArrowLeft" ? -1 : 1); }
+    });
     ui();
+    if (!calib && ev && CS.mpCalib) CS.mpCalib(ev).then(c => { if (c && !dead && !calib) { calib = c; const keep = S.t; ui(); S.t = keep; hud(); draw(); } }).catch(() => { });
     const ro = new ResizeObserver(() => { if (!root.isConnected) return; const w = canvas && canvas.parentElement.clientWidth; if (w && Math.abs(w - W) > 1) { size(); draw(); } });
     ro.observe(root);
     const mo = new MutationObserver(() => { if (root.isConnected) draw(); }); mo.observe(document.documentElement, { attributes: true });
-    const mq = matchMedia("(prefers-color-scheme: dark)"), onMq = () => draw(); mq.addEventListener && mq.addEventListener("change", onMq);
-    const destroy = () => { dead = true; cancelAnimationFrame(raf); ro.disconnect(); mo.disconnect(); mq.removeEventListener && mq.removeEventListener("change", onMq); };
+    if (!(FIELD_IMG.complete && FIELD_IMG.naturalWidth)) FIELD_IMG.addEventListener("load", () => draw(), { once: true });
+    const destroy = () => { dead = true; S.playing = false; cancelAnimationFrame(raf); ro.disconnect(); mo.disconnect(); };
     if (typeof cleanup !== "undefined") cleanup.push(destroy);
-    return { destroy, state: S };
+    return { destroy, state: S, seek: t => { S.t = t; hud(); draw(); } };
   };
 })();
