@@ -195,10 +195,15 @@
     document.head.appendChild(st);
   }
 
+  // The predicted play-through is off until it's tuned (owner, 2026-10-24): an unplayed match shows the field with "Match not
+  // played yet", a played one replays only what the tracking saw. The code stays; on for one device:
+  // localStorage.setItem("cs:field:predict", "1") (and removeItem to turn it off again).
+  const predictOn = () => { try { return localStorage.getItem("cs:field:predict") === "1"; } catch (e) { return false; } };
   CS.matchField = (el, plan, opts = {}) => {
     css(); css2();
+    const PREDICT = predictOn();
     const mini = !!opts.mini, US = opts.us || "frc4911", ev = String(plan.key || "").split("_")[0];
-    const robots = plan.robots || [];
+    const robots = (plan.robots || []).map(r => PREDICT ? r : Object.assign({}, r, { timeline: null }));
     const hasAct = !!(plan.played && !(opts.asof && plan.time > opts.asof) && robots.some(r => r.actual && r.actual.timeline));
     const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
     const tlOf = (r, v) => v === "actual" ? r.actual && r.actual.timeline : r.timeline;
@@ -236,10 +241,11 @@
       const tot = ["red", "blue"].filter(al => A[al] && A[al].pred && A[al].pred.score).map(al => { const v = S.view === "actual" && A[al].actual ? A[al].actual.score : A[al].pred.score.mean;
         return `<div class="mf-at ${al}${nei(al) ? " nei" : ""}" title="${H(nei(al) ? CS.matchNote(plan, al) : "")}"><span>${al === "red" ? "Red" : "Blue"} ${S.view === "actual" ? "final" : "predicted"}</span><b>${v == null ? "–" : n0(v, S.view === "actual" ? 0 : 0)}</b>${nei(al) ? `<small>not enough info</small>` : ""}</div>`; }).join("");
       const seg = (lab, key, arr) => `<div class="mf-seg" role="group" aria-label="${lab}">${arr.map(([k, l]) => `<button type="button" data-${key}="${k}" aria-pressed="${S[key === "sp" ? "speed" : key] == k}">${l}</button>`).join("")}</div>`;
-      const pa = hasAct ? seg("Predicted or actual", "view", [["pred", "Predicted"], ["actual", "Actual"], ["both", "Both"]]) : "";
+      const pa = hasAct && PREDICT ? seg("Predicted or actual", "view", [["pred", "Predicted"], ["actual", "Actual"], ["both", "Both"]]) : "";
       const rt = anyPred ? `<button type="button" class="mf-tg" data-routes aria-pressed="${S.routes}" title="Where the robots usually drive while cycling (path density)">Most-travelled routes</button>` : "";
       const col = al => `<div class="mf-col">${robots.filter(r => r.alliance === al).map(rowHtml).join("")}</div>`;
-      const help = CS.help(`<b>Play</b> moves the six robots along where the model expects each of them to be over the match: auto, transition, shifts 1 to 4, endgame. The soft halo is how unsure it is at that moment (tap a team for its dashed ring), never an exact position; a yellow dashed outline is an estimate for a team we have little video of. Small labels pop up when the model expects a first score, a first defense or a climb (with its chance).<br><b>Most-travelled routes</b> shades the paths a team uses most while cycling. After the match, <b>Actual</b> replays where the video tracking saw each robot; <b>Both</b> draws actual solid and the prediction faint.${calib ? CS.matchCalib(calib, "start_side_hit") : ""}${calib && calib.timeline ? `<br><b>How far to trust it:</b> ${calib.timeline.route_err_m != null ? `the predicted route is usually right (within ~${n0(calib.timeline.route_err_m, 1)} m of where the team drives)` : "the route a robot drives is the better part of the prediction"}; <b>where</b> it is in its cycle at a given second is not: half the time it is over ~${n0(calib.timeline.pos_err_m && calib.timeline.pos_err_m.median, 1)} m off at this event (${calib.timeline.n_matches} matches checked). Read the halo: the robot may be anywhere inside it.${calib.timeline.first_score_t_err_s != null ? ` First-score times are off by about ${n0(calib.timeline.first_score_t_err_s, 0)} s.` : ""}` : ""}`, "How to read the field");
+      const help = !PREDICT ? CS.help(`${hasAct ? "<b>Play</b> replays where the video tracking saw each robot in this match (real tracking, not a prediction). " : ""}The tabs on the walls are the driver stations with their teams. Tap a team for its at-a-glance view.`, "How to read the field")
+        : CS.help(`<b>Play</b> moves the six robots along where the model expects each of them to be over the match: auto, transition, shifts 1 to 4, endgame. The soft halo is how unsure it is at that moment (tap a team for its dashed ring), never an exact position; a yellow dashed outline is an estimate for a team we have little video of. Small labels pop up when the model expects a first score, a first defense or a climb (with its chance).<br><b>Most-travelled routes</b> shades the paths a team uses most while cycling. After the match, <b>Actual</b> replays where the video tracking saw each robot; <b>Both</b> draws actual solid and the prediction faint.${calib ? CS.matchCalib(calib, "start_side_hit") : ""}${calib && calib.timeline ? `<br><b>How far to trust it:</b> ${calib.timeline.route_err_m != null ? `the predicted route is usually right (within ~${n0(calib.timeline.route_err_m, 1)} m of where the team drives)` : "the route a robot drives is the better part of the prediction"}; <b>where</b> it is in its cycle at a given second is not: half the time it is over ~${n0(calib.timeline.pos_err_m && calib.timeline.pos_err_m.median, 1)} m off at this event (${calib.timeline.n_matches} matches checked). Read the halo: the robot may be anywhere inside it.${calib.timeline.first_score_t_err_s != null ? ` First-score times are off by about ${n0(calib.timeline.first_score_t_err_s, 0)} s.` : ""}` : ""}`, "How to read the field");
       const can = anyPred || (hasAct && S.view !== "pred");
       root.innerHTML = `<div class="mf-bar">${pa}${rt}<span class="mf-sp"></span>${help}</div>
         ${tot ? `<div class="mf-tot">${tot}</div>` : ""}
@@ -249,8 +255,8 @@
         ${can ? `<div class="mf-ctl"><span class="mf-ppw"><button type="button" class="mf-pp" data-pp aria-label="Play">${ICO.play}</button>${help}</span>
           <div class="mf-scr"><div class="mf-bands">${phases.map(p => `<i data-ph="${p.phase}" style="flex:${p.t1 - p.t0};--c:${PHC[p.phase] || "#bbb"}">${(p.t1 - p.t0) / END > .09 ? PHN[p.phase] || p.phase : ""}</i>`).join("")}</div><div class="mf-ticks"></div>
             <input type="range" min="0" max="${END}" step="1" value="0" aria-label="Match time, seconds"></div>
-          ${seg("Speed", "sp", [[1, "1×"], [2, "2×"], [4, "4×"]])}</div>` : `<div class="mf-note">No tracked play-through for these robots yet: the field shows each robot's start spot.</div>`}
-        <div class="mf-leg"><span><i class="ds"></i>driver station</span><span><i class="e"></i>estimate (little video)</span><span><i class="a"></i>unsure (halo)</span>${S.view === "both" ? `<span><i class="g"></i>prediction (faint)</span>` : ""}${S.routes ? `<span><i class="h"></i>most-travelled route</span>` : ""}</div>
+          ${seg("Speed", "sp", [[1, "1×"], [2, "2×"], [4, "4×"]])}</div>` : PREDICT ? `<div class="mf-note">No tracked play-through for these robots yet: the field shows each robot's start spot.</div>` : ""}
+        <div class="mf-leg"><span><i class="ds"></i>driver station</span>${PREDICT ? `<span><i class="e"></i>estimate (little video)</span><span><i class="a"></i>unsure (halo)</span>` : ""}${S.view === "both" ? `<span><i class="g"></i>prediction (faint)</span>` : ""}${S.routes ? `<span><i class="h"></i>most-travelled route</span>` : ""}</div>
         <div class="mf-rob">${col("red")}${col("blue")}</div><div class="mf-gl" hidden></div>`;
       canvas = root.querySelector("canvas"); size(); ticks(); hud(); draw();
       root.querySelectorAll("[data-view]").forEach(b => b.onclick = () => { S.view = b.dataset.view; ui(); });
@@ -401,9 +407,20 @@
           if (on) { ctx.setLineDash([5, 4]); ctx.lineWidth = 1.5; ctx.strokeStyle = al(c, .85); ctx.stroke(); ctx.setLineDash([]); } }
         if (tl && S.t > 0) trail(ctx, tl, r, !ghost);
       }));
+      if (!PREDICT && S.view === "pred") {     // prediction off: the field only, and why there's nothing on it
+        const ahead = !plan.played || (opts.asof && plan.time > opts.asof);
+        const t = ahead ? "Match not played yet" : "Not tracked yet", sub = ahead ? "" : "the replay appears once its video is tracked";
+        ctx.fillStyle = "rgba(10,14,22,.62)"; const bw = Math.min(W - 24, mini ? 260 : 380), bh = sub ? (mini ? 52 : 64) : (mini ? 38 : 48);
+        ctx.beginPath(); ctx.roundRect(W / 2 - bw / 2, Hh / 2 - bh / 2, bw, bh, 10); ctx.fill();
+        ctx.fillStyle = "#fff"; ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.font = `700 ${mini ? 15 : 20}px system-ui`;
+        ctx.fillText(t, W / 2, Hh / 2 - (sub ? (mini ? 8 : 10) : 0));
+        if (sub) { ctx.font = `500 ${mini ? 11 : 13}px system-ui`; ctx.fillStyle = "rgba(255,255,255,.8)"; ctx.fillText(sub, W / 2, Hh / 2 + (mini ? 12 : 16)); }
+        ctx.textBaseline = "alphabetic";
+        return;
+      }
       views.forEach(v => robots.forEach(r => { const xy = nowXY(r, v); if (xy) bot(ctx, r, xy, { view: v, ghost: S.view === "both" && v === "pred" }); }));
       pops(ctx);
-      if (S.t === 0 && !robots.some(r => r.timeline && r.timeline.xy)) { ctx.fillStyle = "rgba(255,255,255,.9)"; ctx.font = "600 13px system-ui"; ctx.textAlign = "center"; ctx.fillText("start spots (no tracked play-through yet)", W / 2, Hh - 10); }
+      if (PREDICT && S.t === 0 && !robots.some(r => r.timeline && r.timeline.xy)) { ctx.fillStyle = "rgba(255,255,255,.9)"; ctx.font = "600 13px system-ui"; ctx.textAlign = "center"; ctx.fillText("start spots (no tracked play-through yet)", W / 2, Hh - 10); }
     }
     function hit(px, py) {   // nearest robot (by its drawn position) within 30 px
       let best = null, bd = 30;

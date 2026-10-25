@@ -654,6 +654,8 @@ that row. Polls every 90 s. Its banner uses `CS.latestLabel` ("Latest data" unti
 
 ### `matchfield.js` — the match field (`CS.matchField`, `CS.matchPeriods`, `CS.matchNote`)
 
+**Predicted play-through is OFF by default (2026-10-24, until it's tuned):** an unplayed match shows the field, the driver stations and "Match not played yet"; a played match's Play replays only the tracking (Actual). The prediction code is kept; one device turns it on with `localStorage.setItem("cs:field:predict", "1")` (read at each field draw).
+
 `CS.matchField(el, plan, {mini, us, asof, calib})` draws one match plan (`mp/<match>.json`) on the **real field picture**
 (`field.jpg`, the match player's mapping: red end on the left, y down) on a canvas, redrawn on theme / mode change. Driver
 stations (station digit + team number, `robot.ds.xy`) and the **yellow dashed outline** for estimated robots
