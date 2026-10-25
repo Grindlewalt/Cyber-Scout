@@ -16,6 +16,7 @@ import time
 
 from . import behavior as B
 from . import epa as EPAMOD
+from . import timeline as TLM
 from .data import LEVEL, TOWER_AUTO_PTS, TOWER_TELEOP_PTS, load_tba
 
 PERIODS = B.PERIODS
@@ -32,6 +33,7 @@ LEN, WID = 16.541, 8.069
 DEF_X, DEF_TRENCH_Y = 3.5, 0.75
 DS_DY = 2.0          # driver stations sit on the alliance wall centred on y=WID/2, 2.0 m apart (assumed layout)
 STATION_NAME = {1: "left trench", 2: "middle", 3: "right trench"}
+_TLC = {}            # (team, station, al, hist keys, partners, prior keys, version) -> timeline result
 _CACHE = {}          # path -> (mtime, size, extracted records)
 
 
@@ -287,7 +289,7 @@ def _actual_robot(rec, al):
                 inactive=dict(role=(rec.get("inactive") or {}).get("role")), collect=dict(xy=cx))
 
 
-def _robot_out(team, al, station, P, hist_n, rec_actual, stand, scale, spot=None, sb=None):
+def _robot_out(team, al, station, P, hist_n, rec_actual, stand, scale, spot=None, sb=None, tlr=None):
     base = dict(team=team, alliance=al, station=station, ds=driver_station(al, station), n_video=hist_n)
     if not P or not P.get("enough"):
         base.update(enough=False, why=(P or {}).get("why") or "no tracked matches yet", start=None, auto=None,
@@ -336,8 +338,34 @@ def _robot_out(team, al, station, P, hist_n, rec_actual, stand, scale, spot=None
             tr = dict(tr); tr["path"] = _fpath(tr["path"], al); tr["scores_p"] = _r(tr["scores_p"], 2)
         base.update(enough=True, why=None, start=s, auto=a,
                     tele=dict(transition=tr, cycle=cyc, inactive=P.get("inactive")), partners=P["partners"])
+    base["timeline"] = None
+    if tlr:
+        base["timeline"] = {k: v for k, v in tlr["timeline"].items() if not k.startswith("_")}
+        if base.get("tele") is None:
+            base["tele"] = dict(transition=None, cycle=None, inactive=None)
+        base["tele"] = dict(base["tele"], cycles_per_shift=tlr["cycles_per_shift"], path_heat=tlr["path_heat"])
     base["actual"] = _actual_robot(rec_actual, al)
+    if base["actual"] is not None:
+        base["actual"]["timeline"] = TLM.actual_timeline(rec_actual, al)
     return base
+
+
+def _timeline(tm, al, st, hist, flat, smap, teams, before):
+    """Play-through for one robot (timeline.py), cached: the inputs of a played match never change."""
+    h = hist.get(tm, [])
+    if not h:
+        return None
+    partners = set(teams) - {tm}
+    prior = [x for x in flat if x["station"] == st and x["team"] != tm]
+    ck = (tm, st, al, tuple(x["key"] for x in h), tuple(sorted(partners)), tuple(x["key"] + x["team"] for x in prior), TLM.VERSION)
+    if ck not in _TLC:
+        if len(_TLC) > 6000:
+            _TLC.clear()
+        try:
+            _TLC[ck] = TLM.team_timeline(h, st, partners, smap, al, prior=prior)
+        except Exception:                      # a model failure must never stop the site build
+            _TLC[ck] = None
+    return _TLC[ck]
 
 
 def _load_sb(data_dir, event, log=None):
@@ -380,6 +408,7 @@ def build(data_dir, event, team="frc4911", out_dir=None, log=None, tba_path=None
     index, vids = [], {}
     n_enough = n_rob = side_ok = side_n = role_ok = role_n = 0
     auto_err = []
+    tl_scores, tl_matches = [], set()
     sc_err, cover, win = [], [], []
     for r in rows:
         key, t0 = r["key"], r.get("time") or 0
@@ -428,11 +457,16 @@ def build(data_dir, event, team="frc4911", out_dir=None, log=None, tba_path=None
         preds = {"red": A, "blue": Bp}
         ro = []
         for tm, al, st, P in robots:
-            o = _robot_out(tm, al, st, P, len(hist.get(tm, [])), cur.get(tm) if played else None, stand, scale, spots.get(st), sbm.get(tm))
+            o = _robot_out(tm, al, st, P, len(hist.get(tm, [])), cur.get(tm) if played else None, stand, scale, spots.get(st), sbm.get(tm),
+                           _timeline(tm, al, st, hist, flat, smap, r[al], before))
             ro.append(o)
             n_rob += 1
             n_enough += 1 if o["enough"] else 0
             c = cur.get(tm)
+            if played and c and o.get("timeline"):
+                sc_ = TLM.score(_timeline(tm, al, st, hist, flat, smap, r[al], before), c)
+                if sc_:
+                    tl_scores.append(sc_); tl_matches.add(key)
             if o["enough"] and c and played:
                 if c.get("start"):
                     side_n += 1; side_ok += o["start"]["side"] == B.side_of(c["start"][1])
@@ -480,6 +514,9 @@ def build(data_dir, event, team="frc4911", out_dir=None, log=None, tba_path=None
                  auto_fuel_mae=f_(auto_err), alliance_score_mae=round(sum(sc_err) / len(sc_err), 1) if sc_err else None,
                  score_range_cover=f_([float(x) for x in cover]), win_hit=f_([float(x) for x in win]),
                  n_robots_start=side_n, n_robots_role=role_n)
+    calib["timeline"] = TLM.calib_summary(tl_scores)
+    if calib["timeline"]:
+        calib["timeline"]["n_matches"] = len(tl_matches)
     _dump(os.path.join(outdir, "index.json"), dict(v=1, generated=int(time.time()), calib=calib, matches=index))
     for r in sched["matches"]:
         r["video"] = vids.get(r["key"])

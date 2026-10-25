@@ -131,6 +131,7 @@ def extract(m):
                     cyc.append(seg)
         rec["cycles"] = cyc
         # volleys = bursts of hub shots (> 3 s apart start a new one), not single shots
+        rec.update(timeline_features(pts, mine, ints, m, k, al, team, per))
         rec["volleys"] = sum(1 for i, h in enumerate(hub) if i == 0 or h - hub[i - 1] > 3.0)
         # observed teleop minutes (gated frames), at least 0.5 so a barely seen robot is not extrapolated wildly
         rec["tele_min"] = max(0.5, sum(1 for t, _, _ in pts if t >= 20) / hz / 60.0)
@@ -140,6 +141,51 @@ def extract(m):
         rec["inactive"] = classify_inactive(m, k, al, team, act, pts, mine, ints)
         out.append(rec)
     return out
+
+
+def timeline_features(pts, mine, ints, m, k, al, team, per):
+    """Per-second canonical track `tl` (161x2, NaN = not observed), first-of-kind events `ev` (match_t or None) and
+    hub-shot bursts per period `bursts` of one robot, for strategy/timeline.py.  Pure; cheap."""
+    tl = np.full((161, 2), np.nan)
+    cnt = np.zeros(161)
+    for t, x, y in pts:
+        i = int(round(t))
+        if 0 <= i <= 160:
+            if cnt[i] == 0:
+                tl[i] = (x, y)
+            else:
+                tl[i] = (tl[i] * cnt[i] + (x, y)) / (cnt[i] + 1)
+            cnt[i] += 1
+    hub = sorted((s for s in mine if s.get("target")), key=lambda s: s.get("match_t", 0))
+    made = [s for s in hub if s.get("outcome") == "made"]
+    ev = dict(first_pickup=min([i[0] for i in ints], default=None), first_score=None, first_score_xy=None,
+              first_defense=None, cross_neutral=None, climb=None)
+    if made:
+        s0 = made[0]
+        ev["first_score"] = float(s0.get("match_t", 0))
+        if s0.get("origin"):
+            ev["first_score_xy"] = [round(v, 2) for v in canon(s0["origin"][0], s0["origin"][1], al)]
+    deps = sorted((e for e in (m.get("_defense_eps") or []) if e.get("defender") == team and e.get("t_match") is not None),
+                  key=lambda e: e["t_match"])
+    ev["first_defense"] = deps[0]["t_match"] if deps else None
+    ev["defense_target"] = deps[0].get("target") if deps else None
+    out_ = [t for t, x, _ in pts if t >= 0 and x < Z_OWN - 0.6]          # clearly out of its own zone (not a start-line wobble)
+    ev["cross_neutral"] = next((t for a_, t in zip(out_, out_[1:]) if 0 < t - a_ <= 1.0), None)
+    an = m.get("analytics") or []
+    eg = ((an[k] if k < len(an) else None) or {}).get("endgame") or {}
+    if (eg.get("level") or 0) > 0 and eg.get("arrive_t") is not None:
+        ev["climb"] = float(eg["arrive_t"])
+    bursts = {p: 0 for p in PERIODS}
+    prev = None
+    for s in hub:
+        t = float(s.get("match_t", 0))
+        if prev is None or t - prev > 3.0:
+            for p in PERIODS:
+                q = per.get(p)
+                if q and q["t0"] <= t < q["t1"]:
+                    bursts[p] += 1
+        prev = t
+    return dict(tl=tl, ev=ev, bursts=bursts)
 
 
 def classify_inactive(m, k, al, team, windows, pts, shots, ints):

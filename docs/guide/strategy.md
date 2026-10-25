@@ -1025,3 +1025,10 @@ Stand-in chain for a robot without enough tracked matches: Statbotics EPA as of 
 cache when the API is down) -> event average -> nothing; the start spot goes own history -> the station's usual spot here ->
 a default by station (1 left trench, 2 middle, 3 right trench, in the alliance starting area, `matchplan.default_spot`).
 Alliance predictions with stand-ins stay `enough: false` (yellow); every robot carries `station` and `ds` (driver station).
+
+Play-through (`live/strategy/timeline.py`): each robot also carries `timeline` (predicted 1 Hz path with spread, phases and
+events first pickup / neutral crossing / first score / first defense / climb), `tele.cycles_per_shift`, `tele.path_heat`
+(most-travelled collect->shoot route, 0.25 m grid) and, once played, `actual.timeline`. The path follows the team's own
+earlier tracks (Viterbi through the time-binned density under a speed limit, shrunk toward the station's event prior,
+blended with the dominant cluster's median); `mp/index.json calib.timeline` carries the measured accuracy, from
+`tools/eval_timeline.py` (leave-future-out; log `.work/redesign/timeline-eval.md`). See the README section for details.

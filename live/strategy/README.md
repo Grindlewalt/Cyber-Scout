@@ -355,3 +355,26 @@ alliance zone, ends at 4.028 / 12.513; 2026wasam's tracked starts sit at x 3.4-3
 (driver faces -x, left = low y) and mirrored for blue (`matchplan.default_spot`; trench lanes are y 0..1.19 and 6.88..8.07 in
 `live/field/rebuilt_rules.json`). Every robot also has `station` (1-3) and `ds.xy`, its driver station on its alliance wall
 (x = 0 blue / 16.541 red, y = 4.03 +/- 2.0 m, an assumed layout; station 1 on the driver's left).
+
+### Play-through timelines (`timeline.py`, owner request 2026-10-24)
+`robots[].timeline`, `tele.cycles_per_shift`, `tele.path_heat`, `actual.timeline` and `mp/index.json calib.timeline`
+(contract: `.work/redesign/CONTRACT2.md`). `behavior.extract` now also keeps, per robot, a 1 Hz canonical track `tl`
+(161x2, NaN = unobserved, obs/conf gated), first-of-kind events `ev` (first_pickup, first_score + spot, first_defense from
+the defense episodes, cross_neutral, climb) and hub-shot `bursts` per period (a burst starts after a > 3 s gap).
+`timeline.team_timeline(hist, station, partners, smap, al, prior=...)` builds a prediction from the SAME conditioned
+matches as `behavior.select` (station, partners x2): (1) a Viterbi route through the weighted, time-binned density of those
+tracks (0.75 m cells, steps <= 3.8 m/s) with the event's other robots of that station added as a prior of total weight
+kappa=4 matches; (2) blended 50/50 with the per-second median of the team's dominant cluster (tracks that move like the
+medoid, so a left/right team is never averaged into the middle); (3) the typical first-score spot pulled in at the typical
+first-score time; (4) smoothed and speed-limited (forward/backward clamp), so every step is physically possible. Events
+carry the weighted-median time, `p` (share of matches that had it, only >= 0.25 kept) and `sd_t`; `spread` is the
+weighted-median distance of the real tracks from the path (+-2 s). `cycles_per_shift` = bursts per period from all earlier
+matches (shifts only where the hub was active); `path_heat` = line density of the collect->shoot cycle segments in a
+0.25 m field-frame grid, blurred and normalised to 1. Results are cached per process in `matchplan._TLC` (first build of an
+event ~30-45 s, then only new matches). Accuracy is measured leave-future-out by `tools/eval_timeline.py` (tune:
+2026wasam + earliest 20 2026wamil; report: later 2026wamil; log in `.work/redesign/timeline-eval.md`); the same errors
+are computed in every build into `calib.timeline` (pos_err_m, by_phase, zone_hit, first_score_t_err_s,
+cycles_per_shift_mae, baseline_stay_pos_err_m). Honest reading: a single believable path cannot know the phase of a
+cycle loop, so per-second position error is ~4 m (stay-at-start 4.6, event-station median 3.7 but that is a smear
+between lanes: it is 1.2 m from the real route, the model 0.7 m); event times (4 s) and cycles per shift (MAE 0.72 vs 0.81
+event average) are the reliable parts. Versions v1..v7 are in `timeline.OPTS`; `VERSION` is the one shipped.
